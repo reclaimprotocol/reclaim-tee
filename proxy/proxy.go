@@ -30,7 +30,7 @@ const (
 	// TCP reverse proxy constants
 	listenAddressHTTP, listenAddressHTTPS           = ":80", ":443"
 	vsockHTTPPort, vsockHTTPSPort, vsockForwardPort = 8080, 8443, 8444
-	vsockCID, vsockParentCID                        = 16, 3
+	vsockCID                                        = 16
 	retryDelay, keepAliveInterval                   = 1 * time.Second, 15 * time.Second
 	maxConnectionRetries, circuitBreakerThreshold   = 5, 5
 	initialBackoffDelay, maxBackoffDelay            = 100 * time.Millisecond, 10 * time.Second
@@ -157,23 +157,23 @@ func startTCPReverseProxy(ctx context.Context) {
 
 	httpsListener, err := net.Listen("tcp", listenAddressHTTPS)
 	if err != nil {
+		_ = httpListener.Close()
 		log.Fatalf("Failed to listen on %s: %v", listenAddressHTTPS, err)
-		httpListener.Close()
 	}
 	log.Printf("Successfully started TCP listener on %s", listenAddressHTTPS)
 
 	vsockListener, err := vsock.Listen(vsockForwardPort, nil)
 	if err != nil {
+		_ = httpListener.Close()
+		_ = httpsListener.Close()
 		log.Fatalf("Failed to listen on vsock port %d: %v", vsockForwardPort, err)
-		httpListener.Close()
-		httpsListener.Close()
 	}
 	log.Printf("Successfully started vsock listener on port %d", vsockForwardPort)
 
 	defer func() {
-		httpListener.Close()
-		httpsListener.Close()
-		vsockListener.Close()
+		_ = httpListener.Close()
+		_ = httpsListener.Close()
+		_ = vsockListener.Close()
 		log.Println("TCP reverse proxy stopped")
 	}()
 
@@ -260,7 +260,7 @@ func startVSockProxy(ctx context.Context) {
 
 	// Give accept loop a moment to process cancellation before closing listener
 	time.Sleep(100 * time.Millisecond)
-	listener.Close()
+	_ = listener.Close()
 	wg.Wait()
 	log.Println("VSock proxy shut down gracefully")
 }
@@ -293,7 +293,7 @@ func NewVSockFactory(vsockPort uint32) *VSockConnectionFactory {
 			}
 			log.Printf("Successfully connected to enclave %s in %v", conn.RemoteAddr(), time.Since(startTime))
 			if deadline, ok := ctx.Deadline(); ok {
-				conn.SetDeadline(deadline)
+				_ = conn.SetDeadline(deadline)
 			}
 			return conn, nil
 		},
@@ -389,8 +389,8 @@ func handleReverseConnection(ctx context.Context, clientConn net.Conn, vsockPort
 	defer clientConn.Close()
 
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(keepAliveInterval)
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(keepAliveInterval)
 	}
 
 	manager := getProxyManager()
@@ -439,7 +439,7 @@ func handleReverseConnection(ctx context.Context, clientConn net.Conn, vsockPort
 
 	defer func() {
 		log.Printf("Closing HTTP connection to enclave port %d: %s", vsockPort, enclaveConn.RemoteAddr())
-		enclaveConn.Close()
+		_ = enclaveConn.Close()
 	}()
 
 	manager.circuitBreaker.OnSuccess()
@@ -450,7 +450,7 @@ func handleReverseConnection(ctx context.Context, clientConn net.Conn, vsockPort
 
 	go func() {
 		defer wg.Done()
-		enclaveConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
+		_ = enclaveConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
 		_, err := io.Copy(enclaveConn, clientConn)
 		if err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
 			log.Printf("Error copying from client to enclave on vsock port %d: %v", vsockPort, err)
@@ -459,7 +459,7 @@ func handleReverseConnection(ctx context.Context, clientConn net.Conn, vsockPort
 
 	go func() {
 		defer wg.Done()
-		clientConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
+		_ = clientConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
 		_, err := io.Copy(clientConn, enclaveConn)
 		if err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
 			log.Printf("Error copying from enclave to client on vsock port %d: %v", vsockPort, err)
@@ -529,8 +529,8 @@ func handleForwardConnection(ctx context.Context, enclaveConn net.Conn) {
 	defer externalConn.Close()
 
 	if tcpConn, ok := externalConn.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(keepAliveInterval)
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(keepAliveInterval)
 	}
 	log.Printf("Connected to external target %s", target)
 
@@ -539,7 +539,7 @@ func handleForwardConnection(ctx context.Context, enclaveConn net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		externalConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
+		_ = externalConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
 		_, err := io.Copy(externalConn, reader)
 		if err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
 			log.Printf("Error copying enclave to external: %v", err)
@@ -548,7 +548,7 @@ func handleForwardConnection(ctx context.Context, enclaveConn net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		enclaveConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
+		_ = enclaveConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
 		_, err := io.Copy(enclaveConn, externalConn)
 		if err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
 			log.Printf("Error copying external to enclave: %v", err)
@@ -568,15 +568,14 @@ func handleVSockConnection(conn net.Conn, kmsClient *kms.Client, config VSockPro
 	// Handle multiple requests on the same connection
 	for {
 		// Set read timeout for each request
-		conn.SetReadDeadline(time.Now().Add(config.Timeout))
+		_ = conn.SetReadDeadline(time.Now().Add(config.Timeout))
 
 		buf := make([]byte, config.MaxRequestSize)
 		n, err := conn.Read(buf)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				log.Println("VSock connection idle timeout, closing")
-			} else {
-				log.Printf("VSock connection closed by client or read error: %v", err)
 			}
 			return
 		}
@@ -610,7 +609,7 @@ func handleVSockConnection(conn net.Conn, kmsClient *kms.Client, config VSockPro
 		cancel()
 
 		// Clear read deadline after successful request
-		conn.SetReadDeadline(time.Time{})
+		_ = conn.SetReadDeadline(time.Time{})
 	}
 }
 
