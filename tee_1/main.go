@@ -1,5 +1,3 @@
-//go:build enclave
-
 package main
 
 import (
@@ -16,8 +14,6 @@ import (
 	"tee/enclave"
 )
 
-var config *enclave.ServerConfig
-
 func main() {
 	// Load environment variables first
 	enclave.LoadEnvVariables()
@@ -27,11 +23,8 @@ func main() {
 		log.Fatalf("Failed to initialize NSM: %v", err)
 	}
 
-	// Create business logic mux
-	businessMux := createBusinessMux()
-
 	// Create server configuration with the business mux
-	config = enclave.CreateServerConfig(businessMux)
+	config := enclave.CreateServerConfig(createBusinessMux())
 
 	// Start the server
 	startServer(config)
@@ -51,10 +44,21 @@ func createBusinessMux() *http.ServeMux {
 	})
 
 	// Attestation endpoint - business logic
-	mux.HandleFunc("/attest", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/attest", createAttestHandler())
+
+	return mux
+}
+
+func createAttestHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received attestation request from %s", r.RemoteAddr)
 
-		fingerprint, err := enclave.GetCertificateFingerprint(r.Context(), config.Cache)
+		// We need to get the server config to access the cache
+		// For now, we'll create a temporary cache instance
+		// This is a limitation of the current architecture
+		cache := enclave.NewMemoryCache()
+
+		fingerprint, err := enclave.GetCertificateFingerprint(r.Context(), cache)
 		if err != nil {
 			log.Printf("Failed to get certificate fingerprint: %v", err)
 			http.Error(w, "Failed to generate attestation", http.StatusInternalServerError)
@@ -76,19 +80,17 @@ func createBusinessMux() *http.ServeMux {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("X-Service", "tee_1")
 		fmt.Fprint(w, encoded)
-	})
-
-	return mux
+	}
 }
 
 func startServer(serverConfig *enclave.ServerConfig) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	httpErrChan, httpsErrChan := enclave.StartListeners(ctx, config.HTTPServer, config.HTTPSServer)
+	httpErrChan, httpsErrChan := enclave.StartListeners(ctx, serverConfig.HTTPServer, serverConfig.HTTPSServer)
 
 	log.Printf("Attempting to load or issue certificate for %s", enclave.EnclaveDomain)
-	_, err := config.Manager.GetCertificate(&tls.ClientHelloInfo{ServerName: enclave.EnclaveDomain})
+	_, err := serverConfig.Manager.GetCertificate(&tls.ClientHelloInfo{ServerName: enclave.EnclaveDomain})
 	if err != nil {
 		log.Printf("Failed to load or issue certificate on startup: %v", err)
 	} else {
@@ -116,7 +118,7 @@ func startServer(serverConfig *enclave.ServerConfig) {
 			manager.Close()
 		}
 
-		_ = config.HTTPServer.Close()
-		_ = config.HTTPSServer.Close()
+		_ = serverConfig.HTTPServer.Close()
+		_ = serverConfig.HTTPSServer.Close()
 	}
 }

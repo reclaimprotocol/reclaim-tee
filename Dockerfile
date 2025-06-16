@@ -5,7 +5,7 @@ ENV GOOS=linux
 ENV GOARCH=amd64
 WORKDIR /src
 COPY . .
-RUN go build -a -installsuffix cgo -ldflags="-w -s" -tags "enclave,netgo,osusergo" -o /bin/tee_1 ./tee_1
+RUN go build -a -installsuffix cgo -ldflags="-w -s" -ldflags="-extldflags=-static" -tags "enclave,netgo,osusergo" -o /bin/tee_1 ./tee_1
 
 # Release Image Stage  
 FROM scratch AS app-container
