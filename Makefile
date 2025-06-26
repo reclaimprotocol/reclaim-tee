@@ -4,32 +4,32 @@
 
 # Build all components
 build:
-	@echo "🔨 Building TEE components..."
+	@echo "Building TEE components..."
 	go build -o bin/tee_k ./tee_k
 	go build -o bin/tee_t ./tee_t  
 	go build -o bin/demo-client ./cmd/demo-client
 	go build -o bin/test-demo ./cmd/test-demo
-	@echo "✅ Build complete"
+	@echo "Build complete"
 
 # Run comprehensive tests
 test:
-	@echo "🧪 Running comprehensive tests..."
+	@echo "Running comprehensive tests..."
 	go test ./enclave -v
 	go test ./tee_k -v  
 	go test ./tee_t -v
-	@echo "✅ Tests complete"
+	@echo "Tests complete"
 
 # Run the local redaction logic test
 test-demo:
-	@echo "🧪 Running redaction protocol test..."
+	@echo "Running redaction protocol test..."
 	@go run ./cmd/test-demo
-	@echo "✅ Protocol test complete"
+	@echo "Protocol test complete"
 
 # Clean up build artifacts
 clean:
-	@echo "🧹 Cleaning up..."
+	@echo "Cleaning up..."
 	@rm -rf bin/
-	@echo "✅ Cleanup complete"
+	@echo "Cleanup complete"
 
 # Help
 help:
@@ -42,10 +42,10 @@ help:
 	@echo "  clean      - Clean up build artifacts"
 	@echo ""
 	@echo "Manual Demo Steps:"
-	@echo "  1. Terminal 1: go run ./tee_k"
+	@echo "  1. Terminal 1: PORT=8080 go run ./tee_k"
 	@echo "  2. Terminal 2: PORT=8081 go run ./tee_t"
 	@echo "  3. Terminal 3: go run ./cmd/demo-client"
 	@echo ""
 	@echo "Individual service targets:"
-	@echo "  go run ./tee_k      - Start TEE_K on :8080"
-	@echo "  PORT=8081 go run ./tee_t  - Start TEE_T on :8081" 
+	@echo "  PORT=8080 go run ./tee_k  - Start TEE_K on :8080 (demo mode)"
+	@echo "  PORT=8081 go run ./tee_t  - Start TEE_T on :8081 (demo mode)" 

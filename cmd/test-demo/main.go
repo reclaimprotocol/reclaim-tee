@@ -17,16 +17,19 @@ type HTTPRequestData struct {
 }
 
 func createRedactionRequest(httpReq HTTPRequestData) (*enclave.RedactionRequest, error) {
-	// For demo purposes, we'll redact the "Auth" header
-	// In a real implementation, this would be more sophisticated
+	// Implement the new redaction structure:
+	// R_NS: domain, URL, and all public headers (goes as plaintext)
+	// R_S: secret auth header (sensitive but not used in proof)
+	// R_SP: bank account header (sensitive and used in proof)
 
-	// Create a proper copy without the auth header for non-sensitive part
+	// Extract sensitive values
 	authValue := httpReq.Headers["Auth"]
+	bankAccountValue := httpReq.Headers["X-Bank-Account"]
 
-	// Make a deep copy of headers without the Auth header
+	// R_NS: Create non-sensitive request with all public headers (domain, URL, public headers)
 	nonSensitiveHeaders := make(map[string]string)
 	for k, v := range httpReq.Headers {
-		if k != "Auth" {
+		if k != "Auth" && k != "X-Bank-Account" {
 			nonSensitiveHeaders[k] = v
 		}
 	}
@@ -43,16 +46,19 @@ func createRedactionRequest(httpReq HTTPRequestData) (*enclave.RedactionRequest,
 		return nil, err
 	}
 
-	// The sensitive part is just the auth header
+	// R_S: The sensitive part is the auth header (not used in proof)
 	authHeaderData := map[string]string{"Auth": authValue}
 	sensitiveBytes, err := json.Marshal(authHeaderData)
 	if err != nil {
 		return nil, err
 	}
 
-	// For this demo, we'll use empty sensitive proof
-	// In practice, this might contain proof-related data
-	sensitiveProofBytes := []byte("")
+	// R_SP: The sensitive proof part is the bank account header (used in proof)
+	bankAccountData := map[string]string{"X-Bank-Account": bankAccountValue}
+	sensitiveProofBytes, err := json.Marshal(bankAccountData)
+	if err != nil {
+		return nil, err
+	}
 
 	return &enclave.RedactionRequest{
 		NonSensitive:   nonSensitiveBytes,
@@ -62,12 +68,17 @@ func createRedactionRequest(httpReq HTTPRequestData) (*enclave.RedactionRequest,
 }
 
 func reconstructHTTPRequest(redactionRequest *enclave.RedactionRequest) (*HTTPRequestData, error) {
-	// Combine non-sensitive and sensitive parts
+	// Combine non-sensitive, sensitive, and sensitive proof parts
 	var combinedRequest HTTPRequestData
 
 	// Parse non-sensitive part
 	if err := json.Unmarshal(redactionRequest.NonSensitive, &combinedRequest); err != nil {
 		return nil, fmt.Errorf("failed to parse non-sensitive data: %v", err)
+	}
+
+	// Initialize headers if nil
+	if combinedRequest.Headers == nil {
+		combinedRequest.Headers = make(map[string]string)
 	}
 
 	// Parse and merge sensitive part (Auth header)
@@ -78,10 +89,20 @@ func reconstructHTTPRequest(redactionRequest *enclave.RedactionRequest) (*HTTPRe
 		}
 
 		// Merge sensitive headers back into the request
-		if combinedRequest.Headers == nil {
-			combinedRequest.Headers = make(map[string]string)
-		}
 		for k, v := range sensitiveHeaders {
+			combinedRequest.Headers[k] = v
+		}
+	}
+
+	// Parse and merge sensitive proof part (Bank account header)
+	if len(redactionRequest.SensitiveProof) > 0 {
+		var sensitiveProofHeaders map[string]string
+		if err := json.Unmarshal(redactionRequest.SensitiveProof, &sensitiveProofHeaders); err != nil {
+			return nil, fmt.Errorf("failed to parse sensitive proof data: %v", err)
+		}
+
+		// Merge sensitive proof headers back into the request
+		for k, v := range sensitiveProofHeaders {
 			combinedRequest.Headers[k] = v
 		}
 	}
@@ -96,9 +117,11 @@ func printHTTPRequest(title string, req HTTPRequestData) {
 	fmt.Printf("     Headers:\n")
 	for k, v := range req.Headers {
 		if k == "Auth" {
-			fmt.Printf("       %s: %s (🔒 SENSITIVE)\n", k, v)
+			fmt.Printf("       %s: %s (R_S - SENSITIVE)\n", k, v)
+		} else if k == "X-Bank-Account" {
+			fmt.Printf("       %s: %s (R_SP - SENSITIVE PROOF)\n", k, v)
 		} else {
-			fmt.Printf("       %s: %s\n", k, v)
+			fmt.Printf("       %s: %s (R_NS - PUBLIC)\n", k, v)
 		}
 	}
 	if req.Body != "" {
@@ -109,16 +132,16 @@ func printHTTPRequest(title string, req HTTPRequestData) {
 
 func printRedactionRequest(req *enclave.RedactionRequest) {
 	fmt.Printf("   Redaction Breakdown:\n")
-	fmt.Printf("     Non-sensitive data: %d bytes\n", len(req.NonSensitive))
-	fmt.Printf("     Sensitive data: %d bytes (Auth header)\n", len(req.Sensitive))
-	fmt.Printf("     Sensitive proof data: %d bytes\n", len(req.SensitiveProof))
+	fmt.Printf("     R_NS (Non-sensitive): %d bytes (domain, URL, public headers)\n", len(req.NonSensitive))
+	fmt.Printf("     R_S (Sensitive): %d bytes (Auth header - not used in proof)\n", len(req.Sensitive))
+	fmt.Printf("     R_SP (Sensitive Proof): %d bytes (Bank account header - used in proof)\n", len(req.SensitiveProof))
 	fmt.Printf("     Total: %d bytes\n", len(req.NonSensitive)+len(req.Sensitive)+len(req.SensitiveProof))
 	fmt.Println()
 }
 
 // testDemo runs a local test of the redaction logic without network calls
 func testDemo() error {
-	fmt.Println("🧪 Testing Redaction Protocol Logic")
+	fmt.Println("Testing Redaction Protocol Logic")
 	fmt.Println(strings.Repeat("=", 40))
 
 	// Step 1: Create test HTTP request
@@ -126,14 +149,18 @@ func testDemo() error {
 		Method: "GET",
 		URL:    "http://example.com",
 		Headers: map[string]string{
-			"Host":       "example.com",
-			"User-Agent": "TEE-Demo-Client/1.0",
-			"Auth":       "Bearer secret-token-12345",
+			"Host":            "example.com",
+			"User-Agent":      "TEE-Demo-Client/1.0",
+			"Accept":          "text/html,application/xhtml+xml",
+			"Accept-Language": "en-US,en;q=0.9",
+			"Auth":            "Bearer secret-token-12345", // R_S - sensitive
+			"X-Bank-Account":  "ACC-987654321-TEST-BANK",   // R_SP - sensitive proof
+			"Connection":      "close",
 		},
 		Body: "",
 	}
 
-	fmt.Println("📝 Original Request Created:")
+	fmt.Println("Original Request Created:")
 	printHTTPRequest("Test Request", originalRequest)
 
 	// Step 2: Create redaction request
@@ -142,7 +169,7 @@ func testDemo() error {
 		return fmt.Errorf("failed to create redaction request: %v", err)
 	}
 
-	fmt.Println("🔒 Redaction Request:")
+	fmt.Println("Redaction Request:")
 	printRedactionRequest(redactionRequest)
 
 	// Step 3: Generate streams and commitments
@@ -166,7 +193,7 @@ func testDemo() error {
 		return fmt.Errorf("failed to compute commitments: %v", err)
 	}
 
-	fmt.Printf("🎲 Cryptographic Setup:\n")
+	fmt.Printf("Cryptographic Setup:\n")
 	fmt.Printf("   Streams: S=%d bytes, SP=%d bytes\n",
 		len(streams.StreamS), len(streams.StreamSP))
 	fmt.Printf("   Commitments: S=%d bytes, SP=%d bytes\n",
@@ -176,14 +203,14 @@ func testDemo() error {
 	if err := processor.VerifyCommitments(streams, keys, commitments); err != nil {
 		return fmt.Errorf("commitment verification failed: %v", err)
 	}
-	fmt.Println("   ✅ Commitment verification passed")
+	fmt.Println("   Commitment verification passed")
 
 	// Step 5: Apply redaction
 	redactedData, err := processor.ApplyRedaction(redactionRequest, streams)
 	if err != nil {
 		return fmt.Errorf("failed to apply redaction: %v", err)
 	}
-	fmt.Printf("   ✅ Redaction applied: %d bytes → %d bytes\n",
+	fmt.Printf("   Redaction applied: %d bytes → %d bytes\n",
 		len(redactionRequest.NonSensitive)+len(redactionRequest.Sensitive)+len(redactionRequest.SensitiveProof),
 		len(redactedData))
 
@@ -199,11 +226,11 @@ func testDemo() error {
 		return fmt.Errorf("failed to reconstruct HTTP request: %v", err)
 	}
 
-	fmt.Println("🔄 Reconstructed Request:")
+	fmt.Println("Reconstructed Request:")
 	printHTTPRequest("Recovered Request", *reconstructedHTTP)
 
 	// Step 8: Verify reconstruction is correct
-	fmt.Printf("   🔍 Verification:\n")
+	fmt.Printf("   Verification:\n")
 	fmt.Printf("     Original Auth: '[%s]'\n", originalRequest.Headers["Auth"])
 	fmt.Printf("     Reconstructed Auth: '[%s]'\n", reconstructedHTTP.Headers["Auth"])
 
@@ -211,10 +238,10 @@ func testDemo() error {
 		return fmt.Errorf("auth header mismatch: got '%s', want '%s'",
 			reconstructedHTTP.Headers["Auth"], originalRequest.Headers["Auth"])
 	}
-	fmt.Println("   ✅ Request reconstruction verified successfully")
+	fmt.Println("   Request reconstruction verified successfully")
 
 	// Step 9: Test JSON serialization
-	fmt.Println("📋 Testing JSON Serialization:")
+	fmt.Println("Testing JSON Serialization:")
 
 	testData := map[string]interface{}{
 		"redaction_request": redactionRequest,
@@ -227,15 +254,15 @@ func testDemo() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal test data: %v", err)
 	}
-	fmt.Printf("   ✅ JSON serialization successful (%d bytes)\n", len(jsonData))
+	fmt.Printf("   JSON serialization successful (%d bytes)\n", len(jsonData))
 
 	// Step 10: Cleanup
 	recoveredRequest.SecureZero()
 	streams.SecureZero()
 	keys.SecureZero()
-	fmt.Println("   ✅ Secure cleanup completed")
+	fmt.Println("   Secure cleanup completed")
 
-	fmt.Println("\n🎉 All redaction protocol tests passed!")
+	fmt.Println("\nAll redaction protocol tests passed!")
 	return nil
 }
 

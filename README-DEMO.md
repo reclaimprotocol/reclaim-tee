@@ -1,8 +1,8 @@
-# 🚀 TEE Redaction Protocol - End-to-End Demo
+# TEE Redaction Protocol - End-to-End Demo
 
 This demo showcases the complete redaction protocol implementation with a real HTTP request to example.com, demonstrating both request and response redaction capabilities.
 
-## 📋 What This Demo Shows
+## What This Demo Shows
 
 ### **Scenario**: HTTP Request to example.com with Redaction
 - **Request Redaction**: Hides a sensitive "Auth" header from the HTTP request
@@ -20,13 +20,13 @@ This demo showcases the complete redaction protocol implementation with a real H
 8. **TEE_K** applies response redaction (extracts only "Example Domain")
 9. **Client** receives redacted result
 
-## 🛠 Prerequisites
+## Prerequisites
 
 - Go 1.21+ installed
 - Internet connection (for example.com request)
 - Two terminal windows
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Option 1: Using Makefile (Recommended)
 ```bash
@@ -45,15 +45,15 @@ make clean          # Clean up processes and build artifacts
 #### Terminal 1 - Start TEE_K
 ```bash
 cd /path/to/reclaim-tee
-go run ./tee_k
-# TEE_K will start on :8080
+PORT=8080 go run ./tee_k
+# TEE_K will start on :8080 in demo mode
 ```
 
 #### Terminal 2 - Start TEE_T  
 ```bash
 cd /path/to/reclaim-tee
 PORT=8081 go run ./tee_t
-# TEE_T will start on :8081
+# TEE_T will start on :8081 in demo mode
 ```
 
 #### Terminal 3 - Run Demo
@@ -62,18 +62,18 @@ cd /path/to/reclaim-tee
 go run ./cmd/demo-client
 ```
 
-## 📊 Expected Output
+## Expected Output
 
 ```
-🚀 TEE Redaction Protocol - End-to-End Demo
+TEE Redaction Protocol - End-to-End Demo
 ==================================================
 
-📋 Demo Configuration:
+Demo Configuration:
    Target URL: http://example.com
    Session ID: demo-session-1234567890
    Auth Header: Bearer secret-token-12345 (will be redacted)
 
-📝 Step 1: Creating HTTP request to example.com
+Step 1: Creating HTTP request to example.com
    Original Request:
      Method: GET
      URL: http://example.com
@@ -82,38 +82,38 @@ go run ./cmd/demo-client
        User-Agent: TEE-Demo-Client/1.0
        Accept: text/html,application/xhtml+xml
        Accept-Language: en-US,en;q=0.9
-       Auth: Bearer secret-token-12345 (🔒 SENSITIVE)
+       Auth: Bearer secret-token-12345 (SENSITIVE)
        Connection: close
 
-🔒 Step 2: Separating sensitive data for redaction
+Step 2: Separating sensitive data for redaction
    Redaction Breakdown:
      Non-sensitive data: 156 bytes
      Sensitive data: 32 bytes (Auth header)
      Sensitive proof data: 0 bytes
      Total: 188 bytes
 
-🎲 Step 3: Generating redaction streams and commitments
+Step 3: Generating redaction streams and commitments
    Generated streams: S=32 bytes, SP=0 bytes
    Generated commitments: S=32 bytes, SP=32 bytes
 
-📡 Step 4: Sending redaction streams to TEE_T
-   ✅ TEE_T verified commitments and stored session data
+Step 4: Sending redaction streams to TEE_T
+   TEE_T verified commitments and stored session data
 
-🔀 Step 5: Applying redaction and sending to TEE_K
+Step 5: Applying redaction and sending to TEE_K
 
-📋 Step 6: Processing results
-   🎉 Redaction Protocol Results:
+Step 6: Processing results
+   Redaction Protocol Results:
      Status: success
      Original response size: 1256 bytes
      Redacted response size: 14 bytes
      Redacted content: "Example Domain"
-     ✅ Auth header successfully redacted from request
-     ✅ Response successfully redacted to show only target text
+     Auth header successfully redacted from request
+     Response successfully redacted to show only target text
 
-✅ Demo completed successfully!
+Demo completed successfully!
 ```
 
-## 🔍 What's Being Demonstrated
+## What's Being Demonstrated
 
 ### **Security Features**
 - **Commitment Verification**: HMAC-SHA256 commitments ensure streams haven't been tampered with
@@ -133,7 +133,7 @@ go run ./cmd/demo-client
 - **Response Filtering**: Demonstrating selective response data extraction
 - **Client Reference**: Complete example for TypeScript client development
 
-## 🧪 Technical Details
+## Technical Details
 
 ### **Data Structures**
 - `RedactionRequest`: Splits data into non-sensitive, sensitive, and sensitive-proof parts
@@ -150,7 +150,7 @@ go run ./cmd/demo-client
 - **XOR Redaction**: For reversible data hiding
 - **Secure Random**: Cryptographically secure stream generation
 
-## 🔧 Customization
+## Customization
 
 You can modify the demo by editing `cmd/demo-client/main.go`:
 
@@ -163,16 +163,21 @@ config := DemoConfig{
 }
 ```
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### **Connection Errors**
-- Ensure TEE_K is running on :8080
-- Ensure TEE_T is running on :8081  
+- Ensure TEE_K is running on :8080 with `PORT=8080 go run ./tee_k`
+- Ensure TEE_T is running on :8081 with `PORT=8081 go run ./tee_t`
 - Check firewall settings
+
+### **NSM Initialization Errors**
+- The services need `PORT` environment variable to run in demo mode
+- Without `PORT`, they try to initialize NSM (only available in actual TEE environments)
+- Always use `PORT=8080 go run ./tee_k` and `PORT=8081 go run ./tee_t` for local development
 
 ### **Demo Failures**
 - Verify internet connection for example.com access
-- Check that both TEE services started successfully
+- Check that both TEE services started successfully in demo mode
 - Review logs in TEE service terminals
 
 ### **Port Conflicts**
@@ -183,8 +188,13 @@ const (
     TEE_T_URL = "http://localhost:8081"  // Change if port 8081 is busy  
 )
 ```
+- Update service startup commands accordingly:
+```bash
+PORT=9080 go run ./tee_k  # Use different port
+PORT=9081 go run ./tee_t  # Use different port
+```
 
-## 📝 Next Steps
+## Next Steps
 
 This demo serves as a reference implementation for:
 - **TypeScript Client Development**: Shows complete protocol flow

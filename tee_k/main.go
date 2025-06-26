@@ -1109,6 +1109,13 @@ func main() {
 	// Load environment variables first
 	enclave.LoadEnvVariables()
 
+	// Check for demo mode (PORT environment variable)
+	if port := os.Getenv("PORT"); port != "" {
+		log.Printf("Demo mode: Starting TEE_K on HTTP port %s", port)
+		startDemoServer(port)
+		return
+	}
+
 	// Initialize NSM for crypto operations
 	if err := enclave.InitializeNSM(); err != nil {
 		log.Fatalf("Failed to initialize NSM: %v", err)
@@ -1132,6 +1139,39 @@ func main() {
 
 	// Start the server
 	startServer(config)
+}
+
+// startDemoServer starts a simple HTTP server for demo purposes
+func startDemoServer(port string) {
+	// Initialize TEE communication client for TEE_T coordination
+	teeT_URL := os.Getenv("TEE_T_URL")
+	if teeT_URL == "" {
+		// Use HTTP for local development
+		teeT_URL = "http://localhost:8081" // Default for local development
+	}
+
+	teeCommClient = enclave.NewTEECommClient(teeT_URL)
+	log.Printf("TEE_K Demo: TEE communication client initialized for TEE_T at %s", teeT_URL)
+
+	// Start WebSocket hub for any WebSocket functionality
+	go wsHub.run()
+
+	mux := createBusinessMux()
+
+	server := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+	}
+
+	log.Printf("TEE_K demo server starting on port %s", port)
+	log.Printf("Available endpoints:")
+	log.Printf("  GET / - Basic status check")
+	log.Printf("  WS /ws - WebSocket endpoint for MPC protocol")
+	log.Printf("  POST /demo-redacted-request - End-to-end redaction demo")
+
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatalf("Demo server failed: %v", err)
+	}
 }
 
 func createBusinessMux() *http.ServeMux {
