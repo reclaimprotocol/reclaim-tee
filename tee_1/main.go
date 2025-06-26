@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -36,17 +38,193 @@ func createBusinessMux() *http.ServeMux {
 	// Root endpoint - business logic
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received %s request for %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
-		response := fmt.Sprintf("Hello from TEE_1 service! Received %s request for %s", r.Method, r.URL.Path)
+		response := fmt.Sprintf("Hello from TEE_T service! I handle tag computation for Split AEAD. Received %s request for %s", r.Method, r.URL.Path)
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("X-Enclave", "Nitro")
-		w.Header().Set("X-Service", "tee_1")
+		w.Header().Set("X-Service", "tee_t")
 		fmt.Fprintln(w, response)
 	})
 
 	// Attestation endpoint - business logic
 	mux.HandleFunc("/attest", createAttestHandler())
 
+	// Split AEAD tag computation endpoint
+	mux.HandleFunc("/compute-tag", handleComputeTag)
+
+	// Tag verification endpoint
+	mux.HandleFunc("/verify-tag", handleVerifyTag)
+
 	return mux
+}
+
+// TagComputeRequest represents a tag computation request from TEE_K
+type TagComputeRequest struct {
+	Ciphertext []byte              `json:"ciphertext"`
+	TagSecrets *enclave.TagSecrets `json:"tag_secrets"`
+}
+
+// TagComputeResponse represents the response with computed tag
+type TagComputeResponse struct {
+	Tag    []byte `json:"tag"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// TagVerifyRequest represents a tag verification request
+type TagVerifyRequest struct {
+	Ciphertext  []byte              `json:"ciphertext"`
+	ExpectedTag []byte              `json:"expected_tag"`
+	TagSecrets  *enclave.TagSecrets `json:"tag_secrets"`
+}
+
+// TagVerifyResponse represents the tag verification response
+type TagVerifyResponse struct {
+	Verified bool   `json:"verified"`
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
+}
+
+// handleComputeTag processes tag computation requests from TEE_K
+func handleComputeTag(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Printf("Received tag computation request from %s", r.RemoteAddr)
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Failed to read request body: %v", err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse request
+	var req TagComputeRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("Failed to parse tag compute request: %v", err)
+		http.Error(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// Validate input
+	if req.TagSecrets == nil {
+		log.Printf("Tag secrets missing in request")
+		http.Error(w, "Tag secrets required", http.StatusBadRequest)
+		return
+	}
+
+	// Create tag computer
+	tagComputer := enclave.NewSplitAEADTagComputer()
+
+	// Compute tag
+	tag, err := tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
+
+	var response TagComputeResponse
+	if err != nil {
+		log.Printf("Tag computation failed: %v", err)
+		response = TagComputeResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("Tag computation failed: %v", err),
+		}
+	} else {
+		log.Printf("Tag computation successful (%d bytes)", len(tag))
+		response = TagComputeResponse{
+			Tag:    tag,
+			Status: "success",
+		}
+	}
+
+	// Send response
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Service", "tee_t")
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write(responseJSON)
+}
+
+// handleVerifyTag processes tag verification requests
+func handleVerifyTag(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Printf("Received tag verification request from %s", r.RemoteAddr)
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Failed to read request body: %v", err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse request
+	var req TagVerifyRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("Failed to parse tag verify request: %v", err)
+		http.Error(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// Validate input
+	if req.TagSecrets == nil {
+		log.Printf("Tag secrets missing in request")
+		http.Error(w, "Tag secrets required", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.ExpectedTag) == 0 {
+		log.Printf("Expected tag missing in request")
+		http.Error(w, "Expected tag required", http.StatusBadRequest)
+		return
+	}
+
+	// Create tag computer
+	tagComputer := enclave.NewSplitAEADTagComputer()
+
+	// Verify tag
+	err = tagComputer.VerifyTag(req.Ciphertext, req.ExpectedTag, req.TagSecrets)
+
+	var response TagVerifyResponse
+	if err != nil {
+		log.Printf("Tag verification failed: %v", err)
+		response = TagVerifyResponse{
+			Verified: false,
+			Status:   "failed",
+			Error:    fmt.Sprintf("Tag verification failed: %v", err),
+		}
+	} else {
+		log.Printf("Tag verification successful")
+		response = TagVerifyResponse{
+			Verified: true,
+			Status:   "success",
+		}
+	}
+
+	// Send response
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Service", "tee_t")
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write(responseJSON)
 }
 
 func createAttestHandler() http.HandlerFunc {
@@ -78,7 +256,7 @@ func createAttestHandler() http.HandlerFunc {
 
 		encoded := base64.StdEncoding.EncodeToString(attestationDoc)
 		w.Header().Set("Content-Type", "text/plain")
-		w.Header().Set("X-Service", "tee_1")
+		w.Header().Set("X-Service", "tee_t")
 		fmt.Fprint(w, encoded)
 	}
 }
@@ -109,7 +287,7 @@ func startServer(serverConfig *enclave.ServerConfig) {
 			log.Fatalf("HTTPS server failed: %v", err)
 		}
 	case <-sigChan:
-		log.Println("Received shutdown signal, stopping TEE_1 service...")
+		log.Println("Received shutdown signal, stopping TEE_T service...")
 		cancel()
 
 		// Gracefully close connection manager

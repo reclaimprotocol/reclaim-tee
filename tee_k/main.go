@@ -453,6 +453,8 @@ func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 	type EncryptRequestData struct {
 		RequestData []byte            `json:"request_data"`
 		Commitments map[string][]byte `json:"commitments"`
+		Nonce       []byte            `json:"nonce"`
+		AAD         []byte            `json:"aad"`
 	}
 
 	var data EncryptRequestData
@@ -471,10 +473,56 @@ func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 		return
 	}
 
-	// TODO: Implement split AEAD encryption
-	// For now, send placeholder response
-	log.Printf("WebSocket: Processing encrypt request for session %s (%d bytes)",
-		c.sessionID, len(data.RequestData))
+	// Get session keys for Split AEAD
+	sessionKeys := session.TLSKeys
+	if sessionKeys == nil {
+		c.sendError("Session keys not available")
+		return
+	}
+
+	// Determine Split AEAD mode based on cipher suite
+	var mode enclave.SplitAEADMode
+	switch sessionKeys.CipherSuite {
+	case enclave.TLS_AES_128_GCM_SHA256, enclave.TLS_AES_256_GCM_SHA384:
+		mode = enclave.SplitAEAD_AES_GCM
+	case enclave.TLS_CHACHA20_POLY1305_SHA256:
+		mode = enclave.SplitAEAD_CHACHA20_POLY1305
+	default:
+		c.sendError(fmt.Sprintf("Unsupported cipher suite for Split AEAD: 0x%04x", sessionKeys.CipherSuite))
+		return
+	}
+
+	// Create Split AEAD encryptor with client write key
+	encryptor, err := enclave.NewSplitAEADEncryptor(mode, sessionKeys.ClientWriteKey)
+	if err != nil {
+		c.sendError(fmt.Sprintf("Failed to create Split AEAD encryptor: %v", err))
+		return
+	}
+	defer encryptor.SecureZero()
+
+	// Use client write IV if nonce not provided
+	nonce := data.Nonce
+	if len(nonce) == 0 {
+		nonce = sessionKeys.ClientWriteIV
+	}
+
+	log.Printf("WebSocket: Processing encrypt request for session %s (%d bytes, cipher 0x%04x)",
+		c.sessionID, len(data.RequestData), sessionKeys.CipherSuite)
+
+	// Perform Split AEAD encryption
+	ciphertext, tagSecrets, err := encryptor.EncryptWithoutTag(nonce, data.RequestData, data.AAD)
+	if err != nil {
+		c.sendError(fmt.Sprintf("Split AEAD encryption failed: %v", err))
+		return
+	}
+	defer tagSecrets.SecureZero()
+
+	// Serialize tag secrets for transmission to TEE_T
+	tagSecretsJSON, err := json.Marshal(tagSecrets)
+	if err != nil {
+		c.sendError(fmt.Sprintf("Failed to serialize tag secrets: %v", err))
+		return
+	}
 
 	type EncryptResponseData struct {
 		EncryptedData []byte `json:"encrypted_data"`
@@ -482,10 +530,9 @@ func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 		Status        string `json:"status"`
 	}
 
-	// Placeholder - in real implementation, this would do split AEAD
 	response := EncryptResponseData{
-		EncryptedData: data.RequestData, // Placeholder
-		TagSecrets:    []byte("tag_secrets_placeholder"),
+		EncryptedData: ciphertext,
+		TagSecrets:    tagSecretsJSON,
 		Status:        "encryption_ready",
 	}
 
