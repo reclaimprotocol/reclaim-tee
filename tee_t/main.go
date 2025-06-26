@@ -21,6 +21,13 @@ func main() {
 	// Load environment variables first
 	enclave.LoadEnvVariables()
 
+	// Check for demo mode (PORT environment variable)
+	if port := os.Getenv("PORT"); port != "" {
+		log.Printf("Demo mode: Starting TEE_T on HTTP port %s", port)
+		startDemoServer(port)
+		return
+	}
+
 	// Initialize NSM for crypto operations
 	if err := enclave.InitializeNSM(); err != nil {
 		log.Fatalf("Failed to initialize NSM: %v", err)
@@ -487,4 +494,25 @@ func sendRedactionStreamResponse(w http.ResponseWriter, response RedactionStream
 	}
 
 	w.Write(responseJSON)
+}
+
+// startDemoServer starts a simple HTTP server for demo purposes
+func startDemoServer(port string) {
+	mux := createBusinessMux()
+
+	server := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+	}
+
+	log.Printf("TEE_T demo server starting on port %s", port)
+	log.Printf("Available endpoints:")
+	log.Printf("  POST /process-redaction-streams - Process redaction streams from users")
+	log.Printf("  POST /compute-tag - Compute authentication tags")
+	log.Printf("  POST /verify-tag - Verify authentication tags")
+	log.Printf("  GET /attest - Get attestation document")
+
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatalf("Demo server failed: %v", err)
+	}
 }

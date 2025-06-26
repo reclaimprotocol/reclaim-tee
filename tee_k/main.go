@@ -6,10 +6,12 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"tee/enclave"
@@ -870,6 +872,239 @@ var (
 	storeMutex   = &sync.RWMutex{}
 )
 
+// DemoRedactedRequest represents a demo request with redaction
+type DemoRedactedRequest struct {
+	SessionID         string                        `json:"session_id"`
+	TargetURL         string                        `json:"target_url"`
+	Method            string                        `json:"method"`
+	UseRedaction      bool                          `json:"use_redaction"`
+	RedactedData      []byte                        `json:"redacted_data"`
+	OriginalRequest   *enclave.RedactionRequest     `json:"original_request"`
+	RedactionStreams  *enclave.RedactionStreams     `json:"redaction_streams"`
+	RedactionKeys     *enclave.RedactionKeys        `json:"redaction_keys"`
+	Commitments       *enclave.RedactionCommitments `json:"commitments"`
+	ResponseRedaction ResponseRedactionConfig       `json:"response_redaction"`
+}
+
+// ResponseRedactionConfig configures how to redact the response
+type ResponseRedactionConfig struct {
+	Enabled     bool   `json:"enabled"`
+	ExtractText string `json:"extract_text"`
+}
+
+// DemoRedactedResponse represents the response from demo redacted request
+type DemoRedactedResponse struct {
+	Status               string `json:"status"`
+	RedactedContent      string `json:"redacted_content"`
+	OriginalResponseSize int    `json:"original_response_size"`
+	RedactedResponseSize int    `json:"redacted_response_size"`
+	AuthHeaderRedacted   bool   `json:"auth_header_redacted"`
+	Error                string `json:"error,omitempty"`
+}
+
+// handleDemoRedactedRequest processes the end-to-end demo request
+func handleDemoRedactedRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Printf("Received demo redacted request from %s", r.RemoteAddr)
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Failed to read request body: %v", err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse request
+	var req DemoRedactedRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("Failed to parse demo request: %v", err)
+		http.Error(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// Process the demo request
+	response := processDemoRedactedRequest(req)
+
+	// Send response
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Service", "tee_k")
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write(responseJSON)
+}
+
+func processDemoRedactedRequest(req DemoRedactedRequest) DemoRedactedResponse {
+	log.Printf("Processing demo redacted request for session %s", req.SessionID)
+
+	// Step 1: Verify redaction commitments
+	processor := enclave.NewRedactionProcessor()
+	if err := processor.VerifyCommitments(req.RedactionStreams, req.RedactionKeys, req.Commitments); err != nil {
+		log.Printf("Commitment verification failed: %v", err)
+		return DemoRedactedResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("Commitment verification failed: %v", err),
+		}
+	}
+
+	// Step 2: Recover original request from redacted data
+	recoveredRequest, err := processor.UnapplyRedaction(req.RedactedData, req.RedactionStreams, req.OriginalRequest)
+	if err != nil {
+		log.Printf("Failed to recover original request: %v", err)
+		return DemoRedactedResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("Failed to recover original request: %v", err),
+		}
+	}
+
+	// Step 3: Reconstruct the full HTTP request
+	httpRequest, err := reconstructHTTPRequest(recoveredRequest)
+	if err != nil {
+		log.Printf("Failed to reconstruct HTTP request: %v", err)
+		return DemoRedactedResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("Failed to reconstruct HTTP request: %v", err),
+		}
+	}
+
+	// Step 4: Make the actual HTTP request to the target
+	log.Printf("Making HTTP request to %s", req.TargetURL)
+	httpResponse, err := makeHTTPRequest(httpRequest, req.TargetURL)
+	if err != nil {
+		log.Printf("Failed to make HTTP request: %v", err)
+		return DemoRedactedResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("Failed to make HTTP request: %v", err),
+		}
+	}
+
+	// Step 5: Apply response redaction if enabled
+	var redactedContent string
+	originalSize := len(httpResponse.Body)
+
+	if req.ResponseRedaction.Enabled && req.ResponseRedaction.ExtractText != "" {
+		if strings.Contains(httpResponse.Body, req.ResponseRedaction.ExtractText) {
+			redactedContent = req.ResponseRedaction.ExtractText
+			log.Printf("Successfully extracted target text from response")
+		} else {
+			redactedContent = ""
+			log.Printf("Target text not found in response")
+		}
+	} else {
+		redactedContent = httpResponse.Body
+	}
+
+	// Step 6: Cleanup sensitive data
+	recoveredRequest.SecureZero()
+
+	return DemoRedactedResponse{
+		Status:               "success",
+		RedactedContent:      redactedContent,
+		OriginalResponseSize: originalSize,
+		RedactedResponseSize: len(redactedContent),
+		AuthHeaderRedacted:   true, // Auth header was successfully redacted from request
+	}
+}
+
+// HTTPRequestData represents the HTTP request structure for demo
+type HTTPRequestData struct {
+	Method  string            `json:"method"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
+}
+
+// HTTPResponseData represents the HTTP response structure for demo
+type HTTPResponseData struct {
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers"`
+	Body       string            `json:"body"`
+}
+
+func reconstructHTTPRequest(redactionRequest *enclave.RedactionRequest) (*HTTPRequestData, error) {
+	// Combine non-sensitive and sensitive parts
+	var combinedRequest HTTPRequestData
+
+	// Parse non-sensitive part
+	if err := json.Unmarshal(redactionRequest.NonSensitive, &combinedRequest); err != nil {
+		return nil, fmt.Errorf("failed to parse non-sensitive data: %v", err)
+	}
+
+	// Parse and merge sensitive part (Auth header)
+	if len(redactionRequest.Sensitive) > 0 {
+		var sensitiveHeaders map[string]string
+		if err := json.Unmarshal(redactionRequest.Sensitive, &sensitiveHeaders); err != nil {
+			return nil, fmt.Errorf("failed to parse sensitive data: %v", err)
+		}
+
+		// Merge sensitive headers back into the request
+		if combinedRequest.Headers == nil {
+			combinedRequest.Headers = make(map[string]string)
+		}
+		for k, v := range sensitiveHeaders {
+			combinedRequest.Headers[k] = v
+		}
+	}
+
+	return &combinedRequest, nil
+}
+
+func makeHTTPRequest(httpReq *HTTPRequestData, targetURL string) (*HTTPResponseData, error) {
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	// Create request
+	req, err := http.NewRequest(httpReq.Method, targetURL, strings.NewReader(httpReq.Body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Add headers
+	for k, v := range httpReq.Headers {
+		req.Header.Set(k, v)
+	}
+
+	// Make the request
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	// Convert response headers
+	headers := make(map[string]string)
+	for k, v := range resp.Header {
+		if len(v) > 0 {
+			headers[k] = v[0] // Take first value
+		}
+	}
+
+	return &HTTPResponseData{
+		StatusCode: resp.StatusCode,
+		Headers:    headers,
+		Body:       string(bodyBytes),
+	}, nil
+}
+
 func main() {
 	// Load environment variables first
 	enclave.LoadEnvVariables()
@@ -914,6 +1149,9 @@ func createBusinessMux() *http.ServeMux {
 
 	// WebSocket endpoint for real-time MPC protocol
 	mux.HandleFunc("/ws", handleWebSocket)
+
+	// Demo endpoint for end-to-end redaction demonstration
+	mux.HandleFunc("/demo-redacted-request", handleDemoRedactedRequest)
 
 	return mux
 }
