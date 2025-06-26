@@ -20,16 +20,18 @@ type TEEMessageType string
 
 const (
 	// TEE_K → TEE_T Messages
-	TEEMsgTagCompute   TEEMessageType = "tag_compute"
-	TEEMsgTagVerify    TEEMessageType = "tag_verify"
-	TEEMsgSessionStart TEEMessageType = "session_start"
-	TEEMsgSessionEnd   TEEMessageType = "session_end"
+	TEEMsgTagCompute         TEEMessageType = "tag_compute"
+	TEEMsgTagVerify          TEEMessageType = "tag_verify"
+	TEEMsgSessionStart       TEEMessageType = "session_start"
+	TEEMsgSessionEnd         TEEMessageType = "session_end"
+	TEEMsgTranscriptFinalize TEEMessageType = "transcript_finalize"
 
 	// TEE_T → TEE_K Messages
-	TEEMsgTagComputeResp   TEEMessageType = "tag_compute_response"
-	TEEMsgTagVerifyResp    TEEMessageType = "tag_verify_response"
-	TEEMsgSessionStartResp TEEMessageType = "session_start_response"
-	TEEMsgSessionEndResp   TEEMessageType = "session_end_response"
+	TEEMsgTagComputeResp         TEEMessageType = "tag_compute_response"
+	TEEMsgTagVerifyResp          TEEMessageType = "tag_verify_response"
+	TEEMsgSessionStartResp       TEEMessageType = "session_start_response"
+	TEEMsgSessionEndResp         TEEMessageType = "session_end_response"
+	TEEMsgTranscriptFinalizeResp TEEMessageType = "transcript_finalize_response"
 
 	// Bidirectional Messages
 	TEEMsgPing   TEEMessageType = "ping"
@@ -93,6 +95,19 @@ type SessionStartResponse struct {
 	SessionID string `json:"session_id"`
 	Ready     bool   `json:"ready"`
 	Error     string `json:"error,omitempty"`
+}
+
+// Transcript Finalize Request (TEE_K → TEE_T)
+type TranscriptFinalizeRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+// Transcript Finalize Response (TEE_T → TEE_K)
+type TranscriptFinalizeResponse struct {
+	SessionID                string            `json:"session_id"`
+	SignedResponseTranscript *SignedTranscript `json:"signed_response_transcript"`
+	Success                  bool              `json:"success"`
+	Error                    string            `json:"error,omitempty"`
 }
 
 // TEE Communication Client (runs in TEE_K)
@@ -319,6 +334,34 @@ func (c *TEECommClient) EndSession() error {
 	return nil
 }
 
+// FinalizeTranscript requests the signed response transcript from TEE_T
+func (c *TEECommClient) FinalizeTranscript() (*SignedTranscript, error) {
+	if !c.connected || c.sessionID == "" {
+		return nil, fmt.Errorf("no active session with TEE_T")
+	}
+
+	request := TranscriptFinalizeRequest{
+		SessionID: c.sessionID,
+	}
+
+	response, err := c.sendRequestWithResponse(TEEMsgTranscriptFinalize, request, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("failed to request transcript from TEE_T: %v", err)
+	}
+
+	var finalizeResp TranscriptFinalizeResponse
+	if err := json.Unmarshal(response.Data, &finalizeResp); err != nil {
+		return nil, fmt.Errorf("failed to parse transcript finalize response: %v", err)
+	}
+
+	if !finalizeResp.Success {
+		return nil, fmt.Errorf("TEE_T transcript finalization failed: %s", finalizeResp.Error)
+	}
+
+	log.Printf("TEE_K: Received signed response transcript from TEE_T")
+	return finalizeResp.SignedResponseTranscript, nil
+}
+
 // sendRequestWithResponse sends a request and waits for response
 func (c *TEECommClient) sendRequestWithResponse(msgType TEEMessageType, data interface{}, timeout time.Duration) (TEEMessage, error) {
 	requestID := generateRequestID()
@@ -424,7 +467,7 @@ func (c *TEECommClient) messageHandler() {
 // handleMessage processes individual messages from TEE_T
 func (c *TEECommClient) handleMessage(msg TEEMessage) {
 	switch msg.Type {
-	case TEEMsgTagComputeResp, TEEMsgTagVerifyResp, TEEMsgSessionStartResp, TEEMsgSessionEndResp:
+	case TEEMsgTagComputeResp, TEEMsgTagVerifyResp, TEEMsgSessionStartResp, TEEMsgSessionEndResp, TEEMsgTranscriptFinalizeResp:
 		// Route response to waiting request
 		if msg.RequestID != "" {
 			c.requestMu.RLock()
@@ -575,6 +618,8 @@ func (s *TEECommServer) handleMessage(teeConn *TEECommConnection, msg TEEMessage
 		s.handleTagVerify(teeConn, msg)
 	case TEEMsgSessionEnd:
 		s.handleSessionEnd(teeConn, msg)
+	case TEEMsgTranscriptFinalize:
+		s.handleTranscriptFinalize(teeConn, msg)
 	case TEEMsgPing:
 		s.handlePing(teeConn, msg)
 	case TEEMsgPong:
@@ -725,6 +770,41 @@ func (s *TEECommServer) handleSessionEnd(teeConn *TEECommConnection, msg TEEMess
 
 	s.sendResponse(teeConn, TEEMsgSessionEndResp, msg.RequestID, response)
 	log.Printf("TEE_T: Session %s ended", sessionID)
+}
+
+// handleTranscriptFinalize processes transcript finalization requests
+func (s *TEECommServer) handleTranscriptFinalize(teeConn *TEECommConnection, msg TEEMessage) {
+	var req TranscriptFinalizeRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Invalid transcript finalize request: %v", err))
+		return
+	}
+
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = teeConn.sessionID
+	}
+
+	// Get response transcript from session data
+	signedTranscript, err := GetResponseTranscriptForSession(sessionID)
+	if err != nil {
+		s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Failed to get response transcript: %v", err))
+		return
+	}
+
+	response := TranscriptFinalizeResponse{
+		SessionID:                sessionID,
+		SignedResponseTranscript: signedTranscript,
+		Success:                  true,
+	}
+
+	s.sendResponse(teeConn, TEEMsgTranscriptFinalizeResp, msg.RequestID, response)
+	log.Printf("TEE_T: Sent signed response transcript for session %s", sessionID)
+}
+
+// GetResponseTranscriptForSession is a placeholder that should be overridden by the TEE_T service
+var GetResponseTranscriptForSession func(string) (*SignedTranscript, error) = func(sessionID string) (*SignedTranscript, error) {
+	return nil, fmt.Errorf("GetResponseTranscriptForSession not implemented - needs to be set by TEE_T service")
 }
 
 // handlePing responds to ping messages

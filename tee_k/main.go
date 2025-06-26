@@ -491,11 +491,20 @@ func (c *WSConnection) handleSessionInit(msg WSMessage) {
 		c.sessionID = sessionID
 	}
 
+	// Create transcript signer for demo (generates random key)
+	transcriptSigner, err := enclave.GenerateDemoKey()
+	if err != nil {
+		c.sendError(fmt.Sprintf("Failed to create transcript signer: %v", err))
+		return
+	}
+
 	newState := &SessionState{
-		ID:         sessionID,
-		TLSClient:  tlsClient,
-		WebsiteURL: fmt.Sprintf("%s:%d", req.Hostname, req.Port),
-		Completed:  false,
+		ID:                       sessionID,
+		TLSClient:                tlsClient,
+		WebsiteURL:               fmt.Sprintf("%s:%d", req.Hostname, req.Port),
+		Completed:                false,
+		TranscriptSigner:         transcriptSigner,
+		RequestTranscriptBuilder: enclave.NewRequestTranscriptBuilder(sessionID),
 	}
 
 	storeMutex.Lock()
@@ -745,6 +754,19 @@ func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 
 	log.Printf("WebSocket: Tag computed by TEE_T for session %s (%d bytes)", c.sessionID, len(tag))
 
+	// Add redacted request to transcript
+	storeMutex.Lock()
+	if session.RequestTranscriptBuilder != nil {
+		session.RequestTranscriptBuilder.AddRequest(requestDataToEncrypt)
+		if data.UseRedaction && redactionCommitments != nil {
+			if len(redactionCommitments.CommitmentSP) > 0 {
+				session.RequestTranscriptBuilder.AddCommitment("commitment_sp", redactionCommitments.CommitmentSP)
+			}
+		}
+		session.RequestCount++
+	}
+	storeMutex.Unlock()
+
 	type EncryptResponseData struct {
 		EncryptedData        []byte                        `json:"encrypted_data"`
 		Tag                  []byte                        `json:"tag"`
@@ -935,25 +957,64 @@ func (c *WSConnection) handleFinalize(msg WSMessage) {
 		return
 	}
 
-	// End TEE_T session
+	log.Printf("WebSocket: Finalizing session %s with %d requests", c.sessionID, data.RequestCount)
+
+	// Get signed response transcript from TEE_T before ending session
+	var signedResponseTranscriptBytes []byte
+	if signedResponseTranscript, err := teeCommClient.FinalizeTranscript(); err != nil {
+		log.Printf("Warning: Failed to get response transcript from TEE_T: %v", err)
+		signedResponseTranscriptBytes = []byte("{}") // Empty JSON object as fallback
+	} else {
+		if responseBytes, err := json.Marshal(signedResponseTranscript); err != nil {
+			log.Printf("Warning: Failed to serialize response transcript: %v", err)
+			signedResponseTranscriptBytes = []byte("{}")
+		} else {
+			signedResponseTranscriptBytes = responseBytes
+			log.Printf("WebSocket: Response transcript received from TEE_T (%d bytes, %s algorithm)",
+				len(signedResponseTranscriptBytes), signedResponseTranscript.Algorithm)
+		}
+	}
+
+	// End TEE_T session after getting transcript
 	if err := teeCommClient.EndSession(); err != nil {
 		log.Printf("Warning: Failed to end TEE_T session %s: %v", c.sessionID, err)
 	}
 
-	// TODO: Implement transcript signing
-	log.Printf("WebSocket: Finalizing session %s with %d requests", c.sessionID, data.RequestCount)
+	// Sign the request transcript
+	var signedRequestTranscriptBytes []byte
+	if session.RequestTranscriptBuilder != nil && session.TranscriptSigner != nil {
+		signedRequestTranscript, err := session.RequestTranscriptBuilder.Sign(session.TranscriptSigner)
+		if err != nil {
+			c.sendError(fmt.Sprintf("Failed to sign request transcript: %v", err))
+			return
+		}
 
-	type FinalizeResponseData struct {
-		SignedTranscript []byte                  `json:"signed_transcript"`
-		TLSKeys          *enclave.TLSSessionKeys `json:"tls_keys"`
-		Status           string                  `json:"status"`
+		// Serialize the signed transcript
+		signedRequestTranscriptBytes, err = json.Marshal(signedRequestTranscript)
+		if err != nil {
+			c.sendError(fmt.Sprintf("Failed to serialize signed request transcript: %v", err))
+			return
+		}
+
+		log.Printf("WebSocket: Request transcript signed for session %s (%d bytes, %s algorithm)",
+			c.sessionID, len(signedRequestTranscriptBytes), signedRequestTranscript.Algorithm)
+	} else {
+		log.Printf("Warning: No transcript builder or signer available for session %s", c.sessionID)
+		signedRequestTranscriptBytes = []byte("{}") // Empty JSON object as fallback
 	}
 
-	// Placeholder - in real implementation, this would sign the transcript
+	type FinalizeResponseData struct {
+		SignedRequestTranscript  []byte                  `json:"signed_request_transcript"`
+		SignedResponseTranscript []byte                  `json:"signed_response_transcript"`
+		TLSKeys                  *enclave.TLSSessionKeys `json:"tls_keys"`
+		Status                   string                  `json:"status"`
+	}
+
 	response := FinalizeResponseData{
-		SignedTranscript: []byte("signed_transcript_placeholder"),
-		TLSKeys:          session.TLSKeys,
-		Status:           "finalized",
+		SignedRequestTranscript:  signedRequestTranscriptBytes,
+		SignedResponseTranscript: signedResponseTranscriptBytes,
+		TLSKeys:                  session.TLSKeys,
+		Status:                   "finalized",
 	}
 
 	c.sendResponse(MsgFinalizeResp, response)
@@ -961,12 +1022,14 @@ func (c *WSConnection) handleFinalize(msg WSMessage) {
 
 // SessionState will hold the state for a single user session.
 type SessionState struct {
-	ID           string
-	TLSClient    *enclave.TLSClientState // TLS client state for handshake
-	TLSKeys      *enclave.TLSSessionKeys // Extracted TLS session keys
-	WebsiteURL   string                  // Target website
-	Completed    bool
-	RequestCount int // Number of requests processed
+	ID                       string
+	TLSClient                *enclave.TLSClientState // TLS client state for handshake
+	TLSKeys                  *enclave.TLSSessionKeys // Extracted TLS session keys
+	WebsiteURL               string                  // Target website
+	Completed                bool
+	RequestCount             int                               // Number of requests processed
+	TranscriptSigner         *enclave.TranscriptSigner         // Signer for transcript signing
+	RequestTranscriptBuilder *enclave.RequestTranscriptBuilder // Builder for request transcript
 }
 
 // Global session store (in-memory, not for production)

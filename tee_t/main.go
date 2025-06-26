@@ -35,6 +35,9 @@ func main() {
 		log.Fatalf("Failed to initialize NSM: %v", err)
 	}
 
+	// Set up transcript integration
+	enclave.GetResponseTranscriptForSession = GetSignedResponseTranscriptForSession
+
 	// Create TEE server
 	server, err := enclave.NewTEEServer(config)
 	if err != nil {
@@ -77,6 +80,9 @@ func createBusinessMux() *http.ServeMux {
 	// Redaction stream processing endpoint
 	mux.HandleFunc("/process-redaction-streams", handleRedactionStreams)
 
+	// Response transcript finalization endpoint
+	mux.HandleFunc("/finalize-response-transcript", handleFinalizeResponseTranscript)
+
 	// TEE-to-TEE WebSocket communication endpoint
 	teeCommServer := enclave.NewTEECommServer()
 	mux.HandleFunc("/tee-comm", teeCommServer.HandleWebSocket)
@@ -106,6 +112,7 @@ type TagVerifyRequest struct {
 	Ciphertext  []byte              `json:"ciphertext"`
 	ExpectedTag []byte              `json:"expected_tag"`
 	TagSecrets  *enclave.TagSecrets `json:"tag_secrets"`
+	SessionID   string              `json:"session_id,omitempty"` // For transcript building
 }
 
 // TagVerifyResponse represents the tag verification response
@@ -133,11 +140,13 @@ type RedactionStreamResponse struct {
 
 // RedactionSessionData stores redaction information for a session
 type RedactionSessionData struct {
-	RedactionStreams    *enclave.RedactionStreams
-	RedactionKeys       *enclave.RedactionKeys
-	ExpectedCommitments *enclave.RedactionCommitments
-	RedactionProcessor  *enclave.RedactionProcessor
-	Verified            bool
+	RedactionStreams          *enclave.RedactionStreams
+	RedactionKeys             *enclave.RedactionKeys
+	ExpectedCommitments       *enclave.RedactionCommitments
+	RedactionProcessor        *enclave.RedactionProcessor
+	Verified                  bool
+	TranscriptSigner          *enclave.TranscriptSigner          // Signer for response transcript
+	ResponseTranscriptBuilder *enclave.ResponseTranscriptBuilder // Builder for response transcript
 }
 
 // Global session store for redaction data
@@ -277,6 +286,18 @@ func handleVerifyTag(w http.ResponseWriter, r *http.Request) {
 		response = TagVerifyResponse{
 			Verified: true,
 			Status:   "success",
+		}
+
+		// Capture encrypted response in transcript if session exists
+		if req.SessionID != "" {
+			redactionSessionsMu.RLock()
+			sessionData, exists := redactionSessions[req.SessionID]
+			redactionSessionsMu.RUnlock()
+
+			if exists && sessionData.ResponseTranscriptBuilder != nil {
+				sessionData.ResponseTranscriptBuilder.AddEncryptedResponse(req.Ciphertext)
+				log.Printf("Added encrypted response to transcript for session %s (%d bytes)", req.SessionID, len(req.Ciphertext))
+			}
 		}
 	}
 
@@ -433,13 +454,29 @@ func handleRedactionStreams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create transcript signer for demo (generates random key)
+	transcriptSigner, err := enclave.GenerateDemoKey()
+	if err != nil {
+		log.Printf("Failed to create transcript signer for session %s: %v", req.SessionID, err)
+		response := RedactionStreamResponse{
+			SessionID: req.SessionID,
+			Status:    "error",
+			Error:     fmt.Sprintf("Failed to create transcript signer: %v", err),
+			Ready:     false,
+		}
+		sendRedactionStreamResponse(w, response)
+		return
+	}
+
 	// Store session data for later use during tag computation
 	sessionData := &RedactionSessionData{
-		RedactionStreams:    req.RedactionStreams,
-		RedactionKeys:       req.RedactionKeys,
-		ExpectedCommitments: req.ExpectedCommitments,
-		RedactionProcessor:  processor,
-		Verified:            true,
+		RedactionStreams:          req.RedactionStreams,
+		RedactionKeys:             req.RedactionKeys,
+		ExpectedCommitments:       req.ExpectedCommitments,
+		RedactionProcessor:        processor,
+		Verified:                  true,
+		TranscriptSigner:          transcriptSigner,
+		ResponseTranscriptBuilder: enclave.NewResponseTranscriptBuilder(req.SessionID),
 	}
 
 	redactionSessionsMu.Lock()
@@ -472,7 +509,140 @@ func sendRedactionStreamResponse(w http.ResponseWriter, response RedactionStream
 	w.Write(responseJSON)
 }
 
+// FinalizeTranscriptRequest represents a request to finalize and sign response transcript
+type FinalizeTranscriptRequest struct {
+	SessionID          string   `json:"session_id"`
+	EncryptedResponses [][]byte `json:"encrypted_responses"`
+}
+
+// FinalizeTranscriptResponse represents the response with signed transcript
+type FinalizeTranscriptResponse struct {
+	SessionID        string `json:"session_id"`
+	SignedTranscript []byte `json:"signed_transcript"`
+	Status           string `json:"status"`
+	Error            string `json:"error,omitempty"`
+}
+
+// handleFinalizeResponseTranscript finalizes and signs the response transcript
+func handleFinalizeResponseTranscript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Printf("Received response transcript finalization request from %s", r.RemoteAddr)
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Failed to read request body: %v", err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse request
+	var req FinalizeTranscriptRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("Failed to parse finalize transcript request: %v", err)
+		http.Error(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// Validate input
+	if req.SessionID == "" {
+		log.Printf("Session ID missing in request")
+		http.Error(w, "Session ID required", http.StatusBadRequest)
+		return
+	}
+
+	// Retrieve session data
+	redactionSessionsMu.RLock()
+	sessionData, exists := redactionSessions[req.SessionID]
+	redactionSessionsMu.RUnlock()
+
+	var response FinalizeTranscriptResponse
+	response.SessionID = req.SessionID
+
+	if !exists {
+		log.Printf("No session data found for session %s", req.SessionID)
+		response.Status = "error"
+		response.Error = "Session not found"
+	} else if sessionData.TranscriptSigner == nil || sessionData.ResponseTranscriptBuilder == nil {
+		log.Printf("No transcript signer or builder available for session %s", req.SessionID)
+		response.Status = "error"
+		response.Error = "Transcript components not available"
+	} else {
+		// Add encrypted responses to transcript builder
+		for _, encryptedResponse := range req.EncryptedResponses {
+			sessionData.ResponseTranscriptBuilder.AddEncryptedResponse(encryptedResponse)
+		}
+
+		// Sign the response transcript
+		signedTranscript, err := sessionData.ResponseTranscriptBuilder.Sign(sessionData.TranscriptSigner)
+		if err != nil {
+			log.Printf("Failed to sign response transcript for session %s: %v", req.SessionID, err)
+			response.Status = "error"
+			response.Error = fmt.Sprintf("Failed to sign transcript: %v", err)
+		} else {
+			// Serialize the signed transcript
+			signedTranscriptBytes, err := json.Marshal(signedTranscript)
+			if err != nil {
+				log.Printf("Failed to serialize signed transcript for session %s: %v", req.SessionID, err)
+				response.Status = "error"
+				response.Error = fmt.Sprintf("Failed to serialize transcript: %v", err)
+			} else {
+				log.Printf("Response transcript signed for session %s (%d bytes, %s algorithm)",
+					req.SessionID, len(signedTranscriptBytes), signedTranscript.Algorithm)
+				response.SignedTranscript = signedTranscriptBytes
+				response.Status = "success"
+			}
+		}
+	}
+
+	// Send response
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Service", "tee_t")
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal finalize transcript response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write(responseJSON)
+}
+
 // startDemoServer starts a simple HTTP server for demo purposes
+// GetSignedResponseTranscriptForSession retrieves and signs the response transcript for a session
+func GetSignedResponseTranscriptForSession(sessionID string) (*enclave.SignedTranscript, error) {
+	redactionSessionsMu.RLock()
+	sessionData, exists := redactionSessions[sessionID]
+	redactionSessionsMu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("no session data found for session %s", sessionID)
+	}
+
+	if sessionData.ResponseTranscriptBuilder == nil {
+		return nil, fmt.Errorf("no response transcript builder for session %s", sessionID)
+	}
+
+	if sessionData.TranscriptSigner == nil {
+		return nil, fmt.Errorf("no transcript signer for session %s", sessionID)
+	}
+
+	// Sign the response transcript using the builder
+	signedTranscript, err := sessionData.ResponseTranscriptBuilder.Sign(sessionData.TranscriptSigner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign response transcript: %v", err)
+	}
+
+	log.Printf("Generated signed response transcript for session %s", sessionID)
+	return signedTranscript, nil
+}
+
 func startDemoServer(port string) {
 	mux := createBusinessMux()
 

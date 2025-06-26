@@ -44,7 +44,7 @@ func testSplitAEADIntegration(t *testing.T, mode SplitAEADMode, keySize int) {
 	aad := []byte("additional_data") // Could be TLS record header
 
 	t.Logf("Testing %v integration with %d-byte key", mode, keySize)
-	t.Logf("Plaintext: %s", string(plaintext[:min(50, len(plaintext))]))
+	t.Logf("Plaintext (%d bytes): %s", len(plaintext), string(plaintext))
 
 	// PHASE 1: TEE_K Operation (Encryption without tag)
 	t.Logf("PHASE 1: TEE_K encrypts data and generates tag secrets")
