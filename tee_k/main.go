@@ -241,13 +241,18 @@ func (c *WSConnection) writePump() {
 			}
 
 			if err := c.conn.WriteJSON(message); err != nil {
-				log.Printf("WebSocket write error: %v", err)
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+					log.Printf("WebSocket write error: %v", err)
+				}
 				return
 			}
 
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+					log.Printf("WebSocket ping error: %v", err)
+				}
 				return
 			}
 		}
