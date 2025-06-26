@@ -112,6 +112,30 @@ func (h *WSHub) run() {
 			if _, ok := h.connections[conn.sessionID]; ok {
 				delete(h.connections, conn.sessionID)
 				close(conn.send)
+
+				// Clean up session storage to prevent memory leak
+				storeMutex.Lock()
+				if session, exists := sessionStore[conn.sessionID]; exists {
+					// Clean up sensitive data in TLS keys
+					if session.TLSKeys != nil {
+						// Manually zero sensitive key material
+						for i := range session.TLSKeys.ClientWriteKey {
+							session.TLSKeys.ClientWriteKey[i] = 0
+						}
+						for i := range session.TLSKeys.ServerWriteKey {
+							session.TLSKeys.ServerWriteKey[i] = 0
+						}
+						for i := range session.TLSKeys.ClientWriteIV {
+							session.TLSKeys.ClientWriteIV[i] = 0
+						}
+						for i := range session.TLSKeys.ServerWriteIV {
+							session.TLSKeys.ServerWriteIV[i] = 0
+						}
+					}
+					delete(sessionStore, conn.sessionID)
+					log.Printf("Cleaned up session storage for: %s", conn.sessionID)
+				}
+				storeMutex.Unlock()
 			}
 			h.mutex.Unlock()
 			log.Printf("WebSocket connection unregistered: %s", conn.sessionID)
@@ -127,6 +151,30 @@ func (h *WSHub) run() {
 					close(conn.send)
 					delete(h.connections, sessionID)
 					conn.conn.Close()
+
+					// Clean up session storage for stale connections
+					storeMutex.Lock()
+					if session, exists := sessionStore[sessionID]; exists {
+						// Clean up sensitive data in TLS keys
+						if session.TLSKeys != nil {
+							// Manually zero sensitive key material
+							for i := range session.TLSKeys.ClientWriteKey {
+								session.TLSKeys.ClientWriteKey[i] = 0
+							}
+							for i := range session.TLSKeys.ServerWriteKey {
+								session.TLSKeys.ServerWriteKey[i] = 0
+							}
+							for i := range session.TLSKeys.ClientWriteIV {
+								session.TLSKeys.ClientWriteIV[i] = 0
+							}
+							for i := range session.TLSKeys.ServerWriteIV {
+								session.TLSKeys.ServerWriteIV[i] = 0
+							}
+						}
+						delete(sessionStore, sessionID)
+						log.Printf("Cleaned up session storage for stale connection: %s", sessionID)
+					}
+					storeMutex.Unlock()
 				}
 			}
 			h.mutex.Unlock()
@@ -153,6 +201,30 @@ func (h *WSHub) cleanupStaleConnections() {
 				close(conn.send)
 				delete(h.connections, sessionID)
 				conn.conn.Close()
+
+				// Clean up session storage for stale connections from periodic cleanup
+				storeMutex.Lock()
+				if session, exists := sessionStore[sessionID]; exists {
+					// Clean up sensitive data in TLS keys
+					if session.TLSKeys != nil {
+						// Manually zero sensitive key material
+						for i := range session.TLSKeys.ClientWriteKey {
+							session.TLSKeys.ClientWriteKey[i] = 0
+						}
+						for i := range session.TLSKeys.ServerWriteKey {
+							session.TLSKeys.ServerWriteKey[i] = 0
+						}
+						for i := range session.TLSKeys.ClientWriteIV {
+							session.TLSKeys.ClientWriteIV[i] = 0
+						}
+						for i := range session.TLSKeys.ServerWriteIV {
+							session.TLSKeys.ServerWriteIV[i] = 0
+						}
+					}
+					delete(sessionStore, sessionID)
+					log.Printf("Cleaned up session storage for stale connection: %s", sessionID)
+				}
+				storeMutex.Unlock()
 			}
 		}
 		h.mutex.Unlock()
