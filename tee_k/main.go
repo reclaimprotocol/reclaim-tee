@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -468,13 +469,20 @@ func (c *WSConnection) handleServerHello(msg WSMessage) {
 	c.sendResponse(MsgHandshakeComplete, response)
 }
 
-// handleEncryptRequest processes request encryption for split AEAD
+// handleEncryptRequest processes request encryption for split AEAD with redaction support
 func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 	type EncryptRequestData struct {
+		// Standard fields
 		RequestData []byte            `json:"request_data"`
 		Commitments map[string][]byte `json:"commitments"`
 		Nonce       []byte            `json:"nonce"`
 		AAD         []byte            `json:"aad"`
+
+		// Redaction fields
+		RedactionRequest *enclave.RedactionRequest `json:"redaction_request,omitempty"`
+		RedactionStreams *enclave.RedactionStreams `json:"redaction_streams,omitempty"`
+		RedactionKeys    *enclave.RedactionKeys    `json:"redaction_keys,omitempty"`
+		UseRedaction     bool                      `json:"use_redaction"`
 	}
 
 	var data EncryptRequestData
@@ -526,11 +534,76 @@ func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 		nonce = sessionKeys.ClientWriteIV
 	}
 
-	log.Printf("WebSocket: Processing encrypt request for session %s (%d bytes, cipher 0x%04x)",
-		c.sessionID, len(data.RequestData), sessionKeys.CipherSuite)
+	var requestDataToEncrypt []byte
+	var redactionCommitments *enclave.RedactionCommitments
 
-	// Perform Split AEAD encryption
-	ciphertext, tagSecrets, err := encryptor.EncryptWithoutTag(nonce, data.RequestData, data.AAD)
+	// Process redaction if requested
+	if data.UseRedaction {
+		log.Printf("WebSocket: Processing redacted encrypt request for session %s", c.sessionID)
+
+		// Validate redaction data
+		if data.RedactionRequest == nil || data.RedactionStreams == nil || data.RedactionKeys == nil {
+			c.sendError("Redaction enabled but redaction data is incomplete")
+			return
+		}
+
+		// Create redaction processor
+		redactionProcessor := enclave.NewRedactionProcessor()
+
+		// Compute commitments to verify integrity
+		computedCommitments, err := redactionProcessor.ComputeCommitments(data.RedactionStreams, data.RedactionKeys)
+		if err != nil {
+			c.sendError(fmt.Sprintf("Failed to compute redaction commitments: %v", err))
+			return
+		}
+
+		// Verify commitments against provided ones (if any)
+		if len(data.Commitments) > 0 {
+			if commitmentS, exists := data.Commitments["commitment_s"]; exists {
+				if len(computedCommitments.CommitmentS) > 0 && !hmac.Equal(commitmentS, computedCommitments.CommitmentS) {
+					c.sendError("Commitment S verification failed")
+					return
+				}
+			}
+			if commitmentSP, exists := data.Commitments["commitment_sp"]; exists {
+				if len(computedCommitments.CommitmentSP) > 0 && !hmac.Equal(commitmentSP, computedCommitments.CommitmentSP) {
+					c.sendError("Commitment SP verification failed")
+					return
+				}
+			}
+		}
+
+		// Apply redaction to create R_red
+		redactedData, err := redactionProcessor.ApplyRedaction(data.RedactionRequest, data.RedactionStreams)
+		if err != nil {
+			c.sendError(fmt.Sprintf("Failed to apply redaction: %v", err))
+			return
+		}
+
+		requestDataToEncrypt = redactedData
+		redactionCommitments = computedCommitments
+
+		log.Printf("WebSocket: Redaction applied - original %d bytes, redacted %d bytes",
+			len(data.RedactionRequest.NonSensitive)+len(data.RedactionRequest.Sensitive)+len(data.RedactionRequest.SensitiveProof),
+			len(redactedData))
+
+		// Secure zero the redaction request after processing
+		defer data.RedactionRequest.SecureZero()
+		defer data.RedactionStreams.SecureZero()
+		defer data.RedactionKeys.SecureZero()
+	} else {
+		// Standard encryption without redaction
+		if len(data.RequestData) == 0 {
+			c.sendError("Request data is empty")
+			return
+		}
+		requestDataToEncrypt = data.RequestData
+		log.Printf("WebSocket: Processing standard encrypt request for session %s (%d bytes, cipher 0x%04x)",
+			c.sessionID, len(requestDataToEncrypt), sessionKeys.CipherSuite)
+	}
+
+	// Perform Split AEAD encryption on the (possibly redacted) data
+	ciphertext, tagSecrets, err := encryptor.EncryptWithoutTag(nonce, requestDataToEncrypt, data.AAD)
 	if err != nil {
 		c.sendError(fmt.Sprintf("Split AEAD encryption failed: %v", err))
 		return
@@ -549,6 +622,15 @@ func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 		return
 	}
 
+	// Send encrypted redacted data and commitments to TEE_T for coordination
+	if data.UseRedaction {
+		err = c.sendRedactionDataToTEET(ciphertext, redactionCommitments, tagSecrets)
+		if err != nil {
+			c.sendError(fmt.Sprintf("Failed to send redaction data to TEE_T: %v", err))
+			return
+		}
+	}
+
 	// Request tag computation from TEE_T via WebSocket
 	tag, err := teeCommClient.ComputeTag(ciphertext, tagSecrets, "encrypt")
 	if err != nil {
@@ -559,18 +641,53 @@ func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 	log.Printf("WebSocket: Tag computed by TEE_T for session %s (%d bytes)", c.sessionID, len(tag))
 
 	type EncryptResponseData struct {
-		EncryptedData []byte `json:"encrypted_data"`
-		Tag           []byte `json:"tag"`
-		Status        string `json:"status"`
+		EncryptedData        []byte                        `json:"encrypted_data"`
+		Tag                  []byte                        `json:"tag"`
+		Status               string                        `json:"status"`
+		RedactionCommitments *enclave.RedactionCommitments `json:"redaction_commitments,omitempty"`
+		UseRedaction         bool                          `json:"use_redaction"`
 	}
 
 	response := EncryptResponseData{
-		EncryptedData: ciphertext,
-		Tag:           tag,
-		Status:        "encrypted_with_tag",
+		EncryptedData:        ciphertext,
+		Tag:                  tag,
+		Status:               "encrypted_with_tag",
+		RedactionCommitments: redactionCommitments,
+		UseRedaction:         data.UseRedaction,
 	}
 
 	c.sendResponse(MsgEncryptResponse, response)
+}
+
+// sendRedactionDataToTEET sends encrypted redacted data and commitments to TEE_T for coordination
+func (c *WSConnection) sendRedactionDataToTEET(ciphertext []byte, commitments *enclave.RedactionCommitments, tagSecrets *enclave.TagSecrets) error {
+	// This is a coordination message to inform TEE_T about the redaction commitments
+	// TEE_T will need this information when processing streams from the User
+
+	type RedactionCoordinationData struct {
+		SessionID   string                        `json:"session_id"`
+		Ciphertext  []byte                        `json:"ciphertext"`
+		Commitments *enclave.RedactionCommitments `json:"commitments"`
+		TagSecrets  *enclave.TagSecrets           `json:"tag_secrets"`
+	}
+
+	// Send coordination message to TEE_T
+	// This would typically be done via the TEE communication protocol
+	// For now, we'll log the coordination and assume TEE_T will receive the streams directly from User
+
+	log.Printf("WebSocket: Coordinating redaction with TEE_T for session %s (commitments: S=%d, SP=%d bytes)",
+		c.sessionID, len(commitments.CommitmentS), len(commitments.CommitmentSP))
+
+	// In a full implementation, this would send the coordination data to TEE_T
+	// TEE_T would store this for when it receives streams from the User
+	// coordData := RedactionCoordinationData{
+	//     SessionID:   c.sessionID,
+	//     Ciphertext:  ciphertext,
+	//     Commitments: commitments,
+	//     TagSecrets:  tagSecrets,
+	// }
+
+	return nil
 }
 
 // handleDecryptRequest processes response decryption stream generation

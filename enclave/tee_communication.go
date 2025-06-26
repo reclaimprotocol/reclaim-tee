@@ -50,9 +50,12 @@ type TEEMessage struct {
 
 // Tag Compute Request (TEE_K → TEE_T)
 type TagComputeRequest struct {
-	Ciphertext  []byte      `json:"ciphertext"`
-	TagSecrets  *TagSecrets `json:"tag_secrets"`
-	RequestType string      `json:"request_type"` // "encrypt" or "decrypt"
+	Ciphertext          []byte            `json:"ciphertext"`
+	TagSecrets          *TagSecrets       `json:"tag_secrets"`
+	RequestType         string            `json:"request_type"` // "encrypt" or "decrypt"
+	UseRedaction        bool              `json:"use_redaction,omitempty"`
+	RedactedCiphertext  []byte            `json:"redacted_ciphertext,omitempty"`
+	OriginalRequestInfo *RedactionRequest `json:"original_request_info,omitempty"`
 }
 
 // Tag Compute Response (TEE_T → TEE_K)
@@ -625,11 +628,17 @@ func (s *TEECommServer) handleTagCompute(teeConn *TEECommConnection, msg TEEMess
 		return
 	}
 
-	// Create tag computer
-	tagComputer := NewSplitAEADTagComputer()
+	var tag []byte
+	var err error
 
-	// Compute tag
-	tag, err := tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
+	if req.UseRedaction && teeConn.sessionID != "" {
+		// Handle redacted request using session data
+		tag, err = s.handleRedactedTagComputation(req, teeConn.sessionID)
+	} else {
+		// Standard tag computation
+		tagComputer := NewSplitAEADTagComputer()
+		tag, err = tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
+	}
 
 	var response TagComputeResponse
 	response.RequestID = msg.RequestID
@@ -645,6 +654,26 @@ func (s *TEECommServer) handleTagCompute(teeConn *TEECommConnection, msg TEEMess
 	}
 
 	s.sendResponse(teeConn, TEEMsgTagComputeResp, msg.RequestID, response)
+}
+
+// handleRedactedTagComputation processes tag computation for redacted data
+func (s *TEECommServer) handleRedactedTagComputation(req TagComputeRequest, sessionID string) ([]byte, error) {
+	// For redacted requests, TEE_K provides the original ciphertext after
+	// applying the redaction streams on its side. TEE_T computes the tag
+	// on this recovered original data.
+	if req.OriginalRequestInfo == nil {
+		return nil, fmt.Errorf("original request info required for redaction processing")
+	}
+
+	// Compute tag on the original ciphertext provided by TEE_K
+	tagComputer := NewSplitAEADTagComputer()
+	tag, err := tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute tag on original data: %v", err)
+	}
+
+	log.Printf("TEE_T: Successfully computed tag for redacted session %s", sessionID)
+	return tag, nil
 }
 
 // handleTagVerify processes tag verification requests

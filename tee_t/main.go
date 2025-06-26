@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"tee/enclave"
 )
@@ -54,6 +55,9 @@ func createBusinessMux() *http.ServeMux {
 	// Tag verification endpoint
 	mux.HandleFunc("/verify-tag", handleVerifyTag)
 
+	// Redaction stream processing endpoint
+	mux.HandleFunc("/process-redaction-streams", handleRedactionStreams)
+
 	// TEE-to-TEE WebSocket communication endpoint
 	teeCommServer := enclave.NewTEECommServer()
 	mux.HandleFunc("/tee-comm", teeCommServer.HandleWebSocket)
@@ -63,8 +67,12 @@ func createBusinessMux() *http.ServeMux {
 
 // TagComputeRequest represents a tag computation request from TEE_K
 type TagComputeRequest struct {
-	Ciphertext []byte              `json:"ciphertext"`
-	TagSecrets *enclave.TagSecrets `json:"tag_secrets"`
+	Ciphertext          []byte                    `json:"ciphertext"`
+	TagSecrets          *enclave.TagSecrets       `json:"tag_secrets"`
+	SessionID           string                    `json:"session_id,omitempty"`
+	UseRedaction        bool                      `json:"use_redaction,omitempty"`
+	RedactedCiphertext  []byte                    `json:"redacted_ciphertext,omitempty"`
+	OriginalRequestInfo *enclave.RedactionRequest `json:"original_request_info,omitempty"`
 }
 
 // TagComputeResponse represents the response with computed tag
@@ -87,6 +95,35 @@ type TagVerifyResponse struct {
 	Status   string `json:"status"`
 	Error    string `json:"error,omitempty"`
 }
+
+// RedactionStreamRequest represents a request from a user to process redaction streams
+type RedactionStreamRequest struct {
+	SessionID           string                        `json:"session_id"`
+	RedactionStreams    *enclave.RedactionStreams     `json:"redaction_streams"`
+	RedactionKeys       *enclave.RedactionKeys        `json:"redaction_keys"`
+	ExpectedCommitments *enclave.RedactionCommitments `json:"expected_commitments"`
+}
+
+// RedactionStreamResponse represents the response to a redaction stream request
+type RedactionStreamResponse struct {
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+	Error     string `json:"error,omitempty"`
+	Ready     bool   `json:"ready"`
+}
+
+// RedactionSessionData stores redaction information for a session
+type RedactionSessionData struct {
+	RedactionStreams    *enclave.RedactionStreams
+	RedactionKeys       *enclave.RedactionKeys
+	ExpectedCommitments *enclave.RedactionCommitments
+	RedactionProcessor  *enclave.RedactionProcessor
+	Verified            bool
+}
+
+// Global session store for redaction data
+var redactionSessions = make(map[string]*RedactionSessionData)
+var redactionSessionsMu sync.RWMutex
 
 // handleComputeTag processes tag computation requests from TEE_K
 func handleComputeTag(w http.ResponseWriter, r *http.Request) {
@@ -124,8 +161,15 @@ func handleComputeTag(w http.ResponseWriter, r *http.Request) {
 	// Create tag computer
 	tagComputer := enclave.NewSplitAEADTagComputer()
 
-	// Compute tag
-	tag, err := tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
+	var tag []byte
+
+	if req.UseRedaction && req.SessionID != "" {
+		// Handle redacted request
+		tag, err = handleRedactedTagComputation(req)
+	} else {
+		// Standard tag computation
+		tag, err = tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
+	}
 
 	var response TagComputeResponse
 	if err != nil {
@@ -303,4 +347,144 @@ func startServer(serverConfig *enclave.ServerConfig) {
 		_ = serverConfig.HTTPServer.Close()
 		_ = serverConfig.HTTPSServer.Close()
 	}
+}
+
+// handleRedactedTagComputation processes tag computation for redacted data
+func handleRedactedTagComputation(req TagComputeRequest) ([]byte, error) {
+	// Retrieve session data to verify it exists and is authenticated
+	redactionSessionsMu.RLock()
+	sessionData, exists := redactionSessions[req.SessionID]
+	redactionSessionsMu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("no redaction session data found for session %s", req.SessionID)
+	}
+
+	if !sessionData.Verified {
+		return nil, fmt.Errorf("redaction session %s not verified", req.SessionID)
+	}
+
+	// In the redaction protocol:
+	// 1. User sends streams to TEE_T (already verified above)
+	// 2. TEE_K applies redaction streams and sends recovered original ciphertext to TEE_T
+	// 3. TEE_T computes tag on the original ciphertext from TEE_K
+	if req.OriginalRequestInfo == nil {
+		return nil, fmt.Errorf("original request info required for redaction processing")
+	}
+
+	// Compute tag on the original ciphertext provided by TEE_K
+	tagComputer := enclave.NewSplitAEADTagComputer()
+	tag, err := tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute tag on original data: %v", err)
+	}
+
+	log.Printf("Successfully computed tag for redacted session %s", req.SessionID)
+	return tag, nil
+}
+
+// handleRedactionStreams processes redaction stream requests from users
+func handleRedactionStreams(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Printf("Received redaction stream request from %s", r.RemoteAddr)
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Failed to read request body: %v", err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse request
+	var req RedactionStreamRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("Failed to parse redaction stream request: %v", err)
+		http.Error(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// Validate input
+	if req.SessionID == "" {
+		log.Printf("Session ID missing in request")
+		http.Error(w, "Session ID required", http.StatusBadRequest)
+		return
+	}
+
+	if req.RedactionStreams == nil {
+		log.Printf("Redaction streams missing in request")
+		http.Error(w, "Redaction streams required", http.StatusBadRequest)
+		return
+	}
+
+	if req.RedactionKeys == nil {
+		log.Printf("Redaction keys missing in request")
+		http.Error(w, "Redaction keys required", http.StatusBadRequest)
+		return
+	}
+
+	if req.ExpectedCommitments == nil {
+		log.Printf("Expected commitments missing in request")
+		http.Error(w, "Expected commitments required", http.StatusBadRequest)
+		return
+	}
+
+	// Create redaction processor
+	processor := enclave.NewRedactionProcessor()
+
+	// Verify commitments against streams and keys
+	if err := processor.VerifyCommitments(req.RedactionStreams, req.RedactionKeys, req.ExpectedCommitments); err != nil {
+		log.Printf("Commitment verification failed for session %s: %v", req.SessionID, err)
+		response := RedactionStreamResponse{
+			SessionID: req.SessionID,
+			Status:    "error",
+			Error:     fmt.Sprintf("Commitment verification failed: %v", err),
+			Ready:     false,
+		}
+		sendRedactionStreamResponse(w, response)
+		return
+	}
+
+	// Store session data for later use during tag computation
+	sessionData := &RedactionSessionData{
+		RedactionStreams:    req.RedactionStreams,
+		RedactionKeys:       req.RedactionKeys,
+		ExpectedCommitments: req.ExpectedCommitments,
+		RedactionProcessor:  processor,
+		Verified:            true,
+	}
+
+	redactionSessionsMu.Lock()
+	redactionSessions[req.SessionID] = sessionData
+	redactionSessionsMu.Unlock()
+
+	// Send success response
+	response := RedactionStreamResponse{
+		SessionID: req.SessionID,
+		Status:    "success",
+		Ready:     true,
+	}
+
+	log.Printf("Redaction streams processed and verified for session %s", req.SessionID)
+	sendRedactionStreamResponse(w, response)
+}
+
+// sendRedactionStreamResponse sends a JSON response for redaction stream requests
+func sendRedactionStreamResponse(w http.ResponseWriter, response RedactionStreamResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Service", "tee_t")
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal redaction stream response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write(responseJSON)
 }
