@@ -655,6 +655,13 @@ func (s *TEECommServer) handleSessionStart(teeConn *TEECommConnection, msg TEEMe
 	s.clients[req.SessionID] = teeConn
 	s.clientsMu.Unlock()
 
+	// Create session data for transcript building
+	if err := CreateSessionDataForWebSocket(req.SessionID); err != nil {
+		log.Printf("TEE_T: Failed to create session data for %s: %v", req.SessionID, err)
+		s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Failed to initialize session: %v", err))
+		return
+	}
+
 	// Send success response
 	response := SessionStartResponse{
 		SessionID: req.SessionID,
@@ -748,6 +755,13 @@ func (s *TEECommServer) handleTagVerify(teeConn *TEECommConnection, msg TEEMessa
 		log.Printf("TEE_T: Tag verification error for session %s: %v", teeConn.sessionID, err)
 	} else {
 		log.Printf("TEE_T: Tag verification for session %s: %v", teeConn.sessionID, response.Verified)
+
+		// Capture encrypted response for transcript if verification succeeded
+		if response.Verified {
+			if captureErr := CaptureEncryptedResponseForSession(teeConn.sessionID, req.Ciphertext); captureErr != nil {
+				log.Printf("TEE_T: Warning - failed to capture encrypted response: %v", captureErr)
+			}
+		}
 	}
 
 	s.sendResponse(teeConn, TEEMsgTagVerifyResp, msg.RequestID, response)
@@ -805,6 +819,16 @@ func (s *TEECommServer) handleTranscriptFinalize(teeConn *TEECommConnection, msg
 // GetResponseTranscriptForSession is a placeholder that should be overridden by the TEE_T service
 var GetResponseTranscriptForSession func(string) (*SignedTranscript, error) = func(sessionID string) (*SignedTranscript, error) {
 	return nil, fmt.Errorf("GetResponseTranscriptForSession not implemented - needs to be set by TEE_T service")
+}
+
+// CreateSessionDataForWebSocket creates session data for WebSocket sessions
+var CreateSessionDataForWebSocket func(string) error = func(sessionID string) error {
+	return fmt.Errorf("CreateSessionDataForWebSocket not implemented - needs to be set by TEE_T service")
+}
+
+// CaptureEncryptedResponseForSession captures encrypted responses for transcript building
+var CaptureEncryptedResponseForSession func(string, []byte) error = func(sessionID string, ciphertext []byte) error {
+	return fmt.Errorf("CaptureEncryptedResponseForSession not implemented - needs to be set by TEE_T service")
 }
 
 // handlePing responds to ping messages

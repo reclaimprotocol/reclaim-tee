@@ -1,14 +1,13 @@
-# TEE Redaction Protocol Demo Makefile
+# TEE+MPC Protocol Implementation Makefile
 
-.PHONY: build test test-demo help clean
+.PHONY: build test demo help clean
 
 # Build all components
 build:
 	@echo "Building TEE components..."
 	go build -o bin/tee_k ./tee_k
 	go build -o bin/tee_t ./tee_t  
-	go build -o bin/demo-client ./cmd/demo-client
-	go build -o bin/test-demo ./cmd/test-demo
+	go build -o bin/demo ./demo.go
 	@echo "Build complete"
 
 # Run comprehensive tests
@@ -19,11 +18,14 @@ test:
 	go test ./tee_t -v
 	@echo "Tests complete"
 
-# Run the local redaction logic test
-test-demo:
-	@echo "Running redaction protocol test..."
-	@go run ./cmd/test-demo
-	@echo "Protocol test complete"
+# Run the demo
+demo:
+	@echo "Running TEE+MPC Protocol Demo..."
+	@echo "Please start services first:"
+	@echo "  Terminal 1: PORT=8081 go run ./tee_t"
+	@echo "  Terminal 2: PORT=8080 go run ./tee_k"
+	@echo "  Terminal 3: go run demo.go \"ws://localhost:8080/ws?client_type=user\""
+	@echo ""
 
 # Clean up build artifacts
 clean:
@@ -33,19 +35,20 @@ clean:
 
 # Help
 help:
-	@echo "TEE Redaction Protocol Demo"
+	@echo "TEE+MPC Protocol Implementation"
 	@echo ""
 	@echo "Available targets:"
 	@echo "  build      - Build all components"
 	@echo "  test       - Run all unit tests"
-	@echo "  test-demo  - Run redaction protocol logic test"
+	@echo "  demo       - Show demo instructions"
 	@echo "  clean      - Clean up build artifacts"
 	@echo ""
-	@echo "Manual Demo Steps:"
-	@echo "  1. Terminal 1: PORT=8080 go run ./tee_k"
-	@echo "  2. Terminal 2: PORT=8081 go run ./tee_t"
-	@echo "  3. Terminal 3: go run ./cmd/demo-client"
+	@echo "Quick Start:"
+	@echo "  1. Terminal 1: PORT=8081 go run ./tee_t"
+	@echo "  2. Terminal 2: PORT=8080 go run ./tee_k"
+	@echo "  3. Terminal 3: go run demo.go \"ws://localhost:8080/ws?client_type=user\""
 	@echo ""
-	@echo "Individual service targets:"
-	@echo "  PORT=8080 go run ./tee_k  - Start TEE_K on :8080 (demo mode)"
-	@echo "  PORT=8081 go run ./tee_t  - Start TEE_T on :8081 (demo mode)" 
+	@echo "Testing:"
+	@echo "  make test                     - Run all tests"
+	@echo "  go test ./enclave -v          - Run enclave tests"
+	@echo "  go test ./enclave -run TestTranscript -v  - Run transcript tests" 

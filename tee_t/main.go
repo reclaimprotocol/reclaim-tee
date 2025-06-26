@@ -69,58 +69,23 @@ func createBusinessMux() *http.ServeMux {
 		fmt.Fprintln(w, response)
 	})
 
-	// Attestation endpoint is now handled by common TEEServer infrastructure
-
-	// Split AEAD tag computation endpoint
-	mux.HandleFunc("/compute-tag", handleComputeTag)
-
-	// Tag verification endpoint
-	mux.HandleFunc("/verify-tag", handleVerifyTag)
-
-	// Redaction stream processing endpoint
-	mux.HandleFunc("/process-redaction-streams", handleRedactionStreams)
-
-	// Response transcript finalization endpoint
-	mux.HandleFunc("/finalize-response-transcript", handleFinalizeResponseTranscript)
-
-	// TEE-to-TEE WebSocket communication endpoint
+	// TEE-to-TEE WebSocket communication endpoint (ALL TEE communication uses this)
 	teeCommServer := enclave.NewTEECommServer()
+
+	// Set up callbacks for WebSocket session management
+	enclave.GetResponseTranscriptForSession = GetSignedResponseTranscriptForSession
+	enclave.CreateSessionDataForWebSocket = CreateSessionDataForWebSocket
+	enclave.CaptureEncryptedResponseForSession = CaptureEncryptedResponseForSession
+
 	mux.HandleFunc("/tee-comm", teeCommServer.HandleWebSocket)
+
+	// Redaction stream processing endpoint (for users, not TEEs)
+	mux.HandleFunc("/process-redaction-streams", handleRedactionStreams)
 
 	return mux
 }
 
-// TagComputeRequest represents a tag computation request from TEE_K
-type TagComputeRequest struct {
-	Ciphertext          []byte                    `json:"ciphertext"`
-	TagSecrets          *enclave.TagSecrets       `json:"tag_secrets"`
-	SessionID           string                    `json:"session_id,omitempty"`
-	UseRedaction        bool                      `json:"use_redaction,omitempty"`
-	RedactedCiphertext  []byte                    `json:"redacted_ciphertext,omitempty"`
-	OriginalRequestInfo *enclave.RedactionRequest `json:"original_request_info,omitempty"`
-}
-
-// TagComputeResponse represents the response with computed tag
-type TagComputeResponse struct {
-	Tag    []byte `json:"tag"`
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
-}
-
-// TagVerifyRequest represents a tag verification request
-type TagVerifyRequest struct {
-	Ciphertext  []byte              `json:"ciphertext"`
-	ExpectedTag []byte              `json:"expected_tag"`
-	TagSecrets  *enclave.TagSecrets `json:"tag_secrets"`
-	SessionID   string              `json:"session_id,omitempty"` // For transcript building
-}
-
-// TagVerifyResponse represents the tag verification response
-type TagVerifyResponse struct {
-	Verified bool   `json:"verified"`
-	Status   string `json:"status"`
-	Error    string `json:"error,omitempty"`
-}
+// TEE-to-TEE communication types are now handled by WebSocket protocol in enclave/tee_communication.go
 
 // RedactionStreamRequest represents a request from a user to process redaction streams
 type RedactionStreamRequest struct {
@@ -153,167 +118,9 @@ type RedactionSessionData struct {
 var redactionSessions = make(map[string]*RedactionSessionData)
 var redactionSessionsMu sync.RWMutex
 
-// handleComputeTag processes tag computation requests from TEE_K
-func handleComputeTag(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+// HTTP handlers for tag computation are replaced by WebSocket handlers in enclave/tee_communication.go
 
-	log.Printf("Received tag computation request from %s", r.RemoteAddr)
-
-	// Read request body
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("Failed to read request body: %v", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	// Parse request
-	var req TagComputeRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		log.Printf("Failed to parse tag compute request: %v", err)
-		http.Error(w, "Invalid request format", http.StatusBadRequest)
-		return
-	}
-
-	// Validate input
-	if req.TagSecrets == nil {
-		log.Printf("Tag secrets missing in request")
-		http.Error(w, "Tag secrets required", http.StatusBadRequest)
-		return
-	}
-
-	// Create tag computer
-	tagComputer := enclave.NewSplitAEADTagComputer()
-
-	var tag []byte
-
-	if req.UseRedaction && req.SessionID != "" {
-		// Handle redacted request
-		tag, err = handleRedactedTagComputation(req)
-	} else {
-		// Standard tag computation
-		tag, err = tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
-	}
-
-	var response TagComputeResponse
-	if err != nil {
-		log.Printf("Tag computation failed: %v", err)
-		response = TagComputeResponse{
-			Status: "error",
-			Error:  fmt.Sprintf("Tag computation failed: %v", err),
-		}
-	} else {
-		log.Printf("Tag computation successful (%d bytes)", len(tag))
-		response = TagComputeResponse{
-			Tag:    tag,
-			Status: "success",
-		}
-	}
-
-	// Send response
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Service", "tee_t")
-
-	responseJSON, err := json.Marshal(response)
-	if err != nil {
-		log.Printf("Failed to marshal response: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Write(responseJSON)
-}
-
-// handleVerifyTag processes tag verification requests
-func handleVerifyTag(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	log.Printf("Received tag verification request from %s", r.RemoteAddr)
-
-	// Read request body
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("Failed to read request body: %v", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	// Parse request
-	var req TagVerifyRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		log.Printf("Failed to parse tag verify request: %v", err)
-		http.Error(w, "Invalid request format", http.StatusBadRequest)
-		return
-	}
-
-	// Validate input
-	if req.TagSecrets == nil {
-		log.Printf("Tag secrets missing in request")
-		http.Error(w, "Tag secrets required", http.StatusBadRequest)
-		return
-	}
-
-	if len(req.ExpectedTag) == 0 {
-		log.Printf("Expected tag missing in request")
-		http.Error(w, "Expected tag required", http.StatusBadRequest)
-		return
-	}
-
-	// Create tag computer
-	tagComputer := enclave.NewSplitAEADTagComputer()
-
-	// Verify tag
-	err = tagComputer.VerifyTag(req.Ciphertext, req.ExpectedTag, req.TagSecrets)
-
-	var response TagVerifyResponse
-	if err != nil {
-		log.Printf("Tag verification failed: %v", err)
-		response = TagVerifyResponse{
-			Verified: false,
-			Status:   "failed",
-			Error:    fmt.Sprintf("Tag verification failed: %v", err),
-		}
-	} else {
-		log.Printf("Tag verification successful")
-		response = TagVerifyResponse{
-			Verified: true,
-			Status:   "success",
-		}
-
-		// Capture encrypted response in transcript if session exists
-		if req.SessionID != "" {
-			redactionSessionsMu.RLock()
-			sessionData, exists := redactionSessions[req.SessionID]
-			redactionSessionsMu.RUnlock()
-
-			if exists && sessionData.ResponseTranscriptBuilder != nil {
-				sessionData.ResponseTranscriptBuilder.AddEncryptedResponse(req.Ciphertext)
-				log.Printf("Added encrypted response to transcript for session %s (%d bytes)", req.SessionID, len(req.Ciphertext))
-			}
-		}
-	}
-
-	// Send response
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Service", "tee_t")
-
-	responseJSON, err := json.Marshal(response)
-	if err != nil {
-		log.Printf("Failed to marshal response: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Write(responseJSON)
-}
+// HTTP handlers for tag verification are replaced by WebSocket handlers in enclave/tee_communication.go
 
 func startServer(server *enclave.TEEServer) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -353,39 +160,7 @@ func startServer(server *enclave.TEEServer) {
 	}
 }
 
-// handleRedactedTagComputation processes tag computation for redacted data
-func handleRedactedTagComputation(req TagComputeRequest) ([]byte, error) {
-	// Retrieve session data to verify it exists and is authenticated
-	redactionSessionsMu.RLock()
-	sessionData, exists := redactionSessions[req.SessionID]
-	redactionSessionsMu.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("no redaction session data found for session %s", req.SessionID)
-	}
-
-	if !sessionData.Verified {
-		return nil, fmt.Errorf("redaction session %s not verified", req.SessionID)
-	}
-
-	// In the redaction protocol:
-	// 1. User sends streams to TEE_T (already verified above)
-	// 2. TEE_K applies redaction streams and sends recovered original ciphertext to TEE_T
-	// 3. TEE_T computes tag on the original ciphertext from TEE_K
-	if req.OriginalRequestInfo == nil {
-		return nil, fmt.Errorf("original request info required for redaction processing")
-	}
-
-	// Compute tag on the original ciphertext provided by TEE_K
-	tagComputer := enclave.NewSplitAEADTagComputer()
-	tag, err := tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compute tag on original data: %v", err)
-	}
-
-	log.Printf("Successfully computed tag for redacted session %s", req.SessionID)
-	return tag, nil
-}
+// Redacted tag computation is now handled by WebSocket handlers in enclave/tee_communication.go
 
 // handleRedactionStreams processes redaction stream requests from users
 func handleRedactionStreams(w http.ResponseWriter, r *http.Request) {
@@ -509,112 +284,56 @@ func sendRedactionStreamResponse(w http.ResponseWriter, response RedactionStream
 	w.Write(responseJSON)
 }
 
-// FinalizeTranscriptRequest represents a request to finalize and sign response transcript
-type FinalizeTranscriptRequest struct {
-	SessionID          string   `json:"session_id"`
-	EncryptedResponses [][]byte `json:"encrypted_responses"`
-}
+// Transcript finalization types are now handled by WebSocket protocol in enclave/tee_communication.go
 
-// FinalizeTranscriptResponse represents the response with signed transcript
-type FinalizeTranscriptResponse struct {
-	SessionID        string `json:"session_id"`
-	SignedTranscript []byte `json:"signed_transcript"`
-	Status           string `json:"status"`
-	Error            string `json:"error,omitempty"`
-}
-
-// handleFinalizeResponseTranscript finalizes and signs the response transcript
-func handleFinalizeResponseTranscript(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	log.Printf("Received response transcript finalization request from %s", r.RemoteAddr)
-
-	// Read request body
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("Failed to read request body: %v", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	// Parse request
-	var req FinalizeTranscriptRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		log.Printf("Failed to parse finalize transcript request: %v", err)
-		http.Error(w, "Invalid request format", http.StatusBadRequest)
-		return
-	}
-
-	// Validate input
-	if req.SessionID == "" {
-		log.Printf("Session ID missing in request")
-		http.Error(w, "Session ID required", http.StatusBadRequest)
-		return
-	}
-
-	// Retrieve session data
-	redactionSessionsMu.RLock()
-	sessionData, exists := redactionSessions[req.SessionID]
-	redactionSessionsMu.RUnlock()
-
-	var response FinalizeTranscriptResponse
-	response.SessionID = req.SessionID
-
-	if !exists {
-		log.Printf("No session data found for session %s", req.SessionID)
-		response.Status = "error"
-		response.Error = "Session not found"
-	} else if sessionData.TranscriptSigner == nil || sessionData.ResponseTranscriptBuilder == nil {
-		log.Printf("No transcript signer or builder available for session %s", req.SessionID)
-		response.Status = "error"
-		response.Error = "Transcript components not available"
-	} else {
-		// Add encrypted responses to transcript builder
-		for _, encryptedResponse := range req.EncryptedResponses {
-			sessionData.ResponseTranscriptBuilder.AddEncryptedResponse(encryptedResponse)
-		}
-
-		// Sign the response transcript
-		signedTranscript, err := sessionData.ResponseTranscriptBuilder.Sign(sessionData.TranscriptSigner)
-		if err != nil {
-			log.Printf("Failed to sign response transcript for session %s: %v", req.SessionID, err)
-			response.Status = "error"
-			response.Error = fmt.Sprintf("Failed to sign transcript: %v", err)
-		} else {
-			// Serialize the signed transcript
-			signedTranscriptBytes, err := json.Marshal(signedTranscript)
-			if err != nil {
-				log.Printf("Failed to serialize signed transcript for session %s: %v", req.SessionID, err)
-				response.Status = "error"
-				response.Error = fmt.Sprintf("Failed to serialize transcript: %v", err)
-			} else {
-				log.Printf("Response transcript signed for session %s (%d bytes, %s algorithm)",
-					req.SessionID, len(signedTranscriptBytes), signedTranscript.Algorithm)
-				response.SignedTranscript = signedTranscriptBytes
-				response.Status = "success"
-			}
-		}
-	}
-
-	// Send response
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Service", "tee_t")
-
-	responseJSON, err := json.Marshal(response)
-	if err != nil {
-		log.Printf("Failed to marshal finalize transcript response: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Write(responseJSON)
-}
+// HTTP handlers for transcript finalization are replaced by WebSocket handlers in enclave/tee_communication.go
 
 // startDemoServer starts a simple HTTP server for demo purposes
+// CreateSessionDataForWebSocket creates session data for WebSocket sessions
+func CreateSessionDataForWebSocket(sessionID string) error {
+	// Create transcript signer for demo (generates random key)
+	transcriptSigner, err := enclave.GenerateDemoKey()
+	if err != nil {
+		return fmt.Errorf("failed to create transcript signer: %v", err)
+	}
+
+	// Create session data for WebSocket sessions (without redaction)
+	sessionData := &RedactionSessionData{
+		RedactionStreams:          nil, // No redaction for WebSocket sessions
+		RedactionKeys:             nil,
+		ExpectedCommitments:       nil,
+		RedactionProcessor:        nil,
+		Verified:                  true, // WebSocket sessions are pre-verified
+		TranscriptSigner:          transcriptSigner,
+		ResponseTranscriptBuilder: enclave.NewResponseTranscriptBuilder(sessionID),
+	}
+
+	redactionSessionsMu.Lock()
+	redactionSessions[sessionID] = sessionData
+	redactionSessionsMu.Unlock()
+
+	log.Printf("TEE_T: Created session data for WebSocket session %s", sessionID)
+	return nil
+}
+
+// CaptureEncryptedResponseForSession captures encrypted responses for transcript building
+func CaptureEncryptedResponseForSession(sessionID string, ciphertext []byte) error {
+	redactionSessionsMu.RLock()
+	sessionData, exists := redactionSessions[sessionID]
+	redactionSessionsMu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("no session data found for session %s", sessionID)
+	}
+
+	if sessionData.ResponseTranscriptBuilder != nil {
+		sessionData.ResponseTranscriptBuilder.AddEncryptedResponse(ciphertext)
+		log.Printf("TEE_T: Added encrypted response to transcript for session %s (%d bytes)", sessionID, len(ciphertext))
+	}
+
+	return nil
+}
+
 // GetSignedResponseTranscriptForSession retrieves and signs the response transcript for a session
 func GetSignedResponseTranscriptForSession(sessionID string) (*enclave.SignedTranscript, error) {
 	redactionSessionsMu.RLock()
@@ -654,8 +373,7 @@ func startDemoServer(port string) {
 	log.Printf("TEE_T demo server starting on port %s", port)
 	log.Printf("Available endpoints:")
 	log.Printf("  POST /process-redaction-streams - Process redaction streams from users")
-	log.Printf("  POST /compute-tag - Compute authentication tags")
-	log.Printf("  POST /verify-tag - Verify authentication tags")
+	log.Printf("  WS /tee-comm - WebSocket endpoint for TEE-to-TEE communication")
 	log.Printf("  GET /attest - Get attestation document")
 
 	if err := server.ListenAndServe(); err != nil {
