@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,8 +15,7 @@ import (
 )
 
 func main() {
-	// Load environment variables first
-	enclave.LoadEnvVariables()
+	log.Printf("Starting TEE_T service...")
 
 	// Check for demo mode (PORT environment variable)
 	if port := os.Getenv("PORT"); port != "" {
@@ -28,16 +24,33 @@ func main() {
 		return
 	}
 
+	// Load TEE_T specific configuration
+	config, err := enclave.LoadTEETConfig()
+	if err != nil {
+		log.Fatalf("Failed to load TEE_T configuration: %v", err)
+	}
+
 	// Initialize NSM for crypto operations
 	if err := enclave.InitializeNSM(); err != nil {
 		log.Fatalf("Failed to initialize NSM: %v", err)
 	}
 
-	// Create server configuration with the business mux
-	config := enclave.CreateServerConfig(createBusinessMux())
+	// Create TEE server
+	server, err := enclave.NewTEEServer(config)
+	if err != nil {
+		log.Fatalf("Failed to create TEE server: %v", err)
+	}
+
+	// Create the business logic mux
+	businessMux := createBusinessMux()
+
+	// Setup servers with business logic
+	if err := server.SetupServers(businessMux); err != nil {
+		log.Fatalf("Failed to setup servers: %v", err)
+	}
 
 	// Start the server
-	startServer(config)
+	startServer(server)
 }
 
 func createBusinessMux() *http.ServeMux {
@@ -53,8 +66,7 @@ func createBusinessMux() *http.ServeMux {
 		fmt.Fprintln(w, response)
 	})
 
-	// Attestation endpoint - business logic
-	mux.HandleFunc("/attest", createAttestHandler())
+	// Attestation endpoint is now handled by common TEEServer infrastructure
 
 	// Split AEAD tag computation endpoint
 	mux.HandleFunc("/compute-tag", handleComputeTag)
@@ -282,62 +294,26 @@ func handleVerifyTag(w http.ResponseWriter, r *http.Request) {
 	w.Write(responseJSON)
 }
 
-func createAttestHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Received attestation request from %s", r.RemoteAddr)
-
-		// We need to get the server config to access the cache
-		// For now, we'll create a temporary cache instance
-		// This is a limitation of the current architecture
-		cache := enclave.NewMemoryCache()
-
-		fingerprint, err := enclave.GetCertificateFingerprint(r.Context(), cache)
-		if err != nil {
-			log.Printf("Failed to get certificate fingerprint: %v", err)
-			http.Error(w, "Failed to generate attestation", http.StatusInternalServerError)
-			return
-		}
-
-		// Convert fingerprint to hex
-		fingerprintHex := hex.EncodeToString(fingerprint)
-
-		handle := enclave.MustGlobalHandle()
-		attestationDoc, err := enclave.GenerateAttestation(handle, []byte(fingerprintHex))
-		if err != nil {
-			log.Printf("Failed to generate attestation: %v", err)
-			http.Error(w, "Failed to generate attestation", http.StatusInternalServerError)
-			return
-		}
-
-		encoded := base64.StdEncoding.EncodeToString(attestationDoc)
-		w.Header().Set("Content-Type", "text/plain")
-		w.Header().Set("X-Service", "tee_t")
-		fmt.Fprint(w, encoded)
-	}
-}
-
-func startServer(serverConfig *enclave.ServerConfig) {
+func startServer(server *enclave.TEEServer) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	httpErrChan, httpsErrChan := enclave.StartListeners(ctx, serverConfig.HTTPServer, serverConfig.HTTPSServer)
+	// Start listeners
+	httpErrChan, httpsErrChan := server.StartListeners(ctx)
 
-	log.Printf("Attempting to load or issue certificate for %s", enclave.EnclaveDomain)
-	_, err := serverConfig.Manager.GetCertificate(&tls.ClientHelloInfo{ServerName: enclave.EnclaveDomain})
-	if err != nil {
+	// Load or issue certificate
+	if err := server.LoadOrIssueCertificate(); err != nil {
 		log.Printf("Failed to load or issue certificate on startup: %v", err)
-	} else {
-		log.Printf("Successfully loaded or issued certificate for %s", enclave.EnclaveDomain)
 	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	select {
-	case err = <-httpErrChan:
+	case err := <-httpErrChan:
 		if err != nil {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
-	case err = <-httpsErrChan:
+	case err := <-httpsErrChan:
 		if err != nil {
 			log.Fatalf("HTTPS server failed: %v", err)
 		}
@@ -351,8 +327,8 @@ func startServer(serverConfig *enclave.ServerConfig) {
 			manager.Close()
 		}
 
-		_ = serverConfig.HTTPServer.Close()
-		_ = serverConfig.HTTPSServer.Close()
+		// Close server
+		server.Close()
 	}
 }
 

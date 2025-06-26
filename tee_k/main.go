@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1106,14 +1105,19 @@ func makeHTTPRequest(httpReq *HTTPRequestData, targetURL string) (*HTTPResponseD
 }
 
 func main() {
-	// Load environment variables first
-	enclave.LoadEnvVariables()
+	log.Printf("Starting TEE_K service...")
 
 	// Check for demo mode (PORT environment variable)
 	if port := os.Getenv("PORT"); port != "" {
 		log.Printf("Demo mode: Starting TEE_K on HTTP port %s", port)
 		startDemoServer(port)
 		return
+	}
+
+	// Load TEE_K specific configuration
+	config, err := enclave.LoadTEEKConfig()
+	if err != nil {
+		log.Fatalf("Failed to load TEE_K configuration: %v", err)
 	}
 
 	// Initialize NSM for crypto operations
@@ -1134,11 +1138,22 @@ func main() {
 	// Start WebSocket hub
 	go wsHub.run()
 
-	// Create server configuration with the TEE_K business mux
-	config := enclave.CreateServerConfig(createBusinessMux())
+	// Create TEE server
+	server, err := enclave.NewTEEServer(config)
+	if err != nil {
+		log.Fatalf("Failed to create TEE server: %v", err)
+	}
+
+	// Create the business logic mux
+	businessMux := createBusinessMux()
+
+	// Setup servers with business logic
+	if err := server.SetupServers(businessMux); err != nil {
+		log.Fatalf("Failed to setup servers: %v", err)
+	}
 
 	// Start the server
-	startServer(config)
+	startServer(server)
 }
 
 // startDemoServer starts a simple HTTP server for demo purposes
@@ -1196,28 +1211,26 @@ func createBusinessMux() *http.ServeMux {
 	return mux
 }
 
-func startServer(serverConfig *enclave.ServerConfig) {
+func startServer(server *enclave.TEEServer) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	httpErrChan, httpsErrChan := enclave.StartListeners(ctx, serverConfig.HTTPServer, serverConfig.HTTPSServer)
+	// Start listeners
+	httpErrChan, httpsErrChan := server.StartListeners(ctx)
 
-	log.Printf("Attempting to load or issue certificate for %s", enclave.EnclaveDomain)
-	_, err := serverConfig.Manager.GetCertificate(&tls.ClientHelloInfo{ServerName: enclave.EnclaveDomain})
-	if err != nil {
+	// Load or issue certificate
+	if err := server.LoadOrIssueCertificate(); err != nil {
 		log.Printf("Failed to load or issue certificate on startup: %v", err)
-	} else {
-		log.Printf("Successfully loaded or issued certificate for %s", enclave.EnclaveDomain)
 	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	select {
-	case err = <-httpErrChan:
+	case err := <-httpErrChan:
 		if err != nil {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
-	case err = <-httpsErrChan:
+	case err := <-httpsErrChan:
 		if err != nil {
 			log.Fatalf("HTTPS server failed: %v", err)
 		}
@@ -1231,7 +1244,7 @@ func startServer(serverConfig *enclave.ServerConfig) {
 			manager.Close()
 		}
 
-		_ = serverConfig.HTTPServer.Close()
-		_ = serverConfig.HTTPSServer.Close()
+		// Close server
+		server.Close()
 	}
 }

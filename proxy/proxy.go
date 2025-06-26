@@ -55,6 +55,7 @@ const (
 type (
 	VSockConnectionFactory struct {
 		factory   func() (net.Conn, error)
+		vsockCID  uint32
 		vsockPort uint32
 	}
 	CircuitBreaker struct {
@@ -111,10 +112,15 @@ type (
 var (
 	globalProxyManager *ProxyManager
 	proxyManagerOnce   sync.Once
+	domainRouter       *DomainRouter
+	connectionRouter   *ConnectionRouter
 )
 
 func main() {
 	log.Println("Starting unified proxy server...")
+
+	// Initialize domain routing
+	initializeDomainRouting()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sigChan := make(chan os.Signal, 1)
@@ -143,6 +149,36 @@ func main() {
 
 	wg.Wait()
 	log.Println("Proxy server shut down gracefully")
+}
+
+// initializeDomainRouting sets up domain routing configuration
+func initializeDomainRouting() {
+	domainRouter = NewDomainRouter()
+
+	// Configure domain routes from environment variables
+	teeKDomain := os.Getenv("TEE_K_DOMAIN")
+	if teeKDomain == "" {
+		teeKDomain = "tee-k.reclaimprotocol.org" // fallback
+	}
+
+	teeTDomain := os.Getenv("TEE_T_DOMAIN")
+	if teeTDomain == "" {
+		teeTDomain = "tee-t.reclaimprotocol.org" // fallback
+	}
+
+	// Get enclave CIDs from environment (you'll set these)
+	teeKCID := getEnvValueUint32("TEE_K_CID", 16) // Default CID 16 for TEE_K
+	teeTCID := getEnvValueUint32("TEE_T_CID", 17) // Default CID 17 for TEE_T
+
+	// Add domain routes with CIDs
+	domainRouter.AddRoute(teeKDomain, teeKCID, 8001) // TEE_K: CID and HTTPS vsock port
+	domainRouter.AddRoute(teeTDomain, teeTCID, 8003) // TEE_T: CID and HTTPS vsock port
+
+	connectionRouter = NewConnectionRouter(domainRouter)
+
+	log.Printf("Domain routing initialized:")
+	log.Printf("  %s -> CID %d, HTTPS:8001, HTTP:8000", teeKDomain, teeKCID)
+	log.Printf("  %s -> CID %d, HTTPS:8003, HTTP:8002", teeTDomain, teeTCID)
 }
 
 // TCP Reverse Proxy Implementation
@@ -182,14 +218,14 @@ func startTCPReverseProxy(ctx context.Context) {
 
 	go func() {
 		defer wg.Done()
-		log.Printf("Accepting TCP connections on %s (forwarding to vsock port %d)", listenAddressHTTP, vsockHTTPPort)
-		acceptReverseConnections(ctx, httpListener, vsockHTTPPort)
+		log.Printf("Accepting HTTP connections on %s (with domain routing)", listenAddressHTTP)
+		acceptHTTPConnections(ctx, httpListener)
 	}()
 
 	go func() {
 		defer wg.Done()
-		log.Printf("Accepting TCP connections on %s (forwarding to vsock port %d)", listenAddressHTTPS, vsockHTTPSPort)
-		acceptReverseConnections(ctx, httpsListener, vsockHTTPSPort)
+		log.Printf("Accepting HTTPS connections on %s (with SNI routing)", listenAddressHTTPS)
+		acceptHTTPSConnections(ctx, httpsListener)
 	}()
 
 	go func() {
@@ -269,8 +305,8 @@ func startVSockProxy(ctx context.Context) {
 func getProxyManager() *ProxyManager {
 	proxyManagerOnce.Do(func() {
 		globalProxyManager = &ProxyManager{
-			httpFactory:    NewVSockFactory(vsockHTTPPort),
-			httpsFactory:   NewVSockFactory(vsockHTTPSPort),
+			httpFactory:    NewVSockFactory(16, 8000), // TEE_K default CID and HTTP port
+			httpsFactory:   NewVSockFactory(16, 8001), // TEE_K default CID and HTTPS port
 			circuitBreaker: &CircuitBreaker{state: int32(CircuitClosed)},
 			metrics:        &ConnectionMetrics{},
 		}
@@ -278,8 +314,9 @@ func getProxyManager() *ProxyManager {
 	return globalProxyManager
 }
 
-func NewVSockFactory(vsockPort uint32) *VSockConnectionFactory {
+func NewVSockFactory(vsockCID, vsockPort uint32) *VSockConnectionFactory {
 	return &VSockConnectionFactory{
+		vsockCID:  vsockCID,
 		vsockPort: vsockPort,
 		factory: func() (net.Conn, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), connectionTimeout)
@@ -469,6 +506,88 @@ func handleReverseConnection(ctx context.Context, clientConn net.Conn, vsockPort
 	wg.Wait()
 }
 
+// handleReverseConnectionWithCID handles reverse connections to a specific enclave CID and port
+func handleReverseConnectionWithCID(ctx context.Context, clientConn net.Conn, enclaveCID, vsockPort uint32) {
+	defer clientConn.Close()
+
+	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(keepAliveInterval)
+	}
+
+	manager := getProxyManager()
+	if !manager.circuitBreaker.CanExecute() {
+		manager.metrics.recordFailure()
+		log.Printf("Circuit breaker is open, rejecting connection to CID %d port %d", enclaveCID, vsockPort)
+		return
+	}
+
+	startTime := time.Now()
+
+	// Create a CID-specific connection factory
+	factory := NewVSockFactory(enclaveCID, vsockPort)
+
+	var enclaveConn net.Conn
+	var lastErr error
+	for attempt := 0; attempt < maxConnectionRetries; attempt++ {
+		if attempt > 0 {
+			backoffDelay := calculateBackoff(attempt)
+			log.Printf("Retrying vsock connection (attempt %d/%d) after %v", attempt+1, maxConnectionRetries, backoffDelay)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoffDelay):
+			}
+		}
+
+		conn, err := factory.Create(ctx)
+		if err == nil {
+			enclaveConn = conn
+			break
+		}
+		lastErr = err
+		log.Printf("VSock connection failed (attempt %d/%d): %v", attempt+1, maxConnectionRetries, err)
+	}
+
+	if enclaveConn == nil {
+		manager.circuitBreaker.OnFailure()
+		manager.metrics.recordFailure()
+		log.Printf("Exhausted retries for enclave CID %d port %d: %v", enclaveCID, vsockPort, lastErr)
+		return
+	}
+
+	defer func() {
+		log.Printf("Closing connection to enclave CID %d port %d: %s", enclaveCID, vsockPort, enclaveConn.RemoteAddr())
+		_ = enclaveConn.Close()
+	}()
+
+	manager.circuitBreaker.OnSuccess()
+	manager.metrics.recordSuccess(time.Since(startTime))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		_ = enclaveConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
+		_, err := io.Copy(enclaveConn, clientConn)
+		if err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
+			log.Printf("Error copying from client to enclave CID %d port %d: %v", enclaveCID, vsockPort, err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		_ = clientConn.SetWriteDeadline(time.Now().Add(readWriteTimeout))
+		_, err := io.Copy(clientConn, enclaveConn)
+		if err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
+			log.Printf("Error copying from enclave to client CID %d port %d: %v", enclaveCID, vsockPort, err)
+		}
+	}()
+
+	wg.Wait()
+}
+
 func acceptForwardConnections(ctx context.Context, listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
@@ -556,6 +675,102 @@ func handleForwardConnection(ctx context.Context, enclaveConn net.Conn) {
 	}()
 
 	wg.Wait()
+}
+
+// acceptHTTPConnections handles HTTP connections with Host header routing
+func acceptHTTPConnections(ctx context.Context, listener net.Listener) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				log.Printf("HTTP listener on %s stopped", listener.Addr())
+				return
+			default:
+				log.Printf("Accept error on %s: %v, retrying in %v", listener.Addr(), err, retryDelay)
+				time.Sleep(retryDelay)
+				continue
+			}
+		}
+
+		log.Printf("Accepted HTTP connection from %s", conn.RemoteAddr())
+		go handleHTTPConnection(ctx, conn)
+	}
+}
+
+// acceptHTTPSConnections handles HTTPS connections with SNI routing
+func acceptHTTPSConnections(ctx context.Context, listener net.Listener) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				log.Printf("HTTPS listener on %s stopped", listener.Addr())
+				return
+			default:
+				log.Printf("Accept error on %s: %v, retrying in %v", listener.Addr(), err, retryDelay)
+				time.Sleep(retryDelay)
+				continue
+			}
+		}
+
+		log.Printf("Accepted HTTPS connection from %s", conn.RemoteAddr())
+		go handleHTTPSConnection(ctx, conn)
+	}
+}
+
+// handleHTTPConnection routes HTTP connections based on Host header
+func handleHTTPConnection(ctx context.Context, clientConn net.Conn) {
+	defer clientConn.Close()
+
+	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(keepAliveInterval)
+	}
+
+	// Get the route target using domain router
+	target := domainRouter.RouteHTTPConnection(ctx, clientConn)
+
+	// Create a connection that replays the buffered data
+	replayConn := &HTTPReplayConnection{
+		Conn:      clientConn,
+		reader:    bufio.NewReader(clientConn),
+		firstLine: nil,
+	}
+
+	handleReverseConnectionWithCID(ctx, replayConn, target.CID, target.HttpVsockPort)
+}
+
+// handleHTTPSConnection routes HTTPS connections based on SNI
+func handleHTTPSConnection(ctx context.Context, clientConn net.Conn) {
+	defer clientConn.Close()
+
+	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(keepAliveInterval)
+	}
+
+	// Use SNI routing to determine the target
+	target, wrappedConn := connectionRouter.RouteHTTPSConnection(ctx, clientConn)
+
+	handleReverseConnectionWithCID(ctx, wrappedConn, target.CID, target.HttpsVsockPort)
+}
+
+// HTTPReplayConnection replays buffered HTTP data
+type HTTPReplayConnection struct {
+	net.Conn
+	reader    *bufio.Reader
+	firstLine []byte
+	replayed  bool
+}
+
+func (hrc *HTTPReplayConnection) Read(b []byte) (n int, err error) {
+	if !hrc.replayed {
+		// First read: return the buffered data
+		hrc.replayed = true
+		return hrc.reader.Read(b)
+	}
+	return hrc.Conn.Read(b)
 }
 
 // VSock Proxy Functions
