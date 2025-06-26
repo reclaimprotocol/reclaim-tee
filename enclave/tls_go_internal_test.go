@@ -20,9 +20,13 @@ func TestGoTLSKeyScheduleBasic(t *testing.T) {
 			TLS_AES_128_GCM_SHA256, ks.GetCipherSuite())
 	}
 
-	// Early secret should be initialized
-	if len(ks.earlySecret) == 0 {
-		t.Error("Early secret should be initialized")
+	// Verify properties
+	if ks.GetKeyLength() != 16 {
+		t.Errorf("Wrong key length: expected 16, got %d", ks.GetKeyLength())
+	}
+
+	if ks.GetHashSize() != 32 {
+		t.Errorf("Wrong hash size: expected 32, got %d", ks.GetHashSize())
 	}
 
 	t.Logf("Go TLS key schedule created successfully")
@@ -35,21 +39,28 @@ func TestGoTLSKeyScheduleFullFlow(t *testing.T) {
 		t.Fatalf("Failed to create Go TLS key schedule: %v", err)
 	}
 
-	// Create mock shared secret and transcript
+	// Create mock shared secret
 	sharedSecret := make([]byte, 32)
 	rand.Read(sharedSecret)
 
-	transcript := sha256.New()
-	transcript.Write([]byte("mock handshake data"))
-
-	// Derive handshake secrets
-	err = ks.DeriveHandshakeSecrets(sharedSecret, transcript)
+	// Initialize and derive handshake secrets
+	ks.InitializeEarlySecret()
+	err = ks.DeriveHandshakeSecret(sharedSecret)
 	if err != nil {
-		t.Fatalf("Failed to derive handshake secrets: %v", err)
+		t.Fatalf("Failed to derive handshake secret: %v", err)
+	}
+
+	ks.UpdateTranscript([]byte("mock handshake data"))
+	err = ks.DeriveHandshakeTrafficSecrets()
+	if err != nil {
+		t.Fatalf("Failed to derive handshake traffic secrets: %v", err)
 	}
 
 	// Get handshake keys
-	clientKey, serverKey, clientIV, serverIV := ks.GetHandshakeKeys()
+	clientKey, clientIV, serverKey, serverIV, err := ks.GetHandshakeTrafficKeys()
+	if err != nil {
+		t.Fatalf("Failed to get handshake traffic keys: %v", err)
+	}
 	if len(clientKey) != 16 || len(serverKey) != 16 {
 		t.Errorf("Wrong handshake key lengths: client=%d, server=%d", len(clientKey), len(serverKey))
 	}
@@ -57,14 +68,22 @@ func TestGoTLSKeyScheduleFullFlow(t *testing.T) {
 		t.Errorf("Wrong handshake IV lengths: client=%d, server=%d", len(clientIV), len(serverIV))
 	}
 
-	// Derive application secrets
-	err = ks.DeriveApplicationSecrets(transcript)
+	// Derive master secret and application secrets
+	err = ks.DeriveMasterSecret()
 	if err != nil {
-		t.Fatalf("Failed to derive application secrets: %v", err)
+		t.Fatalf("Failed to derive master secret: %v", err)
+	}
+
+	err = ks.DeriveApplicationTrafficSecrets()
+	if err != nil {
+		t.Fatalf("Failed to derive application traffic secrets: %v", err)
 	}
 
 	// Get application keys
-	appClientKey, appServerKey, appClientIV, appServerIV := ks.GetApplicationKeys()
+	appClientKey, appClientIV, appServerKey, appServerIV, err := ks.GetApplicationTrafficKeys()
+	if err != nil {
+		t.Fatalf("Failed to get application traffic keys: %v", err)
+	}
 	if len(appClientKey) != 16 || len(appServerKey) != 16 {
 		t.Errorf("Wrong application key lengths: client=%d, server=%d", len(appClientKey), len(appServerKey))
 	}
@@ -111,26 +130,39 @@ func TestGoTLSKeyScheduleAllCipherSuites(t *testing.T) {
 				t.Fatalf("Failed to create key schedule for %s: %v", cs.name, err)
 			}
 
-			// Mock ECDH and transcript
+			// Mock ECDH
 			sharedSecret := make([]byte, 32)
 			rand.Read(sharedSecret)
 
-			transcript := ks.suite.hash()
-			transcript.Write([]byte("test data for " + cs.name))
+			ks.UpdateTranscript([]byte("test data for " + cs.name))
 
 			// Full key schedule
-			err = ks.DeriveHandshakeSecrets(sharedSecret, transcript)
+			ks.InitializeEarlySecret()
+			err = ks.DeriveHandshakeSecret(sharedSecret)
 			if err != nil {
-				t.Fatalf("Handshake derivation failed for %s: %v", cs.name, err)
+				t.Fatalf("Handshake secret derivation failed for %s: %v", cs.name, err)
 			}
 
-			err = ks.DeriveApplicationSecrets(transcript)
+			err = ks.DeriveHandshakeTrafficSecrets()
 			if err != nil {
-				t.Fatalf("Application derivation failed for %s: %v", cs.name, err)
+				t.Fatalf("Handshake traffic derivation failed for %s: %v", cs.name, err)
+			}
+
+			err = ks.DeriveMasterSecret()
+			if err != nil {
+				t.Fatalf("Master secret derivation failed for %s: %v", cs.name, err)
+			}
+
+			err = ks.DeriveApplicationTrafficSecrets()
+			if err != nil {
+				t.Fatalf("Application traffic derivation failed for %s: %v", cs.name, err)
 			}
 
 			// Check key lengths
-			clientKey, serverKey, clientIV, serverIV := ks.GetApplicationKeys()
+			clientKey, clientIV, serverKey, serverIV, err := ks.GetApplicationTrafficKeys()
+			if err != nil {
+				t.Fatalf("Failed to get application keys for %s: %v", cs.name, err)
+			}
 			if len(clientKey) != cs.keyLen {
 				t.Errorf("%s: wrong client key length: expected %d, got %d",
 					cs.name, cs.keyLen, len(clientKey))
@@ -160,12 +192,6 @@ func TestGoTLSKeyScheduleDeterminism(t *testing.T) {
 		sharedSecret[i] = byte(i)
 	}
 
-	transcript1 := sha256.New()
-	transcript1.Write([]byte("deterministic test data"))
-
-	transcript2 := sha256.New()
-	transcript2.Write([]byte("deterministic test data"))
-
 	// Create two identical key schedules
 	ks1, err := NewGoTLSKeySchedule(TLS_AES_128_GCM_SHA256)
 	if err != nil {
@@ -178,15 +204,18 @@ func TestGoTLSKeyScheduleDeterminism(t *testing.T) {
 	}
 
 	// Derive keys with identical inputs
-	ks1.DeriveHandshakeSecrets(sharedSecret, transcript1)
-	ks1.DeriveApplicationSecrets(transcript1)
-
-	ks2.DeriveHandshakeSecrets(sharedSecret, transcript2)
-	ks2.DeriveApplicationSecrets(transcript2)
+	for _, ks := range []*GoTLSKeySchedule{ks1, ks2} {
+		ks.InitializeEarlySecret()
+		ks.DeriveHandshakeSecret(sharedSecret)
+		ks.UpdateTranscript([]byte("deterministic test data"))
+		ks.DeriveHandshakeTrafficSecrets()
+		ks.DeriveMasterSecret()
+		ks.DeriveApplicationTrafficSecrets()
+	}
 
 	// Keys should be identical
-	c1, s1, ci1, si1 := ks1.GetApplicationKeys()
-	c2, s2, ci2, si2 := ks2.GetApplicationKeys()
+	c1, ci1, s1, si1, _ := ks1.GetApplicationTrafficKeys()
+	c2, ci2, s2, si2, _ := ks2.GetApplicationTrafficKeys()
 
 	if !bytes.Equal(c1, c2) {
 		t.Error("Client keys should be identical with same inputs")
@@ -201,7 +230,7 @@ func TestGoTLSKeyScheduleDeterminism(t *testing.T) {
 		t.Error("Server IVs should be identical with same inputs")
 	}
 
-	t.Logf("Go TLS key schedule determinism verified")
+	t.Log("Determinism test passed")
 }
 
 func TestGoTLSKeyScheduleSecureZero(t *testing.T) {
@@ -210,105 +239,123 @@ func TestGoTLSKeyScheduleSecureZero(t *testing.T) {
 		t.Fatalf("Failed to create key schedule: %v", err)
 	}
 
-	// Derive some secrets
-	sharedSecret := make([]byte, 32)
-	rand.Read(sharedSecret)
-
-	transcript := sha256.New()
-	transcript.Write([]byte("test data"))
-
-	ks.DeriveHandshakeSecrets(sharedSecret, transcript)
-	ks.DeriveApplicationSecrets(transcript)
-
-	// Verify secrets are non-zero
-	if isAllZero(ks.earlySecret) {
-		t.Error("Early secret should not be zero before SecureZero")
-	}
-	if isAllZero(ks.handshakeSecret) {
-		t.Error("Handshake secret should not be zero before SecureZero")
-	}
-
-	// Zero out secrets
-	ks.SecureZero()
-
-	// Verify all secrets are now zero
-	if !isAllZero(ks.earlySecret) {
-		t.Error("Early secret should be zero after SecureZero")
-	}
-	if !isAllZero(ks.handshakeSecret) {
-		t.Error("Handshake secret should be zero after SecureZero")
-	}
-	if !isAllZero(ks.masterSecret) {
-		t.Error("Master secret should be zero after SecureZero")
-	}
-
-	t.Logf("Go TLS secure zeroing works correctly")
-}
-
-// Comparison test: Our implementation vs Go's approach
-func TestGoTLSVsCustomImplementation(t *testing.T) {
-	// Use identical inputs for both implementations
+	// Set up some secrets
 	sharedSecret := make([]byte, 32)
 	for i := range sharedSecret {
 		sharedSecret[i] = byte(i)
 	}
 
-	// Create handshake hash
-	handshakeData := []byte("identical test data for comparison")
+	ks.InitializeEarlySecret()
+	ks.DeriveHandshakeSecret(sharedSecret)
+	ks.UpdateTranscript([]byte("test data"))
+	ks.DeriveHandshakeTrafficSecrets()
 
-	// Our custom implementation
-	customKS, err := NewTLSKeySchedule(TLS_AES_128_GCM_SHA256)
+	// Verify secrets exist and are non-zero
+	if ks.earlySecret == nil || len(ks.earlySecret) == 0 {
+		t.Fatal("Early secret not initialized")
+	}
+	if ks.handshakeSecret == nil || len(ks.handshakeSecret) == 0 {
+		t.Fatal("Handshake secret not initialized")
+	}
+
+	// Check that secrets contain non-zero data
+	hasNonZero := false
+	for _, b := range ks.earlySecret {
+		if b != 0 {
+			hasNonZero = true
+			break
+		}
+	}
+	if !hasNonZero {
+		t.Error("Early secret appears to be all zeros before SecureZero")
+	}
+
+	// Zero out secrets
+	ks.SecureZero()
+
+	// Verify all secrets are zeroed
+	for i, b := range ks.earlySecret {
+		if b != 0 {
+			t.Errorf("Early secret byte %d not properly zeroed: %d", i, b)
+		}
+	}
+
+	for i, b := range ks.handshakeSecret {
+		if b != 0 {
+			t.Errorf("Handshake secret byte %d not properly zeroed: %d", i, b)
+		}
+	}
+
+	t.Log("Secure zero test passed")
+}
+
+func TestGoTLSKeyScheduleTranscript(t *testing.T) {
+	ks, err := NewGoTLSKeySchedule(TLS_AES_128_GCM_SHA256)
 	if err != nil {
-		t.Fatalf("Failed to create custom key schedule: %v", err)
+		t.Fatalf("Failed to create key schedule: %v", err)
 	}
 
-	customKS.InitializeEarlySecret()
-	customKS.DeriveHandshakeSecret(sharedSecret)
+	// Test transcript hash
+	data1 := []byte("ClientHello")
+	data2 := []byte("ServerHello")
 
-	customHash := sha256.New()
-	customHash.Write(handshakeData)
-	customKS.DeriveHandshakeTrafficSecrets(customHash.Sum(nil))
-	customKS.DeriveMasterSecret()
-	customKS.DeriveApplicationTrafficSecrets(customHash.Sum(nil))
+	ks.UpdateTranscript(data1)
+	ks.UpdateTranscript(data2)
 
-	customClientKeys, customServerKeys, err := customKS.GetApplicationTrafficKeys()
+	hash := ks.GetTranscriptHash()
+	if len(hash) != 32 {
+		t.Errorf("Transcript hash length: got %d, want 32", len(hash))
+	}
+
+	// Verify it matches direct SHA-256
+	expected := sha256.New()
+	expected.Write(data1)
+	expected.Write(data2)
+	expectedHash := expected.Sum(nil)
+
+	if !bytes.Equal(hash, expectedHash) {
+		t.Error("Transcript hash doesn't match expected SHA-256")
+	}
+
+	t.Log("Transcript test passed")
+}
+
+func TestGoTLSKeyScheduleErrorConditions(t *testing.T) {
+	ks, err := NewGoTLSKeySchedule(TLS_AES_128_GCM_SHA256)
 	if err != nil {
-		t.Fatalf("Failed to get custom application keys: %v", err)
+		t.Fatalf("Failed to create key schedule: %v", err)
 	}
 
-	// Go-based implementation
-	goKS, err := NewGoTLSKeySchedule(TLS_AES_128_GCM_SHA256)
-	if err != nil {
-		t.Fatalf("Failed to create Go key schedule: %v", err)
+	// Test error cases
+	sharedSecret := make([]byte, 32)
+
+	// Try to derive handshake secret without early secret
+	err = ks.DeriveHandshakeSecret(sharedSecret)
+	if err == nil {
+		t.Error("Expected error when deriving handshake secret without early secret")
 	}
 
-	goHash := sha256.New()
-	goHash.Write(handshakeData)
-
-	goKS.DeriveHandshakeSecrets(sharedSecret, goHash)
-	goKS.DeriveApplicationSecrets(goHash)
-
-	goClientKey, goServerKey, _, _ := goKS.GetApplicationKeys()
-
-	// Compare results - they might be different due to different label formats
-	// but both should be valid and non-zero
-	if isAllZero(customClientKeys.Key) || isAllZero(goClientKey) {
-		t.Error("Keys should not be zero")
+	// Try to derive traffic secrets without handshake secret
+	err = ks.DeriveHandshakeTrafficSecrets()
+	if err == nil {
+		t.Error("Expected error when deriving traffic secrets without handshake secret")
 	}
 
-	if len(customClientKeys.Key) != len(goClientKey) {
-		t.Errorf("Key lengths differ: custom=%d, go=%d",
-			len(customClientKeys.Key), len(goClientKey))
+	// Try to get keys without deriving secrets
+	_, _, _, _, err = ks.GetHandshakeTrafficKeys()
+	if err == nil {
+		t.Error("Expected error when getting keys without deriving secrets")
 	}
 
-	t.Logf("Both implementations produce valid keys")
-	t.Logf("Custom - Client: %s, Server: %s",
-		hex.EncodeToString(customClientKeys.Key[:8])+"...",
-		hex.EncodeToString(customServerKeys.Key[:8])+"...")
-	t.Logf("Go-based - Client: %s, Server: %s",
-		hex.EncodeToString(goClientKey[:8])+"...",
-		hex.EncodeToString(goServerKey[:8])+"...")
+	t.Log("Error condition tests passed")
+}
 
-	// Note: The keys will likely be different because Go uses different TLS 1.3 labels
-	// ("tls13 c ap traffic" vs "c ap traffic"), but both are RFC-compliant
+func TestGoTLSKeyScheduleUnsupportedCipher(t *testing.T) {
+	// Test unsupported cipher suite
+	_, err := NewGoTLSKeySchedule(0x9999)
+	if err == nil {
+		t.Error("Expected error for unsupported cipher suite")
+	}
+
+	t.Log("Unsupported cipher test passed")
 }

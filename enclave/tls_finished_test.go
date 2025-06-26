@@ -147,9 +147,16 @@ func TestGenerateClientFinished(t *testing.T) {
 	}
 
 	// Derive handshake secrets
-	err = keySchedule.DeriveHandshakeSecrets(sharedSecret, client.HandshakeHash)
+	keySchedule.InitializeEarlySecret()
+	err = keySchedule.DeriveHandshakeSecret(sharedSecret)
 	if err != nil {
-		t.Fatalf("Failed to derive handshake secrets: %v", err)
+		t.Fatalf("Failed to derive handshake secret: %v", err)
+	}
+
+	keySchedule.UpdateTranscript(client.HandshakeHash.Sum(nil))
+	err = keySchedule.DeriveHandshakeTrafficSecrets()
+	if err != nil {
+		t.Fatalf("Failed to derive handshake traffic secrets: %v", err)
 	}
 
 	// Generate client Finished message
@@ -215,15 +222,22 @@ func TestServerFinishedVerification(t *testing.T) {
 		t.Fatalf("ECDH failed: %v", err)
 	}
 
-	err = keySchedule.DeriveHandshakeSecrets(sharedSecret, client.HandshakeHash)
+	keySchedule.InitializeEarlySecret()
+	err = keySchedule.DeriveHandshakeSecret(sharedSecret)
 	if err != nil {
-		t.Fatalf("Failed to derive handshake secrets: %v", err)
+		t.Fatalf("Failed to derive handshake secret: %v", err)
+	}
+
+	keySchedule.UpdateTranscript(client.HandshakeHash.Sum(nil))
+	err = keySchedule.DeriveHandshakeTrafficSecrets()
+	if err != nil {
+		t.Fatalf("Failed to derive handshake traffic secrets: %v", err)
 	}
 
 	// Create a mock server Finished message
-	serverFinishedKey := keySchedule.suite.finishedKey(keySchedule.serverHandshakeSecret)
+	serverFinishedKey := keySchedule.cipherSuite.expandLabel(keySchedule.serverHandshakeSecret, "finished", nil, keySchedule.cipherSuite.hash.Size())
 	transcriptHash := client.HandshakeHash.Sum(nil)
-	serverVerifyData := computeFinishedVerifyData(serverFinishedKey, transcriptHash, keySchedule.suite.hash)
+	serverVerifyData := computeFinishedVerifyData(serverFinishedKey, transcriptHash, keySchedule.cipherSuite.hash.New)
 
 	serverFinishedMsg := &finishedMsg{verifyData: serverVerifyData}
 	serverFinishedBytes, err := serverFinishedMsg.marshal()
@@ -326,14 +340,26 @@ func TestCompleteHandshake(t *testing.T) {
 		t.Fatalf("ECDH failed: %v", err)
 	}
 
-	err = keySchedule.DeriveHandshakeSecrets(sharedSecret, client.HandshakeHash)
+	keySchedule.InitializeEarlySecret()
+	err = keySchedule.DeriveHandshakeSecret(sharedSecret)
 	if err != nil {
-		t.Fatalf("Failed to derive handshake secrets: %v", err)
+		t.Fatalf("Failed to derive handshake secret: %v", err)
 	}
 
-	err = keySchedule.DeriveApplicationSecrets(client.HandshakeHash)
+	keySchedule.UpdateTranscript(client.HandshakeHash.Sum(nil))
+	err = keySchedule.DeriveHandshakeTrafficSecrets()
 	if err != nil {
-		t.Fatalf("Failed to derive application secrets: %v", err)
+		t.Fatalf("Failed to derive handshake traffic secrets: %v", err)
+	}
+
+	err = keySchedule.DeriveMasterSecret()
+	if err != nil {
+		t.Fatalf("Failed to derive master secret: %v", err)
+	}
+
+	err = keySchedule.DeriveApplicationTrafficSecrets()
+	if err != nil {
+		t.Fatalf("Failed to derive application traffic secrets: %v", err)
 	}
 
 	// Step 4: Generate client Finished
@@ -343,9 +369,9 @@ func TestCompleteHandshake(t *testing.T) {
 	}
 
 	// Step 5: Verify server Finished (mock)
-	serverFinishedKey := keySchedule.suite.finishedKey(keySchedule.serverHandshakeSecret)
+	serverFinishedKey := keySchedule.cipherSuite.expandLabel(keySchedule.serverHandshakeSecret, "finished", nil, keySchedule.cipherSuite.hash.Size())
 	transcriptHash := client.HandshakeHash.Sum(nil)
-	serverVerifyData := computeFinishedVerifyData(serverFinishedKey, transcriptHash, keySchedule.suite.hash)
+	serverVerifyData := computeFinishedVerifyData(serverFinishedKey, transcriptHash, keySchedule.cipherSuite.hash.New)
 
 	serverFinishedMsg := &finishedMsg{verifyData: serverVerifyData}
 	serverFinishedBytes, err := serverFinishedMsg.marshal()

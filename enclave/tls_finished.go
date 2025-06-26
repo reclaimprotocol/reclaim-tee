@@ -88,16 +88,12 @@ func (s *TLSClientState) GenerateClientFinished(keySchedule *GoTLSKeySchedule) (
 		return nil, fmt.Errorf("client handshake secret not available")
 	}
 
-	// Get client finished key
-	// finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
-	finishedKey := keySchedule.suite.finishedKey(keySchedule.clientHandshakeSecret)
-
 	// Get handshake transcript hash (up to this point)
-	transcriptHash := s.HandshakeHash.Sum(nil)
+	transcriptHash := s.HandshakeHash
 
-	// Compute verify data
-	// verify_data = HMAC(finished_key, Transcript-Hash(Handshake Context))
-	verifyData := computeFinishedVerifyData(finishedKey, transcriptHash, keySchedule.suite.hash)
+	// Compute verify data using Go's finishedHash method
+	// This handles both key derivation and HMAC computation
+	verifyData := keySchedule.cipherSuite.finishedHash(keySchedule.clientHandshakeSecret, transcriptHash)
 
 	// Create Finished message
 	finishedMsg := &finishedMsg{
@@ -129,14 +125,11 @@ func (s *TLSClientState) VerifyServerFinished(finishedData []byte, keySchedule *
 		return fmt.Errorf("failed to parse server finished: %v", err)
 	}
 
-	// Get server finished key
-	finishedKey := keySchedule.suite.finishedKey(keySchedule.serverHandshakeSecret)
-
 	// Get handshake transcript hash (up to server finished, excluding it)
-	transcriptHash := s.HandshakeHash.Sum(nil)
+	transcriptHash := s.HandshakeHash
 
-	// Compute expected verify data
-	expectedVerifyData := computeFinishedVerifyData(finishedKey, transcriptHash, keySchedule.suite.hash)
+	// Compute expected verify data using Go's finishedHash method
+	expectedVerifyData := keySchedule.cipherSuite.finishedHash(keySchedule.serverHandshakeSecret, transcriptHash)
 
 	// Verify the data matches
 	if len(finishedMsg.verifyData) != len(expectedVerifyData) {

@@ -222,20 +222,38 @@ func (s *TLSClientState) ExtractSessionKeys() (*TLSSessionKeys, error) {
 	}
 	defer keySchedule.SecureZero() // Clean up sensitive data
 
-	// Derive handshake secrets from ECDH shared secret and transcript
-	err = keySchedule.DeriveHandshakeSecrets(sharedSecret, s.HandshakeHash)
+	// Initialize early secret and derive handshake secret from ECDH
+	keySchedule.InitializeEarlySecret()
+	err = keySchedule.DeriveHandshakeSecret(sharedSecret)
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive handshake secrets: %v", err)
+		return nil, fmt.Errorf("failed to derive handshake secret: %v", err)
 	}
 
-	// Derive application traffic secrets
-	err = keySchedule.DeriveApplicationSecrets(s.HandshakeHash)
+	// Update transcript with handshake hash
+	keySchedule.UpdateTranscript(s.HandshakeHash.Sum(nil))
+
+	// Derive handshake traffic secrets
+	err = keySchedule.DeriveHandshakeTrafficSecrets()
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive application secrets: %v", err)
+		return nil, fmt.Errorf("failed to derive handshake traffic secrets: %v", err)
+	}
+
+	// Derive master secret and application traffic secrets
+	err = keySchedule.DeriveMasterSecret()
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive master secret: %v", err)
+	}
+
+	err = keySchedule.DeriveApplicationTrafficSecrets()
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive application traffic secrets: %v", err)
 	}
 
 	// Get application traffic keys (these are what we need for our protocol)
-	clientAppKey, serverAppKey, clientAppIV, serverAppIV := keySchedule.GetApplicationKeys()
+	clientAppKey, clientAppIV, serverAppKey, serverAppIV, err := keySchedule.GetApplicationTrafficKeys()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get application traffic keys: %v", err)
+	}
 
 	// Return the session keys
 	sessionKeys := &TLSSessionKeys{
