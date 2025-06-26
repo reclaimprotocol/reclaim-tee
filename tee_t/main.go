@@ -54,6 +54,10 @@ func createBusinessMux() *http.ServeMux {
 	// Tag verification endpoint
 	mux.HandleFunc("/verify-tag", handleVerifyTag)
 
+	// TEE-to-TEE WebSocket communication endpoint
+	teeCommServer := enclave.NewTEECommServer()
+	mux.HandleFunc("/tee-comm", teeCommServer.HandleWebSocket)
+
 	return mux
 }
 

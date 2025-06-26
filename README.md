@@ -42,6 +42,37 @@ The implementation enables secure TLS transcript generation by:
 - **AES-128-GCM** / **AES-256-GCM**: Using GHASH authentication
 - **ChaCha20-Poly1305**: Using Poly1305 authentication
 
+## TEE Communication Protocol
+
+The system implements a comprehensive WebSocket-based communication protocol between TEE_K and TEE_T for Split AEAD operations, following the design research document specifications:
+
+### Protocol Overview
+- **Transport**: Secure WebSocket (WSS) connections for real-time bidirectional communication
+- **Security**: TLS-encrypted TEE-to-TEE communication with protocol validation
+- **Session Management**: Multi-session support with proper lifecycle management
+- **Error Handling**: Comprehensive error handling and recovery mechanisms
+
+### Message Types
+- **Session Management**: `session_start`, `session_end` 
+- **Split AEAD Operations**: `tag_compute`, `tag_verify`
+- **Protocol Control**: `ping`/`pong`, `error`, `status`
+
+### Communication Flow
+1. **Connection Establishment**: TEE_K connects to TEE_T via secure WebSocket (`wss://tee-t/tee-comm`)
+2. **TLS Handshake**: Full TLS encryption established between TEEs (terminated inside TEEs)
+3. **Session Initialization**: TEE_K starts Split AEAD session with cipher suite negotiation
+4. **Tag Operations**: 
+   - **Encryption**: TEE_K → ciphertext + tag secrets → TEE_T → computed tag
+   - **Decryption**: TEE_K → ciphertext + expected tag → TEE_T → verification result
+5. **Session Termination**: Clean session end with resource cleanup
+6. **Connection Management**: Automatic reconnection and keepalive mechanisms
+
+### Integration Points
+- **TEE_K Service**: Integrated WebSocket client for TEE_T coordination
+- **TEE_T Service**: WebSocket server handling multiple concurrent TEE_K connections
+- **Split AEAD Engine**: Seamless integration with tag computation/verification
+- **Session State**: Proper session lifecycle management across both TEEs
+
 ## Building and Running
 
 ### Prerequisites
@@ -75,6 +106,35 @@ go build -o bin/proxy ./proxy
 ./bin/proxy
 ```
 
+#### Production Configuration
+
+For production deployment with TLS encryption:
+
+```bash
+# Set environment variable for secure TEE communication
+export TEE_T_URL="https://tee-t.your-domain.com"
+
+# Start services (will use HTTPS/WSS automatically)
+./bin/tee_k
+./bin/tee_t
+```
+
+### Demo
+
+```bash
+# Run interactive demo showing TEE communication
+go run demo_tee_communication.go
+```
+
+This demo showcases:
+- WebSocket-based TEE_K ↔ TEE_T communication (HTTP for local dev)
+- Split AEAD encryption with both AES-GCM and ChaCha20-Poly1305
+- Authentication tag computation and verification
+- Security validation (tampered tag detection)
+- Proper session management and cleanup
+
+**Note**: The demo uses HTTP for local development. In production, set `TEE_T_URL` environment variable to use HTTPS/WSS.
+
 ### Docker Deployment
 
 ```bash
@@ -87,14 +147,24 @@ docker run -p 8443:8443 reclaim-tee-t
 
 ## API Endpoints
 
-### TEE_K WebSocket API
-- `ws://localhost:8080/ws` - Real-time TLS coordination
-- Message types: `handshake_init`, `encrypt_request`, `decrypt_request`
+### TEE_K Service (Port 8080)
+- `ws://localhost:8080/ws` - User WebSocket API for TLS coordination
+- `POST /session/init` - Initialize TLS session
+- `POST /encrypt` - Request encryption operations
+- `POST /decrypt-stream` - Generate decryption stream
+- `POST /finalize` - Finalize transcript with signatures
 
-### TEE_T HTTP API
-- `POST /compute-tag` - Compute authentication tag
-- `POST /verify-tag` - Verify authentication tag
+### TEE_T Service (Port 8081)
+- `ws://localhost:8081/tee-comm` - TEE-to-TEE WebSocket communication (dev)
+- `wss://tee-t.domain.com/tee-comm` - TEE-to-TEE secure WebSocket (production)
+- `POST /compute-tag` - Compute authentication tag (HTTP fallback)
+- `POST /verify-tag` - Verify authentication tag (HTTP fallback)
 - `GET /attest` - Generate attestation document
+
+### Communication Patterns
+- **User ↔ TEE_K**: WebSocket for real-time TLS protocol coordination
+- **TEE_K ↔ TEE_T**: WebSocket for Split AEAD tag operations
+- **User ↔ TEE_T**: Direct HTTP for verification (in some flows)
 
 ## Testing
 
@@ -105,17 +175,32 @@ go test ./...
 # Run Split AEAD tests specifically
 go test ./enclave -v -run TestSplitAEAD
 
+# Run TEE communication tests
+go test ./enclave -v -run TestTEECommunication
+
 # Run integration tests
 go test ./enclave -v -run TestSplitAEADIntegration
+
+# Run with coverage
+go test ./enclave -cover
 ```
+
+### Test Coverage
+- **Split AEAD Engine**: 100% compatibility with Go's standard crypto
+- **TEE Communication**: WebSocket protocol validation and error handling
+- **Concurrency**: Multi-client scenarios with proper isolation
+- **Integration**: Full protocol flows from encryption to verification
+- **Edge Cases**: Invalid inputs, network failures, and security boundaries
 
 ## Security Features
 
 - **Cryptographic Isolation**: Keys never leave TEE_K
 - **Independent Computation**: TEE_T operates without key access
+- **TLS-Encrypted Communication**: All TEE-to-TEE communication uses TLS 1.2/1.3
 - **Memory Security**: Automatic secure zeroing of sensitive data
 - **Side-Channel Resistance**: Uses Go's constant-time implementations
 - **Attestation Support**: AWS Nitro Enclave attestation documents
+- **Certificate Management**: Automatic ACME certificate provisioning and renewal
 
 ## Protocol Compliance
 

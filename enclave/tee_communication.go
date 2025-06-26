@@ -1,0 +1,750 @@
+// Package enclave implements TEE-to-TEE communication via WebSockets
+// This enables the Split AEAD protocol coordination between TEE_K and TEE_T
+package enclave
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// TEE Communication Message Types
+type TEEMessageType string
+
+const (
+	// TEE_K → TEE_T Messages
+	TEEMsgTagCompute   TEEMessageType = "tag_compute"
+	TEEMsgTagVerify    TEEMessageType = "tag_verify"
+	TEEMsgSessionStart TEEMessageType = "session_start"
+	TEEMsgSessionEnd   TEEMessageType = "session_end"
+
+	// TEE_T → TEE_K Messages
+	TEEMsgTagComputeResp   TEEMessageType = "tag_compute_response"
+	TEEMsgTagVerifyResp    TEEMessageType = "tag_verify_response"
+	TEEMsgSessionStartResp TEEMessageType = "session_start_response"
+	TEEMsgSessionEndResp   TEEMessageType = "session_end_response"
+
+	// Bidirectional Messages
+	TEEMsgPing   TEEMessageType = "ping"
+	TEEMsgPong   TEEMessageType = "pong"
+	TEEMsgError  TEEMessageType = "error"
+	TEEMsgStatus TEEMessageType = "status"
+)
+
+// TEE WebSocket Message Structure
+type TEEMessage struct {
+	Type      TEEMessageType  `json:"type"`
+	SessionID string          `json:"session_id,omitempty"`
+	RequestID string          `json:"request_id,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	Timestamp time.Time       `json:"timestamp"`
+}
+
+// Tag Compute Request (TEE_K → TEE_T)
+type TagComputeRequest struct {
+	Ciphertext  []byte      `json:"ciphertext"`
+	TagSecrets  *TagSecrets `json:"tag_secrets"`
+	RequestType string      `json:"request_type"` // "encrypt" or "decrypt"
+}
+
+// Tag Compute Response (TEE_T → TEE_K)
+type TagComputeResponse struct {
+	RequestID string `json:"request_id"`
+	Tag       []byte `json:"tag"`
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+}
+
+// Tag Verify Request (TEE_K → TEE_T)
+type TagVerifyRequest struct {
+	Ciphertext  []byte      `json:"ciphertext"`
+	ExpectedTag []byte      `json:"expected_tag"`
+	TagSecrets  *TagSecrets `json:"tag_secrets"`
+}
+
+// Tag Verify Response (TEE_T → TEE_K)
+type TagVerifyResponse struct {
+	RequestID string `json:"request_id"`
+	Verified  bool   `json:"verified"`
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+}
+
+// Session Start Request (TEE_K → TEE_T)
+type SessionStartRequest struct {
+	SessionID   string `json:"session_id"`
+	CipherSuite uint16 `json:"cipher_suite"`
+	Protocol    string `json:"protocol"` // "split_aead"
+}
+
+// Session Start Response (TEE_T → TEE_K)
+type SessionStartResponse struct {
+	SessionID string `json:"session_id"`
+	Ready     bool   `json:"ready"`
+	Error     string `json:"error,omitempty"`
+}
+
+// TEE Communication Client (runs in TEE_K)
+type TEECommClient struct {
+	conn        *websocket.Conn
+	url         string
+	mu          sync.RWMutex
+	connected   bool
+	sessionID   string
+	requestMap  map[string]chan TEEMessage
+	requestMu   sync.RWMutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	reconnectCh chan struct{}
+}
+
+// TEE Communication Server (runs in TEE_T)
+type TEECommServer struct {
+	clients   map[string]*TEECommConnection
+	clientsMu sync.RWMutex
+	upgrader  websocket.Upgrader
+}
+
+// TEE Communication Connection (represents a TEE_K connection to TEE_T)
+type TEECommConnection struct {
+	conn      *websocket.Conn
+	sessionID string
+	mu        sync.Mutex
+}
+
+// NewTEECommClient creates a new TEE communication client for TEE_K
+func NewTEECommClient(teeT_URL string) *TEECommClient {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	return &TEECommClient{
+		url:         teeT_URL,
+		requestMap:  make(map[string]chan TEEMessage),
+		ctx:         ctx,
+		cancel:      cancel,
+		reconnectCh: make(chan struct{}, 1),
+	}
+}
+
+// Connect establishes WebSocket connection to TEE_T
+func (c *TEECommClient) Connect() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.connected {
+		return nil
+	}
+
+	// Parse URL and add WebSocket path
+	u, err := url.Parse(c.url)
+	if err != nil {
+		return fmt.Errorf("invalid TEE_T URL: %v", err)
+	}
+
+	// Use /tee-comm WebSocket endpoint
+	u.Path = "/tee-comm"
+	// Convert HTTP/HTTPS to WS/WSS
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
+	}
+
+	log.Printf("TEE_K: Connecting to TEE_T at %s", u.String())
+
+	// Connect with custom headers
+	headers := http.Header{}
+	headers.Set("X-TEE-Type", "tee_k")
+	headers.Set("X-Protocol", "split_aead")
+
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), headers)
+	if err != nil {
+		return fmt.Errorf("failed to connect to TEE_T: %v", err)
+	}
+
+	c.conn = conn
+	c.connected = true
+
+	// Start message handler
+	go c.messageHandler()
+
+	// Start ping handler
+	go c.pingHandler()
+
+	log.Printf("TEE_K: Successfully connected to TEE_T")
+	return nil
+}
+
+// Disconnect closes the WebSocket connection
+func (c *TEECommClient) Disconnect() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected {
+		return
+	}
+
+	c.cancel()
+
+	if c.conn != nil {
+		c.conn.Close()
+	}
+
+	c.connected = false
+	log.Printf("TEE_K: Disconnected from TEE_T")
+}
+
+// StartSession initiates a new Split AEAD session with TEE_T
+func (c *TEECommClient) StartSession(sessionID string, cipherSuite uint16) error {
+	if !c.connected {
+		if err := c.Connect(); err != nil {
+			return fmt.Errorf("failed to connect to TEE_T: %v", err)
+		}
+	}
+
+	c.sessionID = sessionID
+
+	request := SessionStartRequest{
+		SessionID:   sessionID,
+		CipherSuite: cipherSuite,
+		Protocol:    "split_aead",
+	}
+
+	response, err := c.sendRequestWithResponse(TEEMsgSessionStart, request, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("session start failed: %v", err)
+	}
+
+	var startResp SessionStartResponse
+	if err := json.Unmarshal(response.Data, &startResp); err != nil {
+		return fmt.Errorf("failed to parse session start response: %v", err)
+	}
+
+	if !startResp.Ready {
+		return fmt.Errorf("TEE_T not ready for session: %s", startResp.Error)
+	}
+
+	log.Printf("TEE_K: Session %s started with TEE_T", sessionID)
+	return nil
+}
+
+// ComputeTag requests tag computation from TEE_T (core Split AEAD operation)
+func (c *TEECommClient) ComputeTag(ciphertext []byte, tagSecrets *TagSecrets, requestType string) ([]byte, error) {
+	if !c.connected {
+		return nil, fmt.Errorf("not connected to TEE_T")
+	}
+
+	request := TagComputeRequest{
+		Ciphertext:  ciphertext,
+		TagSecrets:  tagSecrets,
+		RequestType: requestType,
+	}
+
+	response, err := c.sendRequestWithResponse(TEEMsgTagCompute, request, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("tag computation failed: %v", err)
+	}
+
+	var computeResp TagComputeResponse
+	if err := json.Unmarshal(response.Data, &computeResp); err != nil {
+		return nil, fmt.Errorf("failed to parse tag compute response: %v", err)
+	}
+
+	if !computeResp.Success {
+		return nil, fmt.Errorf("TEE_T tag computation failed: %s", computeResp.Error)
+	}
+
+	log.Printf("TEE_K: Tag computed by TEE_T (%d bytes)", len(computeResp.Tag))
+	return computeResp.Tag, nil
+}
+
+// VerifyTag requests tag verification from TEE_T
+func (c *TEECommClient) VerifyTag(ciphertext, expectedTag []byte, tagSecrets *TagSecrets) (bool, error) {
+	if !c.connected {
+		return false, fmt.Errorf("not connected to TEE_T")
+	}
+
+	request := TagVerifyRequest{
+		Ciphertext:  ciphertext,
+		ExpectedTag: expectedTag,
+		TagSecrets:  tagSecrets,
+	}
+
+	response, err := c.sendRequestWithResponse(TEEMsgTagVerify, request, 30*time.Second)
+	if err != nil {
+		return false, fmt.Errorf("tag verification failed: %v", err)
+	}
+
+	var verifyResp TagVerifyResponse
+	if err := json.Unmarshal(response.Data, &verifyResp); err != nil {
+		return false, fmt.Errorf("failed to parse tag verify response: %v", err)
+	}
+
+	if !verifyResp.Success {
+		return false, fmt.Errorf("TEE_T tag verification failed: %s", verifyResp.Error)
+	}
+
+	log.Printf("TEE_K: Tag verification result: %v", verifyResp.Verified)
+	return verifyResp.Verified, nil
+}
+
+// EndSession terminates the Split AEAD session
+func (c *TEECommClient) EndSession() error {
+	if !c.connected || c.sessionID == "" {
+		return nil
+	}
+
+	request := map[string]string{
+		"session_id": c.sessionID,
+	}
+
+	_, err := c.sendRequestWithResponse(TEEMsgSessionEnd, request, 10*time.Second)
+	if err != nil {
+		log.Printf("TEE_K: Warning - session end failed: %v", err)
+		// Don't return error as this is cleanup
+	}
+
+	c.sessionID = ""
+	log.Printf("TEE_K: Session ended with TEE_T")
+	return nil
+}
+
+// sendRequestWithResponse sends a request and waits for response
+func (c *TEECommClient) sendRequestWithResponse(msgType TEEMessageType, data interface{}, timeout time.Duration) (TEEMessage, error) {
+	requestID := generateRequestID()
+
+	// Create response channel
+	responseCh := make(chan TEEMessage, 1)
+	c.requestMu.Lock()
+	c.requestMap[requestID] = responseCh
+	c.requestMu.Unlock()
+
+	// Cleanup
+	defer func() {
+		c.requestMu.Lock()
+		delete(c.requestMap, requestID)
+		c.requestMu.Unlock()
+		close(responseCh)
+	}()
+
+	// Marshal data
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		return TEEMessage{}, fmt.Errorf("failed to marshal request: %v", err)
+	}
+
+	// Send message
+	msg := TEEMessage{
+		Type:      msgType,
+		SessionID: c.sessionID,
+		RequestID: requestID,
+		Data:      dataBytes,
+		Timestamp: time.Now(),
+	}
+
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return TEEMessage{}, fmt.Errorf("no connection to TEE_T")
+	}
+
+	if err := conn.WriteJSON(msg); err != nil {
+		return TEEMessage{}, fmt.Errorf("failed to send message: %v", err)
+	}
+
+	// Wait for response
+	select {
+	case response := <-responseCh:
+		if response.Error != "" {
+			return response, fmt.Errorf("TEE_T error: %s", response.Error)
+		}
+		return response, nil
+	case <-time.After(timeout):
+		return TEEMessage{}, fmt.Errorf("timeout waiting for TEE_T response")
+	case <-c.ctx.Done():
+		return TEEMessage{}, fmt.Errorf("client context cancelled")
+	}
+}
+
+// messageHandler processes incoming messages from TEE_T
+func (c *TEECommClient) messageHandler() {
+	defer func() {
+		c.mu.Lock()
+		c.connected = false
+		c.mu.Unlock()
+
+		// Signal reconnection if context not cancelled
+		select {
+		case c.reconnectCh <- struct{}{}:
+		case <-c.ctx.Done():
+		default:
+		}
+	}()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
+		c.mu.RLock()
+		conn := c.conn
+		c.mu.RUnlock()
+
+		if conn == nil {
+			return
+		}
+
+		var msg TEEMessage
+		err := conn.ReadJSON(&msg)
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("TEE_K: WebSocket error from TEE_T: %v", err)
+			}
+			return
+		}
+
+		c.handleMessage(msg)
+	}
+}
+
+// handleMessage processes individual messages from TEE_T
+func (c *TEECommClient) handleMessage(msg TEEMessage) {
+	switch msg.Type {
+	case TEEMsgTagComputeResp, TEEMsgTagVerifyResp, TEEMsgSessionStartResp, TEEMsgSessionEndResp:
+		// Route response to waiting request
+		if msg.RequestID != "" {
+			c.requestMu.RLock()
+			responseCh, exists := c.requestMap[msg.RequestID]
+			c.requestMu.RUnlock()
+
+			if exists {
+				select {
+				case responseCh <- msg:
+				default:
+					log.Printf("TEE_K: Warning - response channel full for request %s", msg.RequestID)
+				}
+			} else {
+				log.Printf("TEE_K: Warning - no handler for response %s", msg.RequestID)
+			}
+		}
+
+	case TEEMsgPing:
+		// Respond to ping
+		pong := TEEMessage{
+			Type:      TEEMsgPong,
+			Timestamp: time.Now(),
+		}
+		c.mu.RLock()
+		if c.conn != nil {
+			c.conn.WriteJSON(pong)
+		}
+		c.mu.RUnlock()
+
+	case TEEMsgPong:
+		// Handle pong (connection alive)
+		log.Printf("TEE_K: Received pong from TEE_T")
+
+	case TEEMsgError:
+		log.Printf("TEE_K: Error from TEE_T: %s", msg.Error)
+
+	case TEEMsgStatus:
+		log.Printf("TEE_K: Status from TEE_T: %s", string(msg.Data))
+
+	default:
+		log.Printf("TEE_K: Unknown message type from TEE_T: %s", msg.Type)
+	}
+}
+
+// pingHandler sends periodic pings to keep connection alive
+func (c *TEECommClient) pingHandler() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.mu.RLock()
+			connected := c.connected
+			conn := c.conn
+			c.mu.RUnlock()
+
+			if connected && conn != nil {
+				ping := TEEMessage{
+					Type:      TEEMsgPing,
+					Timestamp: time.Now(),
+				}
+				if err := conn.WriteJSON(ping); err != nil {
+					log.Printf("TEE_K: Failed to send ping to TEE_T: %v", err)
+				}
+			}
+
+		case <-c.ctx.Done():
+			return
+		}
+	}
+}
+
+// generateRequestID creates a unique request ID
+func generateRequestID() string {
+	return fmt.Sprintf("req_%d", time.Now().UnixNano())
+}
+
+// NewTEECommServer creates a new TEE communication server for TEE_T
+func NewTEECommServer() *TEECommServer {
+	return &TEECommServer{
+		clients: make(map[string]*TEECommConnection),
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				// In production, implement proper origin checking
+				// For now, allow all connections from TEE_K
+				return r.Header.Get("X-TEE-Type") == "tee_k"
+			},
+		},
+	}
+}
+
+// HandleWebSocket handles incoming WebSocket connections from TEE_K
+func (s *TEECommServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	log.Printf("TEE_T: Incoming WebSocket connection from %s", r.RemoteAddr)
+
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("TEE_T: WebSocket upgrade failed: %v", err)
+		return
+	}
+
+	// Create connection wrapper
+	teeConn := &TEECommConnection{
+		conn: conn,
+	}
+
+	// Start message handler
+	go s.handleConnection(teeConn)
+}
+
+// handleConnection processes messages from a TEE_K connection
+func (s *TEECommServer) handleConnection(teeConn *TEECommConnection) {
+	defer func() {
+		teeConn.conn.Close()
+
+		// Remove from clients map
+		if teeConn.sessionID != "" {
+			s.clientsMu.Lock()
+			delete(s.clients, teeConn.sessionID)
+			s.clientsMu.Unlock()
+			log.Printf("TEE_T: TEE_K session %s disconnected", teeConn.sessionID)
+		}
+	}()
+
+	for {
+		var msg TEEMessage
+		err := teeConn.conn.ReadJSON(&msg)
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("TEE_T: WebSocket error from TEE_K: %v", err)
+			}
+			return
+		}
+
+		s.handleMessage(teeConn, msg)
+	}
+}
+
+// handleMessage processes individual messages from TEE_K
+func (s *TEECommServer) handleMessage(teeConn *TEECommConnection, msg TEEMessage) {
+	switch msg.Type {
+	case TEEMsgSessionStart:
+		s.handleSessionStart(teeConn, msg)
+	case TEEMsgTagCompute:
+		s.handleTagCompute(teeConn, msg)
+	case TEEMsgTagVerify:
+		s.handleTagVerify(teeConn, msg)
+	case TEEMsgSessionEnd:
+		s.handleSessionEnd(teeConn, msg)
+	case TEEMsgPing:
+		s.handlePing(teeConn, msg)
+	case TEEMsgPong:
+		// Connection alive confirmation
+		log.Printf("TEE_T: Received pong from TEE_K")
+	default:
+		log.Printf("TEE_T: Unknown message type from TEE_K: %s", msg.Type)
+	}
+}
+
+// handleSessionStart processes session start requests
+func (s *TEECommServer) handleSessionStart(teeConn *TEECommConnection, msg TEEMessage) {
+	var req SessionStartRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Invalid session start request: %v", err))
+		return
+	}
+
+	// Validate session
+	if req.SessionID == "" {
+		s.sendError(teeConn, msg.RequestID, "Session ID required")
+		return
+	}
+
+	if req.Protocol != "split_aead" {
+		s.sendError(teeConn, msg.RequestID, "Only split_aead protocol supported")
+		return
+	}
+
+	// Register session
+	teeConn.sessionID = req.SessionID
+	s.clientsMu.Lock()
+	s.clients[req.SessionID] = teeConn
+	s.clientsMu.Unlock()
+
+	// Send success response
+	response := SessionStartResponse{
+		SessionID: req.SessionID,
+		Ready:     true,
+	}
+
+	s.sendResponse(teeConn, TEEMsgSessionStartResp, msg.RequestID, response)
+	log.Printf("TEE_T: Session %s started with TEE_K", req.SessionID)
+}
+
+// handleTagCompute processes tag computation requests
+func (s *TEECommServer) handleTagCompute(teeConn *TEECommConnection, msg TEEMessage) {
+	var req TagComputeRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Invalid tag compute request: %v", err))
+		return
+	}
+
+	// Create tag computer
+	tagComputer := NewSplitAEADTagComputer()
+
+	// Compute tag
+	tag, err := tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
+
+	var response TagComputeResponse
+	response.RequestID = msg.RequestID
+
+	if err != nil {
+		response.Success = false
+		response.Error = fmt.Sprintf("Tag computation failed: %v", err)
+		log.Printf("TEE_T: Tag computation failed for session %s: %v", teeConn.sessionID, err)
+	} else {
+		response.Success = true
+		response.Tag = tag
+		log.Printf("TEE_T: Tag computed for session %s (%d bytes)", teeConn.sessionID, len(tag))
+	}
+
+	s.sendResponse(teeConn, TEEMsgTagComputeResp, msg.RequestID, response)
+}
+
+// handleTagVerify processes tag verification requests
+func (s *TEECommServer) handleTagVerify(teeConn *TEECommConnection, msg TEEMessage) {
+	var req TagVerifyRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Invalid tag verify request: %v", err))
+		return
+	}
+
+	// Create tag computer
+	tagComputer := NewSplitAEADTagComputer()
+
+	// Verify tag
+	err := tagComputer.VerifyTag(req.Ciphertext, req.ExpectedTag, req.TagSecrets)
+
+	response := TagVerifyResponse{
+		RequestID: msg.RequestID,
+		Success:   true,
+		Verified:  err == nil,
+	}
+
+	if err != nil && err.Error() != "authentication tag verification failed" {
+		// System error vs verification failure
+		response.Success = false
+		response.Error = fmt.Sprintf("Tag verification error: %v", err)
+		log.Printf("TEE_T: Tag verification error for session %s: %v", teeConn.sessionID, err)
+	} else {
+		log.Printf("TEE_T: Tag verification for session %s: %v", teeConn.sessionID, response.Verified)
+	}
+
+	s.sendResponse(teeConn, TEEMsgTagVerifyResp, msg.RequestID, response)
+}
+
+// handleSessionEnd processes session end requests
+func (s *TEECommServer) handleSessionEnd(teeConn *TEECommConnection, msg TEEMessage) {
+	sessionID := teeConn.sessionID
+
+	// Remove from clients
+	s.clientsMu.Lock()
+	delete(s.clients, sessionID)
+	s.clientsMu.Unlock()
+
+	// Send acknowledgment
+	response := map[string]string{
+		"session_id": sessionID,
+		"status":     "ended",
+	}
+
+	s.sendResponse(teeConn, TEEMsgSessionEndResp, msg.RequestID, response)
+	log.Printf("TEE_T: Session %s ended", sessionID)
+}
+
+// handlePing responds to ping messages
+func (s *TEECommServer) handlePing(teeConn *TEECommConnection, msg TEEMessage) {
+	pong := TEEMessage{
+		Type:      TEEMsgPong,
+		Timestamp: time.Now(),
+	}
+	teeConn.conn.WriteJSON(pong)
+}
+
+// sendResponse sends a response message to TEE_K
+func (s *TEECommServer) sendResponse(teeConn *TEECommConnection, msgType TEEMessageType, requestID string, data interface{}) {
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("TEE_T: Failed to marshal response: %v", err)
+		return
+	}
+
+	response := TEEMessage{
+		Type:      msgType,
+		RequestID: requestID,
+		Data:      dataBytes,
+		Timestamp: time.Now(),
+	}
+
+	teeConn.mu.Lock()
+	err = teeConn.conn.WriteJSON(response)
+	teeConn.mu.Unlock()
+
+	if err != nil {
+		log.Printf("TEE_T: Failed to send response: %v", err)
+	}
+}
+
+// sendError sends an error response to TEE_K
+func (s *TEECommServer) sendError(teeConn *TEECommConnection, requestID, errorMsg string) {
+	response := TEEMessage{
+		Type:      TEEMsgError,
+		RequestID: requestID,
+		Error:     errorMsg,
+		Timestamp: time.Now(),
+	}
+
+	teeConn.mu.Lock()
+	err := teeConn.conn.WriteJSON(response)
+	teeConn.mu.Unlock()
+
+	if err != nil {
+		log.Printf("TEE_T: Failed to send error: %v", err)
+	}
+}

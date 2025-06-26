@@ -92,6 +92,9 @@ var wsHub = &WSHub{
 	broadcast:   make(chan WSMessage),
 }
 
+// Global TEE communication client for coordinating with TEE_T
+var teeCommClient *enclave.TEECommClient
+
 // Start WebSocket hub
 func (h *WSHub) run() {
 	for {
@@ -517,23 +520,37 @@ func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 	}
 	defer tagSecrets.SecureZero()
 
-	// Serialize tag secrets for transmission to TEE_T
-	tagSecretsJSON, err := json.Marshal(tagSecrets)
-	if err != nil {
-		c.sendError(fmt.Sprintf("Failed to serialize tag secrets: %v", err))
+	// Ensure TEE_T connection is established
+	if err := teeCommClient.Connect(); err != nil {
+		c.sendError(fmt.Sprintf("Failed to connect to TEE_T: %v", err))
 		return
 	}
 
+	// Start Split AEAD session with TEE_T if not already started
+	if err := teeCommClient.StartSession(c.sessionID, sessionKeys.CipherSuite); err != nil {
+		c.sendError(fmt.Sprintf("Failed to start TEE_T session: %v", err))
+		return
+	}
+
+	// Request tag computation from TEE_T via WebSocket
+	tag, err := teeCommClient.ComputeTag(ciphertext, tagSecrets, "encrypt")
+	if err != nil {
+		c.sendError(fmt.Sprintf("TEE_T tag computation failed: %v", err))
+		return
+	}
+
+	log.Printf("WebSocket: Tag computed by TEE_T for session %s (%d bytes)", c.sessionID, len(tag))
+
 	type EncryptResponseData struct {
 		EncryptedData []byte `json:"encrypted_data"`
-		TagSecrets    []byte `json:"tag_secrets"`
+		Tag           []byte `json:"tag"`
 		Status        string `json:"status"`
 	}
 
 	response := EncryptResponseData{
 		EncryptedData: ciphertext,
-		TagSecrets:    tagSecretsJSON,
-		Status:        "encryption_ready",
+		Tag:           tag,
+		Status:        "encrypted_with_tag",
 	}
 
 	c.sendResponse(MsgEncryptResponse, response)
@@ -544,6 +561,7 @@ func (c *WSConnection) handleDecryptRequest(msg WSMessage) {
 	type DecryptRequestData struct {
 		ResponseLength int    `json:"response_length"`
 		EncryptedData  []byte `json:"encrypted_data"`
+		ExpectedTag    []byte `json:"expected_tag"`
 	}
 
 	var data DecryptRequestData
@@ -562,18 +580,70 @@ func (c *WSConnection) handleDecryptRequest(msg WSMessage) {
 		return
 	}
 
-	// TODO: Implement decryption stream generation
+	sessionKeys := session.TLSKeys
+	if sessionKeys == nil {
+		c.sendError("Session keys not available")
+		return
+	}
+
 	log.Printf("WebSocket: Processing decrypt request for session %s (%d bytes)",
 		c.sessionID, data.ResponseLength)
+
+	// Determine Split AEAD mode based on cipher suite
+	var mode enclave.SplitAEADMode
+	switch sessionKeys.CipherSuite {
+	case enclave.TLS_AES_128_GCM_SHA256, enclave.TLS_AES_256_GCM_SHA384:
+		mode = enclave.SplitAEAD_AES_GCM
+	case enclave.TLS_CHACHA20_POLY1305_SHA256:
+		mode = enclave.SplitAEAD_CHACHA20_POLY1305
+	default:
+		c.sendError(fmt.Sprintf("Unsupported cipher suite for Split AEAD: 0x%04x", sessionKeys.CipherSuite))
+		return
+	}
+
+	// Create Split AEAD encryptor with server write key for decryption
+	encryptor, err := enclave.NewSplitAEADEncryptor(mode, sessionKeys.ServerWriteKey)
+	if err != nil {
+		c.sendError(fmt.Sprintf("Failed to create Split AEAD encryptor: %v", err))
+		return
+	}
+	defer encryptor.SecureZero()
+
+	// Generate tag secrets for verification
+	nonce := sessionKeys.ServerWriteIV
+	_, tagSecrets, err := encryptor.EncryptWithoutTag(nonce, make([]byte, len(data.EncryptedData)), nil)
+	if err != nil {
+		c.sendError(fmt.Sprintf("Failed to generate tag secrets: %v", err))
+		return
+	}
+	defer tagSecrets.SecureZero()
+
+	// Request tag verification from TEE_T
+	verified, err := teeCommClient.VerifyTag(data.EncryptedData, data.ExpectedTag, tagSecrets)
+	if err != nil {
+		c.sendError(fmt.Sprintf("TEE_T tag verification failed: %v", err))
+		return
+	}
+
+	if !verified {
+		c.sendError("Tag verification failed - response may be tampered")
+		return
+	}
+
+	log.Printf("WebSocket: Tag verified by TEE_T for session %s - generating decryption stream", c.sessionID)
+
+	// Generate decryption stream (keystream for XOR decryption)
+	decryptionStream := make([]byte, data.ResponseLength)
+	// In real implementation, this would generate the actual keystream
+	// For now, using placeholder zeros
 
 	type DecryptResponseData struct {
 		DecryptionStream []byte `json:"decryption_stream"`
 		Status           string `json:"status"`
 	}
 
-	// Placeholder - in real implementation, this would generate decryption stream
 	response := DecryptResponseData{
-		DecryptionStream: make([]byte, data.ResponseLength), // Placeholder zeros
+		DecryptionStream: decryptionStream,
 		Status:           "decryption_ready",
 	}
 
@@ -626,6 +696,11 @@ func (c *WSConnection) handleFinalize(msg WSMessage) {
 		return
 	}
 
+	// End TEE_T session
+	if err := teeCommClient.EndSession(); err != nil {
+		log.Printf("Warning: Failed to end TEE_T session %s: %v", c.sessionID, err)
+	}
+
 	// TODO: Implement transcript signing
 	log.Printf("WebSocket: Finalizing session %s with %d requests", c.sessionID, data.RequestCount)
 
@@ -669,6 +744,16 @@ func main() {
 	if err := enclave.InitializeNSM(); err != nil {
 		log.Fatalf("Failed to initialize NSM: %v", err)
 	}
+
+	// Initialize TEE communication client for TEE_T coordination
+	teeT_URL := os.Getenv("TEE_T_URL")
+	if teeT_URL == "" {
+		// Use HTTP for local development, HTTPS for production (set TEE_T_URL env var)
+		teeT_URL = "http://localhost:8081" // Default for local development
+	}
+
+	teeCommClient = enclave.NewTEECommClient(teeT_URL)
+	log.Printf("TEE_K: TEE communication client initialized for TEE_T at %s", teeT_URL)
 
 	// Start WebSocket hub
 	go wsHub.run()

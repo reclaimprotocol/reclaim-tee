@@ -197,7 +197,7 @@ func handleMessage(msg WSMessage) {
 		fmt.Printf("Error: %s\n", msg.Error)
 
 	case MsgStatus:
-		fmt.Printf("ℹ️  Status update received\n")
+		fmt.Printf("Status update received\n")
 
 	default:
 		fmt.Printf("❓ Unknown message type: %s\n", msg.Type)
