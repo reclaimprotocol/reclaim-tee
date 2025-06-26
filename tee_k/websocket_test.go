@@ -48,7 +48,7 @@ func setupTestWebSocketServer() *httptest.Server {
 			conn:       conn,
 			sessionID:  sessionID,
 			clientType: clientType,
-			send:       make(chan WSMessage, 256),
+			send:       make(chan WSMessage, 1024), // Increased buffer for better performance during benchmarks
 			hub:        testHub,
 		}
 
@@ -705,6 +705,19 @@ func BenchmarkWebSocketMessageSend(b *testing.B) {
 		b.Fatalf("Failed to connect: %v", err)
 	}
 	defer conn.Close()
+
+	// Set up a goroutine to consume responses to prevent buffer overflow
+	go func() {
+		for {
+			var response WSMessage
+			err := conn.ReadJSON(&response)
+			if err != nil {
+				// Connection closed, exit goroutine
+				return
+			}
+			// Just consume the messages to prevent buffer buildup
+		}
+	}()
 
 	msg := WSMessage{
 		Type:      MsgStatus,

@@ -117,17 +117,45 @@ func (h *WSHub) run() {
 			log.Printf("WebSocket connection unregistered: %s", conn.sessionID)
 
 		case message := <-h.broadcast:
-			h.mutex.RLock()
-			for _, conn := range h.connections {
+			h.mutex.Lock()
+			for sessionID, conn := range h.connections {
 				select {
 				case conn.send <- message:
 				default:
+					// Connection is stale, clean it up
+					log.Printf("Cleaning up stale WebSocket connection: %s", sessionID)
 					close(conn.send)
-					delete(h.connections, conn.sessionID)
+					delete(h.connections, sessionID)
+					conn.conn.Close()
 				}
 			}
-			h.mutex.RUnlock()
+			h.mutex.Unlock()
 		}
+	}
+}
+
+// cleanupStaleConnections periodically removes connections with full send buffers
+func (h *WSHub) cleanupStaleConnections() {
+	ticker := time.NewTicker(60 * time.Second) // Check every 60 seconds (less aggressive)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		h.mutex.Lock()
+		for sessionID, conn := range h.connections {
+			// Try to send a status message to test if connection is responsive
+			// Use a timeout to avoid blocking during high load
+			select {
+			case conn.send <- WSMessage{Type: MsgStatus, SessionID: sessionID, Timestamp: time.Now()}:
+				// Connection is responsive, continue
+			case <-time.After(100 * time.Millisecond):
+				// Connection send buffer is full for too long, it's likely stale
+				log.Printf("Cleaning up stale WebSocket connection: %s (send buffer full)", sessionID)
+				close(conn.send)
+				delete(h.connections, sessionID)
+				conn.conn.Close()
+			}
+		}
+		h.mutex.Unlock()
 	}
 }
 
@@ -173,7 +201,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn:       conn,
 		sessionID:  sessionID,
 		clientType: clientType,
-		send:       make(chan WSMessage, 256),
+		send:       make(chan WSMessage, 1024), // Increased buffer for better performance during benchmarks
 		hub:        wsHub,
 	}
 
@@ -297,8 +325,10 @@ func (c *WSConnection) sendError(errorMsg string) {
 
 	select {
 	case c.send <- response:
-	default:
-		log.Printf("Failed to send error message to %s", c.sessionID)
+	case <-time.After(1 * time.Second):
+		// Connection send buffer is full for too long, close connection
+		log.Printf("WebSocket send buffer full for %s for 1 second, closing connection", c.sessionID)
+		c.conn.Close()
 	}
 }
 
@@ -315,8 +345,10 @@ func (c *WSConnection) sendResponse(msgType MessageType, data interface{}) {
 
 	select {
 	case c.send <- response:
-	default:
-		log.Printf("Failed to send response message to %s", c.sessionID)
+	case <-time.After(1 * time.Second):
+		// Connection send buffer is full for too long, close connection
+		log.Printf("WebSocket send buffer full for %s for 1 second, closing connection", c.sessionID)
+		c.conn.Close()
 	}
 }
 
@@ -1137,6 +1169,7 @@ func main() {
 
 	// Start WebSocket hub
 	go wsHub.run()
+	go wsHub.cleanupStaleConnections()
 
 	// Create TEE server
 	server, err := enclave.NewTEEServer(config)
@@ -1170,6 +1203,7 @@ func startDemoServer(port string) {
 
 	// Start WebSocket hub for any WebSocket functionality
 	go wsHub.run()
+	go wsHub.cleanupStaleConnections()
 
 	mux := createBusinessMux()
 
