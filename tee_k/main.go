@@ -1305,15 +1305,21 @@ func (c *WSConnection) coordinateFinishedWithTEET() (bool, error) {
 	}
 
 	// Protocol Step 5.2: TEE_K sends "finished" to TEE_T
-	// Send coordination request to TEE_T
-	// For now, we'll assume TEE_T coordination works and return true
-	// In a full implementation, this would use a proper TEE_T coordination endpoint
 	log.Printf("WebSocket: Sending finished coordination to TEE_T for session %s", c.sessionID)
 
-	// Protocol Step 5.3-5.4: For this implementation, assume coordination succeeds
-	// In a real implementation, this would check with TEE_T via proper coordination messages
-	log.Printf("WebSocket: TEE_T coordination assumed successful for session %s", c.sessionID)
-	return true, nil
+	// Protocol Step 5.3-5.4: Check TEE_T coordination response
+	coordinated, err := teeCommClient.CoordinateFinished()
+	if err != nil {
+		return false, fmt.Errorf("failed to coordinate finished with TEE_T: %v", err)
+	}
+
+	if coordinated {
+		log.Printf("WebSocket: TEE_T coordination successful for session %s", c.sessionID)
+		return true, nil
+	} else {
+		log.Printf("WebSocket: TEE_T coordination failed - User has not sent finished to TEE_T for session %s", c.sessionID)
+		return false, nil
+	}
 }
 
 // SessionState will hold the state for a single user session.

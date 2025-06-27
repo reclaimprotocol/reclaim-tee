@@ -319,6 +319,7 @@ var (
 	globalConn           *websocket.Conn
 	globalTLSInterceptor *TLSHandshakeInterceptor
 	globalRedactionData  *GlobalRedactionData
+	globalSessionID      string
 	storedClientHello    []byte
 	protocolFailed       bool
 )
@@ -449,6 +450,7 @@ func handleMessage(msg WSMessage, sessionID *string) {
 	case MsgSessionInitResp:
 		fmt.Printf("Received: session_init_response (Session: %s)\n", msg.SessionID)
 		*sessionID = msg.SessionID
+		globalSessionID = msg.SessionID // Store globally for TEE_T coordination
 		handleSessionInit(msg.Data)
 
 	case MsgHandshakeComplete:
@@ -987,6 +989,38 @@ func sendRedactionStreamsToTEET(sessionID string, commitments *RedactionData) er
 	return nil
 }
 
+// sendFinishedToTEET sends "finished" message to TEE_T (Protocol Step 5.1)
+func sendFinishedToTEET(sessionID string) error {
+	const teeT_URL = "http://localhost:8081" // TEE_T endpoint
+
+	// Create finished request
+	finishedRequest := map[string]string{
+		"session_id": sessionID,
+		"status":     "finished",
+	}
+
+	reqData, err := json.Marshal(finishedRequest)
+	if err != nil {
+		return fmt.Errorf("failed to marshal finished request: %v", err)
+	}
+
+	// Send POST request to TEE_T finished endpoint
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(teeT_URL+"/finished", "application/json", strings.NewReader(string(reqData)))
+	if err != nil {
+		return fmt.Errorf("failed to send finished to TEE_T: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("TEE_T rejected finished request (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 func handleDecryptResponse(data json.RawMessage) {
 	var decryptResp DecryptResponseData
 	if err := json.Unmarshal(data, &decryptResp); err != nil {
@@ -1003,6 +1037,21 @@ func handleDecryptResponse(data json.RawMessage) {
 	time.Sleep(1 * time.Second)
 
 	fmt.Printf("\nStep 5: Finalizing session to get signed transcripts...\n")
+
+	// Protocol Step 5.1: User sends "finished" to BOTH TEE_K and TEE_T
+	fmt.Printf("   Implementing Protocol Step 5.1: User → TEE_K and TEE_T 'finished' coordination\n")
+
+	// First, send "finished" to TEE_T (this is required for coordination)
+	if err := sendFinishedToTEET(globalSessionID); err != nil {
+		fmt.Printf("   CRITICAL ERROR: Failed to send finished to TEE_T: %v\n", err)
+		protocolFailed = true
+		cleanup()
+		os.Exit(1)
+	}
+	fmt.Printf("   ✓ User sent 'finished' to TEE_T\n")
+
+	// Then, send "finished" to TEE_K (this will trigger Steps 5.2-5.4)
+	fmt.Printf("   ✓ User sending 'finished' to TEE_K (will trigger TEE_K→TEE_T coordination)\n")
 	finalizeData, _ := json.Marshal(map[string]interface{}{
 		"request_count": 1,
 	})

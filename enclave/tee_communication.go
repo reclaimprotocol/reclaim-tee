@@ -26,6 +26,7 @@ const (
 	TEEMsgSessionStart       TEEMessageType = "session_start"
 	TEEMsgSessionEnd         TEEMessageType = "session_end"
 	TEEMsgTranscriptFinalize TEEMessageType = "transcript_finalize"
+	TEEMsgFinished           TEEMessageType = "finished"
 
 	// TEE_T → TEE_K Messages
 	TEEMsgTagComputeResp         TEEMessageType = "tag_compute_response"
@@ -33,6 +34,7 @@ const (
 	TEEMsgSessionStartResp       TEEMessageType = "session_start_response"
 	TEEMsgSessionEndResp         TEEMessageType = "session_end_response"
 	TEEMsgTranscriptFinalizeResp TEEMessageType = "transcript_finalize_response"
+	TEEMsgFinishedResp           TEEMessageType = "finished_response"
 
 	// Bidirectional Messages
 	TEEMsgPing   TEEMessageType = "ping"
@@ -112,6 +114,19 @@ type TranscriptFinalizeResponse struct {
 	SignedResponseTranscript *SignedTranscript `json:"signed_response_transcript"`
 	Success                  bool              `json:"success"`
 	Error                    string            `json:"error,omitempty"`
+}
+
+// Finished Coordination Request (TEE_K → TEE_T) - Protocol Step 5.2
+type FinishedRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+// Finished Coordination Response (TEE_T → TEE_K) - Protocol Step 5.3-5.4
+type FinishedResponse struct {
+	SessionID   string `json:"session_id"`
+	Coordinated bool   `json:"coordinated"` // true if User already sent "finished" to TEE_T
+	Success     bool   `json:"success"`
+	Error       string `json:"error,omitempty"`
 }
 
 // TEE Communication Client (runs in TEE_K)
@@ -401,6 +416,34 @@ func (c *TEECommClient) CaptureHTTPResponse(httpResponse []byte) error {
 	return nil
 }
 
+// CoordinateFinished implements Protocol Steps 5.2-5.4: finished coordination
+func (c *TEECommClient) CoordinateFinished() (bool, error) {
+	if !c.connected || c.sessionID == "" {
+		return false, fmt.Errorf("no active session with TEE_T")
+	}
+
+	request := FinishedRequest{
+		SessionID: c.sessionID,
+	}
+
+	response, err := c.sendRequestWithResponse(TEEMsgFinished, request, 10*time.Second)
+	if err != nil {
+		return false, fmt.Errorf("failed to coordinate finished with TEE_T: %v", err)
+	}
+
+	var finishedResp FinishedResponse
+	if err := json.Unmarshal(response.Data, &finishedResp); err != nil {
+		return false, fmt.Errorf("failed to parse finished coordination response: %v", err)
+	}
+
+	if !finishedResp.Success {
+		return false, fmt.Errorf("TEE_T finished coordination failed: %s", finishedResp.Error)
+	}
+
+	log.Printf("TEE_K: Finished coordination with TEE_T - coordinated: %v", finishedResp.Coordinated)
+	return finishedResp.Coordinated, nil
+}
+
 // sendRequestWithResponse sends a request and waits for response
 func (c *TEECommClient) sendRequestWithResponse(msgType TEEMessageType, data interface{}, timeout time.Duration) (TEEMessage, error) {
 	requestID := generateRequestID()
@@ -506,7 +549,7 @@ func (c *TEECommClient) messageHandler() {
 // handleMessage processes individual messages from TEE_T
 func (c *TEECommClient) handleMessage(msg TEEMessage) {
 	switch msg.Type {
-	case TEEMsgTagComputeResp, TEEMsgTagVerifyResp, TEEMsgSessionStartResp, TEEMsgSessionEndResp, TEEMsgTranscriptFinalizeResp:
+	case TEEMsgTagComputeResp, TEEMsgTagVerifyResp, TEEMsgSessionStartResp, TEEMsgSessionEndResp, TEEMsgTranscriptFinalizeResp, TEEMsgFinishedResp:
 		// Route response to waiting request
 		if msg.RequestID != "" {
 			c.requestMu.RLock()
@@ -678,6 +721,8 @@ func (s *TEECommServer) handleMessage(teeConn *TEECommConnection, msg TEEMessage
 		s.handleTranscriptFinalize(teeConn, msg)
 	case TEEMsgHTTPResponseCapture:
 		s.handleHTTPResponseCapture(teeConn, msg)
+	case TEEMsgFinished:
+		s.handleFinished(teeConn, msg)
 	case TEEMsgPing:
 		s.handlePing(teeConn, msg)
 	case TEEMsgPong:
@@ -970,6 +1015,52 @@ func (s *TEECommServer) handleHTTPResponseCapture(teeConn *TEECommConnection, ms
 	log.Printf("TEE_T: Captured HTTP response for session %s (%d bytes)", sessionID, len(httpResponseData))
 }
 
+// handleFinished processes finished coordination requests (Protocol Steps 5.2-5.4)
+func (s *TEECommServer) handleFinished(teeConn *TEECommConnection, msg TEEMessage) {
+	var req FinishedRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Invalid finished request: %v", err))
+		return
+	}
+
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = teeConn.sessionID
+	}
+
+	if sessionID == "" {
+		s.sendError(teeConn, msg.RequestID, "Session ID required")
+		return
+	}
+
+	// Protocol Step 5.3: Check if User has already sent "finished" to TEE_T
+	// This would typically check a session state flag set when User sends finished to TEE_T
+	// For now, we'll implement a simple check based on session existence
+
+	coordinated := s.checkUserFinishedCoordination(sessionID)
+
+	response := FinishedResponse{
+		SessionID:   sessionID,
+		Coordinated: coordinated,
+		Success:     true,
+	}
+
+	s.sendResponse(teeConn, TEEMsgFinishedResp, msg.RequestID, response)
+
+	if coordinated {
+		log.Printf("TEE_T: Finished coordination successful for session %s", sessionID)
+	} else {
+		log.Printf("TEE_T: Finished coordination pending - User has not sent finished for session %s", sessionID)
+	}
+}
+
+// checkUserFinishedCoordination checks if User has sent "finished" to TEE_T
+func (s *TEECommServer) checkUserFinishedCoordination(sessionID string) bool {
+	// Check if User has sent "finished" via HTTP endpoint (Protocol Step 5.1)
+	// This is implemented via the external callback that checks the redaction session store
+	return CheckUserFinishedStatus(sessionID)
+}
+
 // GetResponseTranscriptForSession is a placeholder that should be overridden by the TEE_T service
 var GetResponseTranscriptForSession func(string) (*SignedTranscript, error) = func(sessionID string) (*SignedTranscript, error) {
 	return nil, fmt.Errorf("GetResponseTranscriptForSession not implemented - needs to be set by TEE_T service")
@@ -983,6 +1074,11 @@ var CreateSessionDataForWebSocket func(string) error = func(sessionID string) er
 // CaptureEncryptedResponseForSession captures encrypted responses for transcript building
 var CaptureEncryptedResponseForSession func(string, []byte) error = func(sessionID string, ciphertext []byte) error {
 	return fmt.Errorf("CaptureEncryptedResponseForSession not implemented - needs to be set by TEE_T service")
+}
+
+// CheckUserFinishedStatus checks if User has sent "finished" to TEE_T (Protocol Step 5.1)
+var CheckUserFinishedStatus func(string) bool = func(sessionID string) bool {
+	return false // Default: User has not sent finished
 }
 
 // handlePing responds to ping messages

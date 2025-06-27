@@ -77,11 +77,15 @@ func createBusinessMux() *http.ServeMux {
 	enclave.GetResponseTranscriptForSession = GetSignedResponseTranscriptForSession
 	enclave.CreateSessionDataForWebSocket = CreateSessionDataForWebSocket
 	enclave.CaptureEncryptedResponseForSession = CaptureEncryptedResponseForSession
+	enclave.CheckUserFinishedStatus = CheckUserFinishedStatus
 
 	mux.HandleFunc("/tee-comm", teeCommServer.HandleWebSocket)
 
 	// Redaction stream processing endpoint (for users, not TEEs)
 	mux.HandleFunc("/process-redaction-streams", handleRedactionStreams)
+
+	// Finished coordination endpoint (Protocol Step 5.1: User → TEE_T)
+	mux.HandleFunc("/finished", handleFinished)
 
 	return mux
 }
@@ -111,6 +115,7 @@ type RedactionSessionData struct {
 	ExpectedCommitments       *enclave.RedactionCommitments
 	RedactionProcessor        *enclave.RedactionProcessor
 	Verified                  bool
+	UserFinished              bool                               // Track if User sent "finished" (Protocol Step 5.1)
 	TranscriptSigner          *enclave.TranscriptSigner          // Signer for response transcript
 	ResponseTranscriptBuilder *enclave.ResponseTranscriptBuilder // Builder for response transcript
 }
@@ -285,6 +290,76 @@ func sendRedactionStreamResponse(w http.ResponseWriter, response RedactionStream
 	w.Write(responseJSON)
 }
 
+// handleFinished processes "finished" requests from users (Protocol Step 5.1)
+func handleFinished(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Printf("Received finished request from %s", r.RemoteAddr)
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Failed to read request body: %v", err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse request
+	var req map[string]string
+	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("Failed to parse finished request: %v", err)
+		http.Error(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	sessionID := req["session_id"]
+	if sessionID == "" {
+		log.Printf("Session ID missing in finished request")
+		http.Error(w, "Session ID required", http.StatusBadRequest)
+		return
+	}
+
+	// Mark the session as finished by the user
+	redactionSessionsMu.Lock()
+	sessionData, exists := redactionSessions[sessionID]
+	if !exists {
+		// Create minimal session data if it doesn't exist
+		sessionData = &RedactionSessionData{
+			Verified:     true,
+			UserFinished: true,
+		}
+		redactionSessions[sessionID] = sessionData
+	} else {
+		sessionData.UserFinished = true
+	}
+	redactionSessionsMu.Unlock()
+
+	log.Printf("TEE_T: User marked session %s as finished", sessionID)
+
+	// Send success response
+	response := map[string]interface{}{
+		"session_id": sessionID,
+		"status":     "finished",
+		"ready":      true,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Service", "tee_t")
+
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal finished response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write(responseJSON)
+}
+
 // Transcript finalization types are now handled by WebSocket protocol in enclave/tee_communication.go
 
 // HTTP handlers for transcript finalization are replaced by WebSocket handlers in enclave/tee_communication.go
@@ -361,4 +436,17 @@ func GetSignedResponseTranscriptForSession(sessionID string) (*enclave.SignedTra
 
 	log.Printf("Generated signed response transcript for session %s", sessionID)
 	return signedTranscript, nil
+}
+
+// CheckUserFinishedStatus checks if User has sent "finished" to TEE_T (Protocol Step 5.1)
+func CheckUserFinishedStatus(sessionID string) bool {
+	redactionSessionsMu.RLock()
+	sessionData, exists := redactionSessions[sessionID]
+	redactionSessionsMu.RUnlock()
+
+	if !exists {
+		return false
+	}
+
+	return sessionData.UserFinished
 }
