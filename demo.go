@@ -884,13 +884,21 @@ func handleFinalizeResponse(data json.RawMessage) {
 		if err := json.Unmarshal(finalizeResp.SignedRequestTranscript, &requestTranscript); err != nil {
 			fmt.Printf("      Failed to parse request transcript: %v\n", err)
 		} else {
-			fmt.Printf("      Type: %s\n", requestTranscript.Data.Type)
-			fmt.Printf("      Session ID: %s\n", requestTranscript.Data.SessionID)
-			fmt.Printf("      Algorithm: %s\n", requestTranscript.Algorithm)
-			signatureHex := fmt.Sprintf("%x", requestTranscript.Signature)
-			fmt.Printf("      Signature: %s...\n", signatureHex[:min(32, len(signatureHex))])
-			fmt.Printf("      Data: %d bytes\n", len(requestTranscript.Data.Data))
-			fmt.Printf("      Metadata: %v\n", requestTranscript.Data.Metadata)
+			// Check if Data field is not nil before accessing its fields
+			if requestTranscript.Data != nil {
+				fmt.Printf("      Type: %s\n", requestTranscript.Data.Type)
+				fmt.Printf("      Session ID: %s\n", requestTranscript.Data.SessionID)
+				fmt.Printf("      Algorithm: %s\n", requestTranscript.Algorithm)
+				signatureHex := fmt.Sprintf("%x", requestTranscript.Signature)
+				fmt.Printf("      Signature: %s...\n", signatureHex[:min(32, len(signatureHex))])
+				fmt.Printf("      Data: %d bytes\n", len(requestTranscript.Data.Data))
+				fmt.Printf("      Metadata: %v\n", requestTranscript.Data.Metadata)
+			} else {
+				fmt.Printf("      Error: Request transcript data is nil\n")
+				fmt.Printf("      Algorithm: %s\n", requestTranscript.Algorithm)
+				signatureHex := fmt.Sprintf("%x", requestTranscript.Signature)
+				fmt.Printf("      Signature: %s...\n", signatureHex[:min(32, len(signatureHex))])
+			}
 		}
 	}
 
@@ -901,13 +909,21 @@ func handleFinalizeResponse(data json.RawMessage) {
 		if err := json.Unmarshal(finalizeResp.SignedResponseTranscript, &responseTranscript); err != nil {
 			fmt.Printf("      Failed to parse response transcript: %v\n", err)
 		} else {
-			fmt.Printf("      Type: %s\n", responseTranscript.Data.Type)
-			fmt.Printf("      Session ID: %s\n", responseTranscript.Data.SessionID)
-			fmt.Printf("      Algorithm: %s\n", responseTranscript.Algorithm)
-			signatureHex := fmt.Sprintf("%x", responseTranscript.Signature)
-			fmt.Printf("      Signature: %s...\n", signatureHex[:min(32, len(signatureHex))])
-			fmt.Printf("      Data: %d bytes\n", len(responseTranscript.Data.Data))
-			fmt.Printf("      Metadata: %v\n", responseTranscript.Data.Metadata)
+			// Check if Data field is not nil before accessing its fields
+			if responseTranscript.Data != nil {
+				fmt.Printf("      Type: %s\n", responseTranscript.Data.Type)
+				fmt.Printf("      Session ID: %s\n", responseTranscript.Data.SessionID)
+				fmt.Printf("      Algorithm: %s\n", responseTranscript.Algorithm)
+				signatureHex := fmt.Sprintf("%x", responseTranscript.Signature)
+				fmt.Printf("      Signature: %s...\n", signatureHex[:min(32, len(signatureHex))])
+				fmt.Printf("      Data: %d bytes\n", len(responseTranscript.Data.Data))
+				fmt.Printf("      Metadata: %v\n", responseTranscript.Data.Metadata)
+			} else {
+				fmt.Printf("      Error: Response transcript data is nil\n")
+				fmt.Printf("      Algorithm: %s\n", responseTranscript.Algorithm)
+				signatureHex := fmt.Sprintf("%x", responseTranscript.Signature)
+				fmt.Printf("      Signature: %s...\n", signatureHex[:min(32, len(signatureHex))])
+			}
 		}
 	}
 

@@ -130,9 +130,11 @@ type TEECommClient struct {
 
 // TEE Communication Server (runs in TEE_T)
 type TEECommServer struct {
-	clients   map[string]*TEECommConnection
-	clientsMu sync.RWMutex
-	upgrader  websocket.Upgrader
+	clients    map[string]*TEECommConnection
+	clientsMu  sync.RWMutex
+	upgrader   websocket.Upgrader
+	sessions   map[string]*TEESessionData
+	sessionsMu sync.RWMutex
 }
 
 // TEE Communication Connection (represents a TEE_K connection to TEE_T)
@@ -141,6 +143,16 @@ type TEECommConnection struct {
 	sessionID string
 	mu        sync.Mutex
 }
+
+// TEESessionData stores session-specific data for redaction processing
+type TEESessionData struct {
+	RedactionStreams *RedactionStreams
+	CipherSuite      uint16
+	Started          bool
+}
+
+// Callback function types for external dependencies
+var GetRedactionSessionData func(sessionID string) interface{}
 
 // NewTEECommClient creates a new TEE communication client for TEE_K
 func NewTEECommClient(teeT_URL string) *TEECommClient {
@@ -223,37 +235,40 @@ func (c *TEECommClient) Disconnect() {
 	log.Printf("TEE_K: Disconnected from TEE_T")
 }
 
-// StartSession initiates a new Split AEAD session with TEE_T
+// StartSession starts a new session with specified cipher suite and redaction streams
 func (c *TEECommClient) StartSession(sessionID string, cipherSuite uint16) error {
 	if !c.connected {
-		if err := c.Connect(); err != nil {
-			return fmt.Errorf("failed to connect to TEE_T: %v", err)
-		}
+		return fmt.Errorf("not connected to TEE_T")
 	}
 
+	// Set the session ID for this client
 	c.sessionID = sessionID
 
+	// Send session start request to TEE_T
 	request := SessionStartRequest{
 		SessionID:   sessionID,
 		CipherSuite: cipherSuite,
 		Protocol:    "split_aead",
 	}
 
-	response, err := c.sendRequestWithResponse(TEEMsgSessionStart, request, 10*time.Second)
+	response, err := c.sendRequestWithResponse(TEEMsgSessionStart, request, 15*time.Second)
 	if err != nil {
-		return fmt.Errorf("session start failed: %v", err)
+		c.sessionID = "" // Clear on failure
+		return fmt.Errorf("failed to start session with TEE_T: %v", err)
 	}
 
 	var startResp SessionStartResponse
 	if err := json.Unmarshal(response.Data, &startResp); err != nil {
+		c.sessionID = "" // Clear on failure
 		return fmt.Errorf("failed to parse session start response: %v", err)
 	}
 
 	if !startResp.Ready {
-		return fmt.Errorf("TEE_T not ready for session: %s", startResp.Error)
+		c.sessionID = "" // Clear on failure
+		return fmt.Errorf("TEE_T session start failed: %s", startResp.Error)
 	}
 
-	log.Printf("TEE_K: Session %s started with TEE_T", sessionID)
+	log.Printf("TEE_K: Session %s started with TEE_T (cipher suite 0x%04x)", sessionID, cipherSuite)
 	return nil
 }
 
@@ -597,6 +612,7 @@ func NewTEECommServer() *TEECommServer {
 				return r.Header.Get("X-TEE-Type") == "tee_k"
 			},
 		},
+		sessions: make(map[string]*TEESessionData),
 	}
 }
 
@@ -752,21 +768,74 @@ func (s *TEECommServer) handleTagCompute(teeConn *TEECommConnection, msg TEEMess
 
 // handleRedactedTagComputation processes tag computation for redacted data
 func (s *TEECommServer) handleRedactedTagComputation(req TagComputeRequest, sessionID string) ([]byte, error) {
-	// For redacted requests, TEE_K provides the original ciphertext after
-	// applying the redaction streams on its side. TEE_T computes the tag
-	// on this recovered original data.
+	// CRITICAL: Protocol Step 3.7 - TEE_T must apply redaction streams to recover original data
+	// before computing the tag, as specified in the design document
+
 	if req.OriginalRequestInfo == nil {
 		return nil, fmt.Errorf("original request info required for redaction processing")
 	}
 
-	// Compute tag on the original ciphertext provided by TEE_K
-	tagComputer := NewSplitAEADTagComputer()
-	tag, err := tagComputer.ComputeTag(req.Ciphertext, req.TagSecrets)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compute tag on original data: %v", err)
+	// Get session data containing redaction streams from WebSocket sessions
+	s.sessionsMu.RLock()
+	sessionData, exists := s.sessions[sessionID]
+	s.sessionsMu.RUnlock()
+
+	var redactionStreams *RedactionStreams
+
+	if exists && sessionData.RedactionStreams != nil {
+		// Use WebSocket session redaction streams
+		redactionStreams = sessionData.RedactionStreams
+		log.Printf("TEE_T: Using WebSocket session redaction streams for session %s", sessionID)
+	} else {
+		// For now, we'll require redaction streams to be set via the SetRedactionStreams method
+		// In a full implementation, this would coordinate with the global redaction session store
+		log.Printf("TEE_T: No redaction streams found in WebSocket session %s", sessionID)
+		return nil, fmt.Errorf("redaction streams not available in session - step 3.6 must be completed first")
 	}
 
-	log.Printf("TEE_T: Successfully computed tag for redacted session %s", sessionID)
+	// Verify session has redaction streams (Protocol Step 3.6 prerequisite)
+	if redactionStreams == nil {
+		return nil, fmt.Errorf("redaction streams not available in session - step 3.6 must be completed first")
+	}
+
+	// Protocol Step 3.7: Apply redaction streams to recover original data from redacted ciphertext
+	// TEE_K sends the redacted ciphertext, but TEE_T needs to recover the original data
+	// before computing the authentication tag
+
+	redactionProcessor := NewRedactionProcessor()
+
+	// Recover the original data by applying redaction streams to the redacted ciphertext
+	// This is the critical step that was missing - TEE_T must recover R_Enc from R_red_Enc
+	recoveredOriginalData, err := redactionProcessor.UnapplyRedaction(
+		req.Ciphertext, // This is the redacted ciphertext from TEE_K
+		redactionStreams,
+		req.OriginalRequestInfo,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to recover original data from redacted ciphertext: %v", err)
+	}
+
+	// Reconstruct the original ciphertext by concatenating recovered parts
+	originalCiphertext := make([]byte, 0, len(req.Ciphertext))
+	originalCiphertext = append(originalCiphertext, recoveredOriginalData.NonSensitive...)
+	originalCiphertext = append(originalCiphertext, recoveredOriginalData.Sensitive...)
+	originalCiphertext = append(originalCiphertext, recoveredOriginalData.SensitiveProof...)
+
+	// Now compute the tag on the recovered original data (not the redacted data)
+	tagComputer := NewSplitAEADTagComputer()
+	tag, err := tagComputer.ComputeTag(originalCiphertext, req.TagSecrets)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute tag on recovered original data: %v", err)
+	}
+
+	log.Printf("TEE_T: Successfully recovered original data (%d bytes) and computed tag for redacted session %s",
+		len(originalCiphertext), sessionID)
+	log.Printf("TEE_T: Original data breakdown - NS:%d, S:%d, SP:%d bytes",
+		len(recoveredOriginalData.NonSensitive), len(recoveredOriginalData.Sensitive), len(recoveredOriginalData.SensitiveProof))
+
+	// Secure cleanup of recovered sensitive data
+	defer recoveredOriginalData.SecureZero()
+
 	return tag, nil
 }
 
@@ -965,4 +1034,29 @@ func (s *TEECommServer) sendError(teeConn *TEECommConnection, requestID, errorMs
 	if err != nil {
 		log.Printf("TEE_T: Failed to send error: %v", err)
 	}
+}
+
+// SetRedactionStreams stores redaction streams for a session (implements Protocol Step 3.6)
+func (s *TEECommServer) SetRedactionStreams(sessionID string, streams *RedactionStreams) error {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+
+	if _, exists := s.sessions[sessionID]; !exists {
+		s.sessions[sessionID] = &TEESessionData{
+			Started: false,
+		}
+	}
+
+	s.sessions[sessionID].RedactionStreams = streams
+	log.Printf("TEE_T: Redaction streams set for session %s", sessionID)
+	return nil
+}
+
+// GetSessionData retrieves session data for redaction processing
+func (s *TEECommServer) GetSessionData(sessionID string) (*TEESessionData, bool) {
+	s.sessionsMu.RLock()
+	defer s.sessionsMu.RUnlock()
+
+	sessionData, exists := s.sessions[sessionID]
+	return sessionData, exists
 }
