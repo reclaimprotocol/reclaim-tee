@@ -4,6 +4,7 @@ package enclave
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -38,6 +39,9 @@ const (
 	TEEMsgPong   TEEMessageType = "pong"
 	TEEMsgError  TEEMessageType = "error"
 	TEEMsgStatus TEEMessageType = "status"
+
+	// New message types
+	TEEMsgHTTPResponseCapture TEEMessageType = "http_response_capture"
 )
 
 // TEE WebSocket Message Structure
@@ -362,6 +366,26 @@ func (c *TEECommClient) FinalizeTranscript() (*SignedTranscript, error) {
 	return finalizeResp.SignedResponseTranscript, nil
 }
 
+// CaptureHTTPResponse sends HTTP response data to TEE_T for transcript capture
+func (c *TEECommClient) CaptureHTTPResponse(httpResponse []byte) error {
+	if !c.connected || c.sessionID == "" {
+		return fmt.Errorf("no active session with TEE_T")
+	}
+
+	request := map[string]interface{}{
+		"session_id":    c.sessionID,
+		"http_response": httpResponse,
+	}
+
+	_, err := c.sendRequestWithResponse(TEEMsgHTTPResponseCapture, request, 15*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to capture HTTP response in TEE_T: %v", err)
+	}
+
+	log.Printf("TEE_K: HTTP response captured by TEE_T (%d bytes)", len(httpResponse))
+	return nil
+}
+
 // sendRequestWithResponse sends a request and waits for response
 func (c *TEECommClient) sendRequestWithResponse(msgType TEEMessageType, data interface{}, timeout time.Duration) (TEEMessage, error) {
 	requestID := generateRequestID()
@@ -505,7 +529,23 @@ func (c *TEECommClient) handleMessage(msg TEEMessage) {
 		log.Printf("TEE_K: Error from TEE_T: %s", msg.Error)
 
 	case TEEMsgStatus:
-		log.Printf("TEE_K: Status from TEE_T: %s", string(msg.Data))
+		// Handle status messages (including HTTP response capture confirmations)
+		if msg.RequestID != "" {
+			// Route to waiting request if this is a response to a request
+			c.requestMu.RLock()
+			responseCh, exists := c.requestMap[msg.RequestID]
+			c.requestMu.RUnlock()
+
+			if exists {
+				select {
+				case responseCh <- msg:
+				default:
+					log.Printf("TEE_K: Warning - response channel full for request %s", msg.RequestID)
+				}
+			}
+		} else {
+			log.Printf("TEE_K: Status from TEE_T: %s", string(msg.Data))
+		}
 
 	default:
 		log.Printf("TEE_K: Unknown message type from TEE_T: %s", msg.Type)
@@ -620,6 +660,8 @@ func (s *TEECommServer) handleMessage(teeConn *TEECommConnection, msg TEEMessage
 		s.handleSessionEnd(teeConn, msg)
 	case TEEMsgTranscriptFinalize:
 		s.handleTranscriptFinalize(teeConn, msg)
+	case TEEMsgHTTPResponseCapture:
+		s.handleHTTPResponseCapture(teeConn, msg)
 	case TEEMsgPing:
 		s.handlePing(teeConn, msg)
 	case TEEMsgPong:
@@ -756,12 +798,8 @@ func (s *TEECommServer) handleTagVerify(teeConn *TEECommConnection, msg TEEMessa
 	} else {
 		log.Printf("TEE_T: Tag verification for session %s: %v", teeConn.sessionID, response.Verified)
 
-		// Capture encrypted response for transcript if verification succeeded
-		if response.Verified {
-			if captureErr := CaptureEncryptedResponseForSession(teeConn.sessionID, req.Ciphertext); captureErr != nil {
-				log.Printf("TEE_T: Warning - failed to capture encrypted response: %v", captureErr)
-			}
-		}
+		// Note: HTTP response data is now captured through dedicated CaptureHTTPResponse message
+		// instead of capturing the Split AEAD ciphertext here
 	}
 
 	s.sendResponse(teeConn, TEEMsgTagVerifyResp, msg.RequestID, response)
@@ -814,6 +852,53 @@ func (s *TEECommServer) handleTranscriptFinalize(teeConn *TEECommConnection, msg
 
 	s.sendResponse(teeConn, TEEMsgTranscriptFinalizeResp, msg.RequestID, response)
 	log.Printf("TEE_T: Sent signed response transcript for session %s", sessionID)
+}
+
+// handleHTTPResponseCapture processes HTTP response capture requests
+func (s *TEECommServer) handleHTTPResponseCapture(teeConn *TEECommConnection, msg TEEMessage) {
+	var req map[string]interface{}
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Invalid HTTP response capture request: %v", err))
+		return
+	}
+
+	sessionID, ok := req["session_id"].(string)
+	if !ok {
+		s.sendError(teeConn, msg.RequestID, "Session ID required")
+		return
+	}
+
+	httpResponseData, ok := req["http_response"].([]byte)
+	if !ok {
+		// Handle base64 encoded data
+		if httpResponseStr, ok := req["http_response"].(string); ok {
+			var err error
+			httpResponseData, err = base64.StdEncoding.DecodeString(httpResponseStr)
+			if err != nil {
+				s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Failed to decode HTTP response data: %v", err))
+				return
+			}
+		} else {
+			s.sendError(teeConn, msg.RequestID, "HTTP response data required")
+			return
+		}
+	}
+
+	// Capture the HTTP response data for transcript
+	if captureErr := CaptureEncryptedResponseForSession(sessionID, httpResponseData); captureErr != nil {
+		s.sendError(teeConn, msg.RequestID, fmt.Sprintf("Failed to capture HTTP response: %v", captureErr))
+		return
+	}
+
+	// Send success response
+	response := map[string]interface{}{
+		"session_id": sessionID,
+		"status":     "captured",
+		"size":       len(httpResponseData),
+	}
+
+	s.sendResponse(teeConn, TEEMsgStatus, msg.RequestID, response)
+	log.Printf("TEE_T: Captured HTTP response for session %s (%d bytes)", sessionID, len(httpResponseData))
 }
 
 // GetResponseTranscriptForSession is a placeholder that should be overridden by the TEE_T service

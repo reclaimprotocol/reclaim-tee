@@ -835,31 +835,35 @@ func (c *WSConnection) handleEncryptRequest(msg WSMessage) {
 
 // sendRedactionDataToTEET sends encrypted redacted data and commitments to TEE_T for coordination
 func (c *WSConnection) sendRedactionDataToTEET(ciphertext []byte, commitments *enclave.RedactionCommitments, tagSecrets *enclave.TagSecrets) error {
-	// This is a coordination message to inform TEE_T about the redaction commitments
-	// TEE_T will need this information when processing streams from the User
-
-	type RedactionCoordinationData struct {
-		SessionID   string                        `json:"session_id"`
-		Ciphertext  []byte                        `json:"ciphertext"`
-		Commitments *enclave.RedactionCommitments `json:"commitments"`
-		TagSecrets  *enclave.TagSecrets           `json:"tag_secrets"`
-	}
-
-	// Send coordination message to TEE_T
-	// This would typically be done via the TEE communication protocol
-	// For now, we'll log the coordination and assume TEE_T will receive the streams directly from User
+	// This implements step 5 of the Request Handling protocol from the design document:
+	// TEE_K sends encrypted redacted request, commitments, and tag secrets to TEE_T
 
 	log.Printf("WebSocket: Coordinating redaction with TEE_T for session %s (commitments: S=%d, SP=%d bytes)",
 		c.sessionID, len(commitments.CommitmentS), len(commitments.CommitmentSP))
 
-	// In a full implementation, this would send the coordination data to TEE_T
-	// TEE_T would store this for when it receives streams from the User
-	// coordData := RedactionCoordinationData{
-	//     SessionID:   c.sessionID,
-	//     Ciphertext:  ciphertext,
-	//     Commitments: commitments,
-	//     TagSecrets:  tagSecrets,
-	// }
+	// Check if TEE communication client is available
+	if teeCommClient == nil {
+		return fmt.Errorf("TEE communication client not initialized")
+	}
+
+	// Send the encrypted redacted ciphertext and tag secrets to TEE_T for tag computation
+	// This implements step 5 of the request handling protocol from the design document
+	tag, err := teeCommClient.ComputeTag(ciphertext, tagSecrets, "encrypt")
+	if err != nil {
+		return fmt.Errorf("failed to compute tag via TEE_T: %v", err)
+	}
+
+	log.Printf("WebSocket: Tag computed by TEE_T for session %s (%d bytes)", c.sessionID, len(tag))
+
+	// Store the tag in session for later verification
+	storeMutex.Lock()
+	if session, exists := sessionStore[c.sessionID]; exists {
+		// Store both the commitments and the computed tag for verification
+		if session.OriginalTagSecrets == nil {
+			session.OriginalTagSecrets = tagSecrets
+		}
+	}
+	storeMutex.Unlock()
 
 	return nil
 }
@@ -870,6 +874,7 @@ func (c *WSConnection) handleDecryptRequest(msg WSMessage) {
 		ResponseLength int    `json:"response_length"`
 		EncryptedData  []byte `json:"encrypted_data"`
 		ExpectedTag    []byte `json:"expected_tag"`
+		HTTPResponse   []byte `json:"http_response"` // Actual HTTP response data for transcript
 	}
 
 	var data DecryptRequestData
@@ -921,6 +926,15 @@ func (c *WSConnection) handleDecryptRequest(msg WSMessage) {
 	}
 
 	log.Printf("WebSocket: Using original tag secrets for verification (mode: %d)", session.OriginalTagSecrets.Mode)
+
+	// Send the actual HTTP response data to TEE_T for transcript capture before tag verification
+	if len(data.HTTPResponse) > 0 {
+		if captureErr := teeCommClient.CaptureHTTPResponse(data.HTTPResponse); captureErr != nil {
+			log.Printf("Warning: Failed to capture HTTP response in TEE_T: %v", captureErr)
+		} else {
+			log.Printf("WebSocket: HTTP response captured by TEE_T (%d bytes)", len(data.HTTPResponse))
+		}
+	}
 
 	// Request tag verification from TEE_T using the original tag secrets
 	verified, err := teeCommClient.VerifyTag(splitAEADCiphertext, splitAEADTag, session.OriginalTagSecrets)
@@ -1098,11 +1112,30 @@ func main() {
 	// Check for demo mode (PORT environment variable)
 	if port := os.Getenv("PORT"); port != "" {
 		log.Printf("Demo mode: Starting TEE_K on HTTP port %s", port)
+
+		// Initialize TEE communication client to connect to TEE_T
+		// Default to localhost:8081 for demo mode, but allow override via TEE_T_URL
+		teeT_URL := os.Getenv("TEE_T_URL")
+		if teeT_URL == "" {
+			teeT_URL = "http://localhost:8081"
+		}
+
+		log.Printf("Initializing TEE communication client to connect to TEE_T at %s", teeT_URL)
+		teeCommClient = enclave.NewTEECommClient(teeT_URL)
+
+		// Connect to TEE_T
+		if err := teeCommClient.Connect(); err != nil {
+			log.Printf("Warning: Failed to connect to TEE_T: %v", err)
+			log.Printf("TEE_K will continue but Split AEAD operations may fail")
+		} else {
+			log.Printf("TEE_K successfully connected to TEE_T")
+		}
+
 		startDemoServer(port)
 		return
 	}
 
-	// Load TEE_K specific configuration
+	// Load TEE_K specific configuration for production mode
 	config, err := enclave.LoadTEEKConfig()
 	if err != nil {
 		log.Fatalf("Failed to load TEE_K configuration: %v", err)
@@ -1113,19 +1146,20 @@ func main() {
 		log.Fatalf("Failed to initialize NSM: %v", err)
 	}
 
-	// Initialize TEE communication client for TEE_T coordination
+	// Initialize TEE communication client for production
 	teeT_URL := os.Getenv("TEE_T_URL")
 	if teeT_URL == "" {
-		// Use HTTP for local development, HTTPS for production (set TEE_T_URL env var)
-		teeT_URL = "http://localhost:8081" // Default for local development
+		teeT_URL = "http://localhost:8081" // Default for production
 	}
 
+	log.Printf("Initializing TEE communication client to connect to TEE_T at %s", teeT_URL)
 	teeCommClient = enclave.NewTEECommClient(teeT_URL)
-	log.Printf("TEE_K: TEE communication client initialized for TEE_T at %s", teeT_URL)
 
-	// Start WebSocket hub
-	go wsHub.run()
-	go wsHub.cleanupStaleConnections()
+	// Connect to TEE_T
+	if err := teeCommClient.Connect(); err != nil {
+		log.Fatalf("Failed to connect to TEE_T: %v", err)
+	}
+	log.Printf("TEE_K successfully connected to TEE_T")
 
 	// Create TEE server
 	server, err := enclave.NewTEEServer(config)
@@ -1133,7 +1167,7 @@ func main() {
 		log.Fatalf("Failed to create TEE server: %v", err)
 	}
 
-	// Create the business logic mux
+	// Create the business logic mux with WebSocket support
 	businessMux := createBusinessMux()
 
 	// Setup servers with business logic

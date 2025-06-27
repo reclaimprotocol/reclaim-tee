@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -249,15 +250,23 @@ type SessionInitResponse struct {
 
 // Response types for encrypted communication
 type EncryptResponseData struct {
-	EncryptedData []byte `json:"encrypted_data"`
-	Tag           []byte `json:"tag"`
-	Status        string `json:"status"`
+	EncryptedData        []byte         `json:"encrypted_data"`
+	Tag                  []byte         `json:"tag"`
+	Status               string         `json:"status"`
+	UseRedaction         bool           `json:"use_redaction"`
+	RedactionCommitments *RedactionData `json:"redaction_commitments,omitempty"`
+}
+
+type RedactionData struct {
+	CommitmentS  []byte `json:"commitment_s"`
+	CommitmentSP []byte `json:"commitment_sp"`
 }
 
 type DecryptRequestData struct {
 	ResponseLength int    `json:"response_length"`
 	EncryptedData  []byte `json:"encrypted_data"`
 	ExpectedTag    []byte `json:"expected_tag"`
+	HTTPResponse   []byte `json:"http_response"` // Actual HTTP response data for transcript
 }
 
 type DecryptResponseData struct {
@@ -558,14 +567,66 @@ func handleHandshakeComplete(data json.RawMessage) {
 		return
 	}
 
-	// Step 3.5: Send HTTP request through TEE protocol
-	fmt.Printf("\nStep 3.5: Sending HTTP request through TEE protocol...\n")
+	// Step 3.5: Send HTTP request through TEE protocol with REDACTION DEMO
+	fmt.Printf("\nStep 3.5: Demonstrating TEE+MPC Redaction Protocol...\n")
+	fmt.Printf("   Creating HTTP request with sensitive data for redaction demo:\n")
 
-	httpRequest := "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+	// Create HTTP request with sensitive components for redaction demo
+	httpRequest := `GET /api/account HTTP/1.1
+Host: example.com
+User-Agent: TEE-MPC-Demo/1.0
+Authorization: Bearer secret_token_12345_DO_NOT_REVEAL
+X-Bank-Account: 1234567890123456
+Connection: close
+
+`
+
+	// Define redaction streams - what should be hidden vs revealed
+	fmt.Printf("   R_NS (Non-Sensitive - Will be revealed):\n")
+	nonSensitiveData := []byte(`GET /api/account HTTP/1.1
+Host: example.com
+User-Agent: TEE-MPC-Demo/1.0
+Connection: close
+
+`)
+	fmt.Printf("      • HTTP method, path, and basic headers\n")
+	fmt.Printf("      • Host: example.com\n")
+	fmt.Printf("      • User-Agent and Connection headers\n")
+	fmt.Printf("      • Total: %d bytes\n", len(nonSensitiveData))
+
+	fmt.Printf("   R_S (Sensitive - Hidden but proven to exist):\n")
+	sensitiveData := []byte("Authorization: Bearer secret_token_12345_DO_NOT_REVEAL\n")
+	fmt.Printf("      • Authorization header with secret token\n")
+	fmt.Printf("      • Content: [REDACTED] (%d bytes)\n", len(sensitiveData))
+	fmt.Printf("      • Will generate cryptographic commitment\n")
+
+	fmt.Printf("   R_SP (Sensitive Proof - Bank account with ZK proof):\n")
+	sensitiveProofData := []byte("X-Bank-Account: 1234567890123456\n")
+	fmt.Printf("      • Bank account number requiring zero-knowledge proof\n")
+	fmt.Printf("      • Content: [REDACTED] (%d bytes)\n", len(sensitiveProofData))
+	fmt.Printf("      • Will generate zero-knowledge commitment\n")
+
+	// Create redaction request structure
 	encryptReqData, _ := json.Marshal(map[string]interface{}{
-		"request_data": []byte(httpRequest),
-		"aad":          []byte("HTTP/1.1"),
+		"request_data":  []byte(httpRequest),
+		"aad":           []byte("HTTP/1.1"),
+		"use_redaction": true,
+		"redaction_request": map[string]interface{}{
+			"non_sensitive":   nonSensitiveData,
+			"sensitive":       sensitiveData,
+			"sensitive_proof": sensitiveProofData,
+		},
+		"redaction_streams": map[string]interface{}{
+			"stream_s":  generateRedactionStream(len(sensitiveData)),      // XOR stream for sensitive data
+			"stream_sp": generateRedactionStream(len(sensitiveProofData)), // XOR stream for sensitive proof data
+		},
+		"redaction_keys": map[string]interface{}{
+			"key_s":  generateDummyKey(32), // Key for sensitive redaction commitment
+			"key_sp": generateDummyKey(32), // Key for sensitive proof redaction commitment
+		},
 	})
+
+	fmt.Printf("\n   Sending redacted HTTP request through TEE protocol...\n")
 
 	encryptMsg := WSMessage{
 		Type:      MsgEncryptRequest,
@@ -578,6 +639,25 @@ func handleHandshakeComplete(data json.RawMessage) {
 	}
 }
 
+// generateRedactionStream creates a random XOR stream for redacting sensitive data
+func generateRedactionStream(length int) []byte {
+	stream := make([]byte, length)
+	// Generate random bytes for XOR redaction (in real implementation, this would be cryptographically secure)
+	for i := range stream {
+		stream[i] = byte((i*17 + 42) % 256) // Deterministic pattern for demo
+	}
+	return stream
+}
+
+// generateDummyKey creates a dummy key for redaction operations
+func generateDummyKey(length int) []byte {
+	key := make([]byte, length)
+	for i := range key {
+		key[i] = byte(i % 256)
+	}
+	return key
+}
+
 func handleEncryptResponse(data json.RawMessage, sessionID *string) {
 	var encryptResp EncryptResponseData
 	if err := json.Unmarshal(data, &encryptResp); err != nil {
@@ -585,10 +665,33 @@ func handleEncryptResponse(data json.RawMessage, sessionID *string) {
 		return
 	}
 
-	fmt.Printf("   TEE Split AEAD Result:\n")
+	fmt.Printf("   TEE Split AEAD Result with Redaction:\n")
 	fmt.Printf("     Encrypted data: %d bytes\n", len(encryptResp.EncryptedData))
 	fmt.Printf("     Authentication tag: %d bytes\n", len(encryptResp.Tag))
 	fmt.Printf("     Status: %s\n", encryptResp.Status)
+	fmt.Printf("     Using redaction: %t\n", encryptResp.UseRedaction)
+
+	if encryptResp.UseRedaction && encryptResp.RedactionCommitments != nil {
+		fmt.Printf("   Redaction Commitments Generated:\n")
+		if len(encryptResp.RedactionCommitments.CommitmentS) > 0 {
+			fmt.Printf("     • R_S Commitment: %x... (%d bytes)\n",
+				encryptResp.RedactionCommitments.CommitmentS[:min(8, len(encryptResp.RedactionCommitments.CommitmentS))],
+				len(encryptResp.RedactionCommitments.CommitmentS))
+		}
+		if len(encryptResp.RedactionCommitments.CommitmentSP) > 0 {
+			fmt.Printf("     • R_SP Commitment: %x... (%d bytes)\n",
+				encryptResp.RedactionCommitments.CommitmentSP[:min(8, len(encryptResp.RedactionCommitments.CommitmentSP))],
+				len(encryptResp.RedactionCommitments.CommitmentSP))
+		}
+		fmt.Printf("     These commitments prove sensitive data exists without revealing it!\n")
+
+		// Step 3.6: Send redaction streams to TEE_T (implementing step 6 of the protocol)
+		fmt.Printf("\n   Step 3.6: Sending redaction streams to TEE_T (Protocol Step 6)...\n")
+		if err := sendRedactionStreamsToTEET(*sessionID, encryptResp.RedactionCommitments); err != nil {
+			fmt.Printf("   Failed to send redaction streams to TEE_T: %v\n", err)
+			return
+		}
+	}
 
 	if globalTLSInterceptor == nil {
 		fmt.Printf("   Error: TLS interceptor not initialized\n")
@@ -598,6 +701,7 @@ func handleEncryptResponse(data json.RawMessage, sessionID *string) {
 	// Step 4: Send HTTP request through real TLS connection
 	fmt.Printf("\n   Step 4: Sending HTTP request through real TLS connection...\n")
 
+	// Use the same request structure but for real HTTP (Go's TLS will handle encryption)
 	httpRequest := "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
 	httpResponse, err := globalTLSInterceptor.SendHTTPRequest(httpRequest)
 	if err != nil {
@@ -608,10 +712,35 @@ func handleEncryptResponse(data json.RawMessage, sessionID *string) {
 	fmt.Printf("   Real HTTP Response received: %d bytes\n", len(httpResponse))
 	fmt.Printf("   HTTP Response preview: %s\n", string(httpResponse[:min(100, len(httpResponse))])+"...")
 
-	// Step 4b: Send TEE_K's Split AEAD data to TEE_T for verification
-	// The key insight: Both TEE_K and TEE_T must use the SAME data for verification
-	// We send the actual Split AEAD ciphertext + tag that TEE_K created
-	fmt.Printf("   Step 4b: Verifying Split AEAD integrity through TEE protocol...\n")
+	// Step 4b: Demonstrate response redaction
+	fmt.Printf("\n   Response Redaction Demo:\n")
+	fmt.Printf("   Raw HTML response contains full page content...\n")
+
+	// Show what would be redacted vs revealed
+	htmlContent := string(httpResponse)
+
+	// Find "Example Domain" text in response
+	exampleDomainStart := strings.Index(htmlContent, "Example Domain")
+	if exampleDomainStart != -1 {
+		fmt.Printf("   Found 'Example Domain' at position %d\n", exampleDomainStart)
+		fmt.Printf("   Response Redaction Streams:\n")
+		fmt.Printf("      • R_NS (Revealed): 'Example Domain' text only\n")
+		fmt.Printf("      • R_S (Hidden): All other HTML content\n")
+		fmt.Printf("      • R_SP (Proof): Server response authenticity\n")
+
+		// Create redacted response showing only "Example Domain"
+		redactedResponse := strings.Repeat("[REDACTED]", len(htmlContent)/10)
+		if exampleDomainStart+13 < len(htmlContent) {
+			redactedResponse = redactedResponse[:exampleDomainStart] + "Example Domain" + redactedResponse[exampleDomainStart+13:]
+		}
+		fmt.Printf("   Redacted Response: %s...\n", redactedResponse[:min(50, len(redactedResponse))])
+	} else {
+		fmt.Printf("   'Example Domain' not found in response, showing general redaction\n")
+		fmt.Printf("   Redacted Response: [REDACTED HTML CONTENT] (%d bytes hidden)\n", len(httpResponse))
+	}
+
+	// Step 4c: Send TEE_K's Split AEAD data to TEE_T for verification
+	fmt.Printf("\n   Step 4c: Verifying Split AEAD integrity through TEE protocol...\n")
 
 	// Create the combined data: ciphertext + tag (as TEE_T expects)
 	combinedData := make([]byte, len(encryptResp.EncryptedData)+len(encryptResp.Tag))
@@ -622,6 +751,7 @@ func handleEncryptResponse(data json.RawMessage, sessionID *string) {
 		ResponseLength: len(combinedData),
 		EncryptedData:  combinedData,    // Combined ciphertext + tag
 		ExpectedTag:    encryptResp.Tag, // Expected tag for verification
+		HTTPResponse:   httpResponse,    // Actual HTTP response data for transcript
 	}
 
 	decryptReqData, _ := json.Marshal(decryptReq)
@@ -637,6 +767,74 @@ func handleEncryptResponse(data json.RawMessage, sessionID *string) {
 			fmt.Printf("   Failed to send decrypt request: %v\n", err)
 		}
 	}
+}
+
+// sendRedactionStreamsToTEET implements step 6 from the protocol design document:
+// User sends redaction streams (Str_S, Str_SP) and commitment keys (K_S, K_SP) to TEE_T
+func sendRedactionStreamsToTEET(sessionID string, commitments *RedactionData) error {
+	fmt.Printf("   Implementing Protocol Step 6: User → TEE_T redaction streams\n")
+
+	// Connect to TEE_T service directly for redaction stream processing
+	teeT_URL := "http://localhost:8081" // TEE_T service URL
+
+	// Generate the redaction streams and keys that were used in encryption
+	// These must match exactly what was used in the original encryption request
+	sensitiveData := []byte("Authorization: Bearer secret_token_12345_DO_NOT_REVEAL\n")
+	sensitiveProofData := []byte("X-Bank-Account: 1234567890123456\n")
+
+	streamS := generateRedactionStream(len(sensitiveData))
+	streamSP := generateRedactionStream(len(sensitiveProofData))
+	keyS := generateDummyKey(32)
+	keySP := generateDummyKey(32)
+
+	type RedactionStreamRequest struct {
+		SessionID           string            `json:"session_id"`
+		RedactionStreams    map[string][]byte `json:"redaction_streams"`
+		RedactionKeys       map[string][]byte `json:"redaction_keys"`
+		ExpectedCommitments *RedactionData    `json:"expected_commitments"`
+	}
+
+	request := RedactionStreamRequest{
+		SessionID: sessionID,
+		RedactionStreams: map[string][]byte{
+			"stream_s":  streamS,
+			"stream_sp": streamSP,
+		},
+		RedactionKeys: map[string][]byte{
+			"key_s":  keyS,
+			"key_sp": keySP,
+		},
+		ExpectedCommitments: commitments,
+	}
+
+	reqData, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("failed to marshal redaction stream request: %v", err)
+	}
+
+	// Send POST request to TEE_T
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(teeT_URL+"/process-redaction-streams", "application/json", strings.NewReader(string(reqData)))
+	if err != nil {
+		return fmt.Errorf("failed to send redaction streams to TEE_T: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("TEE_T rejected redaction streams (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	fmt.Printf("   ✅ Redaction streams successfully sent to TEE_T\n")
+	fmt.Printf("     • Stream S: %d bytes (for sensitive authorization)\n", len(streamS))
+	fmt.Printf("     • Stream SP: %d bytes (for sensitive proof bank account)\n", len(streamSP))
+	fmt.Printf("     • Key S: %d bytes\n", len(keyS))
+	fmt.Printf("     • Key SP: %d bytes\n", len(keySP))
+	fmt.Printf("   TEE_T response: %s\n", string(body))
+	fmt.Printf("   TEE_T will now verify commitments and prepare for tag computation\n")
+
+	return nil
 }
 
 func handleDecryptResponse(data json.RawMessage) {
@@ -713,10 +911,11 @@ func handleFinalizeResponse(data json.RawMessage) {
 		}
 	}
 
-	fmt.Printf("\n   ✅ TEE+MPC Protocol completed successfully!\n")
+	fmt.Printf("\n   TEE+MPC Protocol completed successfully!\n")
 	fmt.Printf("   Both transcripts can be verified by third-party verifiers\n")
 	fmt.Printf("   Request transcript proves TEE_K handled requests with commitments\n")
 	fmt.Printf("   Response transcript proves TEE_T processed encrypted responses\n")
+
 	fmt.Printf("\n   This demo used REAL TLS data:\n")
 	fmt.Printf("   1. Real Client Hello from TEE_K's TLS implementation\n")
 	fmt.Printf("   2. Real Server Hello captured from example.com\n")
