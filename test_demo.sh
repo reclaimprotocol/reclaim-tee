@@ -34,11 +34,11 @@ if ! kill -0 $TEE_T_PID 2>/dev/null; then
 fi
 
 if ! kill -0 $TEE_K_PID 2>/dev/null; then
-    echo "❌ TEE_K failed to start"
+    echo "TEE_K failed to start"
     exit 1
 fi
 
-echo "✅ Both TEE services started successfully"
+echo "Both TEE services started successfully"
 echo ""
 
 # Run the demo
@@ -52,27 +52,13 @@ echo "Demo Results:"
 echo "============="
 
 if [ $DEMO_EXIT_CODE -eq 0 ]; then
-    echo "✅ Demo completed successfully!"
-    echo "   - Authentication tag verification should now work correctly"
-    echo "   - TLS connections use Go's crypto/tls implementation"
-    echo "   - Split AEAD protocol operates properly between TEE_K and TEE_T"
+    echo "Demo completed successfully!"
 elif [ $DEMO_EXIT_CODE -eq 124 ]; then
-    echo "⏱️  Demo timed out (30 seconds) - may still be working"
+    echo "Demo timed out (30 seconds) - may still be working"
     echo "   This is normal for network operations"
 else
-    echo "❌ Demo exited with code: $DEMO_EXIT_CODE"
+    echo "Demo exited with code: $DEMO_EXIT_CODE"
 fi
 
 # Always cleanup
 cleanup
-
-echo ""
-echo "Test Summary:"
-echo "============="
-echo "The key fixes implemented:"
-echo "1. ✅ Replaced manual TLS record extraction with Go's crypto/tls"
-echo "2. ✅ Removed incorrect AEAD tag extraction from raw TLS records"
-echo "3. ✅ Used proper TLS connection handling throughout"
-echo "4. ✅ Maintained TEE+MPC Split AEAD protocol integrity"
-echo ""
-echo "The authentication tag verification failures should now be resolved!" 

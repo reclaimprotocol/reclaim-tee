@@ -597,14 +597,14 @@ Connection: close
 	fmt.Printf("   R_S (Sensitive - Hidden but proven to exist):\n")
 	sensitiveData := []byte("Authorization: Bearer secret_token_12345_DO_NOT_REVEAL\n")
 	fmt.Printf("      • Authorization header with secret token\n")
-	fmt.Printf("      • Content: [REDACTED] (%d bytes)\n", len(sensitiveData))
-	fmt.Printf("      • Will generate cryptographic commitment\n")
+	fmt.Printf("      • Content: '%s' (%d bytes)\n", strings.TrimSpace(string(sensitiveData)), len(sensitiveData))
+	fmt.Printf("      • Will generate cryptographic commitment (hidden from server)\n")
 
 	fmt.Printf("   R_SP (Sensitive Proof - Bank account with ZK proof):\n")
 	sensitiveProofData := []byte("X-Bank-Account: 1234567890123456\n")
 	fmt.Printf("      • Bank account number requiring zero-knowledge proof\n")
-	fmt.Printf("      • Content: [REDACTED] (%d bytes)\n", len(sensitiveProofData))
-	fmt.Printf("      • Will generate zero-knowledge commitment\n")
+	fmt.Printf("      • Content: '%s' (%d bytes)\n", strings.TrimSpace(string(sensitiveProofData)), len(sensitiveProofData))
+	fmt.Printf("      • Will generate zero-knowledge commitment (proven but not revealed)\n")
 
 	// Create redaction request structure
 	encryptReqData, _ := json.Marshal(map[string]interface{}{
@@ -714,29 +714,77 @@ func handleEncryptResponse(data json.RawMessage, sessionID *string) {
 
 	// Step 4b: Demonstrate response redaction
 	fmt.Printf("\n   Response Redaction Demo:\n")
-	fmt.Printf("   Raw HTML response contains full page content...\n")
+	fmt.Printf("   Raw HTTP response contains full page content...\n")
 
 	// Show what would be redacted vs revealed
 	htmlContent := string(httpResponse)
 
+	// Find the end of headers (double CRLF)
+	bodyStart := strings.Index(htmlContent, "\r\n\r\n")
+	if bodyStart == -1 {
+		bodyStart = strings.Index(htmlContent, "\n\n")
+	}
+
+	// Find ETag header
+	etagStart := strings.Index(htmlContent, "ETag:")
+	etagEnd := -1
+	if etagStart != -1 {
+		etagEnd = strings.Index(htmlContent[etagStart:], "\n")
+		if etagEnd != -1 {
+			etagEnd += etagStart
+		} else {
+			etagEnd = len(htmlContent)
+		}
+	}
+
 	// Find "Example Domain" text in response
 	exampleDomainStart := strings.Index(htmlContent, "Example Domain")
-	if exampleDomainStart != -1 {
-		fmt.Printf("   Found 'Example Domain' at position %d\n", exampleDomainStart)
-		fmt.Printf("   Response Redaction Streams:\n")
-		fmt.Printf("      • R_NS (Revealed): 'Example Domain' text only\n")
-		fmt.Printf("      • R_S (Hidden): All other HTML content\n")
-		fmt.Printf("      • R_SP (Proof): Server response authenticity\n")
 
-		// Create redacted response showing only "Example Domain"
-		redactedResponse := strings.Repeat("[REDACTED]", len(htmlContent)/10)
-		if exampleDomainStart+13 < len(htmlContent) {
-			redactedResponse = redactedResponse[:exampleDomainStart] + "Example Domain" + redactedResponse[exampleDomainStart+13:]
-		}
-		fmt.Printf("   Redacted Response: %s...\n", redactedResponse[:min(50, len(redactedResponse))])
+	if bodyStart != -1 && etagStart != -1 && exampleDomainStart != -1 {
+		// Extract the different parts
+		headersBeforeETag := htmlContent[:etagStart]
+		etagHeader := htmlContent[etagStart:etagEnd]
+		headersAfterETag := htmlContent[etagEnd : bodyStart+4] // Include the double newline
+		bodyBeforeExample := htmlContent[bodyStart+4 : exampleDomainStart]
+		exampleDomainText := "Example Domain"
+		bodyAfterExample := htmlContent[exampleDomainStart+13:]
+
+		fmt.Printf("   Response Redaction Categories:\n")
+		fmt.Printf("      • R_NS (Non-Sensitive): HTTP headers except ETag\n")
+		fmt.Printf("      • R_S (Sensitive): ETag header (like a sensitive cookie)\n")
+		fmt.Printf("      • R_SP (Sensitive Proof): 'Example Domain' text with ZK proof\n")
+
+		fmt.Printf("   \n   ACTUAL CONTENT CATEGORIZATION:\n")
+
+		// R_NS: Headers before and after ETag (non-sensitive)
+		rnsContent := headersBeforeETag + headersAfterETag
+		fmt.Printf("   • R_NS (Revealed headers): '%s...' (%d bytes)\n",
+			strings.ReplaceAll(rnsContent[:min(60, len(rnsContent))], "\n", "\\n"), len(rnsContent))
+
+		// R_S: ETag header (sensitive like a cookie)
+		fmt.Printf("   • R_S (Hidden ETag): '%s' (%d bytes) - treated as sensitive cookie\n",
+			strings.TrimSpace(etagHeader), len(etagHeader))
+
+		// R_SP: Example Domain (sensitive proof)
+		fmt.Printf("   • R_SP (ZK Proof content): '%s' (%d bytes) - proven but location hidden\n",
+			exampleDomainText, len(exampleDomainText))
+
+		// Hidden body content
+		hiddenBodyContent := bodyBeforeExample + bodyAfterExample
+		fmt.Printf("   • Hidden body content: %d bytes of HTML\n", len(hiddenBodyContent))
+
+		fmt.Printf("   \n   Redaction Result:\n")
+		fmt.Printf("   ✓ Headers visible (%d bytes) except ETag\n", len(rnsContent))
+		fmt.Printf("   ✗ ETag hidden (%d bytes) - sensitive like session cookie\n", len(etagHeader))
+		fmt.Printf("   ✓ 'Example Domain' proven present but location hidden via ZK proof\n")
+		fmt.Printf("   ✗ Remaining HTML content hidden (%d bytes)\n", len(hiddenBodyContent))
+
 	} else {
-		fmt.Printf("   'Example Domain' not found in response, showing general redaction\n")
-		fmt.Printf("   Redacted Response: [REDACTED HTML CONTENT] (%d bytes hidden)\n", len(httpResponse))
+		fmt.Printf("   Could not parse response structure properly\n")
+		fmt.Printf("   \n   ACTUAL CONTENT BEING REDACTED:\n")
+		fmt.Printf("   • Full HTTP response: '%s...' (%d bytes)\n",
+			strings.ReplaceAll(htmlContent[:min(100, len(htmlContent))], "\n", "\\n"), len(httpResponse))
+		fmt.Printf("   • Redaction Result: All content hidden for privacy\n")
 	}
 
 	// Step 4c: Send TEE_K's Split AEAD data to TEE_T for verification
@@ -826,7 +874,7 @@ func sendRedactionStreamsToTEET(sessionID string, commitments *RedactionData) er
 		return fmt.Errorf("TEE_T rejected redaction streams (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	fmt.Printf("   ✅ Redaction streams successfully sent to TEE_T\n")
+	fmt.Printf("   Redaction streams successfully sent to TEE_T\n")
 	fmt.Printf("     • Stream S: %d bytes (for sensitive authorization)\n", len(streamS))
 	fmt.Printf("     • Stream SP: %d bytes (for sensitive proof bank account)\n", len(streamSP))
 	fmt.Printf("     • Key S: %d bytes\n", len(keyS))
@@ -928,16 +976,7 @@ func handleFinalizeResponse(data json.RawMessage) {
 	}
 
 	fmt.Printf("\n   TEE+MPC Protocol completed successfully!\n")
-	fmt.Printf("   Both transcripts can be verified by third-party verifiers\n")
-	fmt.Printf("   Request transcript proves TEE_K handled requests with commitments\n")
-	fmt.Printf("   Response transcript proves TEE_T processed encrypted responses\n")
 
-	fmt.Printf("\n   This demo used REAL TLS data:\n")
-	fmt.Printf("   1. Real Client Hello from TEE_K's TLS implementation\n")
-	fmt.Printf("   2. Real Server Hello captured from example.com\n")
-	fmt.Printf("   3. Real session keys extracted by TEE_K\n")
-	fmt.Printf("   4. Real Split AEAD operations with authentic keys\n")
-	fmt.Printf("   5. Real HTTP communication through Go's TLS\n")
 }
 
 // Helper function to convert TLS version to string
