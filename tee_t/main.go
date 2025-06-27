@@ -18,7 +18,8 @@ func main() {
 	log.Printf("Starting TEE_T service...")
 
 	// Check for demo mode (PORT environment variable)
-	if port := os.Getenv("PORT"); port != "" {
+	if isDemoMode() {
+		port := getDemoPort()
 		log.Printf("Demo mode: Starting TEE_T on HTTP port %s", port)
 		startDemoServer(port)
 		return
@@ -230,7 +231,7 @@ func handleRedactionStreams(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create transcript signer for demo (generates random key)
-	transcriptSigner, err := enclave.GenerateDemoKey()
+	transcriptSigner, err := createDemoTranscriptSigner()
 	if err != nil {
 		log.Printf("Failed to create transcript signer for session %s: %v", req.SessionID, err)
 		response := RedactionStreamResponse{
@@ -292,7 +293,7 @@ func sendRedactionStreamResponse(w http.ResponseWriter, response RedactionStream
 // CreateSessionDataForWebSocket creates session data for WebSocket sessions
 func CreateSessionDataForWebSocket(sessionID string) error {
 	// Create transcript signer for demo (generates random key)
-	transcriptSigner, err := enclave.GenerateDemoKey()
+	transcriptSigner, err := createDemoTranscriptSigner()
 	if err != nil {
 		return fmt.Errorf("failed to create transcript signer: %v", err)
 	}
@@ -360,24 +361,4 @@ func GetSignedResponseTranscriptForSession(sessionID string) (*enclave.SignedTra
 
 	log.Printf("Generated signed response transcript for session %s", sessionID)
 	return signedTranscript, nil
-}
-
-func startDemoServer(port string) {
-	// Use the same business mux as production to ensure callbacks are set
-	mux := createBusinessMux()
-
-	server := &http.Server{
-		Addr:    ":" + port,
-		Handler: mux,
-	}
-
-	log.Printf("TEE_T demo server starting on port %s", port)
-	log.Printf("Available endpoints:")
-	log.Printf("  POST /process-redaction-streams - Process redaction streams from users")
-	log.Printf("  WS /tee-comm - WebSocket endpoint for TEE-to-TEE communication")
-	log.Printf("  GET /attest - Get attestation document")
-
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Demo server failed: %v", err)
-	}
 }

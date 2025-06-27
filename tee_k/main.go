@@ -493,7 +493,7 @@ func (c *WSConnection) handleSessionInit(msg WSMessage) {
 	}
 
 	// Create transcript signer for demo (generates random key)
-	transcriptSigner, err := enclave.GenerateDemoKey()
+	transcriptSigner, err := createDemoTranscriptSigner()
 	if err != nil {
 		c.sendError(fmt.Sprintf("Failed to create transcript signer: %v", err))
 		return
@@ -1196,26 +1196,12 @@ func main() {
 	log.Printf("Starting TEE_K service...")
 
 	// Check for demo mode (PORT environment variable)
-	if port := os.Getenv("PORT"); port != "" {
+	if isDemoMode() {
+		port := getDemoPort()
 		log.Printf("Demo mode: Starting TEE_K on HTTP port %s", port)
 
-		// Initialize TEE communication client to connect to TEE_T
-		// Default to localhost:8081 for demo mode, but allow override via TEE_T_URL
-		teeT_URL := os.Getenv("TEE_T_URL")
-		if teeT_URL == "" {
-			teeT_URL = "http://localhost:8081"
-		}
-
-		log.Printf("Initializing TEE communication client to connect to TEE_T at %s", teeT_URL)
-		teeCommClient = enclave.NewTEECommClient(teeT_URL)
-
-		// Connect to TEE_T
-		if err := teeCommClient.Connect(); err != nil {
-			log.Printf("Warning: Failed to connect to TEE_T: %v", err)
-			log.Printf("TEE_K will continue but Split AEAD operations may fail")
-		} else {
-			log.Printf("TEE_K successfully connected to TEE_T")
-		}
+		// Setup demo TEE client
+		setupDemoTEEClient()
 
 		startDemoServer(port)
 		return
@@ -1263,39 +1249,6 @@ func main() {
 
 	// Start the server
 	startServer(server)
-}
-
-// startDemoServer starts a simple HTTP server for demo purposes
-func startDemoServer(port string) {
-	// Initialize TEE communication client for TEE_T coordination
-	teeT_URL := os.Getenv("TEE_T_URL")
-	if teeT_URL == "" {
-		// Use HTTP for local development
-		teeT_URL = "http://localhost:8081" // Default for local development
-	}
-
-	teeCommClient = enclave.NewTEECommClient(teeT_URL)
-	log.Printf("TEE_K Demo: TEE communication client initialized for TEE_T at %s", teeT_URL)
-
-	// Start WebSocket hub for any WebSocket functionality
-	go wsHub.run()
-	go wsHub.cleanupStaleConnections()
-
-	mux := createBusinessMux()
-
-	server := &http.Server{
-		Addr:    ":" + port,
-		Handler: mux,
-	}
-
-	log.Printf("TEE_K demo server starting on port %s", port)
-	log.Printf("Available endpoints:")
-	log.Printf("  GET / - Basic status check")
-	log.Printf("  WS /ws - WebSocket endpoint for MPC protocol")
-
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Demo server failed: %v", err)
-	}
 }
 
 func createBusinessMux() *http.ServeMux {
