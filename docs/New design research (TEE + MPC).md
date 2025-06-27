@@ -30,7 +30,7 @@ NOTE: due to the need to divide AEAD into two processes (encryption and MAC comp
 
 ## Visualization
 
-![image.png](../image.png)
+![image.png](image.png)
 
 ---
 
