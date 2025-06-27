@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/hkdf"
 )
 
 // TLS Record Types (RFC 5246)
@@ -301,10 +304,21 @@ type TranscriptData struct {
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
 
+// GlobalRedactionData holds the redaction streams and keys for consistency across operations
+type GlobalRedactionData struct {
+	SensitiveData      []byte
+	SensitiveProofData []byte
+	StreamS            []byte
+	StreamSP           []byte
+	KeyS               []byte
+	KeySP              []byte
+}
+
 // Global state
 var (
 	globalConn           *websocket.Conn
 	globalTLSInterceptor *TLSHandshakeInterceptor
+	globalRedactionData  *GlobalRedactionData
 	storedClientHello    []byte
 	protocolFailed       bool
 )
@@ -648,6 +662,22 @@ Connection: close
 	fmt.Printf("      • Content: '%s' (%d bytes)\n", strings.TrimSpace(string(sensitiveProofData)), len(sensitiveProofData))
 	fmt.Printf("      • Will generate zero-knowledge commitment (proven but not revealed)\n")
 
+	// Generate redaction streams and keys once and store globally for consistency
+	streamS := generateContextualRedactionStream(len(sensitiveData), "sensitive-auth")
+	streamSP := generateContextualRedactionStream(len(sensitiveProofData), "sensitive-proof")
+	keyS := generateRedactionKey(32)
+	keySP := generateRedactionKey(32)
+
+	// Store globally for later use in sendRedactionStreamsToTEET
+	globalRedactionData = &GlobalRedactionData{
+		SensitiveData:      sensitiveData,
+		SensitiveProofData: sensitiveProofData,
+		StreamS:            streamS,
+		StreamSP:           streamSP,
+		KeyS:               keyS,
+		KeySP:              keySP,
+	}
+
 	// Create redaction request structure
 	encryptReqData, _ := json.Marshal(map[string]interface{}{
 		"request_data":  []byte(httpRequest),
@@ -659,12 +689,12 @@ Connection: close
 			"sensitive_proof": sensitiveProofData,
 		},
 		"redaction_streams": map[string]interface{}{
-			"stream_s":  generateRedactionStream(len(sensitiveData)),      // XOR stream for sensitive data
-			"stream_sp": generateRedactionStream(len(sensitiveProofData)), // XOR stream for sensitive proof data
+			"stream_s":  streamS,  // Use the same stream
+			"stream_sp": streamSP, // Use the same stream
 		},
 		"redaction_keys": map[string]interface{}{
-			"key_s":  generateDummyKey(32), // Key for sensitive redaction commitment
-			"key_sp": generateDummyKey(32), // Key for sensitive proof redaction commitment
+			"key_s":  keyS,  // Use the same key
+			"key_sp": keySP, // Use the same key
 		},
 	})
 
@@ -681,23 +711,53 @@ Connection: close
 	}
 }
 
-// generateRedactionStream creates a random XOR stream for redacting sensitive data
+// generateRedactionStream creates a cryptographically secure random XOR stream for redacting sensitive data
 func generateRedactionStream(length int) []byte {
+	if length <= 0 {
+		return nil
+	}
+
 	stream := make([]byte, length)
-	// Generate random bytes for XOR redaction (in real implementation, this would be cryptographically secure)
-	for i := range stream {
-		stream[i] = byte((i*17 + 42) % 256) // Deterministic pattern for demo
+	if _, err := rand.Read(stream); err != nil {
+		panic(fmt.Sprintf("Failed to generate secure redaction stream: %v", err))
 	}
 	return stream
 }
 
-// generateDummyKey creates a dummy key for redaction operations
-func generateDummyKey(length int) []byte {
+// generateRedactionKey creates a cryptographically secure random key for redaction operations
+func generateRedactionKey(length int) []byte {
+	if length <= 0 {
+		return nil
+	}
+
 	key := make([]byte, length)
-	for i := range key {
-		key[i] = byte(i % 256)
+	if _, err := rand.Read(key); err != nil {
+		panic(fmt.Sprintf("Failed to generate secure redaction key: %v", err))
 	}
 	return key
+}
+
+// generateContextualRedactionStream creates unique streams for different contexts
+// This ensures that even if the same length is requested, different contexts get different streams
+func generateContextualRedactionStream(length int, context string) []byte {
+	if length <= 0 {
+		return nil
+	}
+
+	// Use crypto/rand for base entropy
+	baseStream := make([]byte, length)
+	if _, err := rand.Read(baseStream); err != nil {
+		panic(fmt.Sprintf("Failed to generate base stream: %v", err))
+	}
+
+	// Add context-specific entropy using HKDF
+	h := hkdf.New(sha256.New, baseStream, []byte(context), []byte("redaction-stream"))
+	finalStream := make([]byte, length)
+	if _, err := io.ReadFull(h, finalStream); err != nil {
+		panic(fmt.Sprintf("Failed to derive contextual stream: %v", err))
+	}
+
+	return finalStream
 }
 
 func handleEncryptResponse(data json.RawMessage, sessionID *string) {
@@ -867,15 +927,15 @@ func sendRedactionStreamsToTEET(sessionID string, commitments *RedactionData) er
 	// Connect to TEE_T service directly for redaction stream processing
 	teeT_URL := "http://localhost:8081" // TEE_T service URL
 
-	// Generate the redaction streams and keys that were used in encryption
-	// These must match exactly what was used in the original encryption request
-	sensitiveData := []byte("Authorization: Bearer secret_token_12345_DO_NOT_REVEAL\n")
-	sensitiveProofData := []byte("X-Bank-Account: 1234567890123456\n")
+	// Use the same redaction streams and keys that were used in the original encryption request
+	if globalRedactionData == nil {
+		return fmt.Errorf("no redaction data available - encrypt request must be sent first")
+	}
 
-	streamS := generateRedactionStream(len(sensitiveData))
-	streamSP := generateRedactionStream(len(sensitiveProofData))
-	keyS := generateDummyKey(32)
-	keySP := generateDummyKey(32)
+	streamS := globalRedactionData.StreamS
+	streamSP := globalRedactionData.StreamSP
+	keyS := globalRedactionData.KeyS
+	keySP := globalRedactionData.KeySP
 
 	type RedactionStreamRequest struct {
 		SessionID           string            `json:"session_id"`

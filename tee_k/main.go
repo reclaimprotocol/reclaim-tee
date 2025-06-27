@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/aes"
 	"crypto/hmac"
 	"crypto/tls"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/chacha20"
 )
 
 // WebSocket upgrader with CORS support
@@ -941,8 +943,8 @@ func (c *WSConnection) handleDecryptRequest(msg WSMessage) {
 		return
 	}
 
-	log.Printf("WebSocket: Processing decrypt request for session %s (%d bytes)",
-		c.sessionID, len(data.EncryptedData))
+	log.Printf("WebSocket: Processing decrypt request for session %s (%d bytes encrypted, %d bytes HTTP response)",
+		c.sessionID, len(data.EncryptedData), len(data.HTTPResponse))
 
 	// With real TLS connection, data is already decrypted by Go's crypto/tls
 	// The encrypted data is the raw application data (HTTP response)
@@ -992,15 +994,39 @@ func (c *WSConnection) handleDecryptRequest(msg WSMessage) {
 
 	log.Printf("WebSocket: Tag verified by TEE_T for session %s - generating decryption stream", c.sessionID)
 
-	// Generate decryption stream (keystream for XOR decryption) for the Split AEAD ciphertext
-	// For the demo, we provide a placeholder decryption stream
-	// In a real implementation, this would be the actual keystream computed from the original tag secrets
-	decryptionStream := make([]byte, len(splitAEADCiphertext))
+	// PROTOCOL FIX: Generate proper decryption stream for the full HTTP response
+	// According to Protocol Phase 4 Step 6: "TEE_K computes the stream Str_Dec of the length of Resp"
+	// The decryption stream should be for the full HTTP response, not just the Split AEAD ciphertext
 
-	// Fill with placeholder data - in real implementation this would be derived from tag secrets
-	for i := range decryptionStream {
-		decryptionStream[i] = 0x00 // Placeholder
+	var decryptionStreamLength int
+	if len(data.HTTPResponse) > 0 {
+		// Use the actual HTTP response length if available
+		decryptionStreamLength = len(data.HTTPResponse)
+	} else {
+		// Fallback to the encrypted data length if HTTP response not provided
+		decryptionStreamLength = len(splitAEADCiphertext)
 	}
+
+	// Generate actual decryption stream using TLS session keys
+	// Use current server sequence number then increment it
+	currentSeqNum := session.ServerSeqNum
+	decryptionStream, err := c.generateTLSDecryptionStream(sessionKeys, decryptionStreamLength, currentSeqNum)
+	if err != nil {
+		c.sendError(fmt.Sprintf("Failed to generate decryption stream: %v", err))
+		return
+	}
+
+	// Increment server sequence number after generating decryption stream
+	storeMutex.Lock()
+	if updatedSession, exists := sessionStore[c.sessionID]; exists {
+		updatedSession.ServerSeqNum++
+		log.Printf("WebSocket: Server sequence number incremented to %d for session %s",
+			updatedSession.ServerSeqNum, c.sessionID)
+	}
+	storeMutex.Unlock()
+
+	log.Printf("WebSocket: Generated decryption stream of %d bytes using TLS session keys (seqNum=%d)",
+		len(decryptionStream), currentSeqNum)
 
 	type DecryptResponseData struct {
 		DecryptionStream []byte `json:"decryption_stream"`
@@ -1013,6 +1039,128 @@ func (c *WSConnection) handleDecryptRequest(msg WSMessage) {
 	}
 
 	c.sendResponse(MsgDecryptResponse, response)
+}
+
+// generateTLSDecryptionStream generates a proper decryption stream from TLS session keys
+// This implements the actual TLS record decryption keystream generation
+func (c *WSConnection) generateTLSDecryptionStream(keys *enclave.TLSSessionKeys, length int, seqNum uint64) ([]byte, error) {
+	if keys == nil {
+		return nil, fmt.Errorf("session keys are nil")
+	}
+
+	// Use server write key and IV since we're decrypting server-to-client data
+	key := keys.ServerWriteKey
+	baseIV := keys.ServerWriteIV
+
+	if len(key) == 0 || len(baseIV) == 0 {
+		return nil, fmt.Errorf("invalid session keys: key=%d bytes, iv=%d bytes", len(key), len(baseIV))
+	}
+
+	log.Printf("Generating TLS decryption stream: cipher=0x%04x, keyLen=%d, ivLen=%d, length=%d, seqNum=%d",
+		keys.CipherSuite, len(key), len(baseIV), length, seqNum)
+
+	// Generate the nonce for this record (XOR sequence number with base IV)
+	// This follows TLS 1.3 record encryption specification
+	nonce := make([]byte, len(baseIV))
+	copy(nonce, baseIV)
+
+	// XOR the sequence number into the last 8 bytes of the nonce
+	if len(nonce) >= 8 {
+		seqBytes := make([]byte, 8)
+		for i := 0; i < 8; i++ {
+			seqBytes[7-i] = byte(seqNum >> (i * 8))
+		}
+
+		for i := 0; i < 8; i++ {
+			nonce[len(nonce)-8+i] ^= seqBytes[i]
+		}
+	}
+
+	// Generate keystream based on cipher suite
+	switch keys.CipherSuite {
+	case enclave.TLS_AES_128_GCM_SHA256, enclave.TLS_AES_256_GCM_SHA384:
+		return c.generateAESGCMKeystream(key, nonce, length)
+	case enclave.TLS_CHACHA20_POLY1305_SHA256:
+		return c.generateChaCha20Keystream(key, nonce, length)
+	default:
+		return nil, fmt.Errorf("unsupported cipher suite: 0x%04x", keys.CipherSuite)
+	}
+}
+
+// generateAESGCMKeystream generates AES-GCM keystream for decryption
+// Based on Go's crypto/cipher/gcm.go implementation
+func (c *WSConnection) generateAESGCMKeystream(key, nonce []byte, length int) ([]byte, error) {
+	// Import necessary packages for AES-GCM
+	aes, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %v", err)
+	}
+
+	// For AES-GCM, we generate the keystream using CTR mode
+	// The counter starts at 2 (since counter 1 is used for auth tag)
+
+	// Prepare the initial counter block
+	// For GCM, this is nonce + 32-bit counter starting at 2
+	if len(nonce) < 12 {
+		return nil, fmt.Errorf("nonce too short for AES-GCM: %d bytes", len(nonce))
+	}
+
+	// Create counter block: nonce (12 bytes) + counter (4 bytes)
+	counterBlock := make([]byte, 16)
+	copy(counterBlock[:12], nonce[:12])
+
+	// Set initial counter to 2 (big-endian)
+	counterBlock[15] = 2
+
+	// Generate keystream using CTR mode
+	keystream := make([]byte, length)
+	blockSize := aes.BlockSize()
+
+	for i := 0; i < length; i += blockSize {
+		// Encrypt the counter block to get keystream block
+		var keystreamBlock [16]byte
+		aes.Encrypt(keystreamBlock[:], counterBlock)
+
+		// Copy the needed bytes
+		endIdx := i + blockSize
+		if endIdx > length {
+			endIdx = length
+		}
+		copy(keystream[i:endIdx], keystreamBlock[:endIdx-i])
+
+		// Increment counter (32-bit big-endian in last 4 bytes)
+		for j := 15; j >= 12; j-- {
+			counterBlock[j]++
+			if counterBlock[j] != 0 {
+				break
+			}
+		}
+	}
+
+	return keystream, nil
+}
+
+// generateChaCha20Keystream generates ChaCha20 keystream for decryption
+// Based on golang.org/x/crypto/chacha20 implementation
+func (c *WSConnection) generateChaCha20Keystream(key, nonce []byte, length int) ([]byte, error) {
+	// Import ChaCha20 from the x/crypto package
+	cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ChaCha20 cipher: %v", err)
+	}
+
+	// For TLS 1.3 ChaCha20-Poly1305, the keystream starts at counter 1
+	// (counter 0 is used to generate the Poly1305 key)
+
+	// Skip the first 64 bytes (counter 0 block) to start at counter 1
+	skipBlock := make([]byte, 64)
+	cipher.XORKeyStream(skipBlock, skipBlock)
+
+	// Generate the actual keystream
+	keystream := make([]byte, length)
+	cipher.XORKeyStream(keystream, keystream) // XOR with zeros gives us the keystream
+
+	return keystream, nil
 }
 
 // handleTagVerify processes tag verification results from TEE_T
