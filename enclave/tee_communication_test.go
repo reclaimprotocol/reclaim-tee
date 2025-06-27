@@ -11,6 +11,12 @@ import (
 
 // TestTEECommunication tests the full TEE_K ↔ TEE_T WebSocket communication flow
 func TestTEECommunication(t *testing.T) {
+	// Set up the CreateSessionDataForWebSocket callback for tests
+	CreateSessionDataForWebSocket = func(sessionID string) error {
+		// Test implementation - just create empty session data
+		return nil
+	}
+
 	// Create TEE_T server
 	teeServer := NewTEECommServer()
 
@@ -107,6 +113,12 @@ func TestTEECommunication(t *testing.T) {
 
 // TestTEECommunicationChaCha20 tests with ChaCha20-Poly1305
 func TestTEECommunicationChaCha20(t *testing.T) {
+	// Set up the CreateSessionDataForWebSocket callback for tests
+	CreateSessionDataForWebSocket = func(sessionID string) error {
+		// Test implementation - just create empty session data
+		return nil
+	}
+
 	// Create TEE_T server
 	teeServer := NewTEECommServer()
 
@@ -192,6 +204,12 @@ func TestTEECommunicationChaCha20(t *testing.T) {
 
 // TestTEECommunicationConcurrency tests concurrent operations
 func TestTEECommunicationConcurrency(t *testing.T) {
+	// Set up the CreateSessionDataForWebSocket callback for tests
+	CreateSessionDataForWebSocket = func(sessionID string) error {
+		// Test implementation - just create empty session data
+		return nil
+	}
+
 	// Create TEE_T server
 	teeServer := NewTEECommServer()
 

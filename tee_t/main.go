@@ -363,6 +363,7 @@ func GetSignedResponseTranscriptForSession(sessionID string) (*enclave.SignedTra
 }
 
 func startDemoServer(port string) {
+	// Use the same business mux as production to ensure callbacks are set
 	mux := createBusinessMux()
 
 	server := &http.Server{
