@@ -6,6 +6,12 @@ import (
 	"crypto/sha512"
 	"fmt"
 	"hash"
+	"net"
+	"time"
+
+	"bytes"
+	"crypto/tls"
+	"encoding/pem"
 )
 
 // TLS 1.3 constants - simplified for our needs
@@ -66,6 +72,9 @@ type TLSClientState struct {
 	// Store handshake messages for hash replay if needed
 	clientHelloMessage []byte
 	serverHelloMessage []byte
+
+	// Store actual certificate chain from TLS handshake
+	certificateChain [][]byte // DER-encoded certificates
 }
 
 // KeyShare represents a key share in TLS 1.3
@@ -340,17 +349,41 @@ func (s *TLSClientState) ExtractHandshakeKey() ([]byte, error) {
 // GetCertificateChain returns the server's certificate chain if available
 // This supports Protocol Step 2.3: certificate chain revelation for verification
 func (s *TLSClientState) GetCertificateChain() []byte {
-	if s.serverHello == nil {
+	if len(s.certificateChain) == 0 {
 		return nil
 	}
 
-	// In TLS 1.3, certificates are sent in EncryptedExtensions or Certificate messages
-	// For this implementation, we'll return a placeholder indicating certificates were processed
-	// In a real implementation, this would extract the actual certificate chain from the handshake
+	// Convert DER certificates to PEM format for easier parsing
+	var pemBuffer bytes.Buffer
+	for i, certDER := range s.certificateChain {
+		// Create PEM block for each certificate
+		pemBlock := &pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: certDER,
+		}
 
-	// Create a simple certificate chain indicator
-	certChainInfo := fmt.Sprintf("Certificate chain processed for cipher suite 0x%04x", s.GetSelectedCipherSuite())
-	return []byte(certChainInfo)
+		// Write PEM block to buffer
+		if err := pem.Encode(&pemBuffer, pemBlock); err != nil {
+			// If PEM encoding fails, fall back to DER concatenation
+			var totalLength int
+			for _, cert := range s.certificateChain {
+				totalLength += len(cert)
+			}
+
+			result := make([]byte, 0, totalLength)
+			for _, cert := range s.certificateChain {
+				result = append(result, cert...)
+			}
+			return result
+		}
+
+		// Add a newline between certificates for clarity
+		if i < len(s.certificateChain)-1 {
+			pemBuffer.WriteString("\n")
+		}
+	}
+
+	return pemBuffer.Bytes()
 }
 
 // updateHandshakeHashForCipherSuite updates the handshake hash to use the correct
@@ -393,4 +426,47 @@ type TLSSessionKeys struct {
 	ClientWriteIV  []byte
 	ServerWriteIV  []byte
 	CipherSuite    uint16
+}
+
+// ExtractCertificateChainFromTLS extracts the certificate chain from a real TLS connection
+// This populates the certificateChain field with actual DER-encoded certificates
+func (s *TLSClientState) ExtractCertificateChainFromTLS(hostname string, port int) error {
+	// Create a real TLS connection to extract the certificate chain
+	config := &tls.Config{
+		ServerName:         hostname,
+		InsecureSkipVerify: false,            // Use real certificate verification
+		MinVersion:         tls.VersionTLS13, // Force TLS 1.3
+	}
+
+	// Establish TCP connection
+	address := fmt.Sprintf("%s:%d", hostname, port)
+	tcpConn, err := net.DialTimeout("tcp", address, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to connect to %s: %v", address, err)
+	}
+	defer tcpConn.Close()
+
+	// Establish TLS connection
+	tlsConn := tls.Client(tcpConn, config)
+	defer tlsConn.Close()
+
+	// Perform handshake
+	if err := tlsConn.Handshake(); err != nil {
+		return fmt.Errorf("TLS handshake failed: %v", err)
+	}
+
+	// Get connection state and extract certificate chain
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return fmt.Errorf("no peer certificates available")
+	}
+
+	// Store the DER-encoded certificates
+	s.certificateChain = make([][]byte, len(state.PeerCertificates))
+	for i, cert := range state.PeerCertificates {
+		s.certificateChain[i] = make([]byte, len(cert.Raw))
+		copy(s.certificateChain[i], cert.Raw)
+	}
+
+	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"tee/enclave"
@@ -552,6 +553,25 @@ func (c *WSConnection) handleServerHello(msg WSMessage) {
 	if err != nil {
 		c.sendError(fmt.Sprintf("Failed to process Server Hello: %v", err))
 		return
+	}
+
+	// Extract certificate chain from real TLS connection (Protocol Step 2.3)
+	// This provides the actual server certificates for verification
+	hostname := "example.com" // Default for demo
+	if session.WebsiteURL != "" {
+		// Parse hostname from WebsiteURL (format: "hostname:port")
+		if colonIndex := strings.Index(session.WebsiteURL, ":"); colonIndex != -1 {
+			hostname = session.WebsiteURL[:colonIndex]
+		} else {
+			hostname = session.WebsiteURL
+		}
+	}
+
+	if err := session.TLSClient.ExtractCertificateChainFromTLS(hostname, 443); err != nil {
+		log.Printf("Warning: Failed to extract certificate chain from %s: %v", hostname, err)
+		// Continue without certificate chain - demo will show the limitation
+	} else {
+		log.Printf("WebSocket: Certificate chain extracted successfully from %s", hostname)
 	}
 
 	// Complete TLS handshake and extract session keys
