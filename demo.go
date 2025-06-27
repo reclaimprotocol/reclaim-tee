@@ -593,7 +593,7 @@ func handleHandshakeComplete(data json.RawMessage) {
 			fmt.Printf("   This is a critical security failure - the connection may be compromised!\n")
 			return
 		} else {
-			fmt.Printf("   ✅ Certificate verification successful!\n")
+			fmt.Printf("   Certificate verification successful!\n")
 			fmt.Printf("   The server certificate is authentic and matches the handshake key\n")
 		}
 	} else {
