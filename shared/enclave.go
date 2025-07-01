@@ -2,7 +2,6 @@ package shared
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
 	"log"
@@ -130,24 +129,34 @@ func createCertManager(config *EnclaveConfig, cache *MemoryCache) *autocert.Mana
 	return manager
 }
 
+const (
+	defaultKeyBits = 2048
+)
+
+func (e *EnclaveHandle) initialize() error {
+	var err error
+	if e.nsm, err = nsm.OpenDefaultSession(); err != nil {
+		return err
+	}
+	if e.key, err = rsa.GenerateKey(e.nsm, defaultKeyBits); err != nil {
+		return err
+	}
+	return nil
+}
+
 // NSM Handle management
 func GetOrInitializeHandle() (*EnclaveHandle, error) {
-	session, err := nsm.OpenDefaultSession()
-	if err != nil {
-		return nil, fmt.Errorf("failed to open NSM session: %v", err)
+	initMutex.Lock()
+	defer initMutex.Unlock()
+	if globalHandle == nil && initializationError == nil {
+		enclave := &EnclaveHandle{}
+		if err := enclave.initialize(); err != nil {
+			initializationError = err
+			return nil, err
+		}
+		globalHandle = enclave
 	}
-	rand.Reader = session
-
-	// Generate RSA key pair for attestation
-	key, err := rsa.GenerateKey(rand.Reader, 2048) // Using nil for random reader in enclave
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate RSA key: %v", err)
-	}
-
-	return &EnclaveHandle{
-		nsm: session,
-		key: key,
-	}, nil
+	return globalHandle, initializationError
 }
 
 func (e *EnclaveHandle) PublicKey() *rsa.PublicKey {
