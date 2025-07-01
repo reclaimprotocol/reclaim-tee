@@ -134,12 +134,6 @@ func (p *KMSProxy) handleConnection(ctx context.Context, conn net.Conn) {
 				continue
 			}
 
-			if !p.isValidOperation(req.Operation) {
-				p.logger.Error("Unsupported KMS operation", zap.String("operation", req.Operation))
-				p.sendResponse(conn, KMSResponse{Error: fmt.Sprintf("unsupported operation: %s", req.Operation)})
-				continue
-			}
-
 			p.logger.Info("Processing KMS operation", zap.String("operation", req.Operation))
 
 			requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -258,19 +252,4 @@ func (p *KMSProxy) sendResponse(conn net.Conn, resp KMSResponse) {
 		p.logger.Error("Failed to send KMS response", zap.Error(err))
 	}
 	conn.SetWriteDeadline(time.Time{})
-}
-
-func (p *KMSProxy) isValidOperation(op string) bool {
-	validOps := []string{
-		"GenerateDataKey",
-		"Encrypt",
-		"Decrypt",
-	}
-
-	for _, validOp := range validOps {
-		if op == validOp {
-			return true
-		}
-	}
-	return false
 }
