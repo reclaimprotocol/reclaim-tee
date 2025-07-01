@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -27,6 +28,29 @@ type KMSRequest struct {
 type KMSResponse struct {
 	Output json.RawMessage `json:"output,omitempty"`
 	Error  string          `json:"error,omitempty"`
+}
+
+type ProxyStoreItemInput struct {
+	Data     []byte `json:"data"`
+	Key      []byte `json:"key"`
+	Filename string `json:"filename"`
+}
+
+type ProxyGetItemInput struct {
+	Filename string `json:"filename"`
+}
+
+type ProxyGetItemOutput struct {
+	Data []byte `json:"data"`
+	Key  []byte `json:"key"`
+}
+
+type ProxyDeleteItemInput struct {
+	Filename string `json:"filename"`
+}
+
+type ProxyStatusOutput struct {
+	Status string `json:"status"`
 }
 
 func NewKMSProxy(proxyConfig *ProxyConfig, logger *zap.Logger) (*KMSProxy, error) {
@@ -172,6 +196,50 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 			return nil, fmt.Errorf("KMS Decrypt failed: %v", err)
 		}
 		return json.Marshal(output)
+	case "StoreEncryptedItem":
+		var input ProxyStoreItemInput
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return nil, fmt.Errorf("invalid input: %v", err)
+		}
+		cacheFilename := "item-" + input.Filename
+		if err := os.WriteFile(cacheFilename, input.Data, 0600); err != nil {
+			return nil, fmt.Errorf("failed to store item: %v", err)
+		}
+		if err := os.WriteFile(cacheFilename+".key", input.Key, 0600); err != nil {
+			return nil, fmt.Errorf("failed to store key: %v", err)
+		}
+		return json.Marshal(ProxyStatusOutput{Status: "success"})
+	case "GetCachedItem":
+		var input ProxyGetItemInput
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return nil, fmt.Errorf("invalid input: %v", err)
+		}
+		cacheFilename := "item-" + input.Filename
+		data, err := os.ReadFile(cacheFilename)
+		if err != nil {
+			fmt.Println("item file not found", zap.String("filename", cacheFilename))
+			return json.Marshal(ProxyStatusOutput{Status: "not_found"})
+		}
+		key, err := os.ReadFile(cacheFilename + ".key")
+		if err != nil {
+			fmt.Println("key file not found", zap.String("filename", cacheFilename+".key"))
+			return json.Marshal(ProxyStatusOutput{Status: "not_found"})
+		}
+		resp := ProxyGetItemOutput{Data: data, Key: key}
+		return json.Marshal(resp)
+	case "DeleteCachedItem":
+		var input ProxyDeleteItemInput
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return nil, fmt.Errorf("invalid input: %v", err)
+		}
+		cacheFilename := "item-" + input.Filename
+		if err := os.Remove(cacheFilename); err != nil {
+			return nil, fmt.Errorf("failed to delete item file: %v", err)
+		}
+		if err := os.Remove(cacheFilename + ".key"); err != nil {
+			return nil, fmt.Errorf("failed to delete key file: %v", err)
+		}
+		return json.Marshal(ProxyStatusOutput{Status: "success"})
 
 	default:
 		return nil, fmt.Errorf("unsupported operation: %s", req.Operation)
