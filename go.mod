@@ -3,6 +3,8 @@ module tee-mpc
 go 1.24.2
 
 require (
+	github.com/austinast/nitro-enclaves-sdk-go v0.0.2
+	github.com/aws/aws-sdk-go-v2 v1.22.0
 	github.com/aws/aws-sdk-go-v2/config v1.20.0
 	github.com/aws/aws-sdk-go-v2/service/kms v1.25.0
 	github.com/google/uuid v1.6.0
@@ -14,7 +16,6 @@ require (
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.22.0 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.14.0 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.14.0 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.2.0 // indirect

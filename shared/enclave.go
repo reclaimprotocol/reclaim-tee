@@ -5,15 +5,16 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"sync"
+	"time"
 
 	"github.com/hf/nsm"
-	"github.com/hf/nsm/request"
 	"github.com/mdlayher/vsock"
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -39,8 +40,9 @@ type EnclaveHandle struct {
 }
 
 type MemoryCache struct {
-	mu    sync.RWMutex
-	items map[string][]byte
+	mu       sync.RWMutex
+	items    map[string][]byte
+	kmsKeyID string
 }
 
 func NewEnclaveServices(config *EnclaveConfig) (*EnclaveServices, error) {
@@ -51,7 +53,7 @@ func NewEnclaveServices(config *EnclaveConfig) (*EnclaveServices, error) {
 	}
 
 	// Initialize memory cache
-	cache := NewMemoryCache()
+	cache := NewMemoryCache(config.KMSKey)
 
 	// Initialize KMS client
 	kmsClient := NewKMSClient(config.ParentCID, config.KMSKey)
@@ -93,10 +95,48 @@ func (e *EnclaveServices) DialInternet(target string) (net.Conn, error) {
 }
 
 func createCertManager(config *EnclaveConfig, cache *MemoryCache) *autocert.Manager {
+
+	vsockTransport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			log.Printf("Attempting vsock connection to parent CID %d port %d for %s", enclaveVsockParentCID, enclaveVsockForwardPort, addr)
+			var conn net.Conn
+			var err error
+			for attempt := 1; attempt <= 3; attempt++ {
+				conn, err = vsock.Dial(enclaveVsockParentCID, uint32(enclaveVsockForwardPort), nil)
+				if err == nil {
+					break
+				}
+				log.Printf("Attempt %d/3: Failed to dial vsock for %s: %v", attempt, addr, err)
+				if attempt < 3 {
+					time.Sleep(eRetryDelay)
+				}
+			}
+			if err != nil {
+				log.Printf("Failed to connect to vsock after retries: %v", err)
+				return nil, err
+			}
+			log.Printf("Sending target %s to proxy", addr)
+			_, err = fmt.Fprintf(conn, "%s\n", addr)
+			if err != nil {
+				log.Printf("Failed to send target %s to proxy: %v", addr, err)
+				conn.Close()
+				return nil, err
+			}
+			return conn, nil
+		},
+		IdleConnTimeout: 30 * time.Second,
+	}
+
+	client := &http.Client{Transport: vsockTransport}
+
 	manager := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: autocert.HostWhitelist(config.Domain),
 		Cache:      cache,
+		Client: &acme.Client{
+			HTTPClient:   client,
+			DirectoryURL: config.ACMEURL,
+		},
 	}
 
 	return manager
@@ -130,59 +170,10 @@ func (e *EnclaveHandle) PrivateKey() *rsa.PrivateKey {
 	return e.key
 }
 
-func (e *EnclaveHandle) GenerateAttestation(userData []byte) ([]byte, error) {
-	// Generate NSM attestation document with user data
-	res, err := e.nsm.Send(&request.Attestation{
-		Nonce:     nil,
-		UserData:  userData,
-		PublicKey: nil,
-	})
+func MustGlobalHandle() *EnclaveHandle {
+	handle, err := GetOrInitializeHandle()
 	if err != nil {
-		return nil, fmt.Errorf("failed to send attestation request: %v", err)
+		panic(err)
 	}
-
-	if res.Error != "" {
-		return nil, errors.New(string(res.Error))
-	}
-
-	if res.Attestation == nil || res.Attestation.Document == nil {
-		return nil, errors.New("attestation response missing attestation document")
-	}
-
-	return res.Attestation.Document, nil
-}
-
-// Memory Cache implementation for autocert
-func NewMemoryCache() *MemoryCache {
-	return &MemoryCache{
-		items: make(map[string][]byte),
-	}
-}
-
-func (c *MemoryCache) Get(ctx context.Context, key string) ([]byte, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	data, exists := c.items[key]
-	if !exists {
-		return nil, autocert.ErrCacheMiss
-	}
-
-	return data, nil
-}
-
-func (c *MemoryCache) Put(ctx context.Context, key string, data []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.items[key] = data
-	return nil
-}
-
-func (c *MemoryCache) Delete(ctx context.Context, key string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	delete(c.items, key)
-	return nil
+	return handle
 }
