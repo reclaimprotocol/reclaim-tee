@@ -2,6 +2,7 @@ package shared
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
 	"errors"
 	"fmt"
@@ -97,6 +98,7 @@ func GetOrInitializeHandle() (*EnclaveHandle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open NSM session: %v", err)
 	}
+	rand.Reader = session
 
 	// Generate RSA key pair for attestation
 	key, err := rsa.GenerateKey(nil, 2048) // Using nil for random reader in enclave
