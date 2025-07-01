@@ -101,7 +101,7 @@ func GetOrInitializeHandle() (*EnclaveHandle, error) {
 	rand.Reader = session
 
 	// Generate RSA key pair for attestation
-	key, err := rsa.GenerateKey(nil, 2048) // Using nil for random reader in enclave
+	key, err := rsa.GenerateKey(rand.Reader, 2048) // Using nil for random reader in enclave
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate RSA key: %v", err)
 	}
