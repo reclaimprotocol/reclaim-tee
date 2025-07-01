@@ -11,8 +11,8 @@ COPY minitls/ /app/minitls/
 
 # Copy TEE_T source files
 COPY tee_t/*.go /app/tee_t/
-COPY tee_t/go.mod /app/tee_t/go.mod
-COPY tee_t/go.sum /app/tee_t/go.sum
+COPY go.mod /app/go.mod
+COPY go.sum /app/go.sum
 
 WORKDIR /app/tee_t
 
@@ -32,7 +32,7 @@ ENV TEE_DOMAIN=tee-t.reclaimprotocol.org
 ENV HTTP_PORT=8080
 ENV HTTPS_PORT=8443
 ENV PARENT_CID=3
-ENV KMS_KEY=kms_key
+ENV KMS_KEY=$kms_key
 
 # Set entrypoint
 CMD ["./tee_t_enclave"] 
