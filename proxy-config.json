@@ -1,0 +1,21 @@
+{
+  "domains": {
+    "tee-k.reclaimprotocol.org": {
+      "cid": 16,
+      "kms_key": "arn:aws:kms:ap-south-1:342772716647:key/tee-k-unique-key"
+    },
+    "tee-t.reclaimprotocol.org": {
+      "cid": 17,
+      "kms_key": "arn:aws:kms:ap-south-1:342772716647:key/tee-t-unique-key"
+    }
+  },
+  "aws": {
+    "region": "ap-south-1"
+  },
+  "ports": {
+    "http": 80,
+    "https": 443,
+    "kms": 5000,
+    "internet": 8444
+  }
+} 

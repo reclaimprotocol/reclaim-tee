@@ -1,0 +1,702 @@
+package minitls
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/binary"
+	"fmt"
+
+	"hash"
+
+	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/crypto/hkdf"
+)
+
+// TLS 1.3 Key Schedule
+type KeySchedule struct {
+	cipherSuite     uint16
+	sharedSecret    []byte
+	handshakeHash   []byte
+	handshakeSecret []byte
+
+	// Handshake keys
+	clientHandshakeKey []byte
+	clientHandshakeIV  []byte
+	serverHandshakeKey []byte
+	serverHandshakeIV  []byte
+
+	// Finished keys
+	clientFinishedKey []byte
+	serverFinishedKey []byte
+
+	// Application keys
+	clientAppKey []byte
+	clientAppIV  []byte
+	serverAppKey []byte
+	serverAppIV  []byte
+}
+
+// NewKeySchedule creates a new key schedule with the given parameters
+func NewKeySchedule(cipherSuite uint16, sharedSecret []byte, transcript []byte) *KeySchedule {
+	// Calculate initial handshake hash from transcript
+	ks := &KeySchedule{
+		cipherSuite:  cipherSuite,
+		sharedSecret: sharedSecret,
+	}
+
+	// Hash the transcript to get handshake hash
+	hasher := ks.getHashFunc()()
+	hasher.Write(transcript)
+	ks.handshakeHash = hasher.Sum(nil)
+
+	// fmt.Printf("KeySchedule initialized: cipher=0x%04x, transcript=%d bytes, hash=%d bytes\n",
+	//	cipherSuite, len(transcript), len(ks.handshakeHash))
+
+	return ks
+}
+
+func (ks *KeySchedule) getHashFunc() func() hash.Hash {
+	switch ks.cipherSuite {
+	case TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256:
+		return sha256.New
+	case TLS_AES_256_GCM_SHA384:
+		return sha512.New384
+	default:
+		return sha256.New
+	}
+}
+
+func (ks *KeySchedule) getHashSize() int {
+	switch ks.cipherSuite {
+	case TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256:
+		return 32
+	case TLS_AES_256_GCM_SHA384:
+		return 48
+	default:
+		return 32
+	}
+}
+
+// DeriveHandshakeKeys derives the handshake encryption keys
+func (ks *KeySchedule) DeriveHandshakeKeys() error {
+	var keyLen, ivLen int
+	hashSize := ks.getHashSize()
+
+	// fmt.Printf("DeriveHandshakeKeys: cipher=0x%04x, hashSize=%d\n", ks.cipherSuite, hashSize)
+
+	// Determine key and IV lengths based on cipher suite
+	switch ks.cipherSuite {
+	case TLS_AES_128_GCM_SHA256:
+		keyLen, ivLen = 16, 12
+	case TLS_AES_256_GCM_SHA384:
+		keyLen, ivLen = 32, 12
+	case TLS_CHACHA20_POLY1305_SHA256:
+		keyLen, ivLen = 32, 12
+	default:
+		return fmt.Errorf("unsupported cipher suite: 0x%04x", ks.cipherSuite)
+	}
+
+	// fmt.Printf("Key/IV lengths: keyLen=%d, ivLen=%d\n", keyLen, ivLen)
+
+	// TLS 1.3 key schedule:
+	// Early Secret = HKDF-Extract(0, 0)
+	// dHS = HKDF-Expand-Label(Early Secret, "derived", Hash(""), Hash.length)
+	// Handshake Secret = HKDF-Extract(dHS, ECDHE)
+	// [sender]_handshake_traffic_secret = HKDF-Expand-Label(Handshake Secret, "[sender] hs traffic", ClientHello...ServerHello, Hash.length)
+
+	// Step 1: Early Secret = HKDF-Extract(salt=0, ikm=0)
+	earlySecret := ks.hkdfExtract(nil, make([]byte, hashSize))
+	// fmt.Printf("Early secret (%d bytes): %x\n", len(earlySecret), earlySecret)
+
+	// Step 2: Derive handshake secret
+	// dHS = HKDF-Expand-Label(Early Secret, "derived", Hash(""), Hash.length)
+	emptyHash := ks.getHashFunc()().Sum(nil)
+	derivedSecret := ks.hkdfExpandLabel(earlySecret, "derived", emptyHash, hashSize)
+	// fmt.Printf("Derived secret (%d bytes): %x\n", len(derivedSecret), derivedSecret)
+
+	// Handshake Secret = HKDF-Extract(dHS, shared_secret)
+	handshakeSecret := ks.hkdfExtract(derivedSecret, ks.sharedSecret)
+	ks.handshakeSecret = handshakeSecret
+	// fmt.Printf("Handshake secret (%d bytes): %x\n", len(handshakeSecret), handshakeSecret)
+
+	// Step 3: Derive traffic secrets
+	// client_handshake_traffic_secret = HKDF-Expand-Label(Handshake Secret, "c hs traffic", handshake_hash, Hash.length)
+	clientTrafficSecret := ks.hkdfExpandLabel(handshakeSecret, "c hs traffic", ks.handshakeHash, hashSize)
+	// fmt.Printf("Client handshake traffic secret (%d bytes): %x\n", len(clientTrafficSecret), clientTrafficSecret)
+
+	// server_handshake_traffic_secret = HKDF-Expand-Label(Handshake Secret, "s hs traffic", handshake_hash, Hash.length)
+	serverTrafficSecret := ks.hkdfExpandLabel(handshakeSecret, "s hs traffic", ks.handshakeHash, hashSize)
+	// fmt.Printf("Server handshake traffic secret (%d bytes): %x\n", len(serverTrafficSecret), serverTrafficSecret)
+
+	// Step 4: Derive finished keys and store them
+	ks.clientFinishedKey = ks.hkdfExpandLabel(clientTrafficSecret, "finished", nil, hashSize)
+	ks.serverFinishedKey = ks.hkdfExpandLabel(serverTrafficSecret, "finished", nil, hashSize)
+	// fmt.Printf("Server finished key (%d bytes): %x\n", len(ks.serverFinishedKey), ks.serverFinishedKey)
+
+	// Step 5: Derive keys and IVs
+	ks.clientHandshakeKey = ks.hkdfExpandLabel(clientTrafficSecret, "key", nil, keyLen)
+	ks.clientHandshakeIV = ks.hkdfExpandLabel(clientTrafficSecret, "iv", nil, ivLen)
+	ks.serverHandshakeKey = ks.hkdfExpandLabel(serverTrafficSecret, "key", nil, keyLen)
+	ks.serverHandshakeIV = ks.hkdfExpandLabel(serverTrafficSecret, "iv", nil, ivLen)
+
+	// fmt.Printf("Final handshake keys derived:\n")
+	// fmt.Printf(" Client key (%d bytes): %x\n", len(ks.clientHandshakeKey), ks.clientHandshakeKey)
+	// fmt.Printf(" Client IV (%d bytes): %x\n", len(ks.clientHandshakeIV), ks.clientHandshakeIV)
+	// fmt.Printf(" Server key (%d bytes): %x\n", len(ks.serverHandshakeKey), ks.serverHandshakeKey)
+	// fmt.Printf(" Server IV (%d bytes): %x\n", len(ks.serverHandshakeIV), ks.serverHandshakeIV)
+
+	return nil
+}
+
+// DeriveApplicationKeys derives the application data encryption keys
+func (ks *KeySchedule) DeriveApplicationKeys(transcriptHash []byte) error {
+	var keyLen, ivLen int
+	hashSize := ks.getHashSize()
+
+	// Determine key and IV lengths
+	switch ks.cipherSuite {
+	case TLS_AES_128_GCM_SHA256:
+		keyLen, ivLen = 16, 12
+	case TLS_AES_256_GCM_SHA384:
+		keyLen, ivLen = 32, 12
+	case TLS_CHACHA20_POLY1305_SHA256:
+		keyLen, ivLen = 32, 12
+	default:
+		return fmt.Errorf("unsupported cipher suite: 0x%04x", ks.cipherSuite)
+	}
+
+	if ks.handshakeSecret == nil {
+		return fmt.Errorf("handshake secret not derived or stored")
+	}
+
+	// Derive master secret from the stored handshake secret
+	// dMS = HKDF-Expand-Label(Handshake Secret, "derived", Hash(""), Hash.length)
+	emptyHash := ks.getHashFunc()().Sum(nil)
+	derivedMasterSecret := ks.hkdfExpandLabel(ks.handshakeSecret, "derived", emptyHash, hashSize)
+	masterSecret := ks.hkdfExtract(derivedMasterSecret, make([]byte, hashSize))
+
+	// Derive application traffic secrets using the full transcript hash
+	clientAppTrafficSecret := ks.hkdfExpandLabel(masterSecret, "c ap traffic", transcriptHash, hashSize)
+	serverAppTrafficSecret := ks.hkdfExpandLabel(masterSecret, "s ap traffic", transcriptHash, hashSize)
+
+	// Derive application keys and IVs
+	ks.clientAppKey = ks.hkdfExpandLabel(clientAppTrafficSecret, "key", nil, keyLen)
+	ks.clientAppIV = ks.hkdfExpandLabel(clientAppTrafficSecret, "iv", nil, ivLen)
+	ks.serverAppKey = ks.hkdfExpandLabel(serverAppTrafficSecret, "key", nil, keyLen)
+	ks.serverAppIV = ks.hkdfExpandLabel(serverAppTrafficSecret, "iv", nil, ivLen)
+
+	// fmt.Printf("Application keys derived:\n")
+	// fmt.Printf(" Client app key (%d bytes): %x\n", len(ks.clientAppKey), ks.clientAppKey)
+	// fmt.Printf(" Server app key (%d bytes): %x\n", len(ks.serverAppKey), ks.serverAppKey)
+
+	return nil
+}
+
+// CreateServerHandshakeAEAD creates an AEAD for decrypting server handshake messages
+func (ks *KeySchedule) CreateServerHandshakeAEAD() (*AEAD, error) {
+	return NewAEAD(ks.serverHandshakeKey, ks.serverHandshakeIV, ks.cipherSuite)
+}
+
+// CreateClientHandshakeAEAD creates an AEAD for encrypting client handshake messages
+func (ks *KeySchedule) CreateClientHandshakeAEAD() (*AEAD, error) {
+	return NewAEAD(ks.clientHandshakeKey, ks.clientHandshakeIV, ks.cipherSuite)
+}
+
+// CreateClientApplicationAEAD creates an AEAD for encrypting client application data
+func (ks *KeySchedule) CreateClientApplicationAEAD() (*AEAD, error) {
+	aead, err := NewAEAD(ks.clientAppKey, ks.clientAppIV, ks.cipherSuite)
+	if err != nil {
+		return nil, err
+	}
+	// Application data sequence numbers start fresh at 0
+	aead.seq = 0
+	// fmt.Printf("Created client application AEAD with sequence starting at 0\n")
+	return aead, nil
+}
+
+// CreateServerApplicationAEAD creates an AEAD for decrypting server application data
+func (ks *KeySchedule) CreateServerApplicationAEAD() (*AEAD, error) {
+	aead, err := NewAEAD(ks.serverAppKey, ks.serverAppIV, ks.cipherSuite)
+	if err != nil {
+		return nil, err
+	}
+	// Application data sequence numbers start fresh at 0
+	aead.seq = 0
+	// fmt.Printf("Created server application AEAD with sequence starting at 0\n")
+	return aead, nil
+}
+
+// HKDF-Extract for TLS 1.3
+func (ks *KeySchedule) hkdfExtract(salt, ikm []byte) []byte {
+	if salt == nil {
+		salt = make([]byte, ks.getHashSize())
+	}
+	return hkdf.Extract(ks.getHashFunc(), ikm, salt)
+}
+
+// HKDF-Expand-Label for TLS 1.3
+func (ks *KeySchedule) hkdfExpandLabel(secret []byte, label string, context []byte, length int) []byte {
+	hkdfLabel := make([]byte, 0, 2+1+len("tls13 ")+len(label)+1+len(context))
+	hkdfLabel = append(hkdfLabel, byte(length>>8), byte(length))
+	hkdfLabel = append(hkdfLabel, byte(len("tls13 ")+len(label)))
+	hkdfLabel = append(hkdfLabel, "tls13 "...)
+	hkdfLabel = append(hkdfLabel, label...)
+	hkdfLabel = append(hkdfLabel, byte(len(context)))
+	hkdfLabel = append(hkdfLabel, context...)
+
+	reader := hkdf.Expand(ks.getHashFunc(), secret, hkdfLabel)
+	result := make([]byte, length)
+	reader.Read(result)
+
+	// fmt.Printf(" Result (%d bytes): %x\n", len(result), result)
+	return result
+}
+
+// AEAD provides authenticated encryption with associated data
+type AEAD struct {
+	aead cipher.AEAD
+	iv   []byte
+	seq  uint64
+}
+
+// NewAEAD creates a new AEAD instance
+func NewAEAD(key, iv []byte, cipherSuite uint16) (*AEAD, error) {
+	var aead cipher.AEAD
+	var err error
+
+	// Select cipher based on TLS cipher suite, not just key length
+	switch cipherSuite {
+	case TLS_AES_128_GCM_SHA256:
+		// AES-128-GCM
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			return nil, err
+		}
+		aead, err = cipher.NewGCM(block)
+		if err != nil {
+			return nil, err
+		}
+		// fmt.Printf("Using AES-128-GCM for cipher suite 0x%04x\n", cipherSuite)
+
+	case TLS_AES_256_GCM_SHA384:
+		// AES-256-GCM (force this, don't use ChaCha20)
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			return nil, err
+		}
+		aead, err = cipher.NewGCM(block)
+		if err != nil {
+			return nil, err
+		}
+		// fmt.Printf("Using AES-256-GCM for cipher suite 0x%04x\n", cipherSuite)
+
+	case TLS_CHACHA20_POLY1305_SHA256:
+		// ChaCha20-Poly1305
+		aead, err = chacha20poly1305.New(key)
+		if err != nil {
+			return nil, err
+		}
+		// fmt.Printf("Using ChaCha20-Poly1305 for cipher suite 0x%04x\n", cipherSuite)
+
+	default:
+		return nil, fmt.Errorf("unsupported cipher suite: 0x%04x", cipherSuite)
+	}
+
+	return &AEAD{
+		aead: aead,
+		iv:   iv,
+		seq:  0,
+	}, nil
+}
+
+func (a *AEAD) Encrypt(plaintext, additionalData []byte) []byte {
+	nonce := make([]byte, len(a.iv))
+	copy(nonce, a.iv)
+
+	// XOR sequence number into nonce
+	for i := 0; i < 8; i++ {
+		nonce[len(nonce)-1-i] ^= byte(a.seq >> (8 * i))
+	}
+
+	// fmt.Printf("AEAD Encrypt: seq=%d, nonce=%x, iv=%x\n", a.seq, nonce, a.iv)
+	// fmt.Printf(" Additional data: %x\n", additionalData)
+	// fmt.Printf(" Plaintext length: %d\n", len(plaintext))
+
+	ciphertext := a.aead.Seal(nil, nonce, plaintext, additionalData)
+	a.seq++
+	return ciphertext
+}
+
+func (a *AEAD) Decrypt(ciphertext, additionalData []byte) ([]byte, error) {
+	nonce := make([]byte, len(a.iv))
+	copy(nonce, a.iv)
+
+	// XOR sequence number into nonce
+	for i := 0; i < 8; i++ {
+		nonce[len(nonce)-1-i] ^= byte(a.seq >> (8 * i))
+	}
+
+	// fmt.Printf("AEAD Decrypt: seq=%d, nonce=%x, iv=%x\n", a.seq, nonce, a.iv)
+	// fmt.Printf(" Additional data: %x\n", additionalData)
+	// fmt.Printf(" Ciphertext length: %d\n", len(ciphertext))
+
+	plaintext, err := a.aead.Open(nil, nonce, ciphertext, additionalData)
+	if err != nil {
+		return nil, err
+	}
+
+	a.seq++
+	return plaintext, nil
+}
+
+// GetSequence returns the current sequence number of the AEAD
+func (a *AEAD) GetSequence() uint64 {
+	return a.seq
+}
+
+// CalculateServerFinishedVerifyData calculates the expected verify_data for server Finished message
+func (ks *KeySchedule) CalculateServerFinishedVerifyData(transcriptHash []byte) ([]byte, error) {
+	if ks.serverFinishedKey == nil {
+		return nil, fmt.Errorf("server finished key not derived")
+	}
+
+	// Calculate HMAC(finished_key, transcript_hash)
+	mac := hmac.New(ks.getHashFunc(), ks.serverFinishedKey)
+	mac.Write(transcriptHash)
+	verifyData := mac.Sum(nil)
+
+	// fmt.Printf(" Calculated verify_data (%d bytes): %x\n", len(verifyData), verifyData)
+
+	return verifyData, nil
+}
+
+// CalculateClientFinishedVerifyData calculates the expected verify_data for the client's Finished message
+func (ks *KeySchedule) CalculateClientFinishedVerifyData(transcriptHash []byte) ([]byte, error) {
+	if ks.clientFinishedKey == nil {
+		return nil, fmt.Errorf("client finished key not derived")
+	}
+
+	// Calculate HMAC(finished_key, transcript_hash)
+	mac := hmac.New(ks.getHashFunc(), ks.clientFinishedKey)
+	mac.Write(transcriptHash)
+	verifyData := mac.Sum(nil)
+
+	// fmt.Printf(" Calculated client verify_data (%d bytes): %x\n", len(verifyData), verifyData)
+
+	return verifyData, nil
+}
+
+// Phase 2: Split AEAD Implementation for TEE_K/TEE_T Protocol
+
+// SplitAEAD represents split AEAD implementation for TEE_K/TEE_T protocol
+type SplitAEAD struct {
+	key         []byte
+	iv          []byte
+	cipherSuite uint16
+	seq         uint64
+}
+
+// NewSplitAEAD creates a new split AEAD instance for TEE_K
+func NewSplitAEAD(key, iv []byte, cipherSuite uint16) *SplitAEAD {
+	return &SplitAEAD{
+		key:         key,
+		iv:          iv,
+		cipherSuite: cipherSuite,
+		seq:         0,
+	}
+}
+
+// EncryptWithoutTag encrypts plaintext but doesn't compute the tag (TEE_K responsibility)
+func (sa *SplitAEAD) EncryptWithoutTag(plaintext, additionalData []byte) ([]byte, []byte, error) {
+	nonce := make([]byte, len(sa.iv))
+	copy(nonce, sa.iv)
+
+	// XOR sequence number into nonce
+	for i := 0; i < 8; i++ {
+		nonce[len(nonce)-1-i] ^= byte(sa.seq >> (8 * i))
+	}
+
+	var ciphertext []byte
+	var tagSecrets []byte
+
+	switch sa.cipherSuite {
+	case TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384:
+		// AES-GCM case: split AEAD - encrypt with CTR mode, let TEE_T compute GCM tag
+		block, err := aes.NewCipher(sa.key)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// For AES-CTR, we need 16-byte IV. TLS 1.3 uses 12-byte IV, so pad with 4 bytes counter
+		// GCM nonce format: IV (12 bytes) || counter (4 bytes) starting with 1
+		ctrNonce := make([]byte, 16)
+		copy(ctrNonce, nonce) // Copy 12-byte TLS nonce
+		// Set counter to 1 (big-endian) in the last 4 bytes
+		ctrNonce[15] = 1
+
+		// Encrypt plaintext using AES-CTR mode (GCM encryption without tag)
+		stream := cipher.NewCTR(block, ctrNonce)
+		ciphertext = make([]byte, len(plaintext))
+		stream.XORKeyStream(ciphertext, plaintext)
+
+		// Generate tag computation material for AES-GCM:
+		// This provides TEE_T with the secrets needed to compute the GCM tag
+		tagSecrets = sa.generateGCMTagSecrets(block, nonce)
+
+	case TLS_CHACHA20_POLY1305_SHA256:
+		// ChaCha20-Poly1305 case: encrypt with ChaCha20, generate Poly1305 key material
+		aead, err := chacha20poly1305.New(sa.key)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// For now, use full encryption and split - in real implementation would use ChaCha20 stream directly
+		fullCiphertext := aead.Seal(nil, nonce, plaintext, additionalData)
+
+		// Split ciphertext and tag (tag is last 16 bytes for Poly1305)
+		tagSize := aead.Overhead()
+		if len(fullCiphertext) < tagSize {
+			return nil, nil, fmt.Errorf("ciphertext too short")
+		}
+
+		ciphertext = fullCiphertext[:len(fullCiphertext)-tagSize]
+
+		// Generate tag computation material for ChaCha20-Poly1305:
+		// First 32 bytes of the Stream Block derived using key K, nonce N and counter 0
+		tagSecrets = sa.generateChaChaTagSecrets(nonce)
+
+	default:
+		return nil, nil, fmt.Errorf("unsupported cipher suite for split AEAD: 0x%04x", sa.cipherSuite)
+	}
+
+	sa.seq++
+	// fmt.Printf("SplitAEAD Encrypt: cipher=0x%04x, seq=%d, ciphertext=%d bytes, tagSecrets=%d bytes\n",
+	//	sa.cipherSuite, sa.seq-1, len(ciphertext), len(tagSecrets))
+
+	return ciphertext, tagSecrets, nil
+}
+
+// SetSequence sets the sequence number for the SplitAEAD
+func (sa *SplitAEAD) SetSequence(seq uint64) {
+	sa.seq = seq
+}
+
+// generateGCMTagSecrets generates tag computation material for AES-GCM
+// Returns E_K(0^{128}) and E_K(IV || 0^{31} || 1)
+func (sa *SplitAEAD) generateGCMTagSecrets(block cipher.Block, nonce []byte) []byte {
+	secrets := make([]byte, 32) // 16 bytes for each encryption
+
+	// E_K(0^{128}) - encrypt block of zeros
+	zeros := make([]byte, 16)
+	block.Encrypt(secrets[0:16], zeros)
+
+	// E_K(IV || 0^{31} || 1) - encrypt nonce padded with zeros and ending with 1
+	// For GCM, this is the initial counter block
+	counterBlock := make([]byte, 16)
+	copy(counterBlock, nonce[:min(len(nonce), 12)]) // Copy up to 12 bytes of nonce
+	counterBlock[15] = 1                            // Set counter to 1
+	block.Encrypt(secrets[16:32], counterBlock)
+
+	// fmt.Printf("GCM Tag Secrets: E_K(0^128)=%x, E_K(nonce||counter=1)=%x\n",
+	//	secrets[0:16], secrets[16:32])
+
+	return secrets
+}
+
+// generateChaChaTagSecrets generates tag computation material for ChaCha20-Poly1305
+// Returns first 32 bytes of the Stream Block derived using key K, nonce N and counter 0
+func (sa *SplitAEAD) generateChaChaTagSecrets(nonce []byte) []byte {
+	// For ChaCha20-Poly1305, we need the first 32 bytes of the stream block
+	// This is used for Poly1305 key derivation
+
+	// Create ChaCha20 stream and get first 32 bytes
+	// This is a simplified version - in real implementation would use ChaCha20 stream directly
+	secrets := make([]byte, 32)
+
+	// Use the key and nonce to generate stream bytes
+	// For now, we'll use a simplified approach
+	for i := 0; i < 32; i++ {
+		secrets[i] = sa.key[i%len(sa.key)] ^ nonce[i%len(nonce)] ^ byte(i)
+	}
+
+	// fmt.Printf("ChaCha20 Tag Secrets (32 bytes): %x\n", secrets)
+
+	return secrets
+}
+
+// ComputeTagFromSecrets computes GCM authentication tag using proper GHASH (TEE_T responsibility)
+func ComputeTagFromSecrets(ciphertext, tagSecrets []byte, cipherSuite uint16, additionalData []byte) ([]byte, error) {
+	switch cipherSuite {
+	case TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384:
+		// Extract E_K(0^128) and E_K(IV || 0^31 || 1) from tag secrets
+		if len(tagSecrets) != 32 {
+			return nil, fmt.Errorf("tag secrets wrong size: got %d, need 32", len(tagSecrets))
+		}
+
+		// E_K(0^128) - GHASH key H (first 16 bytes)
+		var ghashKey [16]byte
+		copy(ghashKey[:], tagSecrets[0:16])
+
+		// E_K(IV || 0^31 || 1) - encrypted counter block (second 16 bytes)
+		encryptedCounter := tagSecrets[16:32]
+
+		// Step 1: Prepare GHASH input: AAD, Ciphertext, len(AAD) || len(Ciphertext) as SEPARATE slices
+		// All lengths are in bits, encoded as 64-bit big-endian
+		aadBitLen := uint64(len(additionalData)) * 8
+		ciphertextBitLen := uint64(len(ciphertext)) * 8
+
+		// Create the length block (64-bit big-endian each)
+		lengthBlock := make([]byte, 16)
+		binary.BigEndian.PutUint64(lengthBlock[0:8], aadBitLen)
+		binary.BigEndian.PutUint64(lengthBlock[8:16], ciphertextBitLen)
+
+		// *** CRITICAL FIX: Call GHASH with separate slices like Go's standard implementation ***
+		ghashResult := ghash(&ghashKey, additionalData, ciphertext, lengthBlock)
+
+		// Step 3: Final GCM tag = GHASH ⊕ E_K(IV || 0^31 || 1)
+		tag := make([]byte, 16)
+		for i := 0; i < 16; i++ {
+			tag[i] = ghashResult[i] ^ encryptedCounter[i]
+		}
+
+		return tag, nil
+
+	case TLS_CHACHA20_POLY1305_SHA256:
+		return nil, fmt.Errorf("ChaCha20-Poly1305 split AEAD not yet implemented")
+
+	default:
+		return nil, fmt.Errorf("unsupported cipher suite for tag computation: 0x%04x", cipherSuite)
+	}
+}
+
+// gcmFieldElement represents a value in GF(2^128) for GHASH computation
+type gcmFieldElement struct {
+	low, high uint64
+}
+
+// ghash implements GHASH using the algorithm from Go's crypto library
+// Adapted from https://raw.githubusercontent.com/golang/go/refs/heads/master/src/crypto/internal/fips140/aes/gcm/ghash.go
+func ghash(key *[16]byte, data ...[]byte) []byte {
+	var out [16]byte
+
+	// Convert key to field element
+	x := gcmFieldElement{
+		binary.BigEndian.Uint64(key[:8]),
+		binary.BigEndian.Uint64(key[8:]),
+	}
+
+	// Precompute multiplication table for efficiency
+	var productTable [16]gcmFieldElement
+	productTable[reverseBits(1)] = x
+	for i := 2; i < 16; i += 2 {
+		productTable[reverseBits(i)] = ghashDouble(&productTable[reverseBits(i/2)])
+		productTable[reverseBits(i+1)] = ghashAdd(&productTable[reverseBits(i)], &x)
+	}
+
+	var y gcmFieldElement
+	// Process each data slice separately (like Go's standard implementation)
+	for _, slice := range data {
+		ghashUpdate(&productTable, &y, slice)
+	}
+
+	binary.BigEndian.PutUint64(out[:8], y.low)
+	binary.BigEndian.PutUint64(out[8:], y.high)
+
+	return out[:]
+}
+
+// Helper functions for GHASH (from Go's crypto library)
+func reverseBits(i int) int {
+	i = ((i << 2) & 0xc) | ((i >> 2) & 0x3)
+	i = ((i << 1) & 0xa) | ((i >> 1) & 0x5)
+	return i
+}
+
+func ghashAdd(x, y *gcmFieldElement) gcmFieldElement {
+	return gcmFieldElement{x.low ^ y.low, x.high ^ y.high}
+}
+
+func ghashDouble(x *gcmFieldElement) (double gcmFieldElement) {
+	msbSet := x.high&1 == 1
+	double.high = x.high >> 1
+	double.high |= x.low << 63
+	double.low = x.low >> 1
+
+	if msbSet {
+		double.low ^= 0xe100000000000000
+	}
+	return
+}
+
+var ghashReductionTable = []uint16{
+	0x0000, 0x1c20, 0x3840, 0x2460, 0x7080, 0x6ca0, 0x48c0, 0x54e0,
+	0xe100, 0xfd20, 0xd940, 0xc560, 0x9180, 0x8da0, 0xa9c0, 0xb5e0,
+}
+
+func ghashMul(productTable *[16]gcmFieldElement, y *gcmFieldElement) {
+	var z gcmFieldElement
+	for i := 0; i < 2; i++ {
+		word := y.high
+		if i == 1 {
+			word = y.low
+		}
+
+		for j := 0; j < 64; j += 4 {
+			msw := z.high & 0xf
+			z.high >>= 4
+			z.high |= z.low << 60
+			z.low >>= 4
+			z.low ^= uint64(ghashReductionTable[msw]) << 48
+
+			t := productTable[word&0xf]
+			z.low ^= t.low
+			z.high ^= t.high
+			word >>= 4
+		}
+	}
+	*y = z
+}
+
+func ghashUpdate(productTable *[16]gcmFieldElement, y *gcmFieldElement, data []byte) {
+	const gcmBlockSize = 16
+
+	// Process full 16-byte blocks
+	for len(data) >= gcmBlockSize {
+		y.low ^= binary.BigEndian.Uint64(data[:8])
+		y.high ^= binary.BigEndian.Uint64(data[8:16])
+		ghashMul(productTable, y)
+		data = data[gcmBlockSize:]
+	}
+
+	// Process remaining bytes (zero-padded)
+	if len(data) > 0 {
+		var block [gcmBlockSize]byte
+		copy(block[:], data)
+		y.low ^= binary.BigEndian.Uint64(block[:8])
+		y.high ^= binary.BigEndian.Uint64(block[8:16])
+		ghashMul(productTable, y)
+	}
+}
+
+// GetClientApplicationKey returns the client application key for split AEAD
+func (ks *KeySchedule) GetClientApplicationKey() []byte {
+	return ks.clientAppKey
+}
+
+// GetClientApplicationIV returns the client application IV for split AEAD
+func (ks *KeySchedule) GetClientApplicationIV() []byte {
+	return ks.clientAppIV
+}
+
+// GetServerApplicationKey returns the server application key for split AEAD
+func (ks *KeySchedule) GetServerApplicationKey() []byte {
+	return ks.serverAppKey
+}
+
+// GetServerApplicationIV returns the server application IV for split AEAD
+func (ks *KeySchedule) GetServerApplicationIV() []byte {
+	return ks.serverAppIV
+}

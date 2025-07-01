@@ -1,0 +1,37 @@
+FROM golang:alpine AS app-builder
+ENV CGO_ENABLED=0
+RUN apk add --no-cache --update ca-certificates
+WORKDIR /app
+
+# Copy shared dependencies first
+COPY shared/ /app/shared/
+
+# Copy TEE_K source files
+COPY tee_k/*.go /app/tee_k/
+COPY tee_k/go.mod /app/tee_k/go.mod
+COPY tee_k/go.sum /app/tee_k/go.sum
+
+# Copy minitls dependency
+COPY minitls/ /app/minitls/
+
+WORKDIR /app/tee_k
+
+# Build TEE_K enclave binary
+RUN go build --ldflags '-s -w -extldflags=-static' -tags 'enclave osusergo netgo static_build' -o tee_k_enclave .
+
+FROM scratch
+
+# Copy CA certificates
+COPY --from=app-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# Copy TEE_K enclave binary
+COPY --from=app-builder /app/tee_k/tee_k_enclave .
+
+# Set environment for enclave mode
+ENV ENCLAVE_MODE=true
+ENV TEE_DOMAIN=tee-k.reclaimprotocol.org
+ENV HTTP_PORT=8080
+ENV HTTPS_PORT=8443
+ENV PARENT_CID=3
+
+# Set entrypoint
+CMD ["./tee_k_enclave"] 
