@@ -3,16 +3,16 @@ ENV CGO_ENABLED=0
 RUN apk add --no-cache --update ca-certificates
 WORKDIR /app
 
+ARG kms_key
+
 # Copy shared dependencies first
 COPY shared/ /app/shared/
+COPY minitls/ /app/minitls/
 
 # Copy TEE_T source files
 COPY tee_t/*.go /app/tee_t/
 COPY tee_t/go.mod /app/tee_t/go.mod
 COPY tee_t/go.sum /app/tee_t/go.sum
-
-# Copy minitls dependency
-COPY minitls/ /app/minitls/
 
 WORKDIR /app/tee_t
 
@@ -32,6 +32,7 @@ ENV TEE_DOMAIN=tee-t.reclaimprotocol.org
 ENV HTTP_PORT=8080
 ENV HTTPS_PORT=8443
 ENV PARENT_CID=3
+ENV KMS_KEY=kms_key
 
 # Set entrypoint
 CMD ["./tee_t_enclave"] 
