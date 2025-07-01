@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -92,9 +93,6 @@ func (t *TEETEnclave) Start() error {
 func (t *TEETEnclave) startHTTPServer() error {
 	mux := http.NewServeMux()
 
-	// ACME challenge handler
-	mux.Handle("/.well-known/acme-challenge/", t.services.CertManager.HTTPHandler(nil))
-
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -102,9 +100,13 @@ func (t *TEETEnclave) startHTTPServer() error {
 	})
 
 	t.httpServer = &http.Server{
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Handler:           t.services.CertManager.HTTPHandler(mux),
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		// Enable connection reuse for TCP reverse proxy
+		DisableGeneralOptionsHandler: false,
 	}
 
 	listener, err := vsock.Listen(uint32(t.config.HTTPPort), nil)
@@ -114,7 +116,7 @@ func (t *TEETEnclave) startHTTPServer() error {
 
 	go func() {
 		log.Printf("[TEE_T Enclave] HTTP server listening on VSock port %d", t.config.HTTPPort)
-		if err := t.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := t.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("[TEE_T Enclave] HTTP server error: %v", err)
 		}
 	}()
@@ -133,10 +135,12 @@ func (t *TEETEnclave) startHTTPSServer() error {
 	})
 
 	t.httpsServer = &http.Server{
-		Handler:      mux,
-		TLSConfig:    t.services.CertManager.TLSConfig(),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Handler:           mux,
+		TLSConfig:         t.services.CertManager.TLSConfig(),
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	listener, err := vsock.Listen(uint32(t.config.HTTPSPort), nil)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/tls"
 	"fmt"
 	"log"
 	"net"
@@ -47,10 +46,7 @@ type MemoryCache struct {
 
 func NewEnclaveServices(config *EnclaveConfig) (*EnclaveServices, error) {
 	// Initialize NSM handle
-	handle, err := GetOrInitializeHandle()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize NSM handle: %v", err)
-	}
+	handle := MustGlobalHandle()
 
 	// Initialize memory cache
 	cache := NewMemoryCache(config.KMSKey)
@@ -60,14 +56,6 @@ func NewEnclaveServices(config *EnclaveConfig) (*EnclaveServices, error) {
 
 	// Initialize certificate manager
 	certManager := createCertManager(config, cache)
-
-	log.Printf("Attempting to load or issue certificate for %s", config.Domain)
-	_, err = certManager.GetCertificate(&tls.ClientHelloInfo{ServerName: config.Domain})
-	if err != nil {
-		log.Printf("Failed to load or issue certificate on startup: %v", err)
-	} else {
-		log.Printf("Successfully loaded or issued certificate for %s", config.Domain)
-	}
 
 	return &EnclaveServices{
 		Handle:      handle,

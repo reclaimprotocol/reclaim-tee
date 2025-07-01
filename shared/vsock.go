@@ -118,7 +118,6 @@ type (
 )
 
 func NewVSockPool(maxIdle, maxActive int) *VSockPool {
-	log.Printf("Creating new VSock connection pool: maxIdle=%d, maxActive=%d", maxIdle, maxActive)
 	pool := &VSockPool{
 		connections: make(chan net.Conn, maxIdle),
 		maxIdle:     maxIdle,
@@ -155,12 +154,9 @@ func NewVSockPool(maxIdle, maxActive int) *VSockPool {
 }
 
 func (p *VSockPool) Get(ctx context.Context) (net.Conn, error) {
-	poolSize := len(p.connections)
-	log.Printf("Getting connection from pool (current pool size: %d/%d)", poolSize, p.maxIdle)
 
 	select {
 	case conn := <-p.connections:
-		log.Printf("Retrieved connection from pool, remote addr: %s (pool size was %d)", conn.RemoteAddr(), poolSize)
 		// Quick validation - try to set deadline
 		if err := conn.SetDeadline(time.Now().Add(1 * time.Second)); err != nil {
 			log.Printf("Pool connection validation failed, closing and creating new: %v", err)
@@ -169,7 +165,6 @@ func (p *VSockPool) Get(ctx context.Context) (net.Conn, error) {
 			return p.factory()
 		}
 		conn.SetDeadline(time.Time{}) // Clear deadline
-		log.Printf("Pool connection validated successfully")
 		return conn, nil
 	default:
 		log.Printf("No idle connections available (pool was empty), creating new connection")
@@ -180,7 +175,6 @@ func (p *VSockPool) Get(ctx context.Context) (net.Conn, error) {
 
 func (p *VSockPool) Put(conn net.Conn) {
 	if conn == nil {
-		log.Printf("Attempted to return nil connection to pool")
 		return
 	}
 
@@ -345,14 +339,11 @@ func sendVsockRequestWithContext(ctx context.Context, operation string, input in
 				return Response{}, ctx.Err()
 			case <-time.After(backoffDelay):
 			}
-		} else {
-			log.Printf("First attempt for VSock request: %s", operation)
 		}
 
 		attemptStartTime := time.Now()
 		resp, err := executeSingleRequest(ctx, manager, operation, input)
 		if err == nil {
-			log.Printf("VSock request succeeded for %s on attempt %d/%d in %v (total: %v)", operation, attempt+1, maxConnectionRetries, time.Since(attemptStartTime), time.Since(overallStartTime))
 			manager.circuitBreaker.OnSuccess()
 			manager.metrics.recordSuccess(time.Since(overallStartTime))
 			return resp, nil
@@ -379,7 +370,6 @@ func executeSingleRequest(ctx context.Context, manager *VSockConnectionManager, 
 		log.Printf("Failed to marshal input for %s: %v", operation, err)
 		return Response{}, fmt.Errorf("failed to marshal input: %v", err)
 	}
-	log.Printf("Marshaled input for %s: %d bytes", operation, len(inputBytes))
 
 	req := Request{Operation: operation, Input: inputBytes}
 	reqBytes, err := json.Marshal(req)
@@ -387,7 +377,6 @@ func executeSingleRequest(ctx context.Context, manager *VSockConnectionManager, 
 		log.Printf("Failed to marshal request for %s: %v", operation, err)
 		return Response{}, fmt.Errorf("failed to marshal request: %v", err)
 	}
-	log.Printf("Marshaled request for %s: %d bytes", operation, len(reqBytes))
 
 	connStartTime := time.Now()
 	conn, err := manager.pool.Get(ctx)
@@ -395,7 +384,6 @@ func executeSingleRequest(ctx context.Context, manager *VSockConnectionManager, 
 		log.Printf("Failed to get connection for %s after %v: %v", operation, time.Since(connStartTime), err)
 		return Response{}, fmt.Errorf("failed to get connection: %v", err)
 	}
-	log.Printf("Got connection for %s after %v, remote addr: %s", operation, time.Since(connStartTime), conn.RemoteAddr())
 
 	defer func() {
 		if err != nil {

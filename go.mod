@@ -6,7 +6,7 @@ require (
 	github.com/austinast/nitro-enclaves-sdk-go v0.0.2
 	github.com/aws/aws-sdk-go-v2 v1.22.0
 	github.com/aws/aws-sdk-go-v2/config v1.20.0
-	github.com/aws/aws-sdk-go-v2/service/kms v1.25.0
+	github.com/aws/aws-sdk-go-v2/service/kms v0.0.0-00010101000000-000000000000
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hf/nsm v0.0.0-20220930140112-cd181bd646b9
