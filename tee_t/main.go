@@ -38,9 +38,12 @@ func startEnclaveMode(config *TEETConfig) {
 	if err != nil {
 		log.Fatalf("Failed to initialize enclave services: %v", err)
 	}
+	enclave := NewTEETEnclave(config, services)
+	if err = enclave.startHTTPServer(); err != nil {
+		log.Fatal(err)
+	}
 
 	// Create and start TEE_T enclave
-	enclave := NewTEETEnclave(config, services)
 
 	if err := enclave.Start(); err != nil {
 		log.Fatalf("TEE_T enclave failed: %v", err)
