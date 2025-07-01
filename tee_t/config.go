@@ -26,7 +26,7 @@ func LoadTEETConfig() *TEETConfig {
 		Port:        shared.GetEnvIntOrDefault("PORT", 8081),
 		HTTPPort:    shared.GetEnvIntOrDefault("HTTP_PORT", 8080),
 		HTTPSPort:   shared.GetEnvIntOrDefault("HTTPS_PORT", 8443),
-		KMSKey:      shared.GetEnvOrDefault("KMS_KEY", ""),
+		KMSKey:      shared.GetEnvOrDefault("KMS_KEY", "arn:aws:kms:ap-south-1:342772716647:key/ff4db6ac-b9fe-474c-9f59-5224c0c0f912"),
 		ParentCID:   shared.GetEnvUint32OrDefault("PARENT_CID", 3),
 	}
 }
