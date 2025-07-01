@@ -3,6 +3,7 @@ package shared
 import (
 	"context"
 	"crypto/rsa"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net"
@@ -126,6 +127,14 @@ func createCertManager(config *EnclaveConfig, cache *MemoryCache) *autocert.Mana
 		},
 	}
 
+	log.Printf("Attempting to load or issue certificate for %s", config.Domain)
+	_, err := manager.GetCertificate(&tls.ClientHelloInfo{ServerName: config.Domain})
+	if err != nil {
+		log.Printf("Failed to load or issue certificate on startup: %v", err)
+	} else {
+		log.Printf("Successfully loaded or issued certificate for %s", config.Domain)
+	}
+
 	return manager
 }
 
@@ -145,7 +154,7 @@ func (e *EnclaveHandle) initialize() error {
 }
 
 // NSM Handle management
-func GetOrInitializeHandle() (*EnclaveHandle, error) {
+func getOrInitializeHandle() (*EnclaveHandle, error) {
 	initMutex.Lock()
 	defer initMutex.Unlock()
 	if globalHandle == nil && initializationError == nil {
@@ -168,7 +177,7 @@ func (e *EnclaveHandle) PrivateKey() *rsa.PrivateKey {
 }
 
 func MustGlobalHandle() *EnclaveHandle {
-	handle, err := GetOrInitializeHandle()
+	handle, err := getOrInitializeHandle()
 	if err != nil {
 		panic(err)
 	}
