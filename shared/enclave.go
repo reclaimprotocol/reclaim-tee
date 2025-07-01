@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 
@@ -56,6 +58,14 @@ func NewEnclaveServices(config *EnclaveConfig) (*EnclaveServices, error) {
 
 	// Initialize certificate manager
 	certManager := createCertManager(config, cache)
+
+	log.Printf("Attempting to load or issue certificate for %s", config.Domain)
+	_, err = certManager.GetCertificate(&tls.ClientHelloInfo{ServerName: config.Domain})
+	if err != nil {
+		log.Printf("Failed to load or issue certificate on startup: %v", err)
+	} else {
+		log.Printf("Successfully loaded or issued certificate for %s", config.Domain)
+	}
 
 	return &EnclaveServices{
 		Handle:      handle,
