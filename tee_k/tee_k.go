@@ -15,6 +15,7 @@ import (
 	"tee-mpc/shared" //  Keep shared for session management
 
 	"github.com/gorilla/websocket"
+	"github.com/mdlayher/vsock"
 )
 
 var teekUpgrader = websocket.Upgrader{
@@ -82,19 +83,70 @@ func (t *TEEK) SetTEETURL(url string) {
 	t.teetURL = url
 }
 
+// createVSockWebSocketDialer creates a custom WebSocket dialer for enclave mode
+// that connects via vsock internet proxy (CID 3, port 8444)
+func createVSockWebSocketDialer() *websocket.Dialer {
+	return &websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			log.Printf("[TEE_K] VSock WebSocket dial: connecting to proxy (CID=3, Port=8444) for target: %s", addr)
+
+			// Connect to internet proxy via vsock
+			conn, err := vsock.Dial(3, 8444, nil)
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to internet proxy: %v", err)
+			}
+
+			// Send target address to internet proxy
+			log.Printf("[TEE_K] Sending target address to internet proxy: %s", addr)
+			_, err = fmt.Fprintf(conn, "%s\n", addr)
+			if err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("failed to send target address to proxy: %v", err)
+			}
+
+			log.Printf("[TEE_K] VSock connection established to %s via internet proxy", addr)
+			return conn, nil
+		},
+		HandshakeTimeout: 30 * time.Second,
+	}
+}
+
 // ConnectToTEET establishes connection to TEE_T
 func (t *TEEK) ConnectToTEET() error {
+	log.Printf("[TEE_K] Attempting WebSocket connection to TEE_T at: %s", t.teetURL)
 
-	conn, _, err := websocket.DefaultDialer.Dial(t.teetURL, nil)
+	// Check if using TLS (wss://)
+	if strings.HasPrefix(t.teetURL, "wss://") {
+		log.Printf("[TEE_K] Using secure WebSocket (WSS) connection")
+	} else if strings.HasPrefix(t.teetURL, "ws://") {
+		log.Printf("[TEE_K] Using plain WebSocket (WS) connection")
+	}
+
+	// Determine if we're in enclave mode based on the URL
+	var conn *websocket.Conn
+	var err error
+
+	if strings.HasPrefix(t.teetURL, "wss://") && strings.Contains(t.teetURL, "reclaimprotocol.org") {
+		// Enclave mode: use custom vsock dialer
+		log.Printf("[TEE_K] Enclave mode detected - using VSock dialer via internet proxy")
+		dialer := createVSockWebSocketDialer()
+		conn, _, err = dialer.Dial(t.teetURL, nil)
+	} else {
+		// Standalone mode: use default dialer
+		log.Printf("[TEE_K] Standalone mode detected - using default WebSocket dialer")
+		conn, _, err = websocket.DefaultDialer.Dial(t.teetURL, nil)
+	}
+
 	if err != nil {
+		log.Printf("[TEE_K] WebSocket dial failed for %s: %v", t.teetURL, err)
 		return fmt.Errorf("failed to connect to TEE_T: %v", err)
 	}
 
 	t.teetConn = conn
+	log.Printf("[TEE_K] WebSocket connection established successfully to %s", t.teetURL)
 
-	// Start message handling for TEE_T
+	// Start message handling
 	go t.handleTEETMessages()
-
 	return nil
 }
 

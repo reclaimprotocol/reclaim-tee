@@ -65,13 +65,16 @@ func startEnclaveMode(config *TEEKConfig) {
 	// Connect to TEE_T service
 	go func() {
 		time.Sleep(2 * time.Second) // Wait for TEE_T to start
+		log.Printf("[TEE_K] Enclave mode: Connecting to TEE_T at URL: %s", config.TEETURL)
 		teek.SetTEETURL(config.TEETURL)
 		for i := 0; i < 10; i++ {
+			log.Printf("[TEE_K] Attempting to connect to TEE_T (attempt %d/10) at %s", i+1, config.TEETURL)
 			if err := teek.ConnectToTEET(); err == nil {
-				log.Printf("[TEE_K] Successfully connected to TEE_T")
+				log.Printf("[TEE_K] Successfully connected to TEE_T at %s", config.TEETURL)
 				break
+			} else {
+				log.Printf("[TEE_K] Failed to connect to TEE_T (attempt %d/10): %v", i+1, err)
 			}
-			log.Printf("[TEE_K] Failed to connect to TEE_T (attempt %d/10): %v", i+1, err)
 			time.Sleep(1 * time.Second)
 		}
 	}()
