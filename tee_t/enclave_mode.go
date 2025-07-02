@@ -55,7 +55,7 @@ func startEnclaveMode(config *TEETConfig) {
 	// Start HTTPS server in background
 	go func() {
 		log.Printf("[TEE_T] Starting production HTTPS server on port %d", enclaveConfig.HTTPSPort)
-		if err := httpsServer.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := httpsServer.ListenAndServeTLS(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("[TEE_T] CRITICAL ERROR: HTTPS server failed: %v", err)
 			// Signal main goroutine to shut down gracefully
 			cancel()

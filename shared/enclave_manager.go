@@ -56,10 +56,100 @@ type attestationCacheEntry struct {
 	doc       []byte
 	createdAt time.Time
 }
+
 type AttestationOptions struct {
 	Nonce, UserData []byte
 	NoPublicKey     bool
 	PublicKey       any
+}
+
+// VSockHTTPServer provides HTTP server functionality over VSock
+type VSockHTTPServer struct {
+	Handler      http.Handler
+	Port         uint32
+	ParentCID    uint32
+	ServiceName  string
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+
+	server   *http.Server
+	listener net.Listener
+}
+
+// ListenAndServeVSock starts the VSock HTTP server
+func (vs *VSockHTTPServer) ListenAndServeVSock(ctx context.Context) error {
+	listener, err := vsock.Listen(vs.Port, nil)
+	if err != nil {
+		return fmt.Errorf("failed to listen on VSock port %d: %v", vs.Port, err)
+	}
+	vs.listener = listener
+
+	vs.server = &http.Server{
+		Handler:      vs.Handler,
+		ReadTimeout:  vs.ReadTimeout,
+		WriteTimeout: vs.WriteTimeout,
+		IdleTimeout:  vs.IdleTimeout,
+	}
+
+	log.Printf("[%s] HTTP server listening on VSock port %d", vs.ServiceName, vs.Port)
+
+	return vs.server.Serve(listener)
+}
+
+// Shutdown gracefully shuts down the VSock HTTP server
+func (vs *VSockHTTPServer) Shutdown(ctx context.Context) error {
+	if vs.server != nil {
+		return vs.server.Shutdown(ctx)
+	}
+	return nil
+}
+
+// VSockHTTPSServer provides HTTPS server functionality over VSock
+type VSockHTTPSServer struct {
+	Handler      http.Handler
+	TLSConfig    *tls.Config
+	Port         uint32
+	ParentCID    uint32
+	ServiceName  string
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+
+	server   *http.Server
+	listener net.Listener
+}
+
+// ListenAndServeTLS starts the VSock HTTPS server
+func (vs *VSockHTTPSServer) ListenAndServeTLS(ctx context.Context) error {
+	listener, err := vsock.Listen(vs.Port, nil)
+	if err != nil {
+		return fmt.Errorf("failed to listen on VSock port %d: %v", vs.Port, err)
+	}
+	vs.listener = listener
+
+	vs.server = &http.Server{
+		Handler:           vs.Handler,
+		TLSConfig:         vs.TLSConfig,
+		ReadTimeout:       vs.ReadTimeout,
+		WriteTimeout:      vs.WriteTimeout,
+		IdleTimeout:       vs.IdleTimeout,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	log.Printf("[%s] HTTPS server listening on VSock port %d", vs.ServiceName, vs.Port)
+
+	// Create TLS listener
+	tlsListener := tls.NewListener(listener, vs.TLSConfig)
+	return vs.server.Serve(tlsListener)
+}
+
+// Shutdown gracefully shuts down the VSock HTTPS server
+func (vs *VSockHTTPSServer) Shutdown(ctx context.Context) error {
+	if vs.server != nil {
+		return vs.server.Shutdown(ctx)
+	}
+	return nil
 }
 
 // NewEnclaveManager creates a new enclave manager with production configuration
@@ -100,16 +190,15 @@ func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager,
 func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	log.Printf("[%s] Bootstrapping certificates for domain: %s", em.config.ServiceName, em.config.Domain)
 
-	// Start temporary HTTP server for ACME challenges
-	httpServer := &http.Server{
-		Handler: em.autocertManager.HTTPHandler(nil),
-		Addr:    fmt.Sprintf(":%d", em.config.HTTPPort),
-	}
+	// Create VSock HTTP server for ACME challenges
+	httpServer := em.createVSockHTTPServer(em.autocertManager.HTTPHandler(nil), em.config.HTTPPort)
 
 	// Start HTTP server in background
+	serverErrChan := make(chan error, 1)
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[%s] HTTP server error: %v", em.config.ServiceName, err)
+		if err := httpServer.ListenAndServeVSock(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[%s] VSock HTTP server error: %v", em.config.ServiceName, err)
+			serverErrChan <- err
 		}
 	}()
 
@@ -126,6 +215,16 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	defer cancel()
 	httpServer.Shutdown(shutdownCtx)
 
+	// Check for server errors
+	select {
+	case serverErr := <-serverErrChan:
+		if err == nil {
+			err = fmt.Errorf("VSock HTTP server failed: %v", serverErr)
+		}
+	default:
+		// No server error
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to bootstrap certificate for %s: %v", em.config.Domain, err)
 	}
@@ -135,7 +234,7 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 }
 
 // CreateHTTPSServer creates an HTTPS server with proper TLS configuration
-func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *http.Server {
+func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *VSockHTTPSServer {
 	tlsConfig := em.autocertManager.TLSConfig()
 	tlsConfig.MinVersion = tls.VersionTLS12
 	tlsConfig.MaxVersion = tls.VersionTLS13
@@ -147,14 +246,34 @@ func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *http.Server {
 		return nil, nil
 	}
 
-	return &http.Server{
-		Addr:              fmt.Sprintf(":%d", em.config.HTTPSPort),
-		Handler:           handler,
-		TLSConfig:         tlsConfig,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
+	// Create VSock HTTPS server for enclave mode
+	return em.createVSockHTTPSServer(handler, tlsConfig, em.config.HTTPSPort)
+}
+
+// createVSockHTTPServer creates an HTTP server that listens on VSock
+func (em *EnclaveManager) createVSockHTTPServer(handler http.Handler, port uint32) *VSockHTTPServer {
+	return &VSockHTTPServer{
+		Handler:      handler,
+		Port:         port,
+		ParentCID:    em.config.ParentCID,
+		ServiceName:  em.config.ServiceName,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+}
+
+// createVSockHTTPSServer creates an HTTPS server that listens on VSock
+func (em *EnclaveManager) createVSockHTTPSServer(handler http.Handler, tlsConfig *tls.Config, port uint32) *VSockHTTPSServer {
+	return &VSockHTTPSServer{
+		Handler:      handler,
+		TLSConfig:    tlsConfig,
+		Port:         port,
+		ParentCID:    em.config.ParentCID,
+		ServiceName:  em.config.ServiceName,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 }
 
