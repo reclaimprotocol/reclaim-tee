@@ -2,6 +2,7 @@ package shared
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	"golang.org/x/crypto/acme/autocert"
@@ -28,12 +29,27 @@ func (c *EnclaveCache) Get(ctx context.Context, key string) ([]byte, error) {
 	// Check memory cache first
 	if data, exists := c.memoryCache[key]; exists {
 		c.mu.RUnlock()
+		log.Printf("[EnclaveCache] Found %s in memory cache (%d bytes)", key, len(data))
 		return data, nil
 	}
 	c.mu.RUnlock()
 
+	log.Printf("[EnclaveCache] %s not in memory cache, loading from KMS", key)
+
 	// Attempt to load from persistent storage using comprehensive KMS handler with attestation
-	return c.kmsHandler.LoadAndDecryptCacheItem(ctx, key)
+	data, err := c.kmsHandler.LoadAndDecryptCacheItem(ctx, key)
+	if err != nil {
+		log.Printf("[EnclaveCache] Failed to load %s from KMS: %v", key, err)
+		return nil, err
+	}
+
+	// Store successfully retrieved data in memory cache
+	c.mu.Lock()
+	c.memoryCache[key] = data
+	c.mu.Unlock()
+
+	log.Printf("[EnclaveCache] Successfully loaded %s from KMS and cached in memory (%d bytes)", key, len(data))
+	return data, nil
 }
 
 // Put encrypts and stores a cached item using comprehensive KMS handler

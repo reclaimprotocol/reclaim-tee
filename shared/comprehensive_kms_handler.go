@@ -138,6 +138,7 @@ func (c *ComprehensiveKMSHandler) LoadAndDecryptCacheItem(ctx context.Context, f
 
 	resp, err := c.sendVsockRequest(ctx, "GetEncryptedItem", getInput)
 	if err != nil {
+		log.Printf("[ComprehensiveKMS] Failed to get encrypted item %s: %v", filename, err)
 		return nil, autocert.ErrCacheMiss
 	}
 
@@ -146,6 +147,7 @@ func (c *ComprehensiveKMSHandler) LoadAndDecryptCacheItem(ctx context.Context, f
 		Key  []byte `json:"key"`
 	}
 	if err = json.Unmarshal(resp, &output); err != nil {
+		log.Printf("[ComprehensiveKMS] Failed to unmarshal response for %s: %v", filename, err)
 		return nil, autocert.ErrCacheMiss
 	}
 
@@ -155,6 +157,7 @@ func (c *ComprehensiveKMSHandler) LoadAndDecryptCacheItem(ctx context.Context, f
 	// CRITICAL: Use decryptItem pattern from nitro.go with fresh attestation
 	plaintext, err := c.decryptItem(ctx, output.Data, output.Key)
 	if err != nil {
+		log.Printf("[ComprehensiveKMS] Failed to decrypt item %s: %v", filename, err)
 		return nil, autocert.ErrCacheMiss
 	}
 
@@ -167,12 +170,14 @@ func (c *ComprehensiveKMSHandler) decryptItem(ctx context.Context, encryptedData
 	// CRITICAL: Get global singleton handle safely (NO PANIC)
 	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
+		log.Printf("[ComprehensiveKMS] Failed to get enclave handle: %v", err)
 		return nil, fmt.Errorf("failed to get enclave handle: %v", err)
 	}
 
 	// CRITICAL: Generate fresh attestation document for EVERY decrypt operation
 	attestationDoc, err := c.generateAttestation(handle, nil)
 	if err != nil {
+		log.Printf("[ComprehensiveKMS] Failed to generate attestation: %v", err)
 		return nil, fmt.Errorf("failed to generate attestation: %v", err)
 	}
 
@@ -192,11 +197,13 @@ func (c *ComprehensiveKMSHandler) decryptItem(ctx context.Context, encryptedData
 	// Send KMS request via VSock
 	resp, err := c.sendVsockRequest(ctx, "Decrypt", input)
 	if err != nil {
+		log.Printf("[ComprehensiveKMS] KMS Decrypt request failed: %v", err)
 		return nil, fmt.Errorf("KMS Decrypt failed: %v", err)
 	}
 
 	var output kms.DecryptOutput
 	if err = json.Unmarshal(resp, &output); err != nil {
+		log.Printf("[ComprehensiveKMS] Failed to parse KMS decrypt response: %v", err)
 		return nil, fmt.Errorf("failed to parse KMS output: %v", err)
 	}
 
@@ -205,13 +212,21 @@ func (c *ComprehensiveKMSHandler) decryptItem(ctx context.Context, encryptedData
 	// CRITICAL: Decrypt envelope key using enclave's private key
 	plaintextKey, err := cms.DecryptEnvelopedKey(handle.PrivateKey(), output.CiphertextForRecipient)
 	if err != nil {
+		log.Printf("[ComprehensiveKMS] Failed to decrypt envelope key: %v", err)
 		return nil, fmt.Errorf("failed to decrypt KMS ciphertext for recipient: %v", err)
 	}
 
 	log.Printf("[ComprehensiveKMS] Successfully decrypted envelope key (%d bytes)", len(plaintextKey))
 
 	// Decrypt the actual data using the decrypted key
-	return aesGCMOperation(plaintextKey, encryptedData, false)
+	plaintext, err := aesGCMOperation(plaintextKey, encryptedData, false)
+	if err != nil {
+		log.Printf("[ComprehensiveKMS] AES-GCM decryption failed: %v", err)
+		return nil, fmt.Errorf("AES-GCM decryption failed: %v", err)
+	}
+
+	log.Printf("[ComprehensiveKMS] AES-GCM decryption successful (%d bytes)", len(plaintext))
+	return plaintext, nil
 }
 
 // generateAttestation generates attestation document - matching nitro.go pattern exactly
