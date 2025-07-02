@@ -37,6 +37,17 @@ func startEnclaveMode(config *TEEKConfig) {
 	}
 	defer enclaveManager.Shutdown(ctx)
 
+	// Test KMS attestation functionality before proceeding
+	log.Printf("[TEE_K] Testing KMS attestation functionality...")
+	if kmsHandler := shared.NewComprehensiveKMSHandler(enclaveManager.GetConnectionManager(), config.KMSKey); kmsHandler != nil {
+		if err := kmsHandler.TestKMSAttestationRoundTrip(ctx); err != nil {
+			log.Printf("[TEE_K] KMS ATTESTATION TEST FAILED: %v", err)
+			log.Printf("[TEE_K] This indicates certificate caching will not work properly")
+		} else {
+			log.Printf("[TEE_K] ✓ KMS attestation test PASSED - certificate caching should work correctly")
+		}
+	}
+
 	// Phase 1: Bootstrap certificates via ACME
 	log.Printf("[TEE_K] Bootstrapping certificates for domain: %s", config.Domain)
 	if err := enclaveManager.BootstrapCertificates(ctx); err != nil {

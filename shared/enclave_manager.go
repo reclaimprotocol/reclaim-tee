@@ -362,6 +362,11 @@ func (em *EnclaveManager) GetConnectionMetrics() map[string]interface{} {
 	return em.connectionMgr.GetMetrics()
 }
 
+// GetConnectionManager returns the VSock connection manager for KMS operations
+func (em *EnclaveManager) GetConnectionManager() *VSockConnectionManager {
+	return em.connectionMgr
+}
+
 // GetConfig returns the enclave configuration
 func (em *EnclaveManager) GetConfig() *EnclaveConfig {
 	em.mu.RLock()
