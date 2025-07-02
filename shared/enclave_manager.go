@@ -163,8 +163,8 @@ func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager,
 	// Initialize VSock connection manager
 	connectionMgr := NewVSockConnectionManager(config.ParentCID, config.KMSPort, config.InternetPort)
 
-	// Initialize encrypted cache with service-specific KMS key
-	cache := NewEnclaveCache(connectionMgr, kmsKeyID)
+	// Initialize encrypted cache with service-specific KMS key and service name prefix
+	cache := NewEnclaveCache(connectionMgr, kmsKeyID, config.ServiceName)
 
 	// Initialize ACME manager
 	autocertManager := &autocert.Manager{

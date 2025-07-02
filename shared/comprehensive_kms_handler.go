@@ -24,13 +24,15 @@ type KMSConnectionManager interface {
 type ComprehensiveKMSHandler struct {
 	connectionMgr KMSConnectionManager
 	kmsKeyID      string
+	serviceName   string
 }
 
 // NewComprehensiveKMSHandler creates a new comprehensive KMS handler
-func NewComprehensiveKMSHandler(connectionMgr KMSConnectionManager, kmsKeyID string) *ComprehensiveKMSHandler {
+func NewComprehensiveKMSHandler(connectionMgr KMSConnectionManager, kmsKeyID string, serviceName string) *ComprehensiveKMSHandler {
 	return &ComprehensiveKMSHandler{
 		connectionMgr: connectionMgr,
 		kmsKeyID:      kmsKeyID,
+		serviceName:   serviceName,
 	}
 }
 
@@ -248,6 +250,11 @@ func (c *ComprehensiveKMSHandler) generateAttestation(handle *EnclaveHandle, use
 
 // sendVsockRequest sends a request via VSock connection manager
 func (c *ComprehensiveKMSHandler) sendVsockRequest(ctx context.Context, operation string, input interface{}) ([]byte, error) {
+	// Check if the connection manager supports the new method with service name
+	if mgr, ok := c.connectionMgr.(*VSockConnectionManager); ok {
+		return mgr.SendKMSRequestWithService(ctx, operation, c.serviceName, input)
+	}
+	// Fallback to old method for backward compatibility
 	return c.connectionMgr.SendKMSRequest(ctx, operation, input)
 }
 

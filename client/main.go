@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 )
 
 func main() {
 	fmt.Println("=== Client ===")
 
-	teekURL := "ws://localhost:8080/ws"
+	// Default to enclave mode, fallback to standalone if specified
+	teekURL := "wss://tee-k.reclaimprotocol.org/ws" // Default to enclave
 	if len(os.Args) > 1 {
 		teekURL = os.Args[1]
 	}
@@ -20,8 +22,10 @@ func main() {
 	client := NewClient(teekURL)
 	defer client.Close()
 
-	// Set TEE_T URL and connect to both services
-	client.SetTEETURL("ws://localhost:8081/ws")
+	// Auto-detect TEE_T URL based on TEE_K URL
+	teetURL := autoDetectTEETURL(teekURL)
+	fmt.Printf(" Auto-detected TEE_T URL: %s\n", teetURL)
+	client.SetTEETURL(teetURL)
 
 	// Connect to TEE_K
 	if err := client.ConnectToTEEK(); err != nil {
@@ -50,4 +54,24 @@ func main() {
 	}
 
 	fmt.Println(" Client processing completed!")
+}
+
+// autoDetectTEETURL automatically detects the appropriate TEE_T URL based on TEE_K URL
+func autoDetectTEETURL(teekURL string) string {
+	if strings.HasPrefix(teekURL, "wss://") && strings.Contains(teekURL, "reclaimprotocol.org") {
+		// Enclave mode: TEE_K is using enclave domain, so TEE_T should too
+		return "wss://tee-t.reclaimprotocol.org/ws"
+	} else if strings.HasPrefix(teekURL, "ws://") && strings.Contains(teekURL, "localhost") {
+		// Standalone mode: TEE_K is using localhost, so TEE_T should too
+		return "ws://localhost:8081/ws"
+	} else {
+		// Custom URL - try to infer the pattern
+		if strings.HasPrefix(teekURL, "wss://") {
+			// Assume enclave mode for any wss:// URL
+			return "wss://tee-t.reclaimprotocol.org/ws"
+		} else {
+			// Assume standalone mode for any ws:// URL
+			return "ws://localhost:8081/ws"
+		}
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
@@ -75,7 +76,7 @@ type Client struct {
 func NewClient(teekURL string) *Client {
 	return &Client{
 		teekURL:                  teekURL,
-		teetURL:                  "ws://localhost:8081/ws", // Default TEE_T URL
+		teetURL:                  "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
 		pendingResponsesData:     make(map[uint64][]byte),
 		completionChan:           make(chan struct{}),
 		recordsSent:              0,
@@ -99,18 +100,47 @@ func (c *Client) WaitForCompletion() <-chan struct{} {
 	return c.completionChan
 }
 
+// createEnclaveWebSocketDialer creates a custom WebSocket dialer for enclave mode
+// that skips TLS certificate verification for staging certificates
+func createEnclaveWebSocketDialer() *websocket.Dialer {
+	return &websocket.Dialer{
+		HandshakeTimeout: 30 * time.Second,
+		// Skip TLS certificate verification for staging certificates
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+}
+
 func (c *Client) ConnectToTEEK() error {
 	u, err := url.Parse(c.teekURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse TEE_K URL: %v", err)
 	}
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	log.Printf("[Client] Attempting WebSocket connection to TEE_K at: %s", c.teekURL)
+
+	// Determine connection mode and use appropriate dialer
+	var conn *websocket.Conn
+	if strings.HasPrefix(c.teekURL, "wss://") && strings.Contains(c.teekURL, "reclaimprotocol.org") {
+		// Enclave mode: use custom dialer with TLS config
+		log.Printf("[Client] Enclave mode detected for TEE_K - using custom dialer")
+		log.Printf("[Client] Note: TLS certificate verification is disabled for staging certificates")
+		dialer := createEnclaveWebSocketDialer()
+		conn, _, err = dialer.Dial(u.String(), nil)
+	} else {
+		// Standalone mode: use default dialer
+		log.Printf("[Client] Standalone mode detected for TEE_K - using default dialer")
+		conn, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
+	}
+
 	if err != nil {
+		log.Printf("[Client] WebSocket dial failed for TEE_K %s: %v", c.teekURL, err)
 		return fmt.Errorf("failed to connect to TEE_K: %v", err)
 	}
 
 	c.wsConn = conn
+	log.Printf("[Client] WebSocket connection to TEE_K established successfully")
 
 	// Start message handling goroutine
 	go c.handleMessages()
@@ -124,12 +154,29 @@ func (c *Client) ConnectToTEET() error {
 		return fmt.Errorf("failed to parse TEE_T URL: %v", err)
 	}
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	log.Printf("[Client] Attempting WebSocket connection to TEE_T at: %s", c.teetURL)
+
+	// Determine connection mode and use appropriate dialer
+	var conn *websocket.Conn
+	if strings.HasPrefix(c.teetURL, "wss://") && strings.Contains(c.teetURL, "reclaimprotocol.org") {
+		// Enclave mode: use custom dialer with TLS config
+		log.Printf("[Client] Enclave mode detected for TEE_T - using custom dialer")
+		log.Printf("[Client] Note: TLS certificate verification is disabled for staging certificates")
+		dialer := createEnclaveWebSocketDialer()
+		conn, _, err = dialer.Dial(u.String(), nil)
+	} else {
+		// Standalone mode: use default dialer
+		log.Printf("[Client] Standalone mode detected for TEE_T - using default dialer")
+		conn, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
+	}
+
 	if err != nil {
+		log.Printf("[Client] WebSocket dial failed for TEE_T %s: %v", c.teetURL, err)
 		return fmt.Errorf("failed to connect to TEE_T: %v", err)
 	}
 
 	c.teetConn = conn
+	log.Printf("[Client] WebSocket connection to TEE_T established successfully")
 
 	// Start message handling goroutine for TEE_T
 	go c.handleTEETMessages()

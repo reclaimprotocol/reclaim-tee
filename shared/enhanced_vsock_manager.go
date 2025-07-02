@@ -187,6 +187,11 @@ func (evm *EnhancedVSockConnectionManager) Start(ctx context.Context) error {
 
 // SendKMSRequest sends a request to KMS with advanced features
 func (evm *EnhancedVSockConnectionManager) SendKMSRequest(ctx context.Context, operation string, data interface{}) ([]byte, error) {
+	return evm.SendKMSRequestWithService(ctx, operation, "unknown_service", data)
+}
+
+// SendKMSRequestWithService sends a request to KMS with service name for cache grouping
+func (evm *EnhancedVSockConnectionManager) SendKMSRequestWithService(ctx context.Context, operation string, serviceName string, data interface{}) ([]byte, error) {
 	startTime := time.Now()
 	defer func() {
 		evm.metrics.TotalRequests++
@@ -205,8 +210,9 @@ func (evm *EnhancedVSockConnectionManager) SendKMSRequest(ctx context.Context, o
 
 		// Prepare request
 		request := map[string]interface{}{
-			"operation": operation,
-			"data":      data,
+			"operation":    operation,
+			"service_name": serviceName,
+			"input":        data, // Changed from "data" to "input" to match KMS proxy structure
 		}
 
 		requestData, err := JSONMarshal(request)

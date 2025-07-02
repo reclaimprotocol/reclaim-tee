@@ -104,6 +104,11 @@ func NewVSockPool(maxIdle, maxActive int) *VSockPool {
 
 // SendKMSRequest sends a KMS request via VSock
 func (v *VSockConnectionManager) SendKMSRequest(ctx context.Context, operation string, input interface{}) ([]byte, error) {
+	return v.SendKMSRequestWithService(ctx, operation, "unknown_service", input)
+}
+
+// SendKMSRequestWithService sends a KMS request via VSock with service name for cache grouping
+func (v *VSockConnectionManager) SendKMSRequestWithService(ctx context.Context, operation string, serviceName string, input interface{}) ([]byte, error) {
 	if !v.circuitBreaker.CanExecute() {
 		return nil, fmt.Errorf("circuit breaker is open")
 	}
@@ -124,11 +129,13 @@ func (v *VSockConnectionManager) SendKMSRequest(ctx context.Context, operation s
 
 	// Prepare request
 	request := struct {
-		Operation string      `json:"operation"`
-		Input     interface{} `json:"input"`
+		Operation   string      `json:"operation"`
+		ServiceName string      `json:"service_name,omitempty"`
+		Input       interface{} `json:"input"`
 	}{
-		Operation: operation,
-		Input:     input,
+		Operation:   operation,
+		ServiceName: serviceName,
+		Input:       input,
 	}
 
 	// Send request

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,6 +18,171 @@ import (
 	"github.com/mdlayher/vsock"
 	"go.uber.org/zap"
 )
+
+// KMS Operation Constants
+const (
+	OpGenerateDataKey     = "GenerateDataKey"
+	OpEncrypt             = "Encrypt"
+	OpDecrypt             = "Decrypt"
+	OpStoreEncryptedItem  = "StoreEncryptedItem"
+	OpGetEncryptedItem    = "GetEncryptedItem"
+	OpDeleteEncryptedItem = "DeleteEncryptedItem"
+)
+
+// Cache file constants
+const (
+	CacheFileName  = "kms_cache.json"
+	CacheFilePerms = 0600
+)
+
+// CacheItem represents a single cached item
+type CacheItem struct {
+	Data []byte `json:"data"`
+	Key  []byte `json:"key"`
+}
+
+// ServiceCache represents all cache items for a specific service
+type ServiceCache map[string]*CacheItem
+
+// CacheData represents the entire cache structure grouped by service
+type CacheData struct {
+	Services map[string]ServiceCache `json:"services"`
+	mutex    sync.RWMutex            `json:"-"`
+}
+
+// NewCacheData creates a new cache data structure
+func NewCacheData() *CacheData {
+	return &CacheData{
+		Services: make(map[string]ServiceCache),
+	}
+}
+
+// LoadCache loads the cache from disk, creating it if it doesn't exist
+func (cd *CacheData) LoadCache() error {
+	cd.mutex.Lock()
+	defer cd.mutex.Unlock()
+
+	if _, err := os.Stat(CacheFileName); os.IsNotExist(err) {
+		// Cache file doesn't exist, initialize empty cache
+		cd.Services = make(map[string]ServiceCache)
+		return cd.saveToFile()
+	}
+
+	data, err := os.ReadFile(CacheFileName)
+	if err != nil {
+		return fmt.Errorf("failed to read cache file: %v", err)
+	}
+
+	var fileData struct {
+		Services map[string]ServiceCache `json:"services"`
+	}
+
+	if err := json.Unmarshal(data, &fileData); err != nil {
+		return fmt.Errorf("failed to parse cache file: %v", err)
+	}
+
+	cd.Services = fileData.Services
+	if cd.Services == nil {
+		cd.Services = make(map[string]ServiceCache)
+	}
+
+	return nil
+}
+
+// saveToFile saves the cache to disk (must be called with write lock held)
+func (cd *CacheData) saveToFile() error {
+	fileData := struct {
+		Services map[string]ServiceCache `json:"services"`
+	}{
+		Services: cd.Services,
+	}
+
+	data, err := json.MarshalIndent(fileData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal cache data: %v", err)
+	}
+
+	return os.WriteFile(CacheFileName, data, CacheFilePerms)
+}
+
+// StoreItem stores a cache item for a specific service
+func (cd *CacheData) StoreItem(serviceName, filename string, data, key []byte) error {
+	cd.mutex.Lock()
+	defer cd.mutex.Unlock()
+
+	if cd.Services[serviceName] == nil {
+		cd.Services[serviceName] = make(ServiceCache)
+	}
+
+	cd.Services[serviceName][filename] = &CacheItem{
+		Data: data,
+		Key:  key,
+	}
+
+	return cd.saveToFile()
+}
+
+// GetItem retrieves a cache item for a specific service
+func (cd *CacheData) GetItem(serviceName, filename string) (*CacheItem, error) {
+	cd.mutex.RLock()
+	defer cd.mutex.RUnlock()
+
+	serviceCache, exists := cd.Services[serviceName]
+	if !exists {
+		return nil, fmt.Errorf("service not found: %s", serviceName)
+	}
+
+	item, exists := serviceCache[filename]
+	if !exists {
+		return nil, fmt.Errorf("item not found: %s", filename)
+	}
+
+	// Return a copy to avoid race conditions
+	return &CacheItem{
+		Data: append([]byte(nil), item.Data...),
+		Key:  append([]byte(nil), item.Key...),
+	}, nil
+}
+
+// DeleteItem removes a cache item for a specific service
+func (cd *CacheData) DeleteItem(serviceName, filename string) error {
+	cd.mutex.Lock()
+	defer cd.mutex.Unlock()
+
+	serviceCache, exists := cd.Services[serviceName]
+	if !exists {
+		return nil // Item doesn't exist, consider it deleted
+	}
+
+	delete(serviceCache, filename)
+
+	// Clean up empty service cache
+	if len(serviceCache) == 0 {
+		delete(cd.Services, serviceName)
+	}
+
+	return cd.saveToFile()
+}
+
+// GetStats returns cache statistics
+func (cd *CacheData) GetStats() map[string]interface{} {
+	cd.mutex.RLock()
+	defer cd.mutex.RUnlock()
+
+	stats := make(map[string]interface{})
+	totalItems := 0
+
+	for serviceName, serviceCache := range cd.Services {
+		itemCount := len(serviceCache)
+		stats[serviceName] = itemCount
+		totalItems += itemCount
+	}
+
+	stats["total_items"] = totalItems
+	stats["total_services"] = len(cd.Services)
+
+	return stats
+}
 
 // LoggingHTTPTransport wraps http.Transport to log all requests and responses
 type LoggingHTTPTransport struct {
@@ -72,11 +238,13 @@ type KMSProxy struct {
 	config    *ProxyConfig
 	logger    *zap.Logger
 	kmsClient *kms.Client
+	cache     *CacheData
 }
 
 type KMSRequest struct {
-	Operation string          `json:"operation"`
-	Input     json.RawMessage `json:"input"`
+	Operation   string          `json:"operation"`
+	ServiceName string          `json:"service_name,omitempty"` // Optional service name for cache grouping
+	Input       json.RawMessage `json:"input"`
 }
 
 type KMSResponse struct {
@@ -136,10 +304,17 @@ func NewKMSProxy(proxyConfig *ProxyConfig, logger *zap.Logger) (*KMSProxy, error
 
 	kmsClient := kms.NewFromConfig(awsConfig)
 
+	// Initialize cache
+	cache := NewCacheData()
+	if err := cache.LoadCache(); err != nil {
+		logger.Warn("Failed to load cache, starting with empty cache", zap.Error(err))
+	}
+
 	return &KMSProxy{
 		config:    proxyConfig,
 		logger:    logger.With(zap.String("component", "kms_proxy")),
 		kmsClient: kmsClient,
+		cache:     cache,
 	}, nil
 }
 
@@ -248,8 +423,18 @@ func (p *KMSProxy) handleConnection(ctx context.Context, conn net.Conn) {
 }
 
 func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte, error) {
+	// Auto-detect service name if not provided (for backward compatibility)
+	serviceName := req.ServiceName
+	if serviceName == "" {
+		// Try to detect from operation context or use a default
+		serviceName = "unknown_service"
+		p.logger.Warn("No service name provided in KMS request, using default",
+			zap.String("operation", req.Operation),
+			zap.String("default_service", serviceName))
+	}
+
 	switch req.Operation {
-	case "GenerateDataKey":
+	case OpGenerateDataKey:
 		var input kms.GenerateDataKeyInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid GenerateDataKey input: %v", err)
@@ -287,7 +472,7 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 
 		return json.Marshal(output)
 
-	case "Encrypt":
+	case OpEncrypt:
 		var input kms.EncryptInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid Encrypt input: %v", err)
@@ -298,7 +483,7 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 		}
 		return json.Marshal(output)
 
-	case "Decrypt":
+	case OpDecrypt:
 		var input kms.DecryptInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid Decrypt input: %v", err)
@@ -337,65 +522,65 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 		)
 
 		return json.Marshal(output)
-	case "StoreEncryptedItem":
+	case OpStoreEncryptedItem:
 		var input ProxyStoreItemInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid input: %v", err)
 		}
 
-		// Simple approach - separate files for key and data
-		keyFilename := "cache-" + input.Filename + ".key"
-		dataFilename := "cache-" + input.Filename + ".data"
+		p.logger.Info("Storing encrypted item",
+			zap.String("service", serviceName),
+			zap.String("filename", input.Filename),
+			zap.Int("data_size", len(input.Data)),
+			zap.Int("key_size", len(input.Key)))
 
-		// Store exact KMS key data (no modifications)
-		if err := os.WriteFile(keyFilename, input.Key, 0600); err != nil {
-			return nil, fmt.Errorf("failed to store key: %v", err)
-		}
-
-		// Store encrypted data
-		if err := os.WriteFile(dataFilename, input.Data, 0600); err != nil {
-			return nil, fmt.Errorf("failed to store data: %v", err)
+		// Store in new cache system grouped by service
+		if err := p.cache.StoreItem(serviceName, input.Filename, input.Data, input.Key); err != nil {
+			return nil, fmt.Errorf("failed to store cache item: %v", err)
 		}
 
 		return json.Marshal(ProxyStatusOutput{Status: "success"})
-	case "GetEncryptedItem":
+	case OpGetEncryptedItem:
 		var input ProxyGetItemInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid GetEncryptedItem input: %v", err)
 		}
 
-		keyFilename := "cache-" + input.Filename + ".key"
-		dataFilename := "cache-" + input.Filename + ".data"
+		p.logger.Info("Getting encrypted item",
+			zap.String("service", serviceName),
+			zap.String("filename", input.Filename))
 
-		// Read key file
-		encryptedKey, err := os.ReadFile(keyFilename)
+		// Get from new cache system grouped by service
+		item, err := p.cache.GetItem(serviceName, input.Filename)
 		if err != nil {
-			p.logger.Debug("Encrypted key not found", zap.String("filename", keyFilename))
+			p.logger.Debug("Encrypted item not found",
+				zap.String("service", serviceName),
+				zap.String("filename", input.Filename),
+				zap.Error(err))
 			return nil, fmt.Errorf("encrypted item not found: %s", input.Filename)
 		}
 
-		// Read data file
-		encryptedData, err := os.ReadFile(dataFilename)
-		if err != nil {
-			p.logger.Debug("Encrypted data not found", zap.String("filename", dataFilename))
-			return nil, fmt.Errorf("encrypted item not found: %s", input.Filename)
-		}
-
-		resp := ProxyGetItemOutput{Data: encryptedData, Key: encryptedKey}
+		resp := ProxyGetItemOutput{Data: item.Data, Key: item.Key}
 		return json.Marshal(resp)
 
-	case "DeleteEncryptedItem":
+	case OpDeleteEncryptedItem:
 		var input ProxyDeleteItemInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid DeleteEncryptedItem input: %v", err)
 		}
 
-		keyFilename := "cache-" + input.Filename + ".key"
-		dataFilename := "cache-" + input.Filename + ".data"
+		p.logger.Info("Deleting encrypted item",
+			zap.String("service", serviceName),
+			zap.String("filename", input.Filename))
 
-		// Remove both files (ignore errors if files don't exist)
-		os.Remove(keyFilename)
-		os.Remove(dataFilename)
+		// Delete from new cache system grouped by service
+		if err := p.cache.DeleteItem(serviceName, input.Filename); err != nil {
+			p.logger.Error("Failed to delete cache item",
+				zap.String("service", serviceName),
+				zap.String("filename", input.Filename),
+				zap.Error(err))
+			return nil, fmt.Errorf("failed to delete cache item: %v", err)
+		}
 
 		return json.Marshal(ProxyStatusOutput{Status: "success"})
 
