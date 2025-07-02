@@ -79,8 +79,8 @@ func (r *HTTPSRouter) handleConnection(ctx context.Context, conn net.Conn) {
 	// Set read timeout for SNI extraction
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
-	// Extract SNI from TLS ClientHello
-	sni, err := r.extractSNI(conn)
+	// Extract SNI from TLS ClientHello and get the connection that preserves all data
+	sni, replayConn, err := r.extractSNIWithReplay(conn)
 	if err != nil {
 		r.logger.Error("Failed to extract SNI", zap.Error(err))
 		return
@@ -120,24 +120,24 @@ func (r *HTTPSRouter) handleConnection(ctx context.Context, conn net.Conn) {
 	defer enclaveConn.Close()
 
 	// Clear read deadline and start bidirectional copy
-	conn.SetReadDeadline(time.Time{})
+	replayConn.SetReadDeadline(time.Time{})
 
 	// Set reasonable timeouts for long-lived connections
 	deadline := time.Now().Add(5 * time.Minute)
-	conn.SetDeadline(deadline)
+	replayConn.SetDeadline(deadline)
 	enclaveConn.SetDeadline(deadline)
 
-	// Bidirectional copy between client and enclave
+	// Bidirectional copy between client and enclave using the replay connection
 	done := make(chan struct{}, 2)
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		io.Copy(enclaveConn, conn)
+		io.Copy(enclaveConn, replayConn) // Use replayConn instead of conn
 	}()
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		io.Copy(conn, enclaveConn)
+		io.Copy(replayConn, enclaveConn) // Use replayConn instead of conn
 	}()
 
 	// Wait for either copy to complete or context cancellation
@@ -150,6 +150,67 @@ func (r *HTTPSRouter) handleConnection(ctx context.Context, conn net.Conn) {
 		// Long timeout for persistent connections
 		r.logger.Info("HTTPS connection timeout", zap.String("sni", sni))
 	}
+}
+
+// extractSNIWithReplay extracts SNI and returns a connection that can replay all data
+func (r *HTTPSRouter) extractSNIWithReplay(conn net.Conn) (string, net.Conn, error) {
+	// Read enough bytes to capture the TLS ClientHello
+	buf := make([]byte, 4096)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to read TLS data: %v", err)
+	}
+
+	// Create a connection that can replay the consumed bytes
+	replayConn := &combinedConn{
+		Conn:   conn,
+		buffer: buf[:n],
+		offset: 0,
+	}
+
+	// Extract SNI from the buffered bytes
+	sni, err := r.extractSNIFromBytes(buf[:n])
+	if err != nil {
+		r.logger.Warn("Failed to extract SNI from bytes, trying TLS parsing", zap.Error(err))
+
+		// Fallback: try TLS parsing method
+		sni, err = r.extractSNIWithTLS(replayConn)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to extract SNI: %v", err)
+		}
+
+		// Reset the replay connection after TLS parsing consumed some bytes
+		replayConn = &combinedConn{
+			Conn:   conn,
+			buffer: buf[:n],
+			offset: 0,
+		}
+	}
+
+	return sni, replayConn, nil
+}
+
+// extractSNIWithTLS uses TLS parsing to extract SNI (fallback method)
+func (r *HTTPSRouter) extractSNIWithTLS(replayConn *combinedConn) (string, error) {
+	// Parse TLS ClientHello to extract SNI
+	config := &tls.Config{
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			// This callback is called with the parsed ClientHello
+			// We just need the SNI, so we can return an error to stop the handshake
+			return nil, fmt.Errorf("SNI extraction complete")
+		},
+	}
+
+	// Attempt to start TLS handshake to trigger SNI parsing
+	tlsConn := tls.Server(replayConn, config)
+	_ = tlsConn.Handshake() // Ignore error - we expect this to fail during SNI extraction
+
+	// The handshake will fail, but we should have captured the SNI
+	if hello := tlsConn.ConnectionState().ServerName; hello != "" {
+		return hello, nil
+	}
+
+	return "", fmt.Errorf("failed to extract SNI via TLS parsing")
 }
 
 func (r *HTTPSRouter) extractSNI(conn net.Conn) (string, error) {
