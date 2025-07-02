@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"time"
 
@@ -23,19 +24,17 @@ type LoggingHTTPTransport struct {
 	Logger    *zap.Logger
 }
 
-// RoundTrip implements http.RoundTripper interface with full request/response logging
+// RoundTrip implements http.RoundTripper interface with simple request/response logging
 func (t *LoggingHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Log request
-	reqDump, err := httputil.DumpRequestOut(req, true)
-	if err != nil {
-		t.Logger.Error("Failed to dump request", zap.Error(err))
-	} else {
-		t.Logger.Info("AWS KMS HTTP Request",
-			zap.String("method", req.Method),
-			zap.String("url", req.URL.String()),
-			zap.String("raw_request", string(reqDump)),
-		)
-	}
+	// Log simple request
+	body, _ := io.ReadAll(req.Body)
+	req.Body = io.NopCloser(bytes.NewReader(body)) // Reset body
+
+	t.Logger.Info("KMS Request",
+		zap.String("method", req.Method),
+		zap.String("url", req.URL.String()),
+		zap.String("body", string(body)),
+	)
 
 	// Execute request
 	start := time.Now()
@@ -43,25 +42,22 @@ func (t *LoggingHTTPTransport) RoundTrip(req *http.Request) (*http.Response, err
 	duration := time.Since(start)
 
 	if err != nil {
-		t.Logger.Error("AWS KMS HTTP Request failed",
+		t.Logger.Error("KMS Request failed",
 			zap.Error(err),
 			zap.Duration("duration", duration),
 		)
 		return resp, err
 	}
 
-	// Log response
-	respDump, dumpErr := httputil.DumpResponse(resp, true)
-	if dumpErr != nil {
-		t.Logger.Error("Failed to dump response", zap.Error(dumpErr))
-	} else {
-		t.Logger.Info("AWS KMS HTTP Response",
-			zap.Int("status_code", resp.StatusCode),
-			zap.String("status", resp.Status),
-			zap.Duration("duration", duration),
-			zap.String("raw_response", string(respDump)),
-		)
-	}
+	// Log simple response
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body = io.NopCloser(bytes.NewReader(respBody)) // Reset body
+
+	t.Logger.Info("KMS Response",
+		zap.Int("status", resp.StatusCode),
+		zap.Duration("duration", duration),
+		zap.String("body", string(respBody)),
+	)
 
 	return resp, err
 }
@@ -341,23 +337,20 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 			return nil, fmt.Errorf("invalid input: %v", err)
 		}
 
-		// Store encrypted data and key in combined format for atomic operations
-		// Format: [encrypted_key_256_bytes][encrypted_data_remaining_bytes]
-		const kmsKeySize = 256 // Fixed size for KMS encrypted keys
+		// Simple approach - separate files for key and data
+		keyFilename := "cache-" + input.Filename + ".key"
+		dataFilename := "cache-" + input.Filename + ".data"
 
-		// Pad or truncate key to fixed size for consistent parsing
-		paddedKey := make([]byte, kmsKeySize)
-		copy(paddedKey, input.Key)
-
-		// Create combined storage: fixed-size key + variable-size data
-		combined := make([]byte, kmsKeySize+len(input.Data))
-		copy(combined[:kmsKeySize], paddedKey)
-		copy(combined[kmsKeySize:], input.Data)
-
-		cacheFilename := "cache-" + input.Filename
-		if err := os.WriteFile(cacheFilename, combined, 0600); err != nil {
-			return nil, fmt.Errorf("failed to store encrypted item: %v", err)
+		// Store exact KMS key data (no modifications)
+		if err := os.WriteFile(keyFilename, input.Key, 0600); err != nil {
+			return nil, fmt.Errorf("failed to store key: %v", err)
 		}
+
+		// Store encrypted data
+		if err := os.WriteFile(dataFilename, input.Data, 0600); err != nil {
+			return nil, fmt.Errorf("failed to store data: %v", err)
+		}
+
 		return json.Marshal(ProxyStatusOutput{Status: "success"})
 	case "GetEncryptedItem":
 		var input ProxyGetItemInput
@@ -365,22 +358,22 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 			return nil, fmt.Errorf("invalid GetEncryptedItem input: %v", err)
 		}
 
-		cacheFilename := "cache-" + input.Filename
-		combined, err := os.ReadFile(cacheFilename)
+		keyFilename := "cache-" + input.Filename + ".key"
+		dataFilename := "cache-" + input.Filename + ".data"
+
+		// Read key file
+		encryptedKey, err := os.ReadFile(keyFilename)
 		if err != nil {
-			p.logger.Debug("Encrypted item not found", zap.String("filename", cacheFilename))
+			p.logger.Debug("Encrypted key not found", zap.String("filename", keyFilename))
 			return nil, fmt.Errorf("encrypted item not found: %s", input.Filename)
 		}
 
-		// Combined format: first part is encrypted key, remaining is encrypted data
-		// We need to determine the key size (typically 256 bytes for KMS-encrypted keys)
-		const kmsKeySize = 256 // Typical KMS encrypted key size
-		if len(combined) < kmsKeySize {
-			return nil, fmt.Errorf("invalid cached data format")
+		// Read data file
+		encryptedData, err := os.ReadFile(dataFilename)
+		if err != nil {
+			p.logger.Debug("Encrypted data not found", zap.String("filename", dataFilename))
+			return nil, fmt.Errorf("encrypted item not found: %s", input.Filename)
 		}
-
-		encryptedKey := combined[:kmsKeySize]
-		encryptedData := combined[kmsKeySize:]
 
 		resp := ProxyGetItemOutput{Data: encryptedData, Key: encryptedKey}
 		return json.Marshal(resp)
@@ -391,16 +384,12 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 			return nil, fmt.Errorf("invalid DeleteEncryptedItem input: %v", err)
 		}
 
-		cacheFilename := "cache-" + input.Filename
-		if err := os.Remove(cacheFilename); err != nil {
-			// Don't error if file doesn't exist
-			if !os.IsNotExist(err) {
-				return nil, fmt.Errorf("failed to delete encrypted item: %v", err)
-			}
-		}
+		keyFilename := "cache-" + input.Filename + ".key"
+		dataFilename := "cache-" + input.Filename + ".data"
 
-		// Also remove legacy key file if it exists
-		os.Remove(cacheFilename + ".key")
+		// Remove both files (ignore errors if files don't exist)
+		os.Remove(keyFilename)
+		os.Remove(dataFilename)
 
 		return json.Marshal(ProxyStatusOutput{Status: "success"})
 
