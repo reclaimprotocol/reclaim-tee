@@ -5,14 +5,12 @@ WORKDIR /app
 
 # Copy shared dependencies first
 COPY shared/ /app/shared/
+COPY minitls/ /app/minitls/
 
 # Copy TEE_K source files
 COPY tee_k/*.go /app/tee_k/
-COPY tee_k/go.mod /app/tee_k/go.mod
-COPY tee_k/go.sum /app/tee_k/go.sum
-
-# Copy minitls dependency
-COPY minitls/ /app/minitls/
+COPY go.mod /app/tee_k/go.mod
+COPY go.sum /app/tee_k/go.sum
 
 WORKDIR /app/tee_k
 
