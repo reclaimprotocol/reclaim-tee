@@ -268,10 +268,38 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	// Wait for server to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Request certificate (this will trigger ACME challenge)
-	_, err := em.autocertManager.GetCertificate(&tls.ClientHelloInfo{
-		ServerName: em.config.Domain,
-	})
+	log.Printf("[%s] Starting ACME certificate request for %s...", em.config.ServiceName, em.config.Domain)
+	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.autocertManager.Client.DirectoryURL)
+	log.Printf("[%s] HTTP server running on port %d for ACME challenges", em.config.ServiceName, em.config.HTTPPort)
+
+	// Create a timeout context for the certificate request
+	certCtx, certCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer certCancel()
+
+	// Channel to handle the GetCertificate call with timeout
+	certResult := make(chan error, 1)
+	go func() {
+		log.Printf("[%s] Calling GetCertificate for %s...", em.config.ServiceName, em.config.Domain)
+		_, certErr := em.autocertManager.GetCertificate(&tls.ClientHelloInfo{
+			ServerName: em.config.Domain,
+		})
+		log.Printf("[%s] GetCertificate completed for %s", em.config.ServiceName, em.config.Domain)
+		certResult <- certErr
+	}()
+
+	// Wait for certificate request to complete or timeout
+	var err error
+	select {
+	case err = <-certResult:
+		if err != nil {
+			log.Printf("[%s] ACME certificate request failed: %v", em.config.ServiceName, err)
+		} else {
+			log.Printf("[%s] ACME certificate request succeeded!", em.config.ServiceName)
+		}
+	case <-certCtx.Done():
+		err = fmt.Errorf("certificate request timed out after 5 minutes")
+		log.Printf("[%s] ACME certificate request TIMED OUT", em.config.ServiceName)
+	}
 
 	// Shutdown HTTP server
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
