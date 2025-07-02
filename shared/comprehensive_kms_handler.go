@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 // KMSConnectionManager defines the interface for KMS connection management
@@ -137,7 +138,7 @@ func (c *ComprehensiveKMSHandler) LoadAndDecryptCacheItem(ctx context.Context, f
 
 	resp, err := c.sendVsockRequest(ctx, "GetEncryptedItem", getInput)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get encrypted item: %v", err)
+		return nil, autocert.ErrCacheMiss
 	}
 
 	var output struct {
@@ -145,7 +146,7 @@ func (c *ComprehensiveKMSHandler) LoadAndDecryptCacheItem(ctx context.Context, f
 		Key  []byte `json:"key"`
 	}
 	if err = json.Unmarshal(resp, &output); err != nil {
-		return nil, fmt.Errorf("failed to parse get response: %v", err)
+		return nil, autocert.ErrCacheMiss
 	}
 
 	log.Printf("[ComprehensiveKMS] Retrieved encrypted item - data: %d bytes, key: %d bytes",
@@ -154,7 +155,7 @@ func (c *ComprehensiveKMSHandler) LoadAndDecryptCacheItem(ctx context.Context, f
 	// CRITICAL: Use decryptItem pattern from nitro.go with fresh attestation
 	plaintext, err := c.decryptItem(ctx, output.Data, output.Key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt item: %v", err)
+		return nil, autocert.ErrCacheMiss
 	}
 
 	log.Printf("[ComprehensiveKMS] Successfully decrypted item: %s (%d bytes)", filename, len(plaintext))
