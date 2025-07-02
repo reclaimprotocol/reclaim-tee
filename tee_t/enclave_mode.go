@@ -37,17 +37,6 @@ func startEnclaveMode(config *TEETConfig) {
 	}
 	defer enclaveManager.Shutdown(ctx)
 
-	// Test KMS attestation functionality before proceeding
-	log.Printf("[TEE_T] Testing KMS attestation functionality...")
-	if kmsHandler := shared.NewComprehensiveKMSHandler(enclaveManager.GetConnectionManager(), config.KMSKey); kmsHandler != nil {
-		if err := kmsHandler.TestKMSAttestationRoundTrip(ctx); err != nil {
-			log.Printf("[TEE_T] KMS ATTESTATION TEST FAILED: %v", err)
-			log.Printf("[TEE_T] This indicates certificate caching will not work properly")
-		} else {
-			log.Printf("[TEE_T] ✓ KMS attestation test PASSED - certificate caching should work correctly")
-		}
-	}
-
 	// Phase 1: Bootstrap certificates via ACME
 	log.Printf("[TEE_T] Bootstrapping certificates for domain: %s", config.Domain)
 	if err := enclaveManager.BootstrapCertificates(ctx); err != nil {

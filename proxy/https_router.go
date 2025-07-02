@@ -96,8 +96,6 @@ func (r *HTTPSRouter) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	r.logger.Info("Routing HTTPS connection", zap.String("sni", sni))
-
 	// Find target enclave based on SNI
 	var targetCID uint32
 	var found bool
