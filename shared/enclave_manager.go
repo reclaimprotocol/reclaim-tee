@@ -173,7 +173,7 @@ func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager,
 		Cache:      cache,
 		Client: &acme.Client{
 			HTTPClient:   createVSockHTTPClient(config.ParentCID, config.InternetPort),
-			DirectoryURL: "https://acme-v02.api.letsencrypt.org/directory",
+			DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
 		},
 	}
 
