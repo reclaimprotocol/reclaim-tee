@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,6 +59,23 @@ const (
 	circuitBreakerThreshold = 5
 	circuitBreakerTimeout   = 60 * time.Second
 )
+
+// isCacheMiss checks if an error is a cache miss and should not count as circuit breaker failure
+func isCacheMiss(errorMsg string) bool {
+	cacheMissErrors := []string{
+		"encrypted item not found",
+		"item not found",
+		"cache miss",
+		"not found",
+	}
+
+	for _, missError := range cacheMissErrors {
+		if strings.Contains(strings.ToLower(errorMsg), missError) {
+			return true
+		}
+	}
+	return false
+}
 
 // NewVSockConnectionManager creates a new VSock connection manager
 func NewVSockConnectionManager(parentCID, kmsPort, internetPort uint32) *VSockConnectionManager {
@@ -135,8 +153,11 @@ func (v *VSockConnectionManager) SendKMSRequest(ctx context.Context, operation s
 	}
 
 	if response.Error != "" {
-		v.circuitBreaker.OnFailure()
-		v.metrics.recordFailure()
+		// Don't count cache misses as circuit breaker failures
+		if !isCacheMiss(response.Error) {
+			v.circuitBreaker.OnFailure()
+			v.metrics.recordFailure()
+		}
 		return nil, fmt.Errorf("KMS operation failed: %s", response.Error)
 	}
 
