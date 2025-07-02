@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -45,9 +46,20 @@ type EnclaveConfig struct {
 }
 
 type EnclaveHandle struct {
-	nsm *nsm.Session
-	key *rsa.PrivateKey
-	mu  sync.RWMutex
+	nsm              *nsm.Session
+	key              *rsa.PrivateKey
+	mu               sync.RWMutex
+	attestationCache map[string]attestationCacheEntry
+}
+
+type attestationCacheEntry struct {
+	doc       []byte
+	createdAt time.Time
+}
+type AttestationOptions struct {
+	Nonce, UserData []byte
+	NoPublicKey     bool
+	PublicKey       any
 }
 
 // NewEnclaveManager creates a new enclave manager with production configuration
@@ -213,31 +225,84 @@ func (em *EnclaveManager) getCertificateFingerprint(ctx context.Context) ([]byte
 	return x509Cert.Raw, nil
 }
 
-// NOTE: initializeEnclaveHandle removed - using global singleton pattern from global_enclave_handle.go
+func (e *EnclaveHandle) Attest(args AttestationOptions) ([]byte, error) {
+	var publicKey []byte
+	var err error
+	if args.PublicKey != nil && !args.NoPublicKey {
+		if publicKey, err = x509.MarshalPKIXPublicKey(args.PublicKey); err != nil {
+			return nil, err
+		}
+	} else if !args.NoPublicKey {
+		if publicKey, err = x509.MarshalPKIXPublicKey(e.PublicKey()); err != nil {
+			return nil, err
+		}
+	}
 
-func (eh *EnclaveHandle) generateAttestation(userData []byte) ([]byte, error) {
-	// Generate attestation using NSM
-	res, err := eh.nsm.Send(&request.Attestation{
-		UserData:  userData,
-		Nonce:     nil,
-		PublicKey: nil,
-	})
+	res, err := e.nsm.Send(&request.Attestation{Nonce: args.Nonce, UserData: args.UserData, PublicKey: publicKey})
 	if err != nil {
-		return nil, fmt.Errorf("NSM attestation request failed: %v", err)
+		return nil, err
 	}
-
+	if res.Error != "" {
+		return nil, errors.New(string(res.Error))
+	}
 	if res.Attestation == nil || res.Attestation.Document == nil {
-		return nil, fmt.Errorf("NSM returned empty attestation document")
+		return nil, errors.New("attestation response missing attestation document")
 	}
-
 	return res.Attestation.Document, nil
 }
 
+const attestationTTL = 4*time.Minute + 50*time.Second
+
+func (e *EnclaveHandle) generateAttestation(userData []byte) ([]byte, error) {
+	// Use "Reclaim Protocol" as default user data if none provided
+	if userData == nil {
+		userData = []byte("Reclaim Protocol")
+	}
+
+	// Generate cache key based on userData
+	cacheKey := string(userData)
+
+	// Check cache
+	e.mu.RLock()
+	entry, found := e.attestationCache[cacheKey]
+	if found && time.Since(entry.createdAt) < attestationTTL {
+		log.Printf("Using cached attestation for userData: %s", cacheKey)
+		e.mu.RUnlock()
+		return entry.doc, nil
+	}
+	e.mu.RUnlock()
+
+	// Generate 32-byte random nonce
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("failed to generate nonce: %v", err)
+	}
+
+	attestationDoc, err := e.Attest(AttestationOptions{
+		Nonce:    []byte(hex.EncodeToString(nonce)),
+		UserData: userData,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to request attestation: %v", err)
+	}
+
+	// Store in cache
+	e.mu.Lock()
+	e.attestationCache[cacheKey] = attestationCacheEntry{
+		doc:       attestationDoc,
+		createdAt: time.Now(),
+	}
+	e.mu.Unlock()
+	log.Printf("Stored new attestation in cache for userData: %s", cacheKey)
+
+	return attestationDoc, nil
+}
+
 // PrivateKey returns the enclave's private key for cryptographic operations
-func (eh *EnclaveHandle) PrivateKey() *rsa.PrivateKey {
-	eh.mu.RLock()
-	defer eh.mu.RUnlock()
-	return eh.key
+func (e *EnclaveHandle) PrivateKey() *rsa.PrivateKey {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.key
 }
 
 func createVSockHTTPClient(parentCID, internetPort uint32) *http.Client {

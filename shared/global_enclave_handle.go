@@ -26,7 +26,9 @@ func SafeGetEnclaveHandle() (*EnclaveHandle, error) {
 		defer initMutex.Unlock()
 
 		if globalHandle == nil && initializationError == nil {
-			enclave := &EnclaveHandle{}
+			enclave := &EnclaveHandle{
+				attestationCache: make(map[string]attestationCacheEntry),
+			}
 			if err := enclave.initialize(); err != nil {
 				initializationError = fmt.Errorf("enclave initialization failed: %v", err)
 				return
