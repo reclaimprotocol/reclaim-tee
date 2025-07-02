@@ -190,6 +190,69 @@ func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager,
 func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	log.Printf("[%s] Bootstrapping certificates for domain: %s", em.config.ServiceName, em.config.Domain)
 
+	// First, check if we already have a valid certificate in cache
+	// Let's check what autocert is actually looking for by trying different possible keys
+	possibleKeys := []string{
+		em.config.Domain,
+		em.config.Domain + "+rsa",
+		em.config.Domain + "+ecdsa",
+		em.config.Domain + "+key",
+	}
+
+	log.Printf("[%s] Checking for cached certificates for domain: %s", em.config.ServiceName, em.config.Domain)
+
+	var foundCert []byte
+	var foundKey string
+
+	for _, certKey := range possibleKeys {
+		log.Printf("[%s] Trying cache key: %s", em.config.ServiceName, certKey)
+		if cachedCert, err := em.cache.Get(ctx, certKey); err == nil && len(cachedCert) > 0 {
+			log.Printf("[%s] Found cached certificate data (%d bytes) with key: %s", em.config.ServiceName, len(cachedCert), certKey)
+			foundCert = cachedCert
+			foundKey = certKey
+			break
+		} else {
+			if err != nil {
+				log.Printf("[%s] Cache key %s: error %v", em.config.ServiceName, certKey, err)
+			} else {
+				log.Printf("[%s] Cache key %s: no data found", em.config.ServiceName, certKey)
+			}
+		}
+	}
+
+	if foundCert != nil {
+		log.Printf("[%s] Using certificate from cache key: %s", em.config.ServiceName, foundKey)
+
+		// Try to parse the cached certificate to check its validity
+		if cert, err := tls.X509KeyPair(foundCert, foundCert); err == nil {
+			log.Printf("[%s] Successfully parsed TLS certificate pair", em.config.ServiceName)
+
+			if x509Cert, err := x509.ParseCertificate(cert.Certificate[0]); err == nil {
+				// Check if certificate is still valid for at least 7 days
+				// Only renew if it expires within a week to avoid unnecessary renewals
+				timeUntilExpiry := time.Until(x509Cert.NotAfter)
+				log.Printf("[%s] Certificate expires at %v (in %v)", em.config.ServiceName, x509Cert.NotAfter, timeUntilExpiry)
+
+				if timeUntilExpiry > 7*24*time.Hour {
+					log.Printf("[%s] Found valid cached certificate for %s (expires in %v), skipping ACME challenge",
+						em.config.ServiceName, em.config.Domain, timeUntilExpiry)
+					return nil
+				} else {
+					log.Printf("[%s] Cached certificate for %s expires soon (%v), will renew",
+						em.config.ServiceName, em.config.Domain, timeUntilExpiry)
+				}
+			} else {
+				log.Printf("[%s] Failed to parse x509 certificate: %v", em.config.ServiceName, err)
+			}
+		} else {
+			log.Printf("[%s] Failed to parse TLS certificate pair: %v", em.config.ServiceName, err)
+		}
+	} else {
+		log.Printf("[%s] No cached certificate found for any key variant", em.config.ServiceName)
+	}
+
+	log.Printf("[%s] No valid cached certificate found, starting ACME challenge for %s", em.config.ServiceName, em.config.Domain)
+
 	// Create VSock HTTP server for ACME challenges
 	httpServer := em.createVSockHTTPServer(em.autocertManager.HTTPHandler(nil), em.config.HTTPPort)
 
