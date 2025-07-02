@@ -5,14 +5,66 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httputil"
 	"os"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/mdlayher/vsock"
 	"go.uber.org/zap"
 )
+
+// LoggingHTTPTransport wraps http.Transport to log all requests and responses
+type LoggingHTTPTransport struct {
+	Transport http.RoundTripper
+	Logger    *zap.Logger
+}
+
+// RoundTrip implements http.RoundTripper interface with full request/response logging
+func (t *LoggingHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Log request
+	reqDump, err := httputil.DumpRequestOut(req, true)
+	if err != nil {
+		t.Logger.Error("Failed to dump request", zap.Error(err))
+	} else {
+		t.Logger.Info("AWS KMS HTTP Request",
+			zap.String("method", req.Method),
+			zap.String("url", req.URL.String()),
+			zap.String("raw_request", string(reqDump)),
+		)
+	}
+
+	// Execute request
+	start := time.Now()
+	resp, err := t.Transport.RoundTrip(req)
+	duration := time.Since(start)
+
+	if err != nil {
+		t.Logger.Error("AWS KMS HTTP Request failed",
+			zap.Error(err),
+			zap.Duration("duration", duration),
+		)
+		return resp, err
+	}
+
+	// Log response
+	respDump, dumpErr := httputil.DumpResponse(resp, true)
+	if dumpErr != nil {
+		t.Logger.Error("Failed to dump response", zap.Error(dumpErr))
+	} else {
+		t.Logger.Info("AWS KMS HTTP Response",
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("status", resp.Status),
+			zap.Duration("duration", duration),
+			zap.String("raw_response", string(respDump)),
+		)
+	}
+
+	return resp, err
+}
 
 type KMSProxy struct {
 	config    *ProxyConfig
@@ -54,18 +106,38 @@ type ProxyStatusOutput struct {
 }
 
 func NewKMSProxy(proxyConfig *ProxyConfig, logger *zap.Logger) (*KMSProxy, error) {
-	// Initialize AWS KMS client
+	// Create HTTP transport with logging
+	transport := &http.Transport{
+		MaxIdleConns:       100,
+		IdleConnTimeout:    90 * time.Second,
+		DisableCompression: false,
+	}
+
+	// Wrap transport with logging
+	loggingTransport := &LoggingHTTPTransport{
+		Transport: transport,
+		Logger:    logger.With(zap.String("component", "kms_http_transport")),
+	}
+
+	// Initialize AWS KMS client with logging enabled
 	awsConfig, err := config.LoadDefaultConfig(context.Background(),
 		config.WithRegion(proxyConfig.AWS.Region),
+		config.WithHTTPClient(&http.Client{
+			Transport: loggingTransport,
+			Timeout:   60 * time.Second,
+		}),
+		config.WithClientLogMode(aws.LogRetries|aws.LogRequest|aws.LogResponse|aws.LogRequestWithBody|aws.LogResponseWithBody),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %v", err)
 	}
 
+	kmsClient := kms.NewFromConfig(awsConfig)
+
 	return &KMSProxy{
 		config:    proxyConfig,
 		logger:    logger.With(zap.String("component", "kms_proxy")),
-		kmsClient: kms.NewFromConfig(awsConfig),
+		kmsClient: kmsClient,
 	}, nil
 }
 
@@ -180,10 +252,37 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid GenerateDataKey input: %v", err)
 		}
+
+		// Log detailed KMS GenerateDataKey request info
+		p.logger.Info("KMS GenerateDataKey request details",
+			zap.String("KeyId", aws.ToString(input.KeyId)),
+			zap.String("KeySpec", string(input.KeySpec)),
+			zap.Bool("HasRecipient", input.Recipient != nil),
+		)
+
+		if input.Recipient != nil {
+			p.logger.Info("KMS GenerateDataKey recipient info",
+				zap.Int("AttestationDocument_size", len(input.Recipient.AttestationDocument)),
+				zap.String("KeyEncryptionAlgorithm", string(input.Recipient.KeyEncryptionAlgorithm)),
+			)
+		}
+
 		output, err := p.kmsClient.GenerateDataKey(ctx, &input)
 		if err != nil {
+			p.logger.Error("KMS GenerateDataKey failed - detailed error",
+				zap.Error(err),
+				zap.String("ErrorType", fmt.Sprintf("%T", err)),
+				zap.String("KeyId", aws.ToString(input.KeyId)),
+			)
 			return nil, fmt.Errorf("KMS GenerateDataKey failed: %v", err)
 		}
+
+		p.logger.Info("KMS GenerateDataKey success",
+			zap.Int("CiphertextBlob_size", len(output.CiphertextBlob)),
+			zap.Int("CiphertextForRecipient_size", len(output.CiphertextForRecipient)),
+			zap.String("KeyId", aws.ToString(output.KeyId)),
+		)
+
 		return json.Marshal(output)
 
 	case "Encrypt":
@@ -202,10 +301,39 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid Decrypt input: %v", err)
 		}
+
+		// Log detailed KMS Decrypt request info
+		p.logger.Info("KMS Decrypt request details",
+			zap.String("KeyId", aws.ToString(input.KeyId)),
+			zap.Int("CiphertextBlob_size", len(input.CiphertextBlob)),
+			zap.String("EncryptionAlgorithm", string(input.EncryptionAlgorithm)),
+			zap.Bool("HasRecipient", input.Recipient != nil),
+		)
+
+		if input.Recipient != nil {
+			p.logger.Info("KMS Decrypt recipient info",
+				zap.Int("AttestationDocument_size", len(input.Recipient.AttestationDocument)),
+				zap.String("KeyEncryptionAlgorithm", string(input.Recipient.KeyEncryptionAlgorithm)),
+			)
+		}
+
 		output, err := p.kmsClient.Decrypt(ctx, &input)
 		if err != nil {
+			p.logger.Error("KMS Decrypt failed - detailed error",
+				zap.Error(err),
+				zap.String("ErrorType", fmt.Sprintf("%T", err)),
+				zap.String("KeyId", aws.ToString(input.KeyId)),
+				zap.Int("CiphertextBlob_size", len(input.CiphertextBlob)),
+			)
 			return nil, fmt.Errorf("KMS Decrypt failed: %v", err)
 		}
+
+		p.logger.Info("KMS Decrypt success",
+			zap.Int("CiphertextForRecipient_size", len(output.CiphertextForRecipient)),
+			zap.String("KeyId", aws.ToString(output.KeyId)),
+			zap.String("EncryptionAlgorithm", string(output.EncryptionAlgorithm)),
+		)
+
 		return json.Marshal(output)
 	case "StoreEncryptedItem":
 		var input ProxyStoreItemInput
