@@ -9,8 +9,8 @@ COPY minitls/ /app/minitls/
 
 # Copy TEE_K source files
 COPY tee_k/*.go /app/tee_k/
-COPY go.mod /app/tee_k/go.mod
-COPY go.sum /app/tee_k/go.sum
+COPY go.mod /app/go.mod
+COPY go.sum /app/go.sum
 
 WORKDIR /app/tee_k
 
