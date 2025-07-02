@@ -142,26 +142,27 @@ func (c *ComprehensiveKMSHandler) LoadAndDecryptCacheItem(ctx context.Context, f
 		return nil, autocert.ErrCacheMiss
 	}
 
-	var loadOutput struct {
+	// Parse response directly (matching advanced_kms.go pattern)
+	var output struct {
 		Data []byte `json:"data"`
 		Key  []byte `json:"key"`
 	}
-	if err = json.Unmarshal(resp, &loadOutput); err != nil {
-		log.Printf("[ComprehensiveKMS] Failed to parse GetEncryptedItem response: %v", err)
+	if err = json.Unmarshal(resp, &output); err != nil {
+		log.Printf("[ComprehensiveKMS] Failed to parse response for %s: %v", filename, err)
 		return nil, autocert.ErrCacheMiss
 	}
 
-	log.Printf("[ComprehensiveKMS] Retrieved encrypted item - data: %d bytes, key: %d bytes", len(loadOutput.Data), len(loadOutput.Key))
+	log.Printf("[ComprehensiveKMS] Retrieved encrypted item - data: %d bytes, key: %d bytes", len(output.Data), len(output.Key))
 
-	// Simple decrypt using the exact nitro.go pattern
-	plaintext, err := c.decryptItem(ctx, loadOutput.Data, loadOutput.Key)
+	// Decrypt the item (matching nitro.go decryptItem exactly)
+	decryptedData, err := c.decryptItem(ctx, output.Data, output.Key)
 	if err != nil {
 		log.Printf("[ComprehensiveKMS] Failed to decrypt item %s: %v", filename, err)
 		return nil, autocert.ErrCacheMiss
 	}
 
-	log.Printf("[ComprehensiveKMS] Successfully decrypted item: %s (%d bytes)", filename, len(plaintext))
-	return plaintext, nil
+	log.Printf("[ComprehensiveKMS] Successfully decrypted item %s: %d bytes", filename, len(decryptedData))
+	return decryptedData, nil
 }
 
 // decryptItem decrypts item data - EXACTLY matching nitro.go decryptItem function
