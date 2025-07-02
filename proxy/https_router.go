@@ -13,6 +13,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// vsockDialFunc is a variable function for vsock.Dial that can be mocked in tests
+var vsockDialFunc = func(cid, port uint32) (net.Conn, error) {
+	return vsock.Dial(cid, port, nil)
+}
+
 type HTTPSRouter struct {
 	config *ProxyConfig
 	logger *zap.Logger
@@ -110,7 +115,7 @@ func (r *HTTPSRouter) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	// Connect to target enclave
-	enclaveConn, err := vsock.Dial(targetCID, 8443, nil)
+	enclaveConn, err := vsockDialFunc(targetCID, 8443)
 	if err != nil {
 		r.logger.Error("Failed to connect to enclave",
 			zap.Uint32("cid", targetCID),
@@ -154,40 +159,68 @@ func (r *HTTPSRouter) handleConnection(ctx context.Context, conn net.Conn) {
 
 // extractSNIWithReplay extracts SNI and returns a connection that can replay all data
 func (r *HTTPSRouter) extractSNIWithReplay(conn net.Conn) (string, net.Conn, error) {
-	// Read enough bytes to capture the TLS ClientHello
-	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
+	// Use a buffered approach that can handle fragmented TLS records
+	reader := &tlsRecordReader{conn: conn}
+
+	// Read the complete TLS ClientHello record
+	record, err := reader.readCompleteTLSRecord()
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to read TLS data: %v", err)
+		return "", nil, fmt.Errorf("failed to read TLS record: %v", err)
 	}
 
-	// Create a connection that can replay the consumed bytes
+	// Extract SNI from the complete record
+	sni, err := r.extractSNIFromBytes(record)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to extract SNI: %v", err)
+	}
+
+	// Create replay connection with all consumed data
 	replayConn := &combinedConn{
 		Conn:   conn,
-		buffer: buf[:n],
+		buffer: reader.consumedBytes,
 		offset: 0,
 	}
 
-	// Extract SNI from the buffered bytes
-	sni, err := r.extractSNIFromBytes(buf[:n])
+	return sni, replayConn, nil
+}
+
+// tlsRecordReader helps read complete TLS records while tracking consumed bytes
+type tlsRecordReader struct {
+	conn          net.Conn
+	consumedBytes []byte
+}
+
+func (r *tlsRecordReader) readCompleteTLSRecord() ([]byte, error) {
+	// Read TLS record header (5 bytes)
+	header := make([]byte, 5)
+	_, err := io.ReadFull(r.conn, header)
 	if err != nil {
-		r.logger.Warn("Failed to extract SNI from bytes, trying TLS parsing", zap.Error(err))
+		return nil, fmt.Errorf("failed to read TLS record header: %v", err)
+	}
+	r.consumedBytes = append(r.consumedBytes, header...)
 
-		// Fallback: try TLS parsing method
-		sni, err = r.extractSNIWithTLS(replayConn)
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to extract SNI: %v", err)
-		}
-
-		// Reset the replay connection after TLS parsing consumed some bytes
-		replayConn = &combinedConn{
-			Conn:   conn,
-			buffer: buf[:n],
-			offset: 0,
-		}
+	// Check if it's a handshake record (type 22)
+	if header[0] != 22 {
+		return nil, fmt.Errorf("not a TLS handshake record: type %d", header[0])
 	}
 
-	return sni, replayConn, nil
+	// Extract record length from header
+	recordLength := int(header[3])<<8 | int(header[4])
+
+	// Read the complete record payload
+	payload := make([]byte, recordLength)
+	_, err = io.ReadFull(r.conn, payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read TLS record payload: %v", err)
+	}
+	r.consumedBytes = append(r.consumedBytes, payload...)
+
+	// Return the complete record (header + payload)
+	completeRecord := make([]byte, 5+recordLength)
+	copy(completeRecord, header)
+	copy(completeRecord[5:], payload)
+
+	return completeRecord, nil
 }
 
 // extractSNIWithTLS uses TLS parsing to extract SNI (fallback method)
