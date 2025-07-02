@@ -27,8 +27,11 @@ type LoggingHTTPTransport struct {
 // RoundTrip implements http.RoundTripper interface with simple request/response logging
 func (t *LoggingHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Log simple request
-	body, _ := io.ReadAll(req.Body)
-	req.Body = io.NopCloser(bytes.NewReader(body)) // Reset body
+	var body []byte
+	if req.Body != nil {
+		body, _ = io.ReadAll(req.Body)
+		req.Body = io.NopCloser(bytes.NewReader(body)) // Reset body
+	}
 
 	t.Logger.Info("KMS Request",
 		zap.String("method", req.Method),
@@ -50,8 +53,11 @@ func (t *LoggingHTTPTransport) RoundTrip(req *http.Request) (*http.Response, err
 	}
 
 	// Log simple response
-	respBody, _ := io.ReadAll(resp.Body)
-	resp.Body = io.NopCloser(bytes.NewReader(respBody)) // Reset body
+	var respBody []byte
+	if resp.Body != nil {
+		respBody, _ = io.ReadAll(resp.Body)
+		resp.Body = io.NopCloser(bytes.NewReader(respBody)) // Reset body
+	}
 
 	t.Logger.Info("KMS Response",
 		zap.Int("status", resp.StatusCode),
