@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -108,6 +109,10 @@ func createVSockWebSocketDialer() *websocket.Dialer {
 			return conn, nil
 		},
 		HandshakeTimeout: 30 * time.Second,
+		// Skip TLS certificate verification for staging certificates
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
 	}
 }
 
@@ -129,6 +134,7 @@ func (t *TEEK) ConnectToTEET() error {
 	if strings.HasPrefix(t.teetURL, "wss://") && strings.Contains(t.teetURL, "reclaimprotocol.org") {
 		// Enclave mode: use custom vsock dialer
 		log.Printf("[TEE_K] Enclave mode detected - using VSock dialer via internet proxy")
+		log.Printf("[TEE_K] Note: TLS certificate verification is disabled for staging certificates")
 		dialer := createVSockWebSocketDialer()
 		conn, _, err = dialer.Dial(t.teetURL, nil)
 	} else {
