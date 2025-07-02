@@ -5,30 +5,22 @@ import (
 )
 
 type TEEKConfig struct {
-	// Deployment mode
-	EnclaveMode bool   `json:"enclave_mode"`
-	Domain      string `json:"domain"`
-
 	// Standalone mode settings
 	Port    int    `json:"port"`
 	TEETURL string `json:"teet_url"`
 
 	// Enclave mode settings
-	HTTPPort  int    `json:"http_port"`  // 8080 for ACME
-	HTTPSPort int    `json:"https_port"` // 8443 for service
-	KMSKey    string `json:"kms_key"`
-	ParentCID uint32 `json:"parent_cid"` // 3
+	EnclaveMode bool   `json:"enclave_mode"`
+	Domain      string `json:"domain"`
+	KMSKey      string `json:"kms_key"`
 }
 
 func LoadTEEKConfig() *TEEKConfig {
 	return &TEEKConfig{
-		EnclaveMode: shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true",
-		Domain:      shared.GetEnvOrDefault("TEE_DOMAIN", "tee-k.reclaimprotocol.org"),
 		Port:        shared.GetEnvIntOrDefault("PORT", 8080),
 		TEETURL:     shared.GetEnvOrDefault("TEET_URL", "ws://localhost:8081/teek"),
-		HTTPPort:    shared.GetEnvIntOrDefault("HTTP_PORT", 8080),
-		HTTPSPort:   shared.GetEnvIntOrDefault("HTTPS_PORT", 8443),
-		KMSKey:      shared.GetEnvOrDefault("KMS_KEY", ""),
-		ParentCID:   shared.GetEnvUint32OrDefault("PARENT_CID", 3),
+		EnclaveMode: shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true",
+		Domain:      shared.GetEnvOrDefault("ENCLAVE_DOMAIN", "tee-k.reclaimprotocol.org"),
+		KMSKey:      shared.GetEnvOrDefault("KMS_KEY", "arn:aws:kms:ap-south-1:342772716647:key/ff4db6ac-b9fe-474c-9f59-5224c0c0f912"),
 	}
 }

@@ -78,23 +78,40 @@ func (p *KMSProxy) Start(ctx context.Context, port int) error {
 
 	p.logger.Info("KMS proxy started", zap.Int("port", port))
 
+	// Channel for accepting connections
+	connChan := make(chan net.Conn, 1)
+	errChan := make(chan error, 1)
+
+	// Accept connections in separate goroutine
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				select {
+				case errChan <- err:
+				case <-ctx.Done():
+					return
+				}
+				return
+			}
+			select {
+			case connChan <- conn:
+			case <-ctx.Done():
+				conn.Close()
+				return
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			p.logger.Info("KMS proxy shutting down")
 			return nil
-		default:
-			conn, err := listener.Accept()
-			if err != nil {
-				select {
-				case <-ctx.Done():
-					return nil
-				default:
-					p.logger.Error("Failed to accept vsock connection", zap.Error(err))
-					continue
-				}
-			}
-
+		case err := <-errChan:
+			p.logger.Error("Accept error", zap.Error(err))
+			return err
+		case conn := <-connChan:
 			go p.handleConnection(ctx, conn)
 		}
 	}
@@ -195,44 +212,68 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid input: %v", err)
 		}
-		cacheFilename := "item-" + input.Filename
-		if err := os.WriteFile(cacheFilename, input.Data, 0600); err != nil {
-			return nil, fmt.Errorf("failed to store item: %v", err)
-		}
-		if err := os.WriteFile(cacheFilename+".key", input.Key, 0600); err != nil {
-			return nil, fmt.Errorf("failed to store key: %v", err)
+
+		// Store encrypted data and key in combined format for atomic operations
+		// Format: [encrypted_key_256_bytes][encrypted_data_remaining_bytes]
+		const kmsKeySize = 256 // Fixed size for KMS encrypted keys
+
+		// Pad or truncate key to fixed size for consistent parsing
+		paddedKey := make([]byte, kmsKeySize)
+		copy(paddedKey, input.Key)
+
+		// Create combined storage: fixed-size key + variable-size data
+		combined := make([]byte, kmsKeySize+len(input.Data))
+		copy(combined[:kmsKeySize], paddedKey)
+		copy(combined[kmsKeySize:], input.Data)
+
+		cacheFilename := "cache-" + input.Filename
+		if err := os.WriteFile(cacheFilename, combined, 0600); err != nil {
+			return nil, fmt.Errorf("failed to store encrypted item: %v", err)
 		}
 		return json.Marshal(ProxyStatusOutput{Status: "success"})
-	case "GetCachedItem":
+	case "GetEncryptedItem":
 		var input ProxyGetItemInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
-			return nil, fmt.Errorf("invalid input: %v", err)
+			return nil, fmt.Errorf("invalid GetEncryptedItem input: %v", err)
 		}
-		cacheFilename := "item-" + input.Filename
-		data, err := os.ReadFile(cacheFilename)
+
+		cacheFilename := "cache-" + input.Filename
+		combined, err := os.ReadFile(cacheFilename)
 		if err != nil {
-			fmt.Println("item file not found", zap.String("filename", cacheFilename))
-			return json.Marshal(ProxyStatusOutput{Status: "not_found"})
+			p.logger.Debug("Encrypted item not found", zap.String("filename", cacheFilename))
+			return nil, fmt.Errorf("encrypted item not found: %s", input.Filename)
 		}
-		key, err := os.ReadFile(cacheFilename + ".key")
-		if err != nil {
-			fmt.Println("key file not found", zap.String("filename", cacheFilename+".key"))
-			return json.Marshal(ProxyStatusOutput{Status: "not_found"})
+
+		// Combined format: first part is encrypted key, remaining is encrypted data
+		// We need to determine the key size (typically 256 bytes for KMS-encrypted keys)
+		const kmsKeySize = 256 // Typical KMS encrypted key size
+		if len(combined) < kmsKeySize {
+			return nil, fmt.Errorf("invalid cached data format")
 		}
-		resp := ProxyGetItemOutput{Data: data, Key: key}
+
+		encryptedKey := combined[:kmsKeySize]
+		encryptedData := combined[kmsKeySize:]
+
+		resp := ProxyGetItemOutput{Data: encryptedData, Key: encryptedKey}
 		return json.Marshal(resp)
-	case "DeleteCachedItem":
+
+	case "DeleteEncryptedItem":
 		var input ProxyDeleteItemInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
-			return nil, fmt.Errorf("invalid input: %v", err)
+			return nil, fmt.Errorf("invalid DeleteEncryptedItem input: %v", err)
 		}
-		cacheFilename := "item-" + input.Filename
+
+		cacheFilename := "cache-" + input.Filename
 		if err := os.Remove(cacheFilename); err != nil {
-			return nil, fmt.Errorf("failed to delete item file: %v", err)
+			// Don't error if file doesn't exist
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("failed to delete encrypted item: %v", err)
+			}
 		}
-		if err := os.Remove(cacheFilename + ".key"); err != nil {
-			return nil, fmt.Errorf("failed to delete key file: %v", err)
-		}
+
+		// Also remove legacy key file if it exists
+		os.Remove(cacheFilename + ".key")
+
 		return json.Marshal(ProxyStatusOutput{Status: "success"})
 
 	default:

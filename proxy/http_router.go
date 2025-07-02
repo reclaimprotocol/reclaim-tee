@@ -35,23 +35,40 @@ func (r *HTTPRouter) Start(ctx context.Context, port int) error {
 
 	r.logger.Info("HTTP router started", zap.Int("port", port))
 
+	// Channel for accepting connections
+	connChan := make(chan net.Conn, 1)
+	errChan := make(chan error, 1)
+
+	// Accept connections in separate goroutine
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				select {
+				case errChan <- err:
+				case <-ctx.Done():
+					return
+				}
+				return
+			}
+			select {
+			case connChan <- conn:
+			case <-ctx.Done():
+				conn.Close()
+				return
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			r.logger.Info("HTTP router shutting down")
 			return nil
-		default:
-			conn, err := listener.Accept()
-			if err != nil {
-				select {
-				case <-ctx.Done():
-					return nil
-				default:
-					r.logger.Error("Failed to accept connection", zap.Error(err))
-					continue
-				}
-			}
-
+		case err := <-errChan:
+			r.logger.Error("Accept error", zap.Error(err))
+			return err
+		case conn := <-connChan:
 			go r.handleConnection(ctx, conn)
 		}
 	}

@@ -24,7 +24,7 @@ type SessionManagerInterface interface {
 	Stop()
 }
 
-// SessionManager provides unified session management for both standalone and enclave modes
+// SessionManager provides unified session management
 type SessionManager struct {
 	sessions       map[string]*Session
 	sessionsByConn map[Connection]*Session

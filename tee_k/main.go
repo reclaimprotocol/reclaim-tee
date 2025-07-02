@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"tee-mpc/shared"
 	"time"
 )
 
@@ -25,41 +24,37 @@ func main() {
 	}
 }
 
-func startEnclaveMode(config *TEEKConfig) {
-	// Initialize enclave services
-	enclaveConfig := &shared.EnclaveConfig{
-		Domain:    config.Domain,
-		KMSKey:    config.KMSKey,
-		ParentCID: config.ParentCID,
-		ACMEURL:   "https://acme-v02.api.letsencrypt.org/directory",
-	}
-
-	services, err := shared.NewEnclaveServices(enclaveConfig)
-	if err != nil {
-		log.Fatalf("Failed to initialize enclave services: %v", err)
-	}
-
-	// Create and start TEE_K enclave
-	enclave := NewTEEKEnclave(config, services)
-
-	if err := enclave.Start(); err != nil {
-		log.Fatalf("TEE_K enclave failed: %v", err)
-	}
-}
-
 func startStandaloneMode(config *TEEKConfig) {
-	fmt.Printf("Starting TEE_K service on port %d\n", config.Port)
-
-	// Handle shutdown signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
 	teek := NewTEEK(config.Port)
-	teek.SetTEETURL(config.TEETURL)
+
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%d", config.Port),
+		Handler:      setupRoutes(teek),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
+	// Start server in goroutine
+	go func() {
+		log.Printf("[TEE_K] Starting standalone server on port %d", config.Port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[TEE_K] CRITICAL ERROR: Server failed: %v", err)
+			// Signal shutdown instead of crashing
+			sigChan := make(chan os.Signal, 1)
+			signal.Notify(sigChan, syscall.SIGTERM)
+			select {
+			case sigChan <- syscall.SIGTERM:
+				// Signal sent
+			default:
+				// Channel full, ignore
+			}
+		}
+	}()
 
 	// Connect to TEE_T
 	go func() {
 		time.Sleep(1 * time.Second) // Wait a moment for TEE_T to start
+		teek.SetTEETURL(config.TEETURL)
 		for i := 0; i < 10; i++ {
 			if err := teek.ConnectToTEET(); err == nil {
 				break
@@ -68,34 +63,30 @@ func startStandaloneMode(config *TEEKConfig) {
 		}
 	}()
 
-	// Create separate ServeMux for TEE_K
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	log.Println("[TEE_K] Shutting down...")
+
+	// Graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("[TEE_K] Shutdown error: %v", err)
+	}
+
+	log.Println("[TEE_K] Shutdown complete")
+}
+
+func setupRoutes(teek *TEEK) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", teek.handleWebSocket)
-	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", config.Port),
-		Handler: mux,
-	}
-
-	// Start server in goroutine
-	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("[TEE_K] server failed: %v", err)
-		}
-	}()
-
-	fmt.Printf("TEE_K starting on :%d\n", config.Port)
-
-	// Wait for shutdown signal
-	<-sigChan
-	fmt.Println("\nShutting down TEE_K gracefully...")
-
-	// Graceful shutdown with timeout
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[TEE_K] server shutdown error: %v", err)
-	}
-
-	fmt.Println("TEE_K shutdown complete")
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "TEE_K Healthy")
+	})
+	return mux
 }

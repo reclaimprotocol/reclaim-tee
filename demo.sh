@@ -2,7 +2,7 @@
 
 echo "=== TEE + MPC Protocol - Demo Script ==="
 echo ""
-echo "This will start TEE_K and TEE_T services in standalone mode, then connect a Client to both."
+echo "This will start TEE_K and TEE_T services, then connect a Client to both."
 echo "The Client will request TEE_K to make a TLS connection with split AEAD protocol."
 echo ""
 
@@ -34,14 +34,14 @@ cleanup() {
 # Set up signal handlers
 trap cleanup SIGINT SIGTERM
 
-# Start TEE_K service in standalone mode
-echo "🚀 Starting TEE_K service (standalone mode, port 8080)..."
-ENCLAVE_MODE=false ./bin/tee_k > /tmp/demo_teek.log 2>&1 &
+# Start TEE_K service
+echo "🚀 Starting TEE_K service (port 8080)..."
+./bin/tee_k > /tmp/demo_teek.log 2>&1 &
 TEEK_PID=$!
 
-# Start TEE_T service in standalone mode
-echo "🚀 Starting TEE_T service (standalone mode, port 8081)..."
-ENCLAVE_MODE=false ./bin/tee_t > /tmp/demo_teet.log 2>&1 &
+# Start TEE_T service
+echo "🚀 Starting TEE_T service (port 8081)..."
+./bin/tee_t > /tmp/demo_teet.log 2>&1 &
 TEET_PID=$!
 
 # Wait for services to start

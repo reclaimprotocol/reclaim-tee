@@ -20,8 +20,7 @@ type ProxyConfig struct {
 }
 
 type EnclaveTarget struct {
-	CID    uint32 `json:"cid"`     // 16 for TEE_K, 17 for TEE_T
-	KMSKey string `json:"kms_key"` // Dedicated KMS key
+	CID uint32 `json:"cid"` // 16 for TEE_K, 17 for TEE_T
 }
 
 type AWSConfig struct {
@@ -193,8 +192,8 @@ func loadConfig() (*ProxyConfig, error) {
 	// Fallback to default configuration
 	return &ProxyConfig{
 		Domains: map[string]EnclaveTarget{
-			"tee-k.reclaimprotocol.org": {CID: 16, KMSKey: os.Getenv("TEE_K_KMS_KEY")},
-			"tee-t.reclaimprotocol.org": {CID: 17, KMSKey: os.Getenv("TEE_T_KMS_KEY")},
+			"tee-k.reclaimprotocol.org": {CID: 16},
+			"tee-t.reclaimprotocol.org": {CID: 17},
 		},
 		AWS: AWSConfig{
 			Region: getEnvOrDefault("AWS_REGION", "ap-south-1"),

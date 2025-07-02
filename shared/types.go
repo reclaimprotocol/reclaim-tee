@@ -9,7 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Connection abstraction that works for both WebSocket and VSock
+// Connection abstraction for WebSocket connections
 type Connection interface {
 	WriteJSON(v interface{}) error
 	ReadJSON(v interface{}) error
@@ -17,7 +17,7 @@ type Connection interface {
 	RemoteAddr() string
 }
 
-// WebSocket connection adapter (for both standalone and enclave modes)
+// WebSocket connection adapter
 type WSConnection struct {
 	conn  *websocket.Conn
 	mutex sync.Mutex

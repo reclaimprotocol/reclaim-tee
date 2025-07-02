@@ -34,23 +34,40 @@ func (p *InternetProxy) Start(ctx context.Context, port int) error {
 
 	p.logger.Info("Internet proxy started", zap.Int("port", port))
 
+	// Channel for accepting connections
+	connChan := make(chan net.Conn, 1)
+	errChan := make(chan error, 1)
+
+	// Accept connections in separate goroutine
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				select {
+				case errChan <- err:
+				case <-ctx.Done():
+					return
+				}
+				return
+			}
+			select {
+			case connChan <- conn:
+			case <-ctx.Done():
+				conn.Close()
+				return
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			p.logger.Info("Internet proxy shutting down")
 			return nil
-		default:
-			conn, err := listener.Accept()
-			if err != nil {
-				select {
-				case <-ctx.Done():
-					return nil
-				default:
-					p.logger.Error("Failed to accept vsock connection", zap.Error(err))
-					continue
-				}
-			}
-
+		case err := <-errChan:
+			p.logger.Error("Accept error", zap.Error(err))
+			return err
+		case conn := <-connChan:
 			go p.handleConnection(ctx, conn)
 		}
 	}
