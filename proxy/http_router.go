@@ -94,6 +94,8 @@ func (r *HTTPRouter) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	r.logger.Info("Routing HTTP request", zap.String("host", host), zap.String("path", req.URL.Path))
+
 	// Find target enclave based on host
 	var targetCID uint32
 	var found bool

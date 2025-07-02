@@ -76,6 +76,9 @@ func (p *InternetProxy) Start(ctx context.Context, port int) error {
 func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Conn) {
 	defer enclaveConn.Close()
 
+	p.logger.Info("Internet proxy connection established",
+		zap.String("remote", enclaveConn.RemoteAddr().String()))
+
 	// Read target address from enclave
 	// Expected format: "hostname:port\n" or "ip:port\n"
 	enclaveConn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -98,6 +101,8 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 		return
 	}
 
+	p.logger.Info("Connecting to target", zap.String("target", target))
+
 	// Make outbound connection to target
 	targetConn, err := net.DialTimeout("tcp", target, 10*time.Second)
 	if err != nil {
@@ -116,28 +121,50 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 	enclaveConn.SetDeadline(deadline)
 	targetConn.SetDeadline(deadline)
 
+	p.logger.Info("Starting bidirectional copy", zap.String("target", target))
+
 	// Bidirectional copy between enclave and target
 	done := make(chan struct{}, 2)
 
 	// Copy from enclave to target
 	go func() {
 		defer func() { done <- struct{}{} }()
-		io.Copy(targetConn, enclaveConn)
+		written, err := io.Copy(targetConn, enclaveConn)
+		if err != nil {
+			p.logger.Debug("Enclave->Target copy ended",
+				zap.String("target", target),
+				zap.Int64("bytes", written),
+				zap.Error(err))
+		} else {
+			p.logger.Debug("Enclave->Target copy completed",
+				zap.String("target", target),
+				zap.Int64("bytes", written))
+		}
 	}()
 
 	// Copy from target to enclave
 	go func() {
 		defer func() { done <- struct{}{} }()
-		io.Copy(enclaveConn, targetConn)
+		written, err := io.Copy(enclaveConn, targetConn)
+		if err != nil {
+			p.logger.Debug("Target->Enclave copy ended",
+				zap.String("target", target),
+				zap.Int64("bytes", written),
+				zap.Error(err))
+		} else {
+			p.logger.Debug("Target->Enclave copy completed",
+				zap.String("target", target),
+				zap.Int64("bytes", written))
+		}
 	}()
 
 	// Wait for either copy to complete or context cancellation
 	select {
 	case <-done:
-		// Connection completed
+		p.logger.Info("Internet proxy connection completed", zap.String("target", target))
 	case <-ctx.Done():
-		// Context cancelled
+		p.logger.Info("Internet proxy connection cancelled", zap.String("target", target))
 	case <-time.After(10 * time.Minute):
-		// Timeout
+		p.logger.Info("Internet proxy connection timeout", zap.String("target", target))
 	}
 }
