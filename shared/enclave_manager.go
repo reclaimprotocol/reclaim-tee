@@ -235,22 +235,23 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 		} else {
 			log.Printf("[%s] ACME certificate request succeeded!", em.config.ServiceName)
 
-			// DEBUGGING: Check if certificate is actually available and cached
-			log.Printf("[%s] DEBUG: Verifying certificate was stored in cache...", em.config.ServiceName)
-			if cachedCert, cacheErr := em.cache.Get(ctx, em.config.Domain); cacheErr == nil {
-				log.Printf("[%s] DEBUG: Certificate found in cache (%d bytes)", em.config.ServiceName, len(cachedCert))
-			} else {
-				log.Printf("[%s] DEBUG: Certificate NOT found in cache: %v", em.config.ServiceName, cacheErr)
-			}
+			// Force certificate to be cached immediately after ACME success
+			log.Printf("[%s] DEBUG: Forcing certificate storage after ACME success...", em.config.ServiceName)
 
-			// Also check if we can get the certificate via autocert
-			log.Printf("[%s] DEBUG: Testing GetCertificate call...", em.config.ServiceName)
+			// Trigger GetCertificate to force certificate generation and caching
 			if testCert, testErr := em.autocertManager.GetCertificate(&tls.ClientHelloInfo{
 				ServerName: em.config.Domain,
 			}); testErr == nil {
-				log.Printf("[%s] DEBUG: GetCertificate successful, cert chain length: %d", em.config.ServiceName, len(testCert.Certificate))
+				log.Printf("[%s] DEBUG: Forced GetCertificate successful, cert chain length: %d", em.config.ServiceName, len(testCert.Certificate))
+
+				// Verify it's now cached
+				if cachedCert, cacheErr := em.cache.Get(ctx, em.config.Domain); cacheErr == nil {
+					log.Printf("[%s] DEBUG: Certificate now cached (%d bytes) - ready for TLS!", em.config.ServiceName, len(cachedCert))
+				} else {
+					log.Printf("[%s] DEBUG: WARNING: Certificate still not cached: %v", em.config.ServiceName, cacheErr)
+				}
 			} else {
-				log.Printf("[%s] DEBUG: GetCertificate failed: %v", em.config.ServiceName, testErr)
+				log.Printf("[%s] DEBUG: Forced GetCertificate failed: %v", em.config.ServiceName, testErr)
 			}
 		}
 	case <-certCtx.Done():

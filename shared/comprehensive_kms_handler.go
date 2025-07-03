@@ -2,7 +2,6 @@ package shared
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -233,17 +232,6 @@ func (c *ComprehensiveKMSHandler) decryptItem(ctx context.Context, encryptedData
 
 // generateAttestation generates attestation document - matching nitro.go pattern exactly
 func (c *ComprehensiveKMSHandler) generateAttestation(handle *EnclaveHandle, userData []byte) ([]byte, error) {
-	// Use "Reclaim Protocol" as default user data if none provided (matching nitro.go)
-	if userData == nil {
-		userData = []byte("Reclaim Protocol")
-	}
-
-	// Generate 32-byte random nonce (matching nitro.go)
-	nonce := make([]byte, 32)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("failed to generate nonce: %v", err)
-	}
-
 	// Generate attestation document (matching nitro.go AttestationOptions)
 	return handle.generateAttestation(userData)
 }
