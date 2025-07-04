@@ -1,9 +1,19 @@
 package shared
 
 import (
+	"log"
 	"os"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
+
+func init() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+}
 
 // Helper functions for environment variable handling
 func GetEnvOrDefault(key, defaultValue string) string {
