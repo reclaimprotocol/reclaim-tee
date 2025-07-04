@@ -157,25 +157,30 @@ func (evm *VSockConnectionManager) SendKMSRequest(ctx context.Context, operation
 			"input":        data, // Changed from "data" to "input" to match KMS proxy structure
 		}
 
-		requestData, err := json.Marshal(request)
-		if err != nil {
-			return fmt.Errorf("failed to marshal request: %v", err)
-		}
-
 		// Send request
-		if _, err := conn.Write(requestData); err != nil {
-			return fmt.Errorf("failed to send request: %v", err)
+		conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if err = json.NewEncoder(conn).Encode(request); err != nil {
+			return fmt.Errorf("failed to send KMS request: %v", err)
 		}
 
 		// Read response
-		response := make([]byte, 4096)
-		n, err := conn.Read(response)
-		if err != nil {
-			return fmt.Errorf("failed to read response: %v", err)
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		var response struct {
+			Output json.RawMessage `json:"output,omitempty"`
+			Error  string          `json:"error,omitempty"`
 		}
 
-		result = response[:n]
+		if err := json.NewDecoder(conn).Decode(&response); err != nil {
+			return fmt.Errorf("failed to read KMS response: %v", err)
+		}
+
+		if response.Error != "" {
+			return fmt.Errorf("KMS operation failed: %s", response.Error)
+		}
+
+		result = response.Output
 		return nil
+
 	})
 
 	if err != nil {
