@@ -691,7 +691,7 @@ func (c *Client) parseResponseRecords(serverAEAD *AEAD) (appData []byte, consume
 			fmt.Printf("Partial TLS record in buffer: type=%d, expected=%d bytes, have=%d bytes\n",
 				recordType, recordLength, len(c.readBuffer[offset+5:]))
 
-			// *** ENHANCED: Check for partial CLOSE_NOTIFY alerts ***
+			// *** : Check for partial CLOSE_NOTIFY alerts ***
 			if recordType == 21 && len(c.readBuffer[offset+5:]) >= 2 { // Alert record with at least 2 bytes
 				alertLevel := c.readBuffer[offset+5]
 				alertDescription := c.readBuffer[offset+6]
@@ -708,7 +708,7 @@ func (c *Client) parseResponseRecords(serverAEAD *AEAD) (appData []byte, consume
 			recordType, uint16(header[1])<<8|uint16(header[2]), recordLength)
 
 		if recordType != 23 { // We only expect application_data records at this point
-			// *** ENHANCED ALERT PROCESSING ***
+			// ***  ALERT PROCESSING ***
 			if recordType == 21 { // Alert record
 				ciphertext := c.readBuffer[offset+5 : offset+5+recordLength]
 
@@ -733,7 +733,7 @@ func (c *Client) parseResponseRecords(serverAEAD *AEAD) (appData []byte, consume
 							}
 							fmt.Printf("*** TLS Alert Decrypted in minitls: %s - %s ***\n", levelStr, alertDescriptionString(alertDescription))
 
-							// *** ENHANCED CLOSE_NOTIFY DETECTION ***
+							// ***  CLOSE_NOTIFY DETECTION ***
 							if alertDescription == 0 {
 								fmt.Printf("*** CLOSE_NOTIFY ALERT SUCCESSFULLY PROCESSED IN MINITLS ***\n")
 							}
@@ -797,7 +797,7 @@ func (c *Client) parseResponseRecords(serverAEAD *AEAD) (appData []byte, consume
 			}
 			fmt.Printf(" TLS Alert Received: %s - %s\n", levelStr, alertDescriptionString(alertDesc))
 
-			// *** ENHANCED CLOSE_NOTIFY DETECTION ***
+			// ***  CLOSE_NOTIFY DETECTION ***
 			if alertDesc == 0 {
 				fmt.Printf(" *** CLOSE_NOTIFY ALERT SUCCESSFULLY DETECTED AND PROCESSED ***\n")
 			}

@@ -24,7 +24,7 @@ type VSockConnectionManager struct {
 	shutdownOnce sync.Once
 }
 
-// VSockConfig holds configuration for the enhanced connection manager
+// VSockConfig holds configuration for the  connection manager
 type VSockConfig struct {
 	ParentCID    uint32
 	KMSPort      uint32
@@ -40,7 +40,7 @@ type VSockConfig struct {
 	MemoryCacheTTL      time.Duration
 }
 
-// NewEnhancedVSockConnectionManager creates a new enhanced connection manager
+// NewVSockConnectionManager creates a new  connection manager
 func NewVSockConnectionManager(config *VSockConfig) *VSockConnectionManager {
 	if config == nil {
 		config = &VSockConfig{
@@ -90,7 +90,7 @@ func NewVSockConnectionManager(config *VSockConfig) *VSockConnectionManager {
 	// Initialize attestation cache using global singleton handle
 	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
-		log.Printf("[EnhancedVSock] Warning: Failed to get global handle for attestation cache: %v", err)
+		log.Printf("[VSock] Warning: Failed to get global handle for attestation cache: %v", err)
 	} else {
 		manager.attestationCache = NewAttestationCache(handle, config.AttestationCacheTTL)
 	}
@@ -104,10 +104,10 @@ func (evm *VSockConnectionManager) Start(ctx context.Context) error {
 	defer evm.mu.Unlock()
 
 	if evm.isRunning {
-		return fmt.Errorf("enhanced connection manager is already running")
+		return fmt.Errorf(" connection manager is already running")
 	}
 
-	log.Printf("[EnhancedVSock] Starting enhanced VSock connection manager")
+	log.Printf("[VSock] Starting  VSock connection manager")
 
 	// Start KMS pool
 	if err := evm.kmsPool.Start(ctx); err != nil {
@@ -123,19 +123,19 @@ func (evm *VSockConnectionManager) Start(ctx context.Context) error {
 	// Start attestation cache
 	if evm.attestationCache != nil {
 		if err := evm.attestationCache.Start(ctx); err != nil {
-			log.Printf("[EnhancedVSock] Warning: Failed to start attestation cache: %v", err)
+			log.Printf("[VSock] Warning: Failed to start attestation cache: %v", err)
 		}
 	}
 
 	// Start memory cache
 	if evm.memoryCache != nil {
 		if err := evm.memoryCache.Start(ctx); err != nil {
-			log.Printf("[EnhancedVSock] Warning: Failed to start memory cache: %v", err)
+			log.Printf("[VSock] Warning: Failed to start memory cache: %v", err)
 		}
 	}
 
 	evm.isRunning = true
-	log.Printf("[EnhancedVSock] Enhanced connection manager started successfully")
+	log.Printf("[VSock]  connection manager started successfully")
 	return nil
 }
 
@@ -261,33 +261,33 @@ func (evm *VSockConnectionManager) Shutdown(ctx context.Context) error {
 			return
 		}
 
-		log.Printf("[EnhancedVSock] Shutting down enhanced connection manager")
+		log.Printf("[VSock] Shutting down  connection manager")
 
 		// Shutdown memory cache
 		if evm.memoryCache != nil {
 			if err := evm.memoryCache.Shutdown(ctx); err != nil {
-				log.Printf("[EnhancedVSock] Memory cache shutdown error: %v", err)
+				log.Printf("[VSock] Memory cache shutdown error: %v", err)
 			}
 		}
 
 		// Shutdown attestation cache
 		if evm.attestationCache != nil {
 			if err := evm.attestationCache.Shutdown(ctx); err != nil {
-				log.Printf("[EnhancedVSock] Attestation cache shutdown error: %v", err)
+				log.Printf("[VSock] Attestation cache shutdown error: %v", err)
 			}
 		}
 
 		// Shutdown pools
 		if err := evm.internetPool.Shutdown(ctx); err != nil {
-			log.Printf("[EnhancedVSock] Internet pool shutdown error: %v", err)
+			log.Printf("[VSock] Internet pool shutdown error: %v", err)
 		}
 
 		if err := evm.kmsPool.Shutdown(ctx); err != nil {
-			log.Printf("[EnhancedVSock] KMS pool shutdown error: %v", err)
+			log.Printf("[VSock] KMS pool shutdown error: %v", err)
 		}
 
 		evm.isRunning = false
-		log.Printf("[EnhancedVSock] Enhanced connection manager shutdown completed")
+		log.Printf("[VSock]  connection manager shutdown completed")
 	})
 
 	return shutdownErr

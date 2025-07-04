@@ -22,11 +22,11 @@ import (
 
 // EnclaveManager provides production-ready enclave functionality
 type EnclaveManager struct {
-	config          *EnclaveConfig
-	connectionMgr   *VSockConnectionManager
-	autocertManager *VSockLegoManager
-	cache           *EnclaveCache
-	mu              sync.RWMutex
+	config        *EnclaveConfig
+	connectionMgr *VSockConnectionManager
+	certManager   *VSockLegoManager
+	cache         *EnclaveCache
+	mu            sync.RWMutex
 }
 
 type EnclaveConfig struct {
@@ -189,10 +189,10 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 	}
 
 	return &EnclaveManager{
-		config:          config,
-		connectionMgr:   connectionMgr,
-		autocertManager: certManager,
-		cache:           cache,
+		config:        config,
+		connectionMgr: connectionMgr,
+		certManager:   certManager,
+		cache:         cache,
 	}, nil
 }
 
@@ -206,8 +206,12 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	time.Sleep(100 * time.Millisecond)
 
 	log.Printf("[%s] Starting ACME certificate request for %s...", em.config.ServiceName, em.config.Domain)
-	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.autocertManager.config.CADirURL)
-	log.Printf("[%s] HTTP server running on port %d for ACME challenges", em.config.ServiceName, em.config.HTTPPort)
+	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.certManager.config.CADirURL)
+
+	err := em.certManager.BootstrapCertificates(ctx)
+	if err != nil {
+		return err
+	}
 
 	// Create a timeout context for the certificate request
 	certCtx, certCancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -217,7 +221,7 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	certResult := make(chan error, 1)
 	go func() {
 		log.Printf("[%s] Calling GetCertificate for %s...", em.config.ServiceName, em.config.Domain)
-		_, certErr := em.autocertManager.GetCertificate(&tls.ClientHelloInfo{
+		_, certErr := em.certManager.GetCertificate(&tls.ClientHelloInfo{
 			ServerName: em.config.Domain,
 		})
 		log.Printf("[%s] GetCertificate completed for %s", em.config.ServiceName, em.config.Domain)
@@ -225,7 +229,6 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	}()
 
 	// Wait for certificate request to complete or timeout
-	var err error
 	select {
 	case err = <-certResult:
 		if err != nil {
@@ -237,7 +240,7 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 			log.Printf("[%s] DEBUG: Forcing certificate storage after ACME success...", em.config.ServiceName)
 
 			// Trigger GetCertificate to force certificate generation and caching
-			if testCert, testErr := em.autocertManager.GetCertificate(&tls.ClientHelloInfo{
+			if testCert, testErr := em.certManager.GetCertificate(&tls.ClientHelloInfo{
 				ServerName: em.config.Domain,
 			}); testErr == nil {
 				log.Printf("[%s] DEBUG: Forced GetCertificate successful, cert chain length: %d", em.config.ServiceName, len(testCert.Certificate))
@@ -265,10 +268,10 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	return nil
 }
 
-// CreateHTTPSServer creates an HTTPS server with enhanced TLS configuration and debugging
+// CreateHTTPSServer creates an HTTPS server with  TLS configuration and debugging
 func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *VSockHTTPSServer {
 
-	tlsConfig := em.autocertManager.CreateTLSConfig()
+	tlsConfig := em.certManager.CreateTLSConfig()
 
 	// Wrap the GetCertificate function to add debugging
 	originalGetCertificate := tlsConfig.GetCertificate
@@ -372,7 +375,7 @@ func (em *EnclaveManager) Shutdown(ctx context.Context) error {
 // Private helper methods
 func (em *EnclaveManager) getCertificateFingerprint(ctx context.Context) ([]byte, error) {
 	// Get current certificate from cache
-	cert, err := em.autocertManager.GetCertificate(&tls.ClientHelloInfo{
+	cert, err := em.certManager.GetCertificate(&tls.ClientHelloInfo{
 		ServerName: em.config.Domain,
 	})
 	if err != nil {
