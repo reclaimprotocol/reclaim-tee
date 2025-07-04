@@ -173,6 +173,7 @@ func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager,
 
 	// Get ACME directory URL from environment
 	acmeDirectoryURL := GetEnvOrDefault("ACME_DIRECTORY_URL", "https://acme-v02.api.letsencrypt.org/directory")
+	fmt.Printf("ACME_DIRECTORY_URL: %s\n", acmeDirectoryURL)
 
 	// Initialize ACME manager
 	autocertManager := &autocert.Manager{
