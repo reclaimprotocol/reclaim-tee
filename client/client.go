@@ -7,7 +7,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
@@ -105,10 +104,6 @@ func (c *Client) WaitForCompletion() <-chan struct{} {
 func createEnclaveWebSocketDialer() *websocket.Dialer {
 	return &websocket.Dialer{
 		HandshakeTimeout: 30 * time.Second,
-		// Skip TLS certificate verification for staging certificates
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
 	}
 }
 

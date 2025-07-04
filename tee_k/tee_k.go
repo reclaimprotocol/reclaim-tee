@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -109,10 +108,6 @@ func createVSockWebSocketDialer() *websocket.Dialer {
 			return conn, nil
 		},
 		HandshakeTimeout: 30 * time.Second,
-		// Skip TLS certificate verification for staging certificates
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
 	}
 }
 
