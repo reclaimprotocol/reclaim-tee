@@ -29,7 +29,7 @@ func startEnclaveMode(config *TEETConfig) {
 		KMSPort:      5000, // KMS proxy port
 	}
 
-	enclaveManager, err := shared.NewEnclaveManager(enclaveConfig, config.KMSKey)
+	enclaveManager, err := shared.NewEnclaveManager(ctx, enclaveConfig, config.KMSKey)
 	if err != nil {
 		log.Printf("[TEE_T] CRITICAL ERROR: Failed to initialize enclave manager: %v", err)
 		// Return gracefully instead of crashing enclave

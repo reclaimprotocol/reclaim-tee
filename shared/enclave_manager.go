@@ -153,8 +153,7 @@ func (vs *VSockHTTPSServer) Shutdown(ctx context.Context) error {
 }
 
 // NewEnclaveManager creates a new enclave manager with production configuration
-func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager, error) {
-	// CRITICAL: Use global singleton handle to ensure RSA key is generated only once
+func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID string) (*EnclaveManager, error) {
 	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize global enclave handle: %v", err)
@@ -167,6 +166,11 @@ func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager,
 		InternetPort: config.InternetPort,
 		KMSKeyID:     config.KMSKey,
 	})
+
+	err = connectionMgr.Start(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start VSockConnectionManager: %v", err)
+	}
 
 	// Initialize encrypted cache with service-specific KMS key and service name prefix
 	cache := NewEnclaveCache(connectionMgr, kmsKeyID, config.ServiceName)

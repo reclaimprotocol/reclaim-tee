@@ -231,38 +231,6 @@ func (p *VSockPool) ReturnConnection(conn net.Conn) {
 	}
 }
 
-// GetMetrics returns current pool metrics
-func (p *VSockPool) GetMetrics() *PoolMetrics {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	metrics := *p.metrics // Copy
-	metrics.ActiveConnections = int64(len(p.activeConns))
-	metrics.IdleConnections = int64(len(p.idleConns))
-	metrics.TotalConnections = int64(atomic.LoadInt32(&p.connCount))
-
-	// Calculate average usage count
-	var totalUsage int64
-	var connCount int64
-	for conn := range p.activeConns {
-		conn.mu.RLock()
-		totalUsage += conn.usageCount
-		connCount++
-		conn.mu.RUnlock()
-	}
-	for _, conn := range p.idleConns {
-		conn.mu.RLock()
-		totalUsage += conn.usageCount
-		connCount++
-		conn.mu.RUnlock()
-	}
-	if connCount > 0 {
-		metrics.AverageUsageCount = float64(totalUsage) / float64(connCount)
-	}
-
-	return &metrics
-}
-
 // Shutdown gracefully closes the pool
 func (p *VSockPool) Shutdown(ctx context.Context) error {
 	var shutdownErr error
