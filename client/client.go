@@ -100,7 +100,6 @@ func (c *Client) WaitForCompletion() <-chan struct{} {
 }
 
 // createEnclaveWebSocketDialer creates a custom WebSocket dialer for enclave mode
-// that skips TLS certificate verification for staging certificates
 func createEnclaveWebSocketDialer() *websocket.Dialer {
 	return &websocket.Dialer{
 		HandshakeTimeout: 30 * time.Second,
@@ -120,7 +119,6 @@ func (c *Client) ConnectToTEEK() error {
 	if strings.HasPrefix(c.teekURL, "wss://") && strings.Contains(c.teekURL, "reclaimprotocol.org") {
 		// Enclave mode: use custom dialer with TLS config
 		log.Printf("[Client] Enclave mode detected for TEE_K - using custom dialer")
-		log.Printf("[Client] Note: TLS certificate verification is disabled for staging certificates")
 		dialer := createEnclaveWebSocketDialer()
 		conn, _, err = dialer.Dial(u.String(), nil)
 	} else {
@@ -156,7 +154,6 @@ func (c *Client) ConnectToTEET() error {
 	if strings.HasPrefix(c.teetURL, "wss://") && strings.Contains(c.teetURL, "reclaimprotocol.org") {
 		// Enclave mode: use custom dialer with TLS config
 		log.Printf("[Client] Enclave mode detected for TEE_T - using custom dialer")
-		log.Printf("[Client] Note: TLS certificate verification is disabled for staging certificates")
 		dialer := createEnclaveWebSocketDialer()
 		conn, _, err = dialer.Dial(u.String(), nil)
 	} else {

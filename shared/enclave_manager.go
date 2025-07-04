@@ -171,7 +171,7 @@ func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager,
 	// Initialize encrypted cache with service-specific KMS key and service name prefix
 	cache := NewEnclaveCache(connectionMgr, kmsKeyID, config.ServiceName)
 
-	// Get ACME directory URL from environment or use staging as default
+	// Get ACME directory URL from environment
 	acmeDirectoryURL := GetEnvOrDefault("ACME_DIRECTORY_URL", "https://acme-v02.api.letsencrypt.org/directory")
 
 	// Initialize ACME manager
