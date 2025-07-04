@@ -202,8 +202,20 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 
 	log.Printf("[%s] Starting ACME challenge for %s", em.config.ServiceName, em.config.Domain)
 
-	// Wait for server to start
-	time.Sleep(100 * time.Millisecond)
+	// Create VSock HTTP server for ACME challenges
+	httpServer := em.createVSockHTTPServer(em.certManager.CreateVSockHTTPHandler(nil), em.config.HTTPPort)
+
+	// Start HTTP server in background
+	serverErrChan := make(chan error, 1)
+	go func() {
+		if err := httpServer.ListenAndServeVSock(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[%s] VSock HTTP server error: %v", em.config.ServiceName, err)
+			serverErrChan <- err
+		}
+	}()
+
+	// Wait for HTTP server to start
+	time.Sleep(200 * time.Millisecond)
 
 	log.Printf("[%s] Starting ACME certificate request for %s...", em.config.ServiceName, em.config.Domain)
 	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.certManager.config.CADirURL)
@@ -258,6 +270,21 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	case <-certCtx.Done():
 		err = fmt.Errorf("certificate request timed out after 5 minutes")
 		log.Printf("[%s] ACME certificate request TIMED OUT", em.config.ServiceName)
+	}
+
+	// Shutdown HTTP server
+	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	httpServer.Shutdown(shutdownCtx)
+
+	// Check for server errors
+	select {
+	case serverErr := <-serverErrChan:
+		if err == nil {
+			err = fmt.Errorf("VSock HTTP server failed: %v", serverErr)
+		}
+	default:
+		// No server error
 	}
 
 	if err != nil {
