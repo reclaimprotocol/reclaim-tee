@@ -10,7 +10,7 @@ import (
 
 // EnclaveCache implements autocert.Cache interface with KMS encryption
 type EnclaveCache struct {
-	kmsHandler  *ComprehensiveKMSHandler
+	kmsHandler  *KMSHandler
 	serviceName string // Service name prefix (tee_k or tee_t)
 	mu          sync.RWMutex
 	memoryCache map[string][]byte
@@ -19,7 +19,7 @@ type EnclaveCache struct {
 // NewEnclaveCache creates a new enclave cache with comprehensive KMS encryption and service-specific prefixes
 func NewEnclaveCache(connectionMgr *VSockConnectionManager, kmsKeyID string, serviceName string) *EnclaveCache {
 	return &EnclaveCache{
-		kmsHandler:  NewComprehensiveKMSHandler(connectionMgr, kmsKeyID, serviceName),
+		kmsHandler:  NewKMSHandler(connectionMgr, kmsKeyID, serviceName),
 		serviceName: serviceName,
 		memoryCache: make(map[string][]byte),
 	}
@@ -89,7 +89,7 @@ func (c *EnclaveCache) Delete(ctx context.Context, key string) error {
 	return c.kmsHandler.DeleteCacheItem(ctx, key)
 }
 
-// NOTE: All encryption/decryption operations now handled by ComprehensiveKMSHandler
+// NOTE: All encryption/decryption operations now handled by KMSHandler
 
 // Ensure EnclaveCache implements autocert.Cache interface
 var _ autocert.Cache = (*EnclaveCache)(nil)
