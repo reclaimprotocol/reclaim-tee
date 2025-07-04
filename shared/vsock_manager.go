@@ -13,7 +13,6 @@ import (
 type VSockConnectionManager struct {
 	kmsPool      *VSockPool
 	internetPool *VSockPool
-	kmsClient    *AdvancedKMSClient
 
 	// Caching components
 	attestationCache *AttestationCache
@@ -24,8 +23,8 @@ type VSockConnectionManager struct {
 	shutdownOnce sync.Once
 }
 
-// EnhancedVSockConfig holds configuration for the enhanced connection manager
-type EnhancedVSockConfig struct {
+// VSockConfig holds configuration for the enhanced connection manager
+type VSockConfig struct {
 	ParentCID    uint32
 	KMSPort      uint32
 	InternetPort uint32
@@ -41,9 +40,9 @@ type EnhancedVSockConfig struct {
 }
 
 // NewEnhancedVSockConnectionManager creates a new enhanced connection manager
-func NewVSockConnectionManager(config *EnhancedVSockConfig) *VSockConnectionManager {
+func NewVSockConnectionManager(config *VSockConfig) *VSockConnectionManager {
 	if config == nil {
-		config = &EnhancedVSockConfig{
+		config = &VSockConfig{
 			ParentCID:           3,
 			KMSPort:             5000,
 			InternetPort:        8444,
@@ -87,22 +86,12 @@ func NewVSockConnectionManager(config *EnhancedVSockConfig) *VSockConnectionMana
 		internetPool: NewProductionVSockPool(internetPoolConfig),
 	}
 
-	// Initialize advanced KMS client using global singleton handle
-	if config.KMSKeyID != "" {
-		globalHandle, err := SafeGetEnclaveHandle()
-		if err != nil {
-			log.Printf("[EnhancedVSock] Warning: Failed to get global handle for KMS client: %v", err)
-		} else {
-			manager.kmsClient = NewAdvancedKMSClient(manager, globalHandle, config.KMSKeyID)
-		}
-	}
-
 	// Initialize attestation cache using global singleton handle
-	globalHandle, err := SafeGetEnclaveHandle()
+	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
 		log.Printf("[EnhancedVSock] Warning: Failed to get global handle for attestation cache: %v", err)
 	} else {
-		manager.attestationCache = NewAttestationCache(globalHandle, config.AttestationCacheTTL)
+		manager.attestationCache = NewAttestationCache(handle, config.AttestationCacheTTL)
 	}
 
 	return manager
@@ -258,44 +247,6 @@ func (evm *VSockConnectionManager) GetFromCache(ctx context.Context, key string)
 	}
 
 	return evm.memoryCache.Get(ctx, key)
-}
-
-// PerformAdvancedKMSOperation performs KMS operations with attestation documents
-func (evm *VSockConnectionManager) PerformAdvancedKMSOperation(ctx context.Context, operationType string, data interface{}) (interface{}, error) {
-	if evm.kmsClient == nil {
-		return nil, fmt.Errorf("advanced KMS client not initialized")
-	}
-
-	switch operationType {
-	case "encrypt_and_store":
-		if request, ok := data.(map[string]interface{}); ok {
-			if dataBytes, ok := request["data"].([]byte); ok {
-				if filename, ok := request["filename"].(string); ok {
-					return nil, evm.kmsClient.EncryptAndStoreCacheItem(ctx, dataBytes, filename)
-				}
-			}
-		}
-		return nil, fmt.Errorf("invalid request format for encrypt_and_store")
-
-	case "load_and_decrypt":
-		if request, ok := data.(map[string]interface{}); ok {
-			if filename, ok := request["filename"].(string); ok {
-				return evm.kmsClient.LoadAndDecryptCacheItem(ctx, filename)
-			}
-		}
-		return nil, fmt.Errorf("invalid request format for load_and_decrypt")
-
-	case "delete_cache_item":
-		if request, ok := data.(map[string]interface{}); ok {
-			if filename, ok := request["filename"].(string); ok {
-				return nil, evm.kmsClient.DeleteCacheItem(ctx, filename)
-			}
-		}
-		return nil, fmt.Errorf("invalid request format for delete_cache_item")
-
-	default:
-		return nil, fmt.Errorf("unsupported KMS operation: %s", operationType)
-	}
 }
 
 // Shutdown gracefully shuts down all components

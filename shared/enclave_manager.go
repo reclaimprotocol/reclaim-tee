@@ -25,7 +25,6 @@ import (
 // EnclaveManager provides production-ready enclave functionality
 type EnclaveManager struct {
 	config          *EnclaveConfig
-	handle          *EnclaveHandle
 	connectionMgr   *VSockConnectionManager
 	autocertManager *autocert.Manager
 	cache           *EnclaveCache
@@ -154,20 +153,16 @@ func (vs *VSockHTTPSServer) Shutdown(ctx context.Context) error {
 
 // NewEnclaveManager creates a new enclave manager with production configuration
 func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID string) (*EnclaveManager, error) {
-	handle, err := SafeGetEnclaveHandle()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize global enclave handle: %v", err)
-	}
 
 	// Initialize VSock connection manager
-	connectionMgr := NewVSockConnectionManager(&EnhancedVSockConfig{
+	connectionMgr := NewVSockConnectionManager(&VSockConfig{
 		ParentCID:    config.ParentCID,
 		KMSPort:      config.KMSPort,
 		InternetPort: config.InternetPort,
 		KMSKeyID:     config.KMSKey,
 	})
 
-	err = connectionMgr.Start(ctx)
+	err := connectionMgr.Start(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start VSockConnectionManager: %v", err)
 	}
@@ -193,7 +188,6 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 
 	return &EnclaveManager{
 		config:          config,
-		handle:          handle,
 		connectionMgr:   connectionMgr,
 		autocertManager: autocertManager,
 		cache:           cache,
@@ -367,10 +361,16 @@ func (em *EnclaveManager) GenerateAttestation(ctx context.Context) ([]byte, erro
 	// Generate attestation with fingerprint as user data
 	userData := []byte(hex.EncodeToString(fingerprint))
 
-	em.handle.mu.RLock()
-	defer em.handle.mu.RUnlock()
+	handle, err := SafeGetEnclaveHandle()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get enclave handle: %v", err)
 
-	return em.handle.generateAttestation(userData)
+	}
+
+	handle.mu.RLock()
+	defer handle.mu.RUnlock()
+
+	return handle.generateAttestation(userData)
 }
 
 // GetConnectionManager returns the VSock connection manager for KMS operations
@@ -393,9 +393,11 @@ func (em *EnclaveManager) Shutdown(ctx context.Context) error {
 		em.connectionMgr.Shutdown(ctx)
 	}
 
-	if em.handle != nil && em.handle.nsm != nil {
-		em.handle.nsm.Close()
+	handle, err := SafeGetEnclaveHandle()
+	if err != nil {
+		return err
 	}
+	handle.nsm.Close()
 
 	return nil
 }

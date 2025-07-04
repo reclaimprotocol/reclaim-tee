@@ -2,7 +2,11 @@ package shared
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
@@ -153,6 +157,11 @@ func (c *ComprehensiveKMSHandler) LoadAndDecryptCacheItem(ctx context.Context, f
 		return nil, autocert.ErrCacheMiss
 	}
 
+	if len(output.Data) == 0 || len(output.Key) == 0 {
+		log.Printf("[ComprehensiveKMS] Failed to get encrypted item: %s", filename)
+		return nil, autocert.ErrCacheMiss
+	}
+
 	log.Printf("[ComprehensiveKMS] Retrieved encrypted item - data: %d bytes, key: %d bytes", len(output.Data), len(output.Key))
 
 	// Decrypt the item (matching nitro.go decryptItem exactly)
@@ -274,4 +283,37 @@ func (c *ComprehensiveKMSHandler) DeleteCacheItem(ctx context.Context, filename 
 
 	log.Printf("[ComprehensiveKMS] Successfully deleted encrypted item: %s", filename)
 	return nil
+}
+
+// aesGCMOperation handles AES-GCM encryption or decryption based on the encrypt flag
+// This matches the implementation from nitro.go exactly
+func aesGCMOperation(key, data []byte, encrypt bool) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %v", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %v", err)
+	}
+
+	nonceSize := gcm.NonceSize()
+
+	if encrypt {
+		// Encryption: generate nonce and encrypt
+		nonce := make([]byte, nonceSize)
+		if _, err := rand.Read(nonce); err != nil {
+			return nil, fmt.Errorf("failed to generate nonce: %v", err)
+		}
+		// Return nonce + ciphertext
+		return append(nonce, gcm.Seal(nil, nonce, data, nil)...), nil
+	} else {
+		// Decryption: extract nonce and decrypt
+		if len(data) < nonceSize {
+			return nil, errors.New("encrypted data too short")
+		}
+		nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+		return gcm.Open(nil, nonce, ciphertext, nil)
+	}
 }

@@ -8,9 +8,6 @@ import (
 	"github.com/hf/nsm"
 )
 
-// PRODUCTION-SAFE: Global singleton pattern with NO panic conditions
-// This replaces MustGlobalHandle to prevent enclave crashes
-
 var (
 	globalHandle        *EnclaveHandle
 	initializationError error
