@@ -26,7 +26,6 @@ type EnclaveManager struct {
 	connectionMgr *VSockConnectionManager
 	certManager   *VSockLegoManager
 	cache         *EnclaveCache
-	mu            sync.RWMutex
 }
 
 type EnclaveConfig struct {
@@ -200,6 +199,15 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	log.Printf("[%s] Bootstrapping certificates for domain: %s", em.config.ServiceName, em.config.Domain)
 
+	// Check if certificate exists in cache
+	if cert, err := em.certManager.getCachedCertificate(ctx, em.certManager.config.Domain); err == nil {
+		if em.certManager.isValidCertificate(cert) {
+			log.Printf("[%s] Valid certificate found in cache", em.certManager.config.ServiceName)
+			return nil
+		}
+		log.Printf("[%s] Cached certificate expired or invalid, requesting new one", em.certManager.config.ServiceName)
+	}
+
 	log.Printf("[%s] Starting ACME challenge for %s", em.config.ServiceName, em.config.Domain)
 
 	// Create VSock HTTP server for ACME challenges
@@ -349,14 +357,6 @@ func (em *EnclaveManager) createVSockHTTPSServer(handler http.Handler, tlsConfig
 
 // GenerateAttestation creates an attestation document with certificate fingerprint
 func (em *EnclaveManager) GenerateAttestation(ctx context.Context) ([]byte, error) {
-	// Get certificate fingerprint
-	fingerprint, err := em.getCertificateFingerprint(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get certificate fingerprint: %v", err)
-	}
-
-	// Generate attestation with fingerprint as user data
-	userData := []byte(hex.EncodeToString(fingerprint))
 
 	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
@@ -364,10 +364,7 @@ func (em *EnclaveManager) GenerateAttestation(ctx context.Context) ([]byte, erro
 
 	}
 
-	handle.mu.RLock()
-	defer handle.mu.RUnlock()
-
-	return handle.generateAttestation(userData)
+	return handle.generateAttestation(nil)
 }
 
 // GetConnectionManager returns the VSock connection manager for KMS operations
@@ -377,8 +374,6 @@ func (em *EnclaveManager) GetConnectionManager() *VSockConnectionManager {
 
 // GetConfig returns the enclave configuration
 func (em *EnclaveManager) GetConfig() *EnclaveConfig {
-	em.mu.RLock()
-	defer em.mu.RUnlock()
 	return em.config
 }
 

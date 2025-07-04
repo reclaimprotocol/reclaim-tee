@@ -231,15 +231,6 @@ func (m *VSockLegoManager) CreateVSockHTTPHandler(fallback http.Handler) http.Ha
 func (m *VSockLegoManager) BootstrapCertificates(ctx context.Context) error {
 	log.Printf("[%s] Bootstrapping certificates for domain: %s via VSock", m.config.ServiceName, m.config.Domain)
 
-	// Check if certificate exists in cache
-	if cert, err := m.getCachedCertificate(ctx, m.config.Domain); err == nil {
-		if m.isValidCertificate(cert) {
-			log.Printf("[%s] Valid certificate found in cache", m.config.ServiceName)
-			return nil
-		}
-		log.Printf("[%s] Cached certificate expired or invalid, requesting new one", m.config.ServiceName)
-	}
-
 	// Request new certificate
 	request := certificate.ObtainRequest{
 		Domains: []string{m.config.Domain},
