@@ -48,15 +48,6 @@ func SafeGetEnclaveHandle() (*EnclaveHandle, error) {
 	return globalHandle, nil
 }
 
-// GetOrInitializeHandle - DEPRECATED: Use SafeGetEnclaveHandle instead
-// Kept for backward compatibility but now safe
-func GetOrInitializeHandle() (*EnclaveHandle, error) {
-	return SafeGetEnclaveHandle()
-}
-
-// REMOVED: MustGlobalHandle - this function caused panic conditions
-// All code must use SafeGetEnclaveHandle and handle errors properly
-
 // initialize initializes the enclave handle with proper error handling
 func (e *EnclaveHandle) initialize() error {
 	var err error

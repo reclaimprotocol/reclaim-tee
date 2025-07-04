@@ -155,7 +155,7 @@ func (vs *VSockHTTPSServer) Shutdown(ctx context.Context) error {
 // NewEnclaveManager creates a new enclave manager with production configuration
 func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager, error) {
 	// CRITICAL: Use global singleton handle to ensure RSA key is generated only once
-	handle, err := GetOrInitializeHandle()
+	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize global enclave handle: %v", err)
 	}
@@ -166,14 +166,14 @@ func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager,
 	// Initialize encrypted cache with service-specific KMS key and service name prefix
 	cache := NewEnclaveCache(connectionMgr, kmsKeyID, config.ServiceName)
 
-	// Initialize ACME manager with ECDSA-only configuration
+	// Initialize ACME manager
 	autocertManager := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: autocert.HostWhitelist(config.Domain),
 		Cache:      cache,
 		Client: &acme.Client{
 			HTTPClient:   createVSockHTTPClient(config.ParentCID, config.InternetPort),
-			DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
+			DirectoryURL: "https://acme-v02.api.letsencrypt.org/directory",
 		},
 	}
 
@@ -292,7 +292,6 @@ func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *VSockHTTPSSer
 	originalGetCertificate := tlsConfig.GetCertificate
 	tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		log.Printf("[%s] TLS GetCertificate called for SNI: %s", em.config.ServiceName, hello.ServerName)
-		log.Printf("[%s] Client cipher suites: %v", em.config.ServiceName, hello.CipherSuites)
 
 		cert, err := originalGetCertificate(hello)
 		if err != nil {
