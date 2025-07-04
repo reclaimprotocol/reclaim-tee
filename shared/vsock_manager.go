@@ -11,8 +11,8 @@ import (
 // VSockConnectionManager provides production-grade VSock connection management
 // with advanced features from nitro.go
 type VSockConnectionManager struct {
-	kmsPool      *ProductionVSockPool
-	internetPool *ProductionVSockPool
+	kmsPool      *VSockPool
+	internetPool *VSockPool
 	kmsClient    *AdvancedKMSClient
 
 	// Caching components

@@ -21,9 +21,9 @@ const (
 	defaultCleanupInterval  = 60 * time.Second
 )
 
-// ProductionVSockPool implements a production-grade VSock connection pool
+// VSockPool implements a production-grade VSock connection pool
 // with comprehensive lifecycle management, validation, and cleanup
-type ProductionVSockPool struct {
+type VSockPool struct {
 	cid           uint32
 	port          uint32
 	minPoolSize   int
@@ -87,7 +87,7 @@ type ProductionVSockPoolConfig struct {
 }
 
 // NewProductionVSockPool creates a new production-grade VSock connection pool
-func NewProductionVSockPool(config *ProductionVSockPoolConfig) *ProductionVSockPool {
+func NewProductionVSockPool(config *ProductionVSockPoolConfig) *VSockPool {
 	if config == nil {
 		config = &ProductionVSockPoolConfig{
 			MinPoolSize:      defaultPoolSize / 2,
@@ -99,7 +99,7 @@ func NewProductionVSockPool(config *ProductionVSockPoolConfig) *ProductionVSockP
 		}
 	}
 
-	pool := &ProductionVSockPool{
+	pool := &VSockPool{
 		cid:           config.CID,
 		port:          config.Port,
 		minPoolSize:   config.MinPoolSize,
@@ -118,7 +118,7 @@ func NewProductionVSockPool(config *ProductionVSockPoolConfig) *ProductionVSockP
 }
 
 // Start initializes the pool and begins background maintenance
-func (p *ProductionVSockPool) Start(ctx context.Context) error {
+func (p *VSockPool) Start(ctx context.Context) error {
 	if !atomic.CompareAndSwapInt32(&p.isRunning, 0, 1) {
 		return fmt.Errorf("pool is already running")
 	}
@@ -141,7 +141,7 @@ func (p *ProductionVSockPool) Start(ctx context.Context) error {
 }
 
 // GetConnection retrieves a validated connection from the pool
-func (p *ProductionVSockPool) GetConnection(ctx context.Context) (net.Conn, error) {
+func (p *VSockPool) GetConnection(ctx context.Context) (net.Conn, error) {
 	if atomic.LoadInt32(&p.isRunning) == 0 {
 		return nil, fmt.Errorf("pool is not running")
 	}
@@ -183,7 +183,7 @@ func (p *ProductionVSockPool) GetConnection(ctx context.Context) (net.Conn, erro
 }
 
 // ReturnConnection returns a connection to the pool
-func (p *ProductionVSockPool) ReturnConnection(conn net.Conn) {
+func (p *VSockPool) ReturnConnection(conn net.Conn) {
 	if atomic.LoadInt32(&p.isRunning) == 0 {
 		conn.Close()
 		return
@@ -232,7 +232,7 @@ func (p *ProductionVSockPool) ReturnConnection(conn net.Conn) {
 }
 
 // GetMetrics returns current pool metrics
-func (p *ProductionVSockPool) GetMetrics() *PoolMetrics {
+func (p *VSockPool) GetMetrics() *PoolMetrics {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -264,7 +264,7 @@ func (p *ProductionVSockPool) GetMetrics() *PoolMetrics {
 }
 
 // Shutdown gracefully closes the pool
-func (p *ProductionVSockPool) Shutdown(ctx context.Context) error {
+func (p *VSockPool) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 	p.shutdownOnce.Do(func() {
 		if !atomic.CompareAndSwapInt32(&p.isRunning, 1, 0) {
@@ -309,7 +309,7 @@ func (p *ProductionVSockPool) Shutdown(ctx context.Context) error {
 
 // Private methods for pool management
 
-func (p *ProductionVSockPool) prePopulatePool(ctx context.Context) error {
+func (p *VSockPool) prePopulatePool(ctx context.Context) error {
 	for i := 0; i < p.minPoolSize; i++ {
 		conn, err := p.createConnection(ctx)
 		if err != nil {
@@ -333,7 +333,7 @@ func (p *ProductionVSockPool) prePopulatePool(ctx context.Context) error {
 	return nil
 }
 
-func (p *ProductionVSockPool) createConnection(ctx context.Context) (net.Conn, error) {
+func (p *VSockPool) createConnection(ctx context.Context) (net.Conn, error) {
 	conn, err := vsock.Dial(p.cid, p.port, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create VSock connection: %v", err)
@@ -344,7 +344,7 @@ func (p *ProductionVSockPool) createConnection(ctx context.Context) (net.Conn, e
 	return conn, nil
 }
 
-func (p *ProductionVSockPool) getIdleConnection() *pooledConnection {
+func (p *VSockPool) getIdleConnection() *pooledConnection {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -367,7 +367,7 @@ func (p *ProductionVSockPool) getIdleConnection() *pooledConnection {
 	return p.getIdleConnection() // Recursive call for next connection
 }
 
-func (p *ProductionVSockPool) validateConnection(conn *pooledConnection) bool {
+func (p *VSockPool) validateConnection(conn *pooledConnection) bool {
 	if conn == nil || conn.conn == nil {
 		return false
 	}
@@ -402,7 +402,7 @@ func (p *ProductionVSockPool) validateConnection(conn *pooledConnection) bool {
 	return true
 }
 
-func (p *ProductionVSockPool) performConnectionValidation(conn net.Conn) error {
+func (p *VSockPool) performConnectionValidation(conn net.Conn) error {
 	// Set a short deadline for validation
 	if deadline, ok := conn.(interface{ SetDeadline(time.Time) error }); ok {
 		deadline.SetDeadline(time.Now().Add(1 * time.Second))
@@ -414,13 +414,13 @@ func (p *ProductionVSockPool) performConnectionValidation(conn net.Conn) error {
 	return nil // Simplified for this implementation
 }
 
-func (p *ProductionVSockPool) markConnectionActive(conn *pooledConnection) {
+func (p *VSockPool) markConnectionActive(conn *pooledConnection) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.activeConns[conn] = time.Now()
 }
 
-func (p *ProductionVSockPool) destroyConnection(conn *pooledConnection) {
+func (p *VSockPool) destroyConnection(conn *pooledConnection) {
 	if conn != nil && conn.conn != nil {
 		conn.conn.Close()
 		atomic.AddInt32(&p.connCount, -1)
@@ -428,7 +428,7 @@ func (p *ProductionVSockPool) destroyConnection(conn *pooledConnection) {
 	}
 }
 
-func (p *ProductionVSockPool) connectionManager(ctx context.Context) {
+func (p *VSockPool) connectionManager(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -444,7 +444,7 @@ func (p *ProductionVSockPool) connectionManager(ctx context.Context) {
 	}
 }
 
-func (p *ProductionVSockPool) maintainPoolSize(ctx context.Context) {
+func (p *VSockPool) maintainPoolSize(ctx context.Context) {
 	p.mu.RLock()
 	currentIdle := len(p.idleConns)
 	currentActive := len(p.activeConns)
@@ -476,7 +476,7 @@ func (p *ProductionVSockPool) maintainPoolSize(ctx context.Context) {
 	}
 }
 
-func (p *ProductionVSockPool) cleanupManager(ctx context.Context) {
+func (p *VSockPool) cleanupManager(ctx context.Context) {
 	p.cleanupTicker = time.NewTicker(defaultCleanupInterval)
 	defer p.cleanupTicker.Stop()
 
@@ -492,7 +492,7 @@ func (p *ProductionVSockPool) cleanupManager(ctx context.Context) {
 	}
 }
 
-func (p *ProductionVSockPool) performCleanup() {
+func (p *VSockPool) performCleanup() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -521,7 +521,7 @@ func (p *ProductionVSockPool) performCleanup() {
 	p.metrics.LastCleanupTime = now
 }
 
-func (p *ProductionVSockPool) validationManager(ctx context.Context) {
+func (p *VSockPool) validationManager(ctx context.Context) {
 	ticker := time.NewTicker(defaultValidationPeriod)
 	defer ticker.Stop()
 
@@ -537,7 +537,7 @@ func (p *ProductionVSockPool) validationManager(ctx context.Context) {
 	}
 }
 
-func (p *ProductionVSockPool) validateAllConnections() {
+func (p *VSockPool) validateAllConnections() {
 	p.mu.RLock()
 	idleConns := make([]*pooledConnection, len(p.idleConns))
 	copy(idleConns, p.idleConns)

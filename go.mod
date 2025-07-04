@@ -27,6 +27,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.24.0 // indirect
 	github.com/aws/smithy-go v1.22.4 // indirect
 	github.com/fxamacker/cbor/v2 v2.8.0 // indirect
+	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
