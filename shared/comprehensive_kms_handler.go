@@ -19,7 +19,7 @@ import (
 
 // KMSConnectionManager defines the interface for KMS connection management
 type KMSConnectionManager interface {
-	SendKMSRequest(ctx context.Context, operation string, data interface{}) ([]byte, error)
+	SendKMSRequest(ctx context.Context, operation string, serviceName string, data interface{}) ([]byte, error)
 }
 
 // KMSHandler ensures ALL KMS operations use attestation documents
@@ -71,8 +71,6 @@ func (c *KMSHandler) EncryptAndStoreCacheItem(ctx context.Context, data []byte, 
 	if err != nil {
 		return fmt.Errorf("KMS GenerateDataKey failed: %v", err)
 	}
-
-	log.Printf("[KMS] GenerateDataKey response (%s)", resp)
 
 	var output kms.GenerateDataKeyOutput
 	if err = json.Unmarshal(resp, &output); err != nil {
@@ -241,18 +239,12 @@ func (c *KMSHandler) decryptItem(ctx context.Context, encryptedData, ciphertextB
 
 // generateAttestation generates attestation document - matching nitro.go pattern exactly
 func (c *KMSHandler) generateAttestation(handle *EnclaveHandle, userData []byte) ([]byte, error) {
-	// Generate attestation document (matching nitro.go AttestationOptions)
 	return handle.generateAttestation(userData)
 }
 
 // sendVsockRequest sends a request via VSock connection manager
 func (c *KMSHandler) sendVsockRequest(ctx context.Context, operation string, input interface{}) ([]byte, error) {
-	// Check if the connection manager supports the new method with service name
-	if mgr, ok := c.connectionMgr.(*VSockConnectionManager); ok {
-		return mgr.SendKMSRequestWithService(ctx, operation, c.serviceName, input)
-	}
-	// Fallback to old method for backward compatibility
-	return c.connectionMgr.SendKMSRequest(ctx, operation, input)
+	return c.connectionMgr.SendKMSRequest(ctx, operation, c.serviceName, input)
 }
 
 // DeleteCacheItem deletes an encrypted item from storage

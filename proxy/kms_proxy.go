@@ -164,26 +164,6 @@ func (cd *CacheData) DeleteItem(serviceName, filename string) error {
 	return cd.saveToFile()
 }
 
-// GetStats returns cache statistics
-func (cd *CacheData) GetStats() map[string]interface{} {
-	cd.mutex.RLock()
-	defer cd.mutex.RUnlock()
-
-	stats := make(map[string]interface{})
-	totalItems := 0
-
-	for serviceName, serviceCache := range cd.Services {
-		itemCount := len(serviceCache)
-		stats[serviceName] = itemCount
-		totalItems += itemCount
-	}
-
-	stats["total_items"] = totalItems
-	stats["total_services"] = len(cd.Services)
-
-	return stats
-}
-
 // LoggingHTTPTransport wraps http.Transport to log all requests and responses
 type LoggingHTTPTransport struct {
 	Transport http.RoundTripper
@@ -283,20 +263,13 @@ func NewKMSProxy(proxyConfig *ProxyConfig, logger *zap.Logger) (*KMSProxy, error
 		DisableCompression: false,
 	}
 
-	// Wrap transport with logging
-	loggingTransport := &LoggingHTTPTransport{
-		Transport: transport,
-		Logger:    logger.With(zap.String("component", "kms_http_transport")),
-	}
-
 	// Initialize AWS KMS client with logging enabled
 	awsConfig, err := config.LoadDefaultConfig(context.Background(),
 		config.WithRegion(proxyConfig.AWS.Region),
 		config.WithHTTPClient(&http.Client{
-			Transport: loggingTransport,
+			Transport: transport,
 			Timeout:   60 * time.Second,
 		}),
-		config.WithClientLogMode(aws.LogRetries|aws.LogRequest|aws.LogResponse|aws.LogRequestWithBody|aws.LogResponseWithBody),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %v", err)
@@ -470,7 +443,14 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 			zap.String("KeyId", aws.ToString(output.KeyId)),
 		)
 
-		return json.Marshal(output)
+		out, err := json.Marshal(output)
+		if err != nil {
+			return nil, fmt.Errorf("KMS GenerateDataKey failed - detailed error: %v", err)
+		}
+
+		fmt.Printf("KMS GenerateDataKey output:\n%s\n", out)
+
+		return out, err
 
 	case OpEncrypt:
 		var input kms.EncryptInput

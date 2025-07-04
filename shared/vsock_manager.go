@@ -2,6 +2,7 @@ package shared
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -138,13 +139,8 @@ func (evm *VSockConnectionManager) Start(ctx context.Context) error {
 	return nil
 }
 
-// SendKMSRequest sends a request to KMS with advanced features
-func (evm *VSockConnectionManager) SendKMSRequest(ctx context.Context, operation string, data interface{}) ([]byte, error) {
-	return evm.SendKMSRequestWithService(ctx, operation, "unknown_service", data)
-}
-
 // SendKMSRequestWithService sends a request to KMS with service name for cache grouping
-func (evm *VSockConnectionManager) SendKMSRequestWithService(ctx context.Context, operation string, serviceName string, data interface{}) ([]byte, error) {
+func (evm *VSockConnectionManager) SendKMSRequest(ctx context.Context, operation string, serviceName string, data interface{}) ([]byte, error) {
 	// Use crypto-secure retry logic
 	var result []byte
 	err := RetryWithBackoff(DefaultRetryConfig(), func() error {
@@ -161,7 +157,7 @@ func (evm *VSockConnectionManager) SendKMSRequestWithService(ctx context.Context
 			"input":        data, // Changed from "data" to "input" to match KMS proxy structure
 		}
 
-		requestData, err := JSONMarshal(request)
+		requestData, err := json.Marshal(request)
 		if err != nil {
 			return fmt.Errorf("failed to marshal request: %v", err)
 		}
