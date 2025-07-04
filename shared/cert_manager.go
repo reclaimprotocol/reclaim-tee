@@ -1,0 +1,361 @@
+package shared
+
+import (
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/go-acme/lego/v4/certcrypto"
+	"github.com/go-acme/lego/v4/certificate"
+	"github.com/go-acme/lego/v4/challenge/http01"
+	"github.com/go-acme/lego/v4/lego"
+	"github.com/go-acme/lego/v4/registration"
+)
+
+// VSockLegoManager integrates Lego with VSock infrastructure for enclaves
+type VSockLegoManager struct {
+	config          *LegoVSockConfig
+	client          *lego.Client
+	cache           *EnclaveCache
+	challengeServer *VSockChallengeServer
+	mu              sync.RWMutex
+	certificates    map[string]*tls.Certificate
+}
+
+type LegoVSockConfig struct {
+	Domain       string        `json:"domain"`
+	Email        string        `json:"email"`
+	CADirURL     string        `json:"ca_dir_url"`
+	ServiceName  string        `json:"service_name"`
+	HTTPPort     uint32        `json:"http_port"`
+	HTTPSPort    uint32        `json:"https_port"`
+	ParentCID    uint32        `json:"parent_cid"`
+	InternetPort uint32        `json:"internet_port"`
+	Cache        *EnclaveCache `json:"-"`
+	HTTPClient   *http.Client  `json:"-"`
+}
+
+// VSockChallengeServer handles HTTP-01 challenges over VSock
+type VSockChallengeServer struct {
+	httpProvider *http01.ProviderServer
+	challenges   map[string]string // token -> keyAuth
+	mu           sync.RWMutex
+}
+
+// Supported ACME CAs
+const (
+	LetsEncryptProduction = "https://acme-v02.api.letsencrypt.org/directory"
+	LetsEncryptStaging    = "https://acme-staging-v02.api.letsencrypt.org/directory"
+	ZeroSSLProduction     = "https://acme.zerossl.com/v2/DV90"
+	BuyPassProduction     = "https://api.buypass.com/acme/directory"
+	BuyPassStaging        = "https://api.buypass.com/acme-v02/directory"
+)
+
+// LegoUser implements the required User interface for Lego
+type LegoUser struct {
+	Email        string
+	Registration *registration.Resource
+	key          crypto.PrivateKey
+}
+
+func (u *LegoUser) GetEmail() string {
+	return u.Email
+}
+
+func (u *LegoUser) GetRegistration() *registration.Resource {
+	return u.Registration
+}
+
+func (u *LegoUser) GetPrivateKey() crypto.PrivateKey {
+	return u.key
+}
+
+// NewVSockLegoManager creates a new Lego manager that works with VSock
+func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLegoManager, error) {
+	log.Printf("[%s] Initializing Lego certificate manager with VSock support", config.ServiceName)
+	log.Printf("[%s] CA Directory: %s", config.ServiceName, config.CADirURL)
+	log.Printf("[%s] Domain: %s", config.ServiceName, config.Domain)
+
+	// Create or load user private key
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate private key: %v", err)
+	}
+
+	user := &LegoUser{
+		Email: config.Email,
+		key:   privateKey,
+	}
+
+	// Create Lego configuration
+	legoConfig := lego.NewConfig(user)
+	legoConfig.CADirURL = config.CADirURL
+	legoConfig.Certificate.KeyType = certcrypto.EC256
+
+	// Use custom HTTP client if provided (for VSock internet connectivity)
+	if config.HTTPClient != nil {
+		legoConfig.HTTPClient = config.HTTPClient
+		log.Printf("[%s] Using VSock HTTP client for ACME requests", config.ServiceName)
+	}
+
+	// Create Lego client
+	client, err := lego.NewClient(legoConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Lego client: %v", err)
+	}
+
+	// Register user account
+	reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
+	if err != nil {
+		return nil, fmt.Errorf("failed to register user: %v", err)
+	}
+	user.Registration = reg
+
+	log.Printf("[%s] ACME account registered successfully", config.ServiceName)
+
+	manager := &VSockLegoManager{
+		config:       config,
+		client:       client,
+		cache:        config.Cache,
+		certificates: make(map[string]*tls.Certificate),
+	}
+
+	// Setup VSock-compatible HTTP-01 challenge solver
+	err = manager.setupVSockHTTPChallenge()
+	if err != nil {
+		return nil, fmt.Errorf("failed to setup VSock HTTP challenge: %v", err)
+	}
+
+	return manager, nil
+}
+
+// setupVSockHTTPChallenge configures HTTP-01 challenge to work with VSock
+func (m *VSockLegoManager) setupVSockHTTPChallenge() error {
+	log.Printf("[%s] Setting up VSock-compatible HTTP-01 challenge provider", m.config.ServiceName)
+
+	// Create a custom challenge server that integrates with VSock infrastructure
+	m.challengeServer = &VSockChallengeServer{
+		challenges: make(map[string]string),
+	}
+
+	// Create a custom HTTP-01 provider that uses our challenge server
+	httpProvider := &VSockHTTP01Provider{
+		challengeServer: m.challengeServer,
+		serviceName:     m.config.ServiceName,
+	}
+
+	err := m.client.Challenge.SetHTTP01Provider(httpProvider)
+	if err != nil {
+		return fmt.Errorf("failed to set VSock HTTP-01 provider: %v", err)
+	}
+
+	log.Printf("[%s] VSock HTTP-01 challenge provider configured", m.config.ServiceName)
+	return nil
+}
+
+// VSockHTTP01Provider implements the HTTP-01 challenge provider interface for VSock
+type VSockHTTP01Provider struct {
+	challengeServer *VSockChallengeServer
+	serviceName     string
+}
+
+// Present implements the challenge.Provider interface
+func (p *VSockHTTP01Provider) Present(domain, token, keyAuth string) error {
+	log.Printf("[%s] VSock HTTP-01 challenge: Presenting token for domain %s", p.serviceName, domain)
+
+	p.challengeServer.mu.Lock()
+	p.challengeServer.challenges[token] = keyAuth
+	p.challengeServer.mu.Unlock()
+
+	log.Printf("[%s] Challenge token stored: %s", p.serviceName, token[:8]+"...")
+	return nil
+}
+
+// CleanUp implements the challenge.Provider interface
+func (p *VSockHTTP01Provider) CleanUp(domain, token, keyAuth string) error {
+	log.Printf("[%s] VSock HTTP-01 challenge: Cleaning up token for domain %s", p.serviceName, domain)
+
+	p.challengeServer.mu.Lock()
+	delete(p.challengeServer.challenges, token)
+	p.challengeServer.mu.Unlock()
+
+	return nil
+}
+
+// CreateVSockHTTPHandler creates an HTTP handler for ACME challenges that works with VSock
+func (m *VSockLegoManager) CreateVSockHTTPHandler(fallback http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if this is an ACME challenge request
+		if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
+			token := strings.TrimPrefix(r.URL.Path, "/.well-known/acme-challenge/")
+
+			log.Printf("[%s] VSock ACME challenge request for token: %s", m.config.ServiceName, token[:8]+"...")
+
+			m.challengeServer.mu.RLock()
+			keyAuth, exists := m.challengeServer.challenges[token]
+			m.challengeServer.mu.RUnlock()
+
+			if exists {
+				log.Printf("[%s] VSock ACME challenge: Serving keyAuth for token", m.config.ServiceName)
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(keyAuth))
+				return
+			}
+
+			log.Printf("[%s] VSock ACME challenge: Token not found", m.config.ServiceName)
+			http.NotFound(w, r)
+			return
+		}
+
+		// Fall back to default handler for non-ACME requests
+		if fallback != nil {
+			fallback.ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// BootstrapCertificates obtains certificates for the configured domain using VSock
+func (m *VSockLegoManager) BootstrapCertificates(ctx context.Context) error {
+	log.Printf("[%s] Bootstrapping certificates for domain: %s via VSock", m.config.ServiceName, m.config.Domain)
+
+	// Check if certificate exists in cache
+	if cert, err := m.getCachedCertificate(ctx, m.config.Domain); err == nil {
+		if m.isValidCertificate(cert) {
+			log.Printf("[%s] Valid certificate found in cache", m.config.ServiceName)
+			return nil
+		}
+		log.Printf("[%s] Cached certificate expired or invalid, requesting new one", m.config.ServiceName)
+	}
+
+	// Request new certificate
+	request := certificate.ObtainRequest{
+		Domains: []string{m.config.Domain},
+		Bundle:  true,
+	}
+
+	log.Printf("[%s] Requesting certificate from %s via VSock", m.config.ServiceName, GetCAName(m.config.CADirURL))
+	certificates, err := m.client.Certificate.Obtain(request)
+	if err != nil {
+		return fmt.Errorf("failed to obtain certificate via VSock: %v", err)
+	}
+
+	// Store certificate in cache
+	err = m.storeCertificate(ctx, m.config.Domain, certificates)
+	if err != nil {
+		log.Printf("[%s] Warning: failed to cache certificate: %v", m.config.ServiceName, err)
+	}
+
+	log.Printf("[%s] Certificate successfully obtained and cached via VSock", m.config.ServiceName)
+	return nil
+}
+
+// GetCertificate returns a certificate for TLS configuration
+func (m *VSockLegoManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	domain := hello.ServerName
+	if domain == "" {
+		domain = m.config.Domain
+	}
+
+	m.mu.RLock()
+	if cert, exists := m.certificates[domain]; exists {
+		if m.isValidCertificate(cert) {
+			m.mu.RUnlock()
+			return cert, nil
+		}
+	}
+	m.mu.RUnlock()
+
+	// Load from cache
+	cert, err := m.getCachedCertificate(context.Background(), domain)
+	if err == nil && m.isValidCertificate(cert) {
+		m.mu.Lock()
+		m.certificates[domain] = cert
+		m.mu.Unlock()
+		return cert, nil
+	}
+
+	return nil, fmt.Errorf("no valid certificate available for domain %s", domain)
+}
+
+// CreateTLSConfig creates a TLS configuration with certificate management
+func (m *VSockLegoManager) CreateTLSConfig() *tls.Config {
+	return &tls.Config{
+		GetCertificate: m.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
+		MaxVersion:     tls.VersionTLS13,
+	}
+}
+
+// getCachedCertificate retrieves a certificate from cache
+func (m *VSockLegoManager) getCachedCertificate(ctx context.Context, domain string) (*tls.Certificate, error) {
+	cacheKey := domain
+	data, err := m.cache.Get(ctx, cacheKey)
+	if err != nil {
+		return nil, fmt.Errorf("certificate cache miss: %v", err)
+	}
+
+	cert, err := tls.X509KeyPair(data, data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse cached certificate: %v", err)
+	}
+
+	return &cert, nil
+}
+
+// storeCertificate stores a certificate in cache
+func (m *VSockLegoManager) storeCertificate(ctx context.Context, domain string, certificates *certificate.Resource) error {
+	// Combine certificate and private key like autocert does
+	certPEM := certificates.Certificate
+	keyPEM := certificates.PrivateKey
+	combined := append(certPEM, keyPEM...)
+
+	cacheKey := domain
+	return m.cache.Put(ctx, cacheKey, combined)
+}
+
+// isValidCertificate checks if a certificate is valid and not expiring soon
+func (m *VSockLegoManager) isValidCertificate(cert *tls.Certificate) bool {
+	if len(cert.Certificate) == 0 {
+		return false
+	}
+
+	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return false
+	}
+
+	// Check if certificate expires within 7 days
+	timeUntilExpiry := time.Until(x509Cert.NotAfter)
+	return timeUntilExpiry > 7*24*time.Hour
+}
+
+// GetCAName Helper function to get CA name from directory URL
+func GetCAName(dirURL string) string {
+	switch dirURL {
+	case LetsEncryptProduction:
+		return "Let's Encrypt Production"
+	case LetsEncryptStaging:
+		return "Let's Encrypt Staging"
+	case ZeroSSLProduction:
+		return "ZeroSSL Production"
+	case BuyPassProduction:
+		return "BuyPass Production"
+	case BuyPassStaging:
+		return "BuyPass Staging"
+	default:
+		return "Custom CA"
+	}
+}

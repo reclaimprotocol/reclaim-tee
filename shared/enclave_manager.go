@@ -18,15 +18,13 @@ import (
 	"github.com/hf/nsm"
 	"github.com/hf/nsm/request"
 	"github.com/mdlayher/vsock"
-	"golang.org/x/crypto/acme"
-	"golang.org/x/crypto/acme/autocert"
 )
 
 // EnclaveManager provides production-ready enclave functionality
 type EnclaveManager struct {
 	config          *EnclaveConfig
 	connectionMgr   *VSockConnectionManager
-	autocertManager *autocert.Manager
+	autocertManager *VSockLegoManager
 	cache           *EnclaveCache
 	mu              sync.RWMutex
 }
@@ -171,25 +169,29 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 	cache := NewEnclaveCache(connectionMgr, kmsKeyID, config.ServiceName)
 
 	// Get ACME directory URL from environment
-	acmeDirectoryURL := GetEnvOrDefault("ACME_DIRECTORY_URL", "https://acme-v02.api.letsencrypt.org/directory")
-	fmt.Printf("ACME_DIRECTORY_URL: %s\n", acmeDirectoryURL)
+	acmeDirectoryURL := GetEnvOrDefault("ACME_DIRECTORY_URL", ZeroSSLProduction)
 
-	// Initialize ACME manager
-	autocertManager := &autocert.Manager{
-		Prompt:     autocert.AcceptTOS,
-		HostPolicy: autocert.HostWhitelist(config.Domain),
-		Email:      "alex@reclaimprotocol.org",
-		Cache:      cache,
-		Client: &acme.Client{
-			HTTPClient:   createVSockHTTPClient(config.ParentCID, config.InternetPort),
-			DirectoryURL: acmeDirectoryURL,
-		},
+	certManager, err := NewVSockLegoManager(ctx, &LegoVSockConfig{
+		Domain:       config.Domain,
+		Email:        "alex@reclaimprotocol.org",
+		CADirURL:     acmeDirectoryURL,
+		ServiceName:  config.ServiceName,
+		HTTPPort:     config.HTTPPort,
+		HTTPSPort:    config.HTTPSPort,
+		ParentCID:    config.ParentCID,
+		InternetPort: config.InternetPort,
+		Cache:        cache,
+		HTTPClient:   createVSockHTTPClient(config.ParentCID, config.InternetPort),
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to start VSockConnectionManager: %v", err)
 	}
 
 	return &EnclaveManager{
 		config:          config,
 		connectionMgr:   connectionMgr,
-		autocertManager: autocertManager,
+		autocertManager: certManager,
 		cache:           cache,
 	}, nil
 }
@@ -200,23 +202,11 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 
 	log.Printf("[%s] Starting ACME challenge for %s", em.config.ServiceName, em.config.Domain)
 
-	// Create VSock HTTP server for ACME challenges
-	httpServer := em.createVSockHTTPServer(em.autocertManager.HTTPHandler(nil), em.config.HTTPPort)
-
-	// Start HTTP server in background
-	serverErrChan := make(chan error, 1)
-	go func() {
-		if err := httpServer.ListenAndServeVSock(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("[%s] VSock HTTP server error: %v", em.config.ServiceName, err)
-			serverErrChan <- err
-		}
-	}()
-
 	// Wait for server to start
 	time.Sleep(100 * time.Millisecond)
 
 	log.Printf("[%s] Starting ACME certificate request for %s...", em.config.ServiceName, em.config.Domain)
-	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.autocertManager.Client.DirectoryURL)
+	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.autocertManager.config.CADirURL)
 	log.Printf("[%s] HTTP server running on port %d for ACME challenges", em.config.ServiceName, em.config.HTTPPort)
 
 	// Create a timeout context for the certificate request
@@ -267,21 +257,6 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 		log.Printf("[%s] ACME certificate request TIMED OUT", em.config.ServiceName)
 	}
 
-	// Shutdown HTTP server
-	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	httpServer.Shutdown(shutdownCtx)
-
-	// Check for server errors
-	select {
-	case serverErr := <-serverErrChan:
-		if err == nil {
-			err = fmt.Errorf("VSock HTTP server failed: %v", serverErr)
-		}
-	default:
-		// No server error
-	}
-
 	if err != nil {
 		return fmt.Errorf("failed to bootstrap certificate for %s: %v", em.config.Domain, err)
 	}
@@ -292,9 +267,8 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 
 // CreateHTTPSServer creates an HTTPS server with enhanced TLS configuration and debugging
 func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *VSockHTTPSServer {
-	tlsConfig := em.autocertManager.TLSConfig()
-	tlsConfig.MinVersion = tls.VersionTLS12
-	tlsConfig.MaxVersion = tls.VersionTLS13
+
+	tlsConfig := em.autocertManager.CreateTLSConfig()
 
 	// Wrap the GetCertificate function to add debugging
 	originalGetCertificate := tlsConfig.GetCertificate
@@ -310,13 +284,6 @@ func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *VSockHTTPSSer
 		}
 
 		return cert, err
-	}
-
-	// Add connection logging
-	tlsConfig.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-		log.Printf("[%s] TLS handshake from %s with SNI: %s",
-			em.config.ServiceName, hello.Conn.RemoteAddr(), hello.ServerName)
-		return nil, nil
 	}
 
 	// Create VSock HTTPS server for enclave mode
