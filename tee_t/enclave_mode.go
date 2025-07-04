@@ -38,7 +38,6 @@ func startEnclaveMode(config *TEETConfig) {
 	defer enclaveManager.Shutdown(ctx)
 
 	// Phase 1: Bootstrap certificates via ACME
-	log.Printf("[TEE_T] Bootstrapping certificates for domain: %s", config.Domain)
 	if err := enclaveManager.BootstrapCertificates(ctx); err != nil {
 		log.Printf("[TEE_T] CRITICAL ERROR: Certificate bootstrap failed: %v", err)
 		// Return gracefully instead of crashing enclave
