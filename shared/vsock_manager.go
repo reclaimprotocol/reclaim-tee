@@ -2,288 +2,341 @@ package shared
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net"
-	"strings"
+	"log"
 	"sync"
-	"sync/atomic"
 	"time"
-
-	"github.com/mdlayher/vsock"
 )
 
-// VSockConnectionManager manages VSock connections with circuit breaker and metrics
+// VSockConnectionManager provides production-grade VSock connection management
+// with advanced features from nitro.go
 type VSockConnectionManager struct {
-	parentCID      uint32
-	kmsPort        uint32
-	internetPort   uint32
-	pool           *VSockPool
-	circuitBreaker *CircuitBreaker
-	metrics        *ConnectionMetrics
+	kmsPool      *ProductionVSockPool
+	internetPool *ProductionVSockPool
+	kmsClient    *AdvancedKMSClient
+
+	// Caching components
+	attestationCache *AttestationCache
+	memoryCache      *SmartMemoryCache
+
+	mu           sync.RWMutex
+	isRunning    bool
+	shutdownOnce sync.Once
 }
 
-// CircuitBreaker provides circuit breaker functionality for VSock connections
-type CircuitBreaker struct {
-	state       int32
-	failures    int32
-	lastFailure time.Time
-	mu          sync.RWMutex
+// EnhancedVSockConfig holds configuration for the enhanced connection manager
+type EnhancedVSockConfig struct {
+	ParentCID    uint32
+	KMSPort      uint32
+	InternetPort uint32
+	KMSKeyID     string
+
+	// Pool configurations
+	KMSPoolConfig      *ProductionVSockPoolConfig
+	InternetPoolConfig *ProductionVSockPoolConfig
+
+	// Cache configurations
+	AttestationCacheTTL time.Duration
+	MemoryCacheTTL      time.Duration
 }
 
-// ConnectionMetrics tracks connection statistics
-type ConnectionMetrics struct {
-	totalRequests   int64
-	successfulReqs  int64
-	failedReqs      int64
-	avgResponseTime int64
-	mu              sync.RWMutex
-}
-
-// VSockPool manages a pool of VSock connections
-type VSockPool struct {
-	mu          sync.RWMutex
-	connections chan net.Conn
-	factory     func() (net.Conn, error)
-	maxIdle     int
-	maxActive   int
-	idleTimeout time.Duration
-	stopCh      chan struct{}
-}
-
-const (
-	CircuitClosed = iota
-	CircuitOpen
-	CircuitHalfOpen
-
-	circuitBreakerThreshold = 5
-	circuitBreakerTimeout   = 60 * time.Second
-)
-
-// isCacheMiss checks if an error is a cache miss and should not count as circuit breaker failure
-func isCacheMiss(errorMsg string) bool {
-	cacheMissErrors := []string{
-		"encrypted item not found",
-		"item not found",
-		"cache miss",
-		"not found",
-	}
-
-	for _, missError := range cacheMissErrors {
-		if strings.Contains(strings.ToLower(errorMsg), missError) {
-			return true
+// NewEnhancedVSockConnectionManager creates a new enhanced connection manager
+func NewVSockConnectionManager(config *EnhancedVSockConfig) *VSockConnectionManager {
+	if config == nil {
+		config = &EnhancedVSockConfig{
+			ParentCID:           3,
+			KMSPort:             5000,
+			InternetPort:        8444,
+			AttestationCacheTTL: 4 * time.Minute,
+			MemoryCacheTTL:      10 * time.Minute,
 		}
 	}
-	return false
-}
 
-// NewVSockConnectionManager creates a new VSock connection manager
-func NewVSockConnectionManager(parentCID, kmsPort, internetPort uint32) *VSockConnectionManager {
-	return &VSockConnectionManager{
-		parentCID:    parentCID,
-		kmsPort:      kmsPort,
-		internetPort: internetPort,
-		pool:         NewVSockPool(10, 50),
-		circuitBreaker: &CircuitBreaker{
-			state: CircuitClosed,
-		},
-		metrics: &ConnectionMetrics{},
-	}
-}
-
-// NewVSockPool creates a new VSock connection pool
-func NewVSockPool(maxIdle, maxActive int) *VSockPool {
-	return &VSockPool{
-		connections: make(chan net.Conn, maxIdle),
-		maxIdle:     maxIdle,
-		maxActive:   maxActive,
-		idleTimeout: 30 * time.Second,
-		stopCh:      make(chan struct{}),
-	}
-}
-
-// SendKMSRequest sends a KMS request via VSock
-func (v *VSockConnectionManager) SendKMSRequest(ctx context.Context, operation string, input interface{}) ([]byte, error) {
-	return v.SendKMSRequestWithService(ctx, operation, "unknown_service", input)
-}
-
-// SendKMSRequestWithService sends a KMS request via VSock with service name for cache grouping
-func (v *VSockConnectionManager) SendKMSRequestWithService(ctx context.Context, operation string, serviceName string, input interface{}) ([]byte, error) {
-	if !v.circuitBreaker.CanExecute() {
-		return nil, fmt.Errorf("circuit breaker is open")
+	// Initialize KMS pool
+	kmsPoolConfig := config.KMSPoolConfig
+	if kmsPoolConfig == nil {
+		kmsPoolConfig = &ProductionVSockPoolConfig{
+			CID:              config.ParentCID,
+			Port:             config.KMSPort,
+			MinPoolSize:      5,
+			MaxPoolSize:      20,
+			ConnectionTTL:    5 * time.Minute,
+			IdleTimeout:      30 * time.Second,
+			ValidationPeriod: 30 * time.Second,
+			CleanupInterval:  60 * time.Second,
+		}
 	}
 
-	start := time.Now()
-	defer func() {
-		v.metrics.recordRequest(time.Since(start))
-	}()
+	// Initialize Internet pool
+	internetPoolConfig := config.InternetPoolConfig
+	if internetPoolConfig == nil {
+		internetPoolConfig = &ProductionVSockPoolConfig{
+			CID:              config.ParentCID,
+			Port:             config.InternetPort,
+			MinPoolSize:      3,
+			MaxPoolSize:      15,
+			ConnectionTTL:    3 * time.Minute,
+			IdleTimeout:      30 * time.Second,
+			ValidationPeriod: 30 * time.Second,
+			CleanupInterval:  60 * time.Second,
+		}
+	}
 
-	// Connect to KMS proxy
-	conn, err := vsock.Dial(v.parentCID, v.kmsPort, nil)
+	manager := &VSockConnectionManager{
+		kmsPool:      NewProductionVSockPool(kmsPoolConfig),
+		internetPool: NewProductionVSockPool(internetPoolConfig),
+	}
+
+	// Initialize advanced KMS client using global singleton handle
+	if config.KMSKeyID != "" {
+		globalHandle, err := SafeGetEnclaveHandle()
+		if err != nil {
+			log.Printf("[EnhancedVSock] Warning: Failed to get global handle for KMS client: %v", err)
+		} else {
+			manager.kmsClient = NewAdvancedKMSClient(manager, globalHandle, config.KMSKeyID)
+		}
+	}
+
+	// Initialize attestation cache using global singleton handle
+	globalHandle, err := SafeGetEnclaveHandle()
 	if err != nil {
-		v.circuitBreaker.OnFailure()
-		v.metrics.recordFailure()
-		return nil, fmt.Errorf("failed to connect to KMS proxy: %v", err)
-	}
-	defer conn.Close()
-
-	// Prepare request
-	request := struct {
-		Operation   string      `json:"operation"`
-		ServiceName string      `json:"service_name,omitempty"`
-		Input       interface{} `json:"input"`
-	}{
-		Operation:   operation,
-		ServiceName: serviceName,
-		Input:       input,
+		log.Printf("[EnhancedVSock] Warning: Failed to get global handle for attestation cache: %v", err)
+	} else {
+		manager.attestationCache = NewAttestationCache(globalHandle, config.AttestationCacheTTL)
 	}
 
-	// Send request
-	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if err := json.NewEncoder(conn).Encode(request); err != nil {
-		v.circuitBreaker.OnFailure()
-		v.metrics.recordFailure()
-		return nil, fmt.Errorf("failed to send KMS request: %v", err)
+	return manager
+}
+
+// Start initializes all components and begins operation
+func (evm *VSockConnectionManager) Start(ctx context.Context) error {
+	evm.mu.Lock()
+	defer evm.mu.Unlock()
+
+	if evm.isRunning {
+		return fmt.Errorf("enhanced connection manager is already running")
 	}
 
-	// Read response
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-	var response struct {
-		Output json.RawMessage `json:"output,omitempty"`
-		Error  string          `json:"error,omitempty"`
+	log.Printf("[EnhancedVSock] Starting enhanced VSock connection manager")
+
+	// Start KMS pool
+	if err := evm.kmsPool.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start KMS pool: %v", err)
 	}
 
-	if err := json.NewDecoder(conn).Decode(&response); err != nil {
-		v.circuitBreaker.OnFailure()
-		v.metrics.recordFailure()
-		return nil, fmt.Errorf("failed to read KMS response: %v", err)
+	// Start Internet pool
+	if err := evm.internetPool.Start(ctx); err != nil {
+		evm.kmsPool.Shutdown(ctx)
+		return fmt.Errorf("failed to start Internet pool: %v", err)
 	}
 
-	if response.Error != "" {
-		// Don't count cache misses as circuit breaker failures
-		if !isCacheMiss(response.Error) {
-			v.circuitBreaker.OnFailure()
-			v.metrics.recordFailure()
+	// Start attestation cache
+	if evm.attestationCache != nil {
+		if err := evm.attestationCache.Start(ctx); err != nil {
+			log.Printf("[EnhancedVSock] Warning: Failed to start attestation cache: %v", err)
 		}
-		return nil, fmt.Errorf("KMS operation failed: %s", response.Error)
 	}
 
-	v.circuitBreaker.OnSuccess()
-	v.metrics.recordSuccess()
-	return []byte(response.Output), nil
-}
-
-// GetMetrics returns connection metrics
-func (v *VSockConnectionManager) GetMetrics() map[string]interface{} {
-	v.metrics.mu.RLock()
-	defer v.metrics.mu.RUnlock()
-
-	return map[string]interface{}{
-		"total_requests":        atomic.LoadInt64(&v.metrics.totalRequests),
-		"successful_requests":   atomic.LoadInt64(&v.metrics.successfulReqs),
-		"failed_requests":       atomic.LoadInt64(&v.metrics.failedReqs),
-		"circuit_breaker_state": atomic.LoadInt32(&v.circuitBreaker.state),
-	}
-}
-
-// Close closes the connection manager
-func (v *VSockConnectionManager) Close() {
-	if v.pool != nil {
-		v.pool.Close()
-	}
-}
-
-// Circuit breaker methods
-func (cb *CircuitBreaker) CanExecute() bool {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
-
-	state := atomic.LoadInt32(&cb.state)
-	switch state {
-	case CircuitClosed:
-		return true
-	case CircuitOpen:
-		if time.Since(cb.lastFailure) >= circuitBreakerTimeout {
-			atomic.StoreInt32(&cb.state, CircuitHalfOpen)
-			return true
+	// Start memory cache
+	if evm.memoryCache != nil {
+		if err := evm.memoryCache.Start(ctx); err != nil {
+			log.Printf("[EnhancedVSock] Warning: Failed to start memory cache: %v", err)
 		}
-		return false
-	case CircuitHalfOpen:
-		return true
-	default:
-		return false
 	}
+
+	evm.isRunning = true
+	log.Printf("[EnhancedVSock] Enhanced connection manager started successfully")
+	return nil
 }
 
-func (cb *CircuitBreaker) OnSuccess() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	atomic.StoreInt32(&cb.failures, 0)
-	if atomic.LoadInt32(&cb.state) == CircuitHalfOpen {
-		atomic.StoreInt32(&cb.state, CircuitClosed)
-	}
+// SendKMSRequest sends a request to KMS with advanced features
+func (evm *VSockConnectionManager) SendKMSRequest(ctx context.Context, operation string, data interface{}) ([]byte, error) {
+	return evm.SendKMSRequestWithService(ctx, operation, "unknown_service", data)
 }
 
-func (cb *CircuitBreaker) OnFailure() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	failures := atomic.AddInt32(&cb.failures, 1)
-	cb.lastFailure = time.Now()
-
-	if failures >= circuitBreakerThreshold {
-		atomic.StoreInt32(&cb.state, CircuitOpen)
-	}
-}
-
-// Connection metrics methods
-func (m *ConnectionMetrics) recordRequest(duration time.Duration) {
-	atomic.AddInt64(&m.totalRequests, 1)
-	atomic.StoreInt64(&m.avgResponseTime, duration.Nanoseconds())
-}
-
-func (m *ConnectionMetrics) recordSuccess() {
-	atomic.AddInt64(&m.successfulReqs, 1)
-}
-
-func (m *ConnectionMetrics) recordFailure() {
-	atomic.AddInt64(&m.failedReqs, 1)
-}
-
-// VSockPool methods
-func (p *VSockPool) Get(ctx context.Context) (net.Conn, error) {
-	select {
-	case conn := <-p.connections:
-		return conn, nil
-	default:
-		if p.factory != nil {
-			return p.factory()
+// SendKMSRequestWithService sends a request to KMS with service name for cache grouping
+func (evm *VSockConnectionManager) SendKMSRequestWithService(ctx context.Context, operation string, serviceName string, data interface{}) ([]byte, error) {
+	// Use crypto-secure retry logic
+	var result []byte
+	err := RetryWithBackoff(DefaultRetryConfig(), func() error {
+		conn, err := evm.kmsPool.GetConnection(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get KMS connection: %v", err)
 		}
-		return nil, fmt.Errorf("no connection factory available")
+		defer evm.kmsPool.ReturnConnection(conn)
+
+		// Prepare request
+		request := map[string]interface{}{
+			"operation":    operation,
+			"service_name": serviceName,
+			"input":        data, // Changed from "data" to "input" to match KMS proxy structure
+		}
+
+		requestData, err := JSONMarshal(request)
+		if err != nil {
+			return fmt.Errorf("failed to marshal request: %v", err)
+		}
+
+		// Send request
+		if _, err := conn.Write(requestData); err != nil {
+			return fmt.Errorf("failed to send request: %v", err)
+		}
+
+		// Read response
+		response := make([]byte, 4096)
+		n, err := conn.Read(response)
+		if err != nil {
+			return fmt.Errorf("failed to read response: %v", err)
+		}
+
+		result = response[:n]
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("KMS request failed after retries: %v", err)
+	}
+
+	return result, nil
+}
+
+// SendInternetRequest sends a request to the internet proxy
+func (evm *VSockConnectionManager) SendInternetRequest(ctx context.Context, url string) ([]byte, error) {
+
+	// Use crypto-secure retry logic
+	var result []byte
+	err := RetryWithBackoff(DefaultRetryConfig(), func() error {
+		conn, err := evm.internetPool.GetConnection(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get internet connection: %v", err)
+		}
+		defer evm.internetPool.ReturnConnection(conn)
+
+		// Send URL to proxy
+		if _, err := fmt.Fprintf(conn, "%s\n", url); err != nil {
+			return fmt.Errorf("failed to send URL: %v", err)
+		}
+
+		// Read response
+		response := make([]byte, 8192)
+		n, err := conn.Read(response)
+		if err != nil {
+			return fmt.Errorf("failed to read response: %v", err)
+		}
+
+		result = response[:n]
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("internet request failed after retries: %v", err)
+	}
+
+	return result, nil
+}
+
+// GetCachedAttestation retrieves an attestation document with caching
+func (evm *VSockConnectionManager) GetCachedAttestation(ctx context.Context, userData []byte) ([]byte, error) {
+	if evm.attestationCache == nil {
+		return nil, fmt.Errorf("attestation cache not initialized")
+	}
+
+	return evm.attestationCache.GetAttestation(ctx, userData)
+}
+
+// StoreInCache stores data in the memory cache
+func (evm *VSockConnectionManager) StoreInCache(key string, data interface{}) {
+	if evm.memoryCache != nil {
+		evm.memoryCache.Put(key, data)
 	}
 }
 
-func (p *VSockPool) Put(conn net.Conn) {
-	select {
-	case p.connections <- conn:
-		// Connection added to pool
+// GetFromCache retrieves data from the memory cache
+func (evm *VSockConnectionManager) GetFromCache(ctx context.Context, key string) (interface{}, error) {
+	if evm.memoryCache == nil {
+		return nil, fmt.Errorf("memory cache not initialized")
+	}
+
+	return evm.memoryCache.Get(ctx, key)
+}
+
+// PerformAdvancedKMSOperation performs KMS operations with attestation documents
+func (evm *VSockConnectionManager) PerformAdvancedKMSOperation(ctx context.Context, operationType string, data interface{}) (interface{}, error) {
+	if evm.kmsClient == nil {
+		return nil, fmt.Errorf("advanced KMS client not initialized")
+	}
+
+	switch operationType {
+	case "encrypt_and_store":
+		if request, ok := data.(map[string]interface{}); ok {
+			if dataBytes, ok := request["data"].([]byte); ok {
+				if filename, ok := request["filename"].(string); ok {
+					return nil, evm.kmsClient.EncryptAndStoreCacheItem(ctx, dataBytes, filename)
+				}
+			}
+		}
+		return nil, fmt.Errorf("invalid request format for encrypt_and_store")
+
+	case "load_and_decrypt":
+		if request, ok := data.(map[string]interface{}); ok {
+			if filename, ok := request["filename"].(string); ok {
+				return evm.kmsClient.LoadAndDecryptCacheItem(ctx, filename)
+			}
+		}
+		return nil, fmt.Errorf("invalid request format for load_and_decrypt")
+
+	case "delete_cache_item":
+		if request, ok := data.(map[string]interface{}); ok {
+			if filename, ok := request["filename"].(string); ok {
+				return nil, evm.kmsClient.DeleteCacheItem(ctx, filename)
+			}
+		}
+		return nil, fmt.Errorf("invalid request format for delete_cache_item")
+
 	default:
-		// Pool is full, close connection
-		conn.Close()
+		return nil, fmt.Errorf("unsupported KMS operation: %s", operationType)
 	}
 }
 
-func (p *VSockPool) Close() {
-	close(p.stopCh)
+// Shutdown gracefully shuts down all components
+func (evm *VSockConnectionManager) Shutdown(ctx context.Context) error {
+	var shutdownErr error
+	evm.shutdownOnce.Do(func() {
+		evm.mu.Lock()
+		defer evm.mu.Unlock()
 
-	// Close all connections in pool
-	for {
-		select {
-		case conn := <-p.connections:
-			conn.Close()
-		default:
+		if !evm.isRunning {
 			return
 		}
-	}
+
+		log.Printf("[EnhancedVSock] Shutting down enhanced connection manager")
+
+		// Shutdown memory cache
+		if evm.memoryCache != nil {
+			if err := evm.memoryCache.Shutdown(ctx); err != nil {
+				log.Printf("[EnhancedVSock] Memory cache shutdown error: %v", err)
+			}
+		}
+
+		// Shutdown attestation cache
+		if evm.attestationCache != nil {
+			if err := evm.attestationCache.Shutdown(ctx); err != nil {
+				log.Printf("[EnhancedVSock] Attestation cache shutdown error: %v", err)
+			}
+		}
+
+		// Shutdown pools
+		if err := evm.internetPool.Shutdown(ctx); err != nil {
+			log.Printf("[EnhancedVSock] Internet pool shutdown error: %v", err)
+		}
+
+		if err := evm.kmsPool.Shutdown(ctx); err != nil {
+			log.Printf("[EnhancedVSock] KMS pool shutdown error: %v", err)
+		}
+
+		evm.isRunning = false
+		log.Printf("[EnhancedVSock] Enhanced connection manager shutdown completed")
+	})
+
+	return shutdownErr
 }

@@ -67,17 +67,6 @@ func NewTEEK(port int) *TEEK {
 	}
 }
 
-// NewTEEKWithSessionManager creates a TEEK with a specific session manager
-func NewTEEKWithSessionManager(port int, sessionManager shared.SessionManagerInterface) *TEEK {
-	return &TEEK{
-		port:                port,
-		sessionManager:      sessionManager,
-		teetURL:             "ws://localhost:8081/teek", // Default TEE_T URL
-		tcpReady:            make(chan bool, 1),
-		responseLengthBySeq: make(map[uint64]int),
-	}
-}
-
 // SetTEETURL sets the TEE_T connection URL
 func (t *TEEK) SetTEETURL(url string) {
 	t.teetURL = url

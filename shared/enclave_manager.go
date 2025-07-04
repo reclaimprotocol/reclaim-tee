@@ -161,19 +161,28 @@ func NewEnclaveManager(config *EnclaveConfig, kmsKeyID string) (*EnclaveManager,
 	}
 
 	// Initialize VSock connection manager
-	connectionMgr := NewVSockConnectionManager(config.ParentCID, config.KMSPort, config.InternetPort)
+	connectionMgr := NewVSockConnectionManager(&EnhancedVSockConfig{
+		ParentCID:    config.ParentCID,
+		KMSPort:      config.KMSPort,
+		InternetPort: config.InternetPort,
+		KMSKeyID:     config.KMSKey,
+	})
 
 	// Initialize encrypted cache with service-specific KMS key and service name prefix
 	cache := NewEnclaveCache(connectionMgr, kmsKeyID, config.ServiceName)
+
+	// Get ACME directory URL from environment or use staging as default
+	acmeDirectoryURL := GetEnvOrDefault("ACME_DIRECTORY_URL", "https://acme-v02.api.letsencrypt.org/directory")
 
 	// Initialize ACME manager
 	autocertManager := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: autocert.HostWhitelist(config.Domain),
+		Email:      "alex@reclaimprotocol.org",
 		Cache:      cache,
 		Client: &acme.Client{
 			HTTPClient:   createVSockHTTPClient(config.ParentCID, config.InternetPort),
-			DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
+			DirectoryURL: acmeDirectoryURL,
 		},
 	}
 
@@ -359,11 +368,6 @@ func (em *EnclaveManager) GenerateAttestation(ctx context.Context) ([]byte, erro
 	return em.handle.generateAttestation(userData)
 }
 
-// GetConnectionMetrics returns connection pool metrics
-func (em *EnclaveManager) GetConnectionMetrics() map[string]interface{} {
-	return em.connectionMgr.GetMetrics()
-}
-
 // GetConnectionManager returns the VSock connection manager for KMS operations
 func (em *EnclaveManager) GetConnectionManager() *VSockConnectionManager {
 	return em.connectionMgr
@@ -381,7 +385,7 @@ func (em *EnclaveManager) Shutdown(ctx context.Context) error {
 	log.Printf("[%s] Shutting down enclave manager", em.config.ServiceName)
 
 	if em.connectionMgr != nil {
-		em.connectionMgr.Close()
+		em.connectionMgr.Shutdown(ctx)
 	}
 
 	if em.handle != nil && em.handle.nsm != nil {

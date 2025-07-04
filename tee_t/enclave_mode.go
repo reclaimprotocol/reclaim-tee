@@ -103,7 +103,7 @@ func setupEnclaveRoutes(teet *TEET, enclaveManager *shared.EnclaveManager) http.
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"status":"healthy","service":"tee_t","mode":"enclave"}`)
+		fmt.Fprint(w, `{"status":"healthy","mode":"enclave"}`)
 	})
 
 	// Attestation endpoint with certificate fingerprint
@@ -120,41 +120,6 @@ func setupEnclaveRoutes(teet *TEET, enclaveManager *shared.EnclaveManager) http.
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("X-Enclave-Service", "tee_t")
 		w.Write(attestationDoc)
-	})
-
-	// Metrics endpoint for monitoring
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		metrics := enclaveManager.GetConnectionMetrics()
-		w.Header().Set("Content-Type", "application/json")
-
-		// Add service-specific metrics
-		metrics["service"] = "tee_t"
-		metrics["mode"] = "enclave"
-
-		response, _ := shared.JSONMarshal(metrics)
-		w.Write(response)
-	})
-
-	// Status endpoint with circuit breaker info
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		metrics := enclaveManager.GetConnectionMetrics()
-
-		status := map[string]interface{}{
-			"service":                "tee_t",
-			"mode":                   "enclave",
-			"status":                 "healthy",
-			"circuit_breaker_closed": metrics["circuit_breaker_state"].(int32) == 0,
-		}
-
-		// Check if circuit breaker is open
-		if metrics["circuit_breaker_state"].(int32) != 0 {
-			status["status"] = "degraded"
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		response, _ := shared.JSONMarshal(status)
-		w.Write(response)
 	})
 
 	// Default handler for the root

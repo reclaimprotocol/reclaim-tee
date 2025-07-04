@@ -23,13 +23,8 @@ FROM scratch
 COPY --from=app-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 # Copy TEE_K enclave binary
 COPY --from=app-builder /app/tee_k/tee_k_enclave .
-
-# Set environment for enclave mode
-ENV ENCLAVE_MODE=true
-ENV TEE_DOMAIN=tee-k.reclaimprotocol.org
-ENV HTTP_PORT=8080
-ENV HTTPS_PORT=8443
-ENV PARENT_CID=3
+# Copy environment configuration
+COPY deploy/tee_k.env /.env
 
 # Set entrypoint
 CMD ["./tee_k_enclave"] 
