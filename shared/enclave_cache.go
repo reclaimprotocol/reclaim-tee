@@ -4,8 +4,6 @@ import (
 	"context"
 	"log"
 	"sync"
-
-	"golang.org/x/crypto/acme/autocert"
 )
 
 // EnclaveCache implements autocert.Cache interface with KMS encryption
@@ -88,8 +86,3 @@ func (c *EnclaveCache) Delete(ctx context.Context, key string) error {
 	// Delete from persistent storage using comprehensive KMS handler
 	return c.kmsHandler.DeleteCacheItem(ctx, key)
 }
-
-// NOTE: All encryption/decryption operations now handled by KMSHandler
-
-// Ensure EnclaveCache implements autocert.Cache interface
-var _ autocert.Cache = (*EnclaveCache)(nil)

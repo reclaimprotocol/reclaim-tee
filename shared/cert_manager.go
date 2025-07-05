@@ -86,6 +86,18 @@ func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLe
 	log.Printf("[%s] CA Directory: %s", config.ServiceName, config.CADirURL)
 	log.Printf("[%s] Domain: %s", config.ServiceName, config.Domain)
 
+	// TODO Check that cert exists in cache
+	/*
+		// Check if certificate exists in cache
+		if cert, err := em.certManager.getCachedCertificate(ctx, em.certManager.config.Domain); err == nil {
+			if em.certManager.isValidCertificate(cert) {
+				log.Printf("[%s] Valid certificate found in cache", em.certManager.config.ServiceName)
+				return nil
+			}
+			log.Printf("[%s] Cached certificate expired or invalid, requesting new one", em.certManager.config.ServiceName)
+		}
+	*/
+
 	// Create or load user private key
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -109,13 +121,13 @@ func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLe
 	}
 
 	// Create Lego client
-	client, err := lego.NewClient(legoConfig)
+	legoClient, err := lego.NewClient(legoConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Lego client: %v", err)
 	}
 
 	// Register user account
-	reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
+	reg, err := legoClient.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to register user: %v", err)
 	}
@@ -125,7 +137,7 @@ func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLe
 
 	manager := &VSockLegoManager{
 		config:       config,
-		client:       client,
+		client:       legoClient,
 		cache:        config.Cache,
 		certificates: make(map[string]*tls.Certificate),
 	}
