@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"tee-mpc/shared"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -40,6 +41,10 @@ type Client struct {
 	isClosing         bool
 	capturedTraffic   [][]byte // Store all captured traffic for verification
 	handshakeComplete bool     // Track if TLS handshake is complete
+
+	// Pending connection request data (to be sent once session ID is received)
+	pendingConnectionRequest *RequestConnectionData
+	connectionRequestPending bool
 
 	// Phase 4: Response handling
 	responseBuffer       []byte            // Buffer for accumulating TLS record data
@@ -70,22 +75,34 @@ type Client struct {
 	httpRequestSent      bool // Track if HTTP request has been sent
 	httpResponseExpected bool // Track if we should expect HTTP response
 	httpResponseReceived bool // Track if HTTP response content has been received
+
+	// Track signed transcript completion
+	expectingSignedTranscripts bool
+	receivedTEEKTranscript     bool
+	receivedTEETTranscript     bool
+	teeKSignatureValid         bool
+	teeTSignatureValid         bool
 }
 
 func NewClient(teekURL string) *Client {
 	return &Client{
-		teekURL:                  teekURL,
-		teetURL:                  "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
-		pendingResponsesData:     make(map[uint64][]byte),
-		completionChan:           make(chan struct{}),
-		recordsSent:              0,
-		recordsProcessed:         0,
-		eofReached:               false,
-		expectingRedactionResult: false,
-		receivedRedactionResult:  false,
-		httpRequestSent:          false,
-		httpResponseExpected:     false,
-		httpResponseReceived:     false,
+		teekURL:                    teekURL,
+		teetURL:                    "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
+		pendingResponsesData:       make(map[uint64][]byte),
+		completionChan:             make(chan struct{}),
+		recordsSent:                0,
+		recordsProcessed:           0,
+		eofReached:                 false,
+		expectingRedactionResult:   false,
+		receivedRedactionResult:    false,
+		httpRequestSent:            false,
+		httpResponseExpected:       false,
+		httpResponseReceived:       false,
+		expectingSignedTranscripts: false,
+		receivedTEEKTranscript:     false,
+		receivedTEETTranscript:     false,
+		teeKSignatureValid:         false,
+		teeTSignatureValid:         false,
 	}
 }
 
@@ -182,15 +199,31 @@ func (c *Client) RequestHTTP(hostname string, port int) error {
 
 	fmt.Printf("[Client] Requesting connection to %s:%d\n", hostname, port)
 
-	// Send connection request to TEE_K
-	reqData := RequestConnectionData{
+	// Store connection request data to be sent once session ID is received
+	c.pendingConnectionRequest = &RequestConnectionData{
 		Hostname: hostname,
 		Port:     port,
 		SNI:      hostname,
 		ALPN:     []string{"http/1.1"},
 	}
+	c.connectionRequestPending = true
 
-	msg, err := CreateMessage(MsgRequestConnection, reqData)
+	// Check if we already have a session ID and send immediately
+	if c.sessionID != "" {
+		return c.sendPendingConnectionRequest()
+	}
+
+	// Otherwise, request will be sent when session ID is received in handleSessionReady
+	return nil
+}
+
+// sendPendingConnectionRequest sends the stored connection request with the session ID
+func (c *Client) sendPendingConnectionRequest() error {
+	if !c.connectionRequestPending || c.pendingConnectionRequest == nil {
+		return nil
+	}
+
+	msg, err := CreateMessage(MsgRequestConnection, *c.pendingConnectionRequest)
 	if err != nil {
 		return fmt.Errorf("failed to create connection request: %v", err)
 	}
@@ -199,6 +232,8 @@ func (c *Client) RequestHTTP(hostname string, port int) error {
 		return fmt.Errorf("failed to send connection request: %v", err)
 	}
 
+	c.connectionRequestPending = false
+	c.pendingConnectionRequest = nil
 	return nil
 }
 
@@ -247,10 +282,12 @@ func (c *Client) handleMessages() {
 			c.handleHandshakeComplete(msg)
 		case "handshake_key_disclosure":
 			c.handleHandshakeKeyDisclosure(msg)
-		case MsgResponseDecryptionStream:
+		case "response_decryption_stream":
 			c.handleResponseDecryptionStream(msg)
-		case MsgDecryptedResponse:
+		case "decrypted_response":
 			c.handleDecryptedResponse(msg)
+		case MsgSignedTranscript:
+			c.handleSignedTranscript(msg)
 		default:
 			if !closing {
 				log.Printf("[Client] Unknown message type: %s", msg.Type)
@@ -296,6 +333,8 @@ func (c *Client) handleTEETMessages() {
 			c.handleRedactionVerification(msg)
 		case MsgResponseTagVerification:
 			c.handleResponseTagVerification(msg)
+		case MsgSignedTranscript:
+			c.handleSignedTranscript(msg)
 		case MsgError:
 			c.handleTEETError(msg)
 		default:
@@ -723,6 +762,10 @@ func (c *Client) tcpToWebsocket() {
 
 				fmt.Printf("[Client] EOF reached, processing any remaining buffered data...\n")
 				c.processAllRemainingRecords()
+
+				// Check protocol completion - finished command will be sent when all conditions are met
+				c.checkProtocolCompletion("EOF reached")
+
 				break
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				// Timeout is normal when no data is available - continue waiting
@@ -1691,16 +1734,71 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	// 1. EOF reached (TCP connection closed)
 	// 2. All split AEAD records processed (or no records sent)
 	// 3. Redaction result received (if expected)
+	// 4. Signed transcripts received from both TEE_K and TEE_T (if expected)
 
 	eofCondition := c.eofReached
 	recordsCondition := c.recordsSent == 0 || c.recordsProcessed >= c.recordsSent
 	redactionCondition := !c.expectingRedactionResult || c.receivedRedactionResult
 
-	allConditionsMet := eofCondition && recordsCondition && redactionCondition
+	// Check if split AEAD processing is complete (conditions 1-3)
+	splitAEADComplete := eofCondition && recordsCondition && redactionCondition
+
+	// If split AEAD is complete but we haven't sent finished command yet, send it now
+	if splitAEADComplete && !c.expectingSignedTranscripts {
+		log.Printf("[Client] 🎯 Split AEAD processing complete - sending finished command")
+		if err := c.sendFinishedCommand(); err != nil {
+			log.Printf("[Client] Failed to send finished command: %v", err)
+			return
+		}
+		// Note: expectingSignedTranscripts is set to true in sendFinishedCommand
+	}
+
+	// Final completion condition: signed transcripts received AND signatures valid
+	transcriptCondition := !c.expectingSignedTranscripts || (c.receivedTEEKTranscript && c.receivedTEETTranscript && c.teeKSignatureValid && c.teeTSignatureValid)
+
+	allConditionsMet := splitAEADComplete && transcriptCondition
 
 	if allConditionsMet {
-		c.completionOnce.Do(func() { close(c.completionChan) })
+		c.completionOnce.Do(func() {
+			log.Printf("[Client] 🎯 All protocol conditions met (including signature validation) - completing client processing")
+			close(c.completionChan)
+		})
+	} else if splitAEADComplete && c.expectingSignedTranscripts &&
+		c.receivedTEEKTranscript && c.receivedTEETTranscript &&
+		(!c.teeKSignatureValid || !c.teeTSignatureValid) {
+		// Special case: All transcripts received but signatures invalid
+		log.Printf("[Client] ❌ Protocol completion BLOCKED due to invalid signatures (TEE_K: %v, TEE_T: %v)",
+			c.teeKSignatureValid, c.teeTSignatureValid)
 	}
+}
+
+// sendFinishedCommand sends "finished" message to both TEE_K and TEE_T
+func (c *Client) sendFinishedCommand() error {
+	log.Printf("[Client] Sending finished command to both TEE_K and TEE_T")
+
+	// Set flag to expect signed transcripts
+	c.expectingSignedTranscripts = true
+
+	finishedMsg := shared.FinishedMessage{
+		Source: "client",
+	}
+
+	// Send to TEE_K
+	msg := shared.CreateSessionMessage(shared.MsgFinished, c.sessionID, finishedMsg)
+	if err := c.wsConn.WriteJSON(msg); err != nil {
+		return fmt.Errorf("failed to send finished to TEE_K: %v", err)
+	}
+	log.Printf("[Client] Sent finished command to TEE_K")
+
+	// Send to TEE_T
+	if err := c.teetConn.WriteJSON(msg); err != nil {
+		return fmt.Errorf("failed to send finished to TEE_T: %v", err)
+	}
+	log.Printf("[Client] Sent finished command to TEE_T")
+
+	log.Printf("[Client] 📝 Now waiting for signed transcripts from both TEE_K and TEE_T...")
+
+	return nil
 }
 
 // handleSessionReady processes session ready messages from TEE_K
@@ -1714,6 +1812,105 @@ func (c *Client) handleSessionReady(msg *Message) {
 	c.sessionID = sessionData.SessionID
 	fmt.Printf("[Client] Received session ID: %s\n", c.sessionID)
 
-	// Now we can proceed with the normal protocol flow
-	// No immediate action needed - the connection request will come next
+	// Send pending connection request if we have one
+	if c.connectionRequestPending && c.pendingConnectionRequest != nil {
+		if err := c.sendPendingConnectionRequest(); err != nil {
+			log.Printf("[Client] Failed to send pending connection request: %v", err)
+		}
+	}
+}
+
+// handleSignedTranscript processes signed transcript messages from TEE_K and TEE_T
+func (c *Client) handleSignedTranscript(msg *Message) {
+	var signedTranscript shared.SignedTranscript
+	if err := msg.UnmarshalData(&signedTranscript); err != nil {
+		log.Printf("[Client] Failed to unmarshal signed transcript: %v", err)
+		return
+	}
+
+	log.Printf("[Client] 📝 Received signed transcript from %s", signedTranscript.Source)
+	log.Printf("[Client] 📝 Transcript contains %d packets", len(signedTranscript.Packets))
+	log.Printf("[Client] 📝 Signature: %d bytes", len(signedTranscript.Signature))
+	log.Printf("[Client] 📝 Public Key: %d bytes (DER format)", len(signedTranscript.PublicKey))
+
+	// Calculate total size of all packets
+	totalSize := 0
+	for _, packet := range signedTranscript.Packets {
+		totalSize += len(packet)
+	}
+
+	log.Printf("[Client] 📝 Total transcript size: %d bytes", totalSize)
+
+	// Display signature for verification
+	if len(signedTranscript.Signature) > 0 {
+		fmt.Printf("[Client] 📝 %s signature (first 16 bytes): %x\n",
+			strings.ToUpper(signedTranscript.Source), signedTranscript.Signature[:min(16, len(signedTranscript.Signature))])
+	}
+
+	// Display public key for verification
+	if len(signedTranscript.PublicKey) > 0 {
+		fmt.Printf("[Client] 📝 %s public key (first 16 bytes): %x\n",
+			strings.ToUpper(signedTranscript.Source), signedTranscript.PublicKey[:min(16, len(signedTranscript.PublicKey))])
+	}
+
+	// Verify signature
+	log.Printf("[Client] 🔐 Verifying signature for %s transcript...", signedTranscript.Source)
+	verificationErr := shared.VerifyTranscriptSignature(&signedTranscript)
+	if verificationErr != nil {
+		log.Printf("[Client] ❌ Signature verification FAILED for %s: %v", signedTranscript.Source, verificationErr)
+		fmt.Printf("[Client] ❌ %s signature verification FAILED: %v\n",
+			strings.ToUpper(signedTranscript.Source), verificationErr)
+		// Don't return here - continue processing but mark signature as invalid
+	} else {
+		log.Printf("[Client] ✅ Signature verification SUCCESS for %s", signedTranscript.Source)
+		fmt.Printf("[Client] ✅ %s signature verification SUCCESS\n",
+			strings.ToUpper(signedTranscript.Source))
+	}
+
+	// Track transcript completion and signature validity
+	c.completionMutex.Lock()
+	switch signedTranscript.Source {
+	case "tee_k":
+		c.receivedTEEKTranscript = true
+		c.teeKSignatureValid = (verificationErr == nil)
+		log.Printf("[Client] 📝 Marked TEE_K transcript as received (signature valid: %v)", c.teeKSignatureValid)
+	case "tee_t":
+		c.receivedTEETTranscript = true
+		c.teeTSignatureValid = (verificationErr == nil)
+		log.Printf("[Client] 📝 Marked TEE_T transcript as received (signature valid: %v)", c.teeTSignatureValid)
+	default:
+		log.Printf("[Client] 📝 Unknown transcript source: %s", signedTranscript.Source)
+	}
+
+	transcriptsComplete := c.receivedTEEKTranscript && c.receivedTEETTranscript
+	signaturesValid := c.teeKSignatureValid && c.teeTSignatureValid
+	c.completionMutex.Unlock()
+
+	log.Printf("[Client] 📝 Signed transcript from %s processed successfully", signedTranscript.Source)
+
+	// Show packet summary
+	fmt.Printf("[Client] 📝 %s transcript summary:\n", strings.ToUpper(signedTranscript.Source))
+	for i, packet := range signedTranscript.Packets {
+		if len(packet) > 0 {
+			fmt.Printf("[Client]   Packet %d: %d bytes (starts with %02x)\n", i+1, len(packet), packet[0])
+		}
+	}
+
+	if transcriptsComplete {
+		if signaturesValid {
+			log.Printf("[Client] 📝 ✅ Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+		} else {
+			log.Printf("[Client] 📝 ❌ Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
+		}
+	}
+
+	// Check protocol completion (function will only proceed if all conditions are met)
+	c.checkProtocolCompletion("signed transcript received from " + signedTranscript.Source)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

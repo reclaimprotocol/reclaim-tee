@@ -57,6 +57,12 @@ const (
 	// Session management messages
 	MsgSessionCreated MessageType = "session_created"
 	MsgSessionReady   MessageType = "session_ready"
+
+	// Single Session Mode message types
+	MsgFinished                       MessageType = "finished"
+	MsgSignedTranscript               MessageType = "signed_transcript"
+	MsgRedactionSpec                  MessageType = "redaction_spec"
+	MsgSignedRedactedDecryptionStream MessageType = "signed_redacted_decryption_stream"
 )
 
 // Base message structure with session support

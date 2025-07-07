@@ -51,22 +51,53 @@ type TEET struct {
 	teekConn_for_pending    *websocket.Conn                          // Store TEE_K connection for pending request
 	pendingResponses        map[uint64]*shared.EncryptedResponseData // Responses awaiting tag secrets by seq num
 	responsesMutex          sync.Mutex                               // Protects pendingResponses map access
+
+	// Single Session Mode: Transcript collection
+	transcriptPackets [][]byte   // Collect all packets for transcript signing
+	transcriptMutex   sync.Mutex // Protect transcript collection
+
+	// Single Session Mode: ECDSA signing keys
+	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
 }
 
 func NewTEET(port int) *TEET {
+	// Generate ECDSA signing key pair
+	signingKeyPair, err := shared.GenerateSigningKeyPair()
+	if err != nil {
+		log.Printf("[TEE_T] Failed to generate signing key pair: %v", err)
+		// Continue without signing capability rather than failing
+		signingKeyPair = nil
+	} else {
+		fmt.Printf("[TEE_T] Generated ECDSA signing key pair (P-256 curve)\n")
+	}
+
 	return &TEET{
-		port:             port,
-		sessionManager:   shared.NewSessionManager(),
-		pendingResponses: make(map[uint64]*shared.EncryptedResponseData),
+		port:              port,
+		sessionManager:    shared.NewSessionManager(),
+		pendingResponses:  make(map[uint64]*shared.EncryptedResponseData),
+		transcriptPackets: make([][]byte, 0),
+		signingKeyPair:    signingKeyPair,
 	}
 }
 
 // NewTEETWithSessionManager creates a TEET with a specific session manager
 func NewTEETWithSessionManager(port int, sessionManager shared.SessionManagerInterface) *TEET {
+	// Generate ECDSA signing key pair
+	signingKeyPair, err := shared.GenerateSigningKeyPair()
+	if err != nil {
+		log.Printf("[TEE_T] Failed to generate signing key pair: %v", err)
+		// Continue without signing capability rather than failing
+		signingKeyPair = nil
+	} else {
+		fmt.Printf("[TEE_T] Generated ECDSA signing key pair (P-256 curve)\n")
+	}
+
 	return &TEET{
-		port:             port,
-		sessionManager:   sessionManager,
-		pendingResponses: make(map[uint64]*shared.EncryptedResponseData),
+		port:              port,
+		sessionManager:    sessionManager,
+		pendingResponses:  make(map[uint64]*shared.EncryptedResponseData),
+		transcriptPackets: make([][]byte, 0),
+		signingKeyPair:    signingKeyPair,
 	}
 }
 
@@ -149,6 +180,9 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgEncryptedResponse:
 			fmt.Printf("[TEE_T] DEBUG: Handling MsgEncryptedResponse\n")
 			t.handleEncryptedResponseSession(sessionID, msg)
+		case shared.MsgFinished:
+			fmt.Printf("[TEE_T] DEBUG: Handling MsgFinished from client\n")
+			t.handleFinishedFromClientSession(sessionID, msg)
 		default:
 			if !isClosing {
 				log.Printf("[TEE_T] Unknown client message type: %s", msg.Type)
@@ -209,6 +243,8 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 			t.handleEncryptedRequestSession(msg)
 		case shared.MsgResponseTagSecrets:
 			t.handleResponseTagSecretsSession(msg)
+		case shared.MsgFinished:
+			t.handleFinishedFromTEEKSession(msg)
 		default:
 			if !isClosing {
 				log.Printf("[TEE_T] Unknown TEE_K message type: %s", msg.Type)
@@ -311,6 +347,14 @@ func (t *TEET) handleEncryptedResponseSession(sessionID string, msg *shared.Mess
 	fmt.Printf("[TEE_T] RECEIVED FROM CLIENT: encrypted=%x, tag=%x\n",
 		encryptedResp.EncryptedData[:min(16, len(encryptedResp.EncryptedData))],
 		encryptedResp.Tag)
+
+	// Single Session Mode: Collect response packet for transcript
+	// Reconstruct the complete TLS record for transcript
+	completeRecord := make([]byte, len(encryptedResp.RecordHeader)+len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
+	copy(completeRecord, encryptedResp.RecordHeader)
+	copy(completeRecord[len(encryptedResp.RecordHeader):], encryptedResp.EncryptedData)
+	copy(completeRecord[len(encryptedResp.RecordHeader)+len(encryptedResp.EncryptedData):], encryptedResp.Tag)
+	t.addToTranscript(completeRecord)
 
 	// Store the encrypted response for processing when tag secrets arrive
 	t.responsesMutex.Lock()
@@ -876,6 +920,14 @@ func (t *TEET) handleEncryptedResponse(conn *websocket.Conn, msg *shared.Message
 		encryptedResp.EncryptedData[:min(16, len(encryptedResp.EncryptedData))],
 		encryptedResp.Tag)
 
+	// Single Session Mode: Collect response packet for transcript
+	// Reconstruct the complete TLS record for transcript
+	completeRecord := make([]byte, len(encryptedResp.RecordHeader)+len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
+	copy(completeRecord, encryptedResp.RecordHeader)
+	copy(completeRecord[len(encryptedResp.RecordHeader):], encryptedResp.EncryptedData)
+	copy(completeRecord[len(encryptedResp.RecordHeader)+len(encryptedResp.EncryptedData):], encryptedResp.Tag)
+	t.addToTranscript(completeRecord)
+
 	// Store the encrypted response for processing when tag secrets arrive
 	t.responsesMutex.Lock()
 	t.pendingResponses[encryptedResp.SeqNum] = &encryptedResp
@@ -1056,4 +1108,196 @@ func isNetworkShutdownError(err error) bool {
 	return strings.Contains(errStr, "use of closed network connection") ||
 		strings.Contains(errStr, "connection reset by peer") ||
 		strings.Contains(errStr, "broken pipe")
+}
+
+// Single Session Mode: Transcript collection methods
+
+// addToTranscript safely adds a packet to the transcript collection
+func (t *TEET) addToTranscript(packet []byte) {
+	t.transcriptMutex.Lock()
+	defer t.transcriptMutex.Unlock()
+
+	// Make a copy to avoid issues with reused buffers
+	packetCopy := make([]byte, len(packet))
+	copy(packetCopy, packet)
+
+	t.transcriptPackets = append(t.transcriptPackets, packetCopy)
+	fmt.Printf("[TEE_T] Added packet to transcript (%d bytes, total packets: %d)\n",
+		len(packet), len(t.transcriptPackets))
+}
+
+// getTranscript safely returns a copy of the current transcript
+func (t *TEET) getTranscript() [][]byte {
+	t.transcriptMutex.Lock()
+	defer t.transcriptMutex.Unlock()
+
+	// Return a copy to avoid external modification
+	transcriptCopy := make([][]byte, len(t.transcriptPackets))
+	for i, packet := range t.transcriptPackets {
+		packetCopy := make([]byte, len(packet))
+		copy(packetCopy, packet)
+		transcriptCopy[i] = packetCopy
+	}
+
+	return transcriptCopy
+}
+
+// Single Session Mode: Finished command tracking
+type FinishedState struct {
+	SessionID      string
+	ClientFinished bool
+	TEEKFinished   bool
+	mutex          sync.Mutex
+}
+
+// Global map to track finished states per session
+var finishedStates = make(map[string]*FinishedState)
+var finishedStatesMutex sync.RWMutex
+
+// handleFinishedFromClientSession handles finished messages from clients
+func (t *TEET) handleFinishedFromClientSession(sessionID string, msg *shared.Message) {
+	log.Printf("[TEE_T] Handling finished message from client for session %s", sessionID)
+
+	var finishedMsg shared.FinishedMessage
+	if err := msg.UnmarshalData(&finishedMsg); err != nil {
+		log.Printf("[TEE_T] Failed to unmarshal finished message: %v", err)
+		return
+	}
+
+	if finishedMsg.Source != "client" {
+		log.Printf("[TEE_T] Received finished message from unexpected source: %s", finishedMsg.Source)
+		return
+	}
+
+	log.Printf("[TEE_T] Received finished command from client")
+
+	// Update finished state for this session
+	finishedStatesMutex.Lock()
+	if finishedStates[sessionID] == nil {
+		finishedStates[sessionID] = &FinishedState{
+			SessionID: sessionID,
+		}
+	}
+	finishedStates[sessionID].ClientFinished = true
+	finishedStatesMutex.Unlock()
+
+	// Check if we should process the finished command
+	t.checkFinishedCondition(sessionID)
+}
+
+// handleFinishedFromTEEKSession handles finished messages from TEE_K
+func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
+	log.Printf("[TEE_T] Handling finished message from TEE_K for session %s", msg.SessionID)
+
+	var finishedMsg shared.FinishedMessage
+	if err := msg.UnmarshalData(&finishedMsg); err != nil {
+		log.Printf("[TEE_T] Failed to unmarshal finished message: %v", err)
+		return
+	}
+
+	if finishedMsg.Source != "tee_k" {
+		log.Printf("[TEE_T] Received finished message from unexpected source: %s", finishedMsg.Source)
+		return
+	}
+
+	log.Printf("[TEE_T] Received finished command from TEE_K")
+
+	sessionID := msg.SessionID
+
+	// Update finished state for this session
+	finishedStatesMutex.Lock()
+	if finishedStates[sessionID] == nil {
+		finishedStates[sessionID] = &FinishedState{
+			SessionID: sessionID,
+		}
+	}
+	finishedStates[sessionID].TEEKFinished = true
+	finishedStatesMutex.Unlock()
+
+	// Check if we should process the finished command
+	t.checkFinishedCondition(sessionID)
+}
+
+// checkFinishedCondition checks if both client and TEE_K have sent finished messages
+func (t *TEET) checkFinishedCondition(sessionID string) {
+	finishedStatesMutex.RLock()
+	state := finishedStates[sessionID]
+	finishedStatesMutex.RUnlock()
+
+	if state == nil {
+		return
+	}
+
+	state.mutex.Lock()
+	defer state.mutex.Unlock()
+
+	if state.ClientFinished && state.TEEKFinished {
+		log.Printf("[TEE_T] Both client and TEE_K have sent finished - starting transcript signing")
+
+		// Generate and sign transcript
+		transcript := t.getTranscript()
+		if len(transcript) == 0 {
+			log.Printf("[TEE_T] No transcript packets to sign")
+			return
+		}
+
+		if t.signingKeyPair == nil {
+			log.Printf("[TEE_T] No signing key pair available")
+			return
+		}
+
+		signature, err := t.signingKeyPair.SignTranscript(transcript)
+		if err != nil {
+			log.Printf("[TEE_T] Failed to sign transcript: %v", err)
+			return
+		}
+
+		log.Printf("[TEE_T] Successfully signed transcript (%d packets, %d bytes signature)",
+			len(transcript), len(signature))
+
+		// Send "finished" response to TEE_K
+		responseMsg := shared.FinishedMessage{
+			Source: "tee_t",
+		}
+
+		finishedResponse := shared.CreateSessionMessage(shared.MsgFinished, sessionID, responseMsg)
+		if err := t.sendMessageToTEEK(finishedResponse); err != nil {
+			log.Printf("[TEE_T] Failed to send finished response to TEE_K: %v", err)
+			return
+		}
+
+		log.Printf("[TEE_T] Sent finished response to TEE_K")
+
+		// Get public key in DER format
+		publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
+		if err != nil {
+			log.Printf("[TEE_T] Failed to get public key DER: %v", err)
+			return
+		}
+
+		// Create signed transcript for client
+		signedTranscript := shared.SignedTranscript{
+			Packets:   transcript,
+			Signature: signature,
+			PublicKey: publicKeyDER,
+			Source:    "tee_t",
+		}
+
+		// Send signed transcript to client
+		transcriptMsg := shared.CreateSessionMessage(shared.MsgSignedTranscript, sessionID, signedTranscript)
+		if err := t.sendMessageToClientSession(sessionID, transcriptMsg); err != nil {
+			log.Printf("[TEE_T] Failed to send signed transcript to client: %v", err)
+			return
+		}
+
+		log.Printf("[TEE_T] Sent signed transcript to client")
+
+		// Clean up finished state
+		finishedStatesMutex.Lock()
+		delete(finishedStates, sessionID)
+		finishedStatesMutex.Unlock()
+	} else {
+		log.Printf("[TEE_T] Waiting for finished from both parties (client: %v, TEE_K: %v)",
+			state.ClientFinished, state.TEEKFinished)
+	}
 }

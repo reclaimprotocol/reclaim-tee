@@ -1,8 +1,16 @@
 package shared
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
@@ -98,6 +106,12 @@ const (
 	MsgRedactionStreams         MessageType = "redaction_streams"
 	MsgResponseTagSecrets       MessageType = "response_tag_secrets"
 	MsgResponseDecryptionStream MessageType = "response_decryption_stream"
+
+	// Single Session Mode message types
+	MsgFinished                       MessageType = "finished"
+	MsgSignedTranscript               MessageType = "signed_transcript"
+	MsgRedactionSpec                  MessageType = "redaction_spec"
+	MsgSignedRedactedDecryptionStream MessageType = "signed_redacted_decryption_stream"
 )
 
 // Message represents a protocol message with session context
@@ -359,6 +373,161 @@ type EncryptedResponseData struct {
 	RecordHeader  []byte `json:"record_header"`  // Actual TLS record header used by server (5 bytes)
 	SeqNum        uint64 `json:"seq_num"`        // TLS sequence number for AEAD
 	CipherSuite   uint16 `json:"cipher_suite"`   // TLS cipher suite
+}
+
+// Single Session Mode data structures
+
+// FinishedMessage represents a finished command from client or coordination between TEEs
+type FinishedMessage struct {
+	Source string `json:"source"` // "client", "tee_k", "tee_t"
+}
+
+// SignedTranscript represents a signed transcript with packets, signature, and public key
+type SignedTranscript struct {
+	Packets   [][]byte `json:"packets"`    // All packets in chronological order (binary data)
+	Signature []byte   `json:"signature"`  // Cryptographic signature (binary data)
+	PublicKey []byte   `json:"public_key"` // Public key in DER format (binary data)
+	Source    string   `json:"source"`     // "tee_k" or "tee_t"
+}
+
+// RedactionSpec specifies which parts of the response should be redacted
+type RedactionSpec struct {
+	Ranges                     []RedactionRange `json:"ranges"`                        // Specific ranges to redact
+	AlwaysRedactSessionTickets bool             `json:"always_redact_session_tickets"` // Always redact session tickets
+}
+
+// SignedRedactedDecryptionStream represents a signed redacted decryption stream
+type SignedRedactedDecryptionStream struct {
+	RedactedStream []byte `json:"redacted_stream"` // Decryption stream with "*" for redacted parts
+	Signature      []byte `json:"signature"`       // Cryptographic signature
+	SeqNum         uint64 `json:"seq_num"`         // TLS sequence number
+}
+
+// Single Session Mode: Cryptographic signing infrastructure
+
+// SigningKeyPair represents a cryptographic ECDSA signing key pair
+type SigningKeyPair struct {
+	PrivateKey *ecdsa.PrivateKey `json:"private_key"`
+	PublicKey  *ecdsa.PublicKey  `json:"public_key"`
+}
+
+// GenerateSigningKeyPair generates a new ECDSA signing key pair using P-256 curve
+func GenerateSigningKeyPair() (*SigningKeyPair, error) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate ECDSA key pair: %v", err)
+	}
+
+	return &SigningKeyPair{
+		PrivateKey: privateKey,
+		PublicKey:  &privateKey.PublicKey,
+	}, nil
+}
+
+// SignData signs the given data using ECDSA and returns the signature
+func (kp *SigningKeyPair) SignData(data []byte) ([]byte, error) {
+	// Hash the data with SHA-256
+	hash := sha256.Sum256(data)
+
+	// Sign the hash
+	r, s, err := ecdsa.Sign(rand.Reader, kp.PrivateKey, hash[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign data: %v", err)
+	}
+
+	// Encode r and s as a simple concatenation (32 bytes each for P-256)
+	signature := make([]byte, 64)
+	r.FillBytes(signature[:32])
+	s.FillBytes(signature[32:])
+
+	return signature, nil
+}
+
+// VerifySignature verifies a signature against the given data using a public key
+func VerifySignature(data []byte, signature []byte, publicKey *ecdsa.PublicKey) error {
+	if len(signature) != 64 {
+		return fmt.Errorf("invalid signature length: expected 64 bytes, got %d", len(signature))
+	}
+
+	// Hash the data with SHA-256
+	hash := sha256.Sum256(data)
+
+	// Extract r and s from signature
+	r := new(big.Int).SetBytes(signature[:32])
+	s := new(big.Int).SetBytes(signature[32:])
+
+	// Verify the signature
+	if !ecdsa.Verify(publicKey, hash[:], r, s) {
+		return fmt.Errorf("signature verification failed")
+	}
+
+	return nil
+}
+
+// VerifySignature method on SigningKeyPair for backward compatibility
+func (kp *SigningKeyPair) VerifySignature(data []byte, signature []byte) bool {
+	err := VerifySignature(data, signature, kp.PublicKey)
+	return err == nil
+}
+
+// GetPublicKeyDER returns the public key in DER format for JSON serialization
+func (kp *SigningKeyPair) GetPublicKeyDER() ([]byte, error) {
+	return x509.MarshalPKIXPublicKey(kp.PublicKey)
+}
+
+// ParsePublicKeyFromDER parses a public key from DER format
+func ParsePublicKeyFromDER(derBytes []byte) (*ecdsa.PublicKey, error) {
+	pubKeyInterface, err := x509.ParsePKIXPublicKey(derBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DER public key: %v", err)
+	}
+
+	ecdsaPubKey, ok := pubKeyInterface.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("public key is not an ECDSA key")
+	}
+
+	return ecdsaPubKey, nil
+}
+
+// VerifySignatureWithDER verifies a signature using a public key in DER format
+func VerifySignatureWithDER(data []byte, signature []byte, publicKeyDER []byte) error {
+	// Parse public key from DER
+	pubKey, err := ParsePublicKeyFromDER(publicKeyDER)
+	if err != nil {
+		return fmt.Errorf("failed to parse public key: %v", err)
+	}
+
+	// Verify signature
+	return VerifySignature(data, signature, pubKey)
+}
+
+// VerifyTranscriptSignature verifies a signed transcript's signature
+func VerifyTranscriptSignature(transcript *SignedTranscript) error {
+	// Reconstruct the original data that was signed
+	// This should match the SignTranscript function logic
+	var buffer bytes.Buffer
+
+	// Write each packet to buffer
+	for _, packet := range transcript.Packets {
+		buffer.Write(packet)
+	}
+
+	originalData := buffer.Bytes()
+
+	// Verify signature using the public key
+	return VerifySignatureWithDER(originalData, transcript.Signature, transcript.PublicKey)
+}
+
+// SignTranscript signs a transcript of packets and returns the signature
+func (kp *SigningKeyPair) SignTranscript(packets [][]byte) ([]byte, error) {
+	// Concatenate all packets for signing
+	var allData []byte
+	for _, packet := range packets {
+		allData = append(allData, packet...)
+	}
+
+	return kp.SignData(allData)
 }
 
 // Helper functions
