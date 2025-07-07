@@ -208,9 +208,10 @@ type ResponseSessionState struct {
 
 // Protocol data structures
 type RedactionRange struct {
-	Start  int    `json:"start"`
-	Length int    `json:"length"`
-	Type   string `json:"type"` // "sensitive" or "sensitive_proof"
+	Start          int    `json:"start"`           // Start position in the decryption stream
+	Length         int    `json:"length"`          // Length of the range to redact
+	Type           string `json:"type"`            // "sensitive" or "sensitive_proof", etc.
+	RedactionBytes []byte `json:"redaction_bytes"` // Bytes to use in redacted stream (calculated to produce '*' when XORed with ciphertext)
 }
 
 // Client to TEE_K: Request to establish connection

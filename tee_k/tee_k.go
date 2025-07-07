@@ -305,6 +305,8 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			t.handleTCPDataSession(sessionID, msg)
 		case shared.MsgRedactedRequest:
 			t.handleRedactedRequestSession(sessionID, msg)
+		case shared.MsgRedactionSpec:
+			t.handleRedactionSpecSession(sessionID, msg)
 		case shared.MsgFinished:
 			t.handleFinishedFromClientSession(sessionID, msg)
 		default:
@@ -1215,7 +1217,24 @@ func (t *TEEK) handleResponseLengthSession(sessionID string, msg *shared.Message
 		return
 	}
 
-	// Store response length for this sequence number
+	// Get session to store response length
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_K] Failed to get session %s for response length storage: %v", sessionID, err)
+		return
+	}
+
+	// Initialize response state if needed
+	if session.ResponseState == nil {
+		session.ResponseState = &shared.ResponseSessionState{
+			ResponseLengthBySeq: make(map[uint64]uint32),
+		}
+	}
+
+	// Store response length for this sequence number in session state
+	session.ResponseState.ResponseLengthBySeq[lengthData.SeqNum] = uint32(lengthData.Length)
+
+	// Also store in global map for backward compatibility with legacy methods
 	if t.responseLengthBySeq == nil {
 		t.responseLengthBySeq = make(map[uint64]int)
 	}
@@ -1281,8 +1300,8 @@ func (t *TEEK) generateAndSendDecryptionStreamSession(sessionID string, seqNum u
 		return fmt.Errorf("no response length found for seq=%d", seqNum)
 	}
 
-	// Clean up stored length after use
-	delete(t.responseLengthBySeq, seqNum)
+	// DON'T delete the stored length - we need it later for redaction processing
+	// delete(t.responseLengthBySeq, seqNum)
 
 	// Get key schedule to access server application keys
 	keySchedule := t.tlsClient.GetKeySchedule()
@@ -1488,8 +1507,8 @@ func (t *TEEK) generateAndSendDecryptionStream(seqNum uint64) error {
 		return fmt.Errorf("no response length found for seq=%d", seqNum)
 	}
 
-	// Clean up stored length after use
-	delete(t.responseLengthBySeq, seqNum)
+	// DON'T delete the stored length - we need it later for redaction processing
+	// delete(t.responseLengthBySeq, seqNum)
 
 	// Get key schedule to access server application keys
 	keySchedule := t.tlsClient.GetKeySchedule()
@@ -1661,4 +1680,207 @@ func (t *TEEK) handleFinishedFromClientSession(sessionID string, msg *shared.Mes
 
 	// The response from TEE_T will come through handleTEETMessages
 	// and will trigger transcript generation and signing
+}
+
+// handleRedactionSpecSession handles redaction specification from client
+func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message) {
+	log.Printf("[TEE_K] Session %s: Handling redaction specification", sessionID)
+
+	var redactionSpec shared.RedactionSpec
+	if err := msg.UnmarshalData(&redactionSpec); err != nil {
+		log.Printf("[TEE_K] Session %s: Failed to unmarshal redaction spec: %v", sessionID, err)
+		t.sendErrorToSession(sessionID, "Failed to parse redaction specification")
+		return
+	}
+
+	log.Printf("[TEE_K] Session %s: Received redaction spec with %d ranges", sessionID, len(redactionSpec.Ranges))
+
+	// Validate redaction ranges
+	if err := t.validateRedactionSpec(redactionSpec); err != nil {
+		log.Printf("[TEE_K] Session %s: Invalid redaction spec: %v", sessionID, err)
+		t.sendErrorToSession(sessionID, fmt.Sprintf("Invalid redaction specification: %v", err))
+		return
+	}
+
+	// Generate and send redacted decryption streams
+	if err := t.generateAndSendRedactedDecryptionStream(sessionID, redactionSpec); err != nil {
+		log.Printf("[TEE_K] Session %s: Failed to generate redacted streams: %v", sessionID, err)
+		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to generate redacted streams: %v", err))
+		return
+	}
+
+	log.Printf("[TEE_K] Session %s: Successfully processed redaction specification", sessionID)
+}
+
+// validateRedactionSpec validates the redaction specification from client
+func (t *TEEK) validateRedactionSpec(spec shared.RedactionSpec) error {
+	// Validate ranges don't overlap and are within bounds
+	for i, range1 := range spec.Ranges {
+		// Check if range has redaction bytes
+		if len(range1.RedactionBytes) != range1.Length {
+			return fmt.Errorf("range %d: redaction bytes length (%d) doesn't match range length (%d)",
+				i, len(range1.RedactionBytes), range1.Length)
+		}
+
+		// Check for overlaps with other ranges
+		for j := i + 1; j < len(spec.Ranges); j++ {
+			range2 := spec.Ranges[j]
+			if rangesOverlap(range1, range2) {
+				return fmt.Errorf("ranges %d and %d overlap", i, j)
+			}
+		}
+
+		// Basic bounds check (we'll validate against actual packet boundaries later)
+		if range1.Start < 0 || range1.Length <= 0 {
+			return fmt.Errorf("range %d: invalid bounds (start=%d, length=%d)", i, range1.Start, range1.Length)
+		}
+	}
+
+	return nil
+}
+
+// rangesOverlap checks if two redaction ranges overlap
+func rangesOverlap(r1, r2 shared.RedactionRange) bool {
+	return r1.Start < r2.Start+r2.Length && r2.Start < r1.Start+r1.Length
+}
+
+// generateAndSendRedactedDecryptionStream generates redacted decryption streams using client's redaction bytes
+func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec shared.RedactionSpec) error {
+	log.Printf("[TEE_K] Session %s: Generating redacted decryption stream with %d ranges", sessionID, len(spec.Ranges))
+
+	// Get session to access response state
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("session %s not found: %v", sessionID, err)
+	}
+
+	// Get response state for this session
+	if session.ResponseState == nil {
+		return fmt.Errorf("no response state available for session %s", sessionID)
+	}
+
+	// Get all response lengths for this session
+	totalLength := 0
+	seqNumbers := make([]uint64, 0)
+
+	for seqNum, length := range session.ResponseState.ResponseLengthBySeq {
+		totalLength += int(length) // Convert from uint32 to int
+		seqNumbers = append(seqNumbers, seqNum)
+	}
+
+	if totalLength == 0 {
+		return fmt.Errorf("no response data available for redaction in session %s", sessionID)
+	}
+
+	log.Printf("[TEE_K] Session %s: Total response length: %d bytes across %d sequences",
+		sessionID, totalLength, len(seqNumbers))
+
+	// Create redacted decryption stream for each sequence
+	currentOffset := 0
+	for _, seqNum := range seqNumbers {
+		length := int(session.ResponseState.ResponseLengthBySeq[seqNum])
+
+		// Get server application key and IV for response decryption
+		if t.tlsClient == nil {
+			return fmt.Errorf("no TLS client available for decryption key")
+		}
+
+		keySchedule := t.tlsClient.GetKeySchedule()
+		if keySchedule == nil {
+			return fmt.Errorf("no key schedule available")
+		}
+
+		serverAppKey := keySchedule.GetServerApplicationKey()
+		serverAppIV := keySchedule.GetServerApplicationIV()
+
+		if serverAppKey == nil || serverAppIV == nil {
+			return fmt.Errorf("missing server application key or IV")
+		}
+
+		// Generate original decryption stream for this sequence using server application key
+		originalStream, err := t.generateAESCTRStream(serverAppKey, serverAppIV, seqNum, length)
+		if err != nil {
+			return fmt.Errorf("failed to generate original decryption stream for seq %d: %v", seqNum, err)
+		}
+
+		// Apply redaction to this stream
+		redactedStream := make([]byte, len(originalStream))
+		copy(redactedStream, originalStream)
+
+		// Apply redaction ranges that fall within this sequence
+		for _, redactionRange := range spec.Ranges {
+			rangeStart := redactionRange.Start
+			rangeEnd := redactionRange.Start + redactionRange.Length
+
+			// Check if this range overlaps with current sequence
+			seqStart := currentOffset
+			seqEnd := currentOffset + length
+
+			if rangeStart < seqEnd && rangeEnd > seqStart {
+				// Calculate overlap
+				overlapStart := max(rangeStart, seqStart) - seqStart
+				overlapEnd := min(rangeEnd, seqEnd) - seqStart
+				overlapLength := overlapEnd - overlapStart
+
+				if overlapLength > 0 {
+					// Calculate offset within the redaction range
+					redactionOffset := max(0, seqStart-rangeStart)
+
+					// Copy redaction bytes for this overlap
+					for i := 0; i < overlapLength; i++ {
+						if overlapStart+i < len(redactedStream) && redactionOffset+i < len(redactionRange.RedactionBytes) {
+							redactedStream[overlapStart+i] = redactionRange.RedactionBytes[redactionOffset+i]
+						}
+					}
+
+					log.Printf("[TEE_K] Session %s: Applied redaction to seq %d at offset %d-%d (type: %s)",
+						sessionID, seqNum, overlapStart, overlapStart+overlapLength-1, redactionRange.Type)
+				}
+			}
+		}
+
+		// Send redacted decryption stream to client
+		streamData := shared.SignedRedactedDecryptionStream{
+			RedactedStream: redactedStream,
+			SeqNum:         seqNum,
+		}
+
+		// Sign the redacted stream
+		if t.signingKeyPair != nil {
+			signature, err := t.signingKeyPair.SignData(redactedStream)
+			if err != nil {
+				log.Printf("[TEE_K] Session %s: Failed to sign redacted stream for seq %d: %v", sessionID, seqNum, err)
+			} else {
+				streamData.Signature = signature
+			}
+		}
+
+		// Send to client
+		streamMsg := shared.CreateSessionMessage(shared.MsgSignedRedactedDecryptionStream, sessionID, streamData)
+		if err := t.sessionManager.RouteToClient(sessionID, streamMsg); err != nil {
+			return fmt.Errorf("failed to send redacted stream for seq %d: %v", seqNum, err)
+		}
+
+		log.Printf("[TEE_K] Session %s: Sent redacted decryption stream for seq %d (%d bytes)",
+			sessionID, seqNum, len(redactedStream))
+
+		currentOffset += length
+	}
+
+	return nil
+}
+
+// Helper functions
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
