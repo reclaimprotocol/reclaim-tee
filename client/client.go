@@ -26,7 +26,7 @@ type Client struct {
 	teetConn *websocket.Conn
 	tcpConn  net.Conn
 
-	// *** CRITICAL FIX: Add mutexes to prevent concurrent websocket writes ***
+	// *** Add mutexes to prevent concurrent websocket writes ***
 	wsConnMu   sync.Mutex // Protects wsConn writes (TEE_K)
 	teetConnMu sync.Mutex // Protects teetConn writes (TEE_T)
 
@@ -47,16 +47,16 @@ type Client struct {
 	firstApplicationData bool              // Track if this is the first ApplicationData record
 	pendingResponsesData map[uint64][]byte // Encrypted response data by sequence number
 
-	// *** FIX: Add response buffer mutex to prevent race conditions ***
+	// *** Add response buffer mutex to prevent race conditions ***
 	responseBufferMutex sync.Mutex // Protects responseBuffer access
 
 	// Protocol completion signaling
 	completionChan chan struct{} // Signals when protocol is complete
 
-	// *** FIX: Add sync.Once to prevent double-close panic ***
+	// *** Add sync.Once to prevent double-close panic ***
 	completionOnce sync.Once // Ensures completion channel is only closed once
 
-	// *** SIMPLIFIED: Track records sent vs processed instead of streams ***
+	// *** Track records sent vs processed instead of streams ***
 	recordsSent      int  // TLS records sent for split AEAD processing
 	recordsProcessed int  // TLS records that completed split AEAD processing
 	eofReached       bool // Whether we've reached EOF on TCP connection
@@ -452,24 +452,6 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *Message) {
 
 	// Mark handshake as complete for response handling
 	c.handshakeComplete = true
-
-	// Wait for server post-handshake messages to complete properly
-	// instead of using hardcoded sleep
-	fmt.Printf("[Client] Waiting for server post-handshake messages to complete...\n")
-
-	// Give server time to send NewSessionTicket and other post-handshake messages
-	// Use a shorter, more reasonable wait with proper timeout handling
-	postHandshakeTimeout := 500 * time.Millisecond // Much shorter than 2 seconds
-
-	select {
-	case <-time.After(postHandshakeTimeout):
-		// Normal case - brief wait for post-handshake messages
-		fmt.Printf("[Client] Post-handshake wait completed\n")
-	case <-c.completionChan:
-		// If protocol completes early, no need to wait
-		fmt.Printf("[Client] Protocol completed during post-handshake wait\n")
-		return
-	}
 
 	// Phase 3: Redaction System - Send redacted HTTP request to TEE_K for encryption
 
@@ -965,8 +947,6 @@ func (c *Client) sendMessageToTEET(msg *Message) error {
 		return fmt.Errorf("no TEE_T websocket connection")
 	}
 
-	fmt.Printf("[Client] DEBUG: TEE_T connection available, sending %s message\n", msg.Type)
-
 	// Add session ID if available and not already set
 	if c.sessionID != "" && msg.SessionID == "" {
 		msg.SessionID = c.sessionID
@@ -974,21 +954,13 @@ func (c *Client) sendMessageToTEET(msg *Message) error {
 
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		fmt.Printf("[Client] DEBUG: Failed to marshal %s message: %v\n", msg.Type, err)
 		return fmt.Errorf("failed to marshal message: %v", err)
 	}
 
-	fmt.Printf("[Client] DEBUG: Marshaled %s message (%d bytes), about to write to websocket\n", msg.Type, len(msgBytes))
-
-	// *** NEW: Add websocket state debugging ***
-	fmt.Printf("[Client] DEBUG: WebSocket remote addr: %s\n", conn.RemoteAddr().String())
-	fmt.Printf("[Client] DEBUG: WebSocket local addr: %s\n", conn.LocalAddr().String())
-
 	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
 		fmt.Printf("[Client] DEBUG: WriteMessage failed for %s: %v\n", msg.Type, err)
-		fmt.Printf("[Client] DEBUG: Connection might be closed or broken\n")
 
-		// *** NEW: Try to detect connection state ***
+		// *** Try to detect connection state ***
 		if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 			fmt.Printf("[Client] DEBUG: WebSocket close error detected: %v\n", err)
 		} else if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "connection reset") {
@@ -997,9 +969,6 @@ func (c *Client) sendMessageToTEET(msg *Message) error {
 
 		return err
 	}
-
-	fmt.Printf("[Client] DEBUG: Successfully sent %s message to TEE_T\n", msg.Type)
-	fmt.Printf("[Client] DEBUG: Message content preview: %s\n", string(msgBytes[:min(100, len(msgBytes))]))
 	return nil
 }
 
@@ -1036,9 +1005,6 @@ func (c *Client) handleEncryptedData(msg *Message) {
 	if c.expectingRedactionResult && !c.receivedRedactionResult {
 		c.receivedRedactionResult = true
 		fmt.Printf("[Client] RECEIVED redaction verification result from TEE_T\n")
-
-		// Don't complete yet - we're about to send HTTP request and need to wait for response
-		fmt.Printf("[Client] HTTP request ready to send, but waiting for HTTP response before completing\n")
 	}
 	c.completionMutex.Unlock()
 
@@ -1057,8 +1023,7 @@ func (c *Client) handleEncryptedData(msg *Message) {
 	tlsRecord[4] = byte(recordLength & 0xFF) // Length low byte
 	copy(tlsRecord[5:], taggedData)          // Encrypted payload + tag
 
-	fmt.Printf("[Client] Actually-sending TLS record (%d bytes): %x...\n", len(tlsRecord), tlsRecord[:min(32, len(tlsRecord))])
-	fmt.Printf("[Client] Record header: type=0x%02x version=0x%04x length=%d\n", tlsRecord[0], uint16(tlsRecord[1])<<8|uint16(tlsRecord[2]), recordLength)
+	fmt.Printf("[Client] Sending TLS record (%d bytes)\n", len(tlsRecord))
 
 	// Send to website via TCP connection
 	if c.tcpConn != nil {
@@ -1076,8 +1041,6 @@ func (c *Client) handleEncryptedData(msg *Message) {
 		fmt.Printf("[Client] HTTP request sent, now expecting HTTP response...\n")
 		c.completionMutex.Unlock()
 
-		// tcpToWebsocket() is already running and will automatically read the response
-		fmt.Printf("[Client] Request sent, tcpToWebsocket() will handle response automatically\n")
 	} else {
 		log.Printf("[Client] No TCP connection available")
 	}
@@ -1094,13 +1057,6 @@ func (c *Client) handleTEETReady(msg *Message) {
 
 func (c *Client) handleRedactionVerification(msg *Message) {
 	log.Printf("[Client] DEBUG: Received redaction verification message, raw data type: %T", msg.Data)
-	if dataBytes, ok := msg.Data.([]byte); ok {
-		log.Printf("[Client] DEBUG: Raw data bytes (first 50): %s", string(dataBytes[:min(50, len(dataBytes))]))
-	} else if dataStr, ok := msg.Data.(string); ok {
-		log.Printf("[Client] DEBUG: Raw data string (first 50): %s", dataStr[:min(50, len(dataStr))])
-	} else {
-		log.Printf("[Client] DEBUG: Raw data as interface: %+v", msg.Data)
-	}
 
 	var verificationData RedactionVerificationData
 	if err := msg.UnmarshalData(&verificationData); err != nil {
@@ -1128,7 +1084,7 @@ func (c *Client) handleTEETError(msg *Message) {
 func (c *Client) Close() {
 	c.isClosing = true
 
-	// *** FIX: Close TCP connection FIRST to allow tcpToWebsocket() to exit gracefully ***
+	// *** Close TCP connection FIRST to allow tcpToWebsocket() to exit gracefully ***
 	// This mimics standard HTTP client behavior - close the underlying connection first
 	if c.tcpConn != nil {
 		c.tcpConn.Close()
@@ -1158,7 +1114,6 @@ func (c *Client) Close() {
 
 // createRedactedRequest creates a redacted HTTP request with XOR streams and commitments
 func (c *Client) createRedactedRequest(httpRequest []byte) (RedactedRequestData, RedactionStreamsData, error) {
-	// Create test scenario as specified in requirements
 	// HTTP Request: GET / HTTP/1.1\r\nHost: example.com\r\nAuthorization: Bearer dummy_token_12345\r\nX-Account-ID: ACC123456789\r\nConnection: close\r\n\r\n
 
 	// *** REDACTION SYSTEM: Create proper HTTP request with sensitive headers ***
@@ -1329,9 +1284,6 @@ func (c *Client) validateRedactionRanges(ranges []RedactionRange, requestLen int
 
 // processTLSRecord processes a single TLS ApplicationData record using split AEAD protocol
 func (c *Client) processTLSRecord(record []byte) {
-	// *** CRITICAL FIX: Initialize sequence number properly ***
-	// This should only happen once when we start processing response records
-	// responseSeqNum is already initialized to 0 in the struct, so just use it directly
 	fmt.Printf("[Client] ENTERING processTLSRecord with responseSeqNum=%d\n", c.responseSeqNum)
 
 	// *** ALWAYS store record for transcript creation ***
@@ -1355,21 +1307,13 @@ func (c *Client) processTLSRecord(record []byte) {
 	fmt.Printf("[Client] Processing TLS record: %d bytes encrypted data, %d bytes tag\n",
 		len(encryptedData), len(tag))
 
-	// *** CRITICAL DEBUG: Show exact tag from server ***
-	fmt.Printf("[Client] SERVER TAG DEBUG (seq=%d):\n", c.responseSeqNum)
-	fmt.Printf(" TLS record: %x\n", record[:min(32, len(record))])
-	fmt.Printf(" Encrypted data: %x\n", encryptedData[:min(32, len(encryptedData))])
-	fmt.Printf(" Server tag: %x\n", tag)
-
-	// *** FIX: Check if system is shutting down or TEE_T connection is closed ***
+	// *** Check if system is shutting down or TEE_T connection is closed ***
 	if c.isClosing {
 		fmt.Printf("[Client] System is shutting down, storing record but skipping split AEAD processing\n")
 		return
 	}
 
-	// *** CRITICAL DEBUG: Check TEE_T connection state ***
 	teetConnState := c.teetConn != nil
-	fmt.Printf("[Client] DEBUG: TEE_T connection state: %v\n", teetConnState)
 	if !teetConnState {
 		fmt.Printf("[Client] TEE_T connection closed, storing record but skipping split AEAD processing\n")
 		return
@@ -1384,29 +1328,16 @@ func (c *Client) processTLSRecord(record []byte) {
 		CipherSuite:   0x1302, // TLS_AES_256_GCM_SHA384 - TODO: get from handshake
 	}
 
-	fmt.Printf("[Client] DEBUG: Created EncryptedResponseData: %d bytes encrypted, %d bytes tag, seq=%d\n",
-		len(encryptedResponse.EncryptedData), len(encryptedResponse.Tag), encryptedResponse.SeqNum)
-	fmt.Printf("[Client] SENDING TO TEE_T: encrypted=%x, tag=%x\n",
-		encryptedResponse.EncryptedData[:min(16, len(encryptedResponse.EncryptedData))],
-		encryptedResponse.Tag)
-
 	responseMsg, err := CreateMessage(MsgEncryptedResponse, encryptedResponse)
 	if err != nil {
-		fmt.Printf("[Client] DEBUG: Failed to create message: %v\n", err)
 		log.Printf("[Client] Failed to create encrypted response message: %v", err)
 		return
 	}
 
-	fmt.Printf("[Client] DEBUG: Created message of type %s successfully\n", responseMsg.Type)
-
-	fmt.Printf("[Client] DEBUG: Sending encrypted response to TEE_T (seq=%d)\n", c.responseSeqNum)
-
-	fmt.Printf("[Client] DEBUG: About to call sendMessageToTEET\n")
-
 	if err := c.sendMessageToTEET(responseMsg); err != nil {
 		fmt.Printf("[Client] DEBUG: sendMessageToTEET FAILED: %v\n", err)
 
-		// *** FIX: Don't treat this as fatal during shutdown ***
+		// *** Don't treat this as fatal during shutdown ***
 		if c.isClosing {
 			fmt.Printf("[Client] Send failed during shutdown - this is expected, continuing\n")
 		} else {
@@ -1414,8 +1345,6 @@ func (c *Client) processTLSRecord(record []byte) {
 		}
 		return
 	}
-
-	fmt.Printf("[Client] DEBUG: sendMessageToTEET returned SUCCESS\n")
 
 	// Store encrypted data for later decryption (lock already held by caller)
 	c.pendingResponsesData[c.responseSeqNum] = encryptedData
@@ -1427,10 +1356,8 @@ func (c *Client) processTLSRecord(record []byte) {
 	c.recordsSent++
 	fmt.Printf("[Client] EXPECTING decryption stream #%d\n", c.recordsSent)
 	c.completionMutex.Unlock()
-
-	fmt.Printf("[Client] INCREMENTING: responseSeqNum from %d to %d\n", c.responseSeqNum, c.responseSeqNum+1)
 	c.responseSeqNum++
-	fmt.Printf("[Client] INCREMENTED: responseSeqNum is now %d\n", c.responseSeqNum)
+
 }
 
 // handleResponseTagVerification handles tag verification result from TEE_T
@@ -1772,20 +1699,7 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	allConditionsMet := eofCondition && recordsCondition && redactionCondition
 
 	if allConditionsMet {
-		fmt.Printf("[Client] Protocol completed after %s - all conditions met!\n", reason)
-		fmt.Printf("[Client] ✓ EOF reached: %v\n", c.eofReached)
-		fmt.Printf("[Client] ✓ Records: %d sent, %d processed\n", c.recordsSent, c.recordsProcessed)
-		if c.expectingRedactionResult {
-			fmt.Printf("[Client] ✓ Redaction: expecting=%v received=%v\n", c.expectingRedactionResult, c.receivedRedactionResult)
-		}
 		c.completionOnce.Do(func() { close(c.completionChan) })
-	} else {
-		fmt.Printf("[Client] Protocol not yet complete after %s:\n", reason)
-		fmt.Printf("[Client] EOF reached: %v (need: true)\n", c.eofReached)
-		fmt.Printf("[Client] Records: %d sent, %d processed (need: processed >= sent)\n", c.recordsSent, c.recordsProcessed)
-		if c.expectingRedactionResult {
-			fmt.Printf("[Client] Redaction: expecting=%v received=%v (need: !expecting OR received)\n", c.expectingRedactionResult, c.receivedRedactionResult)
-		}
 	}
 }
 

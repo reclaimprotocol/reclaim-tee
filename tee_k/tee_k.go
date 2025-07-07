@@ -173,21 +173,8 @@ func (t *TEEK) handleTEETMessages() {
 				log.Printf("[TEE_K] Unknown session-aware TEE_T message type: %s", msg.Type)
 			}
 		} else {
-			// Legacy message routing (no session ID)
-			switch msg.Type {
-			case shared.MsgKeyShareResponse:
-				t.handleKeyShareResponse(msg)
-			case shared.MsgTagComputationReady:
-				t.handleTagComputationReady(msg)
-			case shared.MsgResponseLength:
-				t.handleResponseLength(msg)
-			case shared.MsgResponseTagVerification:
-				t.handleResponseTagVerification(msg)
-			case shared.MsgError:
-				t.handleTEETError(msg)
-			default:
-				log.Printf("[TEE_K] Unknown legacy TEE_T message type: %s", msg.Type)
-			}
+			log.Printf("[TEE_K] MEWSSAGE WITHOUT SESSION ID: %s", msg)
+			continue
 		}
 	}
 }
@@ -259,34 +246,23 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var isClosing bool
-
 	// shared.Message handling loop
 	for {
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
-			if !isClosing {
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Printf("[TEE_K] Client disconnected normally for session %s", sessionID)
-				} else if !isNetworkShutdownError(err) {
-					log.Printf("[TEE_K] Failed to read websocket message for session %s: %v", sessionID, err)
-				}
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("[TEE_K] Client disconnected normally for session %s", sessionID)
+			} else if !isNetworkShutdownError(err) {
+				log.Printf("[TEE_K] Failed to read websocket message for session %s: %v", sessionID, err)
 			}
 			break
 		}
 
 		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
-			if !isClosing {
-				log.Printf("[TEE_K] Failed to parse client message: %v", err)
-				t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to parse message: %v", err))
-			}
+			log.Printf("[TEE_K] Failed to parse client message: %v", err)
+			t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to parse message: %v", err))
 			continue
-		}
-
-		// Set session ID if not already set
-		if msg.SessionID == "" {
-			msg.SessionID = sessionID
 		}
 
 		// Verify session ID matches
@@ -307,10 +283,8 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgRedactedRequest:
 			t.handleRedactedRequestSession(sessionID, msg)
 		default:
-			if !isClosing {
-				log.Printf("[TEE_K] Unknown message type for session %s: %s", sessionID, msg.Type)
-				t.sendErrorToSession(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
-			}
+			log.Printf("[TEE_K] Unknown message type for session %s: %s", sessionID, msg.Type)
+			t.sendErrorToSession(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
 		}
 	}
 
@@ -765,11 +739,10 @@ func (t *TEEK) handleRedactedRequest(conn *websocket.Conn, msg *shared.Message) 
 		return
 	}
 
-	// *** CRITICAL FIX: Get actual sequence number from client AEAD instead of hardcoding 0 ***
 	actualSeqNum := clientAEAD.GetSequence()
 	fmt.Printf("[TEE_K] DEBUG: Using sequence number %d (not hardcoded 0)\n", actualSeqNum)
 
-	// Create TLS record header for shared.ApplicationData - FIXED: Include tag in length
+	// Create TLS record header for shared.ApplicationData
 	tagSize := 16 // GCM tag size
 	recordLength := len(redactedWithContentType) + tagSize
 	recordHeader := []byte{0x17, 0x03, 0x03, byte(recordLength >> 8), byte(recordLength & 0xFF)}
@@ -794,7 +767,7 @@ func (t *TEEK) handleRedactedRequest(conn *websocket.Conn, msg *shared.Message) 
 		return
 	}
 
-	// Create nonce: IV XOR with sequence number (FIXED: use actual sequence)
+	// Create nonce: IV XOR with sequence number
 	nonce := make([]byte, len(clientAppIV))
 	copy(nonce, clientAppIV)
 	for i := 0; i < 8; i++ {
@@ -847,25 +820,23 @@ func (t *TEEK) handleRedactedRequest(conn *websocket.Conn, msg *shared.Message) 
 
 	// Step 7: Create what TEE_K WOULD send as a complete TLS record (for debugging comparison)
 	// TLS shared.ApplicationData record format: [type(1)] [version(2)] [length(2)] [encrypted_payload]
-	completeRecord := make([]byte, 5+len(encryptedData))
-	completeRecord[0] = 0x17                            // shared.ApplicationData record type
-	completeRecord[1] = 0x03                            // TLS version major
-	completeRecord[2] = 0x03                            // TLS version minor
-	completeRecord[3] = byte(len(encryptedData) >> 8)   // Length high byte
-	completeRecord[4] = byte(len(encryptedData) & 0xFF) // Length low byte
-	copy(completeRecord[5:], encryptedData)             // Encrypted payload
+	// completeRecord := make([]byte, 5+len(encryptedData))
+	// completeRecord[0] = 0x17                            // shared.ApplicationData record type
+	// completeRecord[1] = 0x03                            // TLS version major
+	// completeRecord[2] = 0x03                            // TLS version minor
+	// completeRecord[3] = byte(len(encryptedData) >> 8)   // Length high byte
+	// completeRecord[4] = byte(len(encryptedData) & 0xFF) // Length low byte
+	// copy(completeRecord[5:], encryptedData)             // Encrypted payload
+	//
+	// fmt.Printf("[TEE_K] DEBUG: Complete TLS record that WOULD be sent (%d bytes):\n", len(completeRecord))
+	// previewLen := 64
+	// if len(completeRecord) < previewLen {
+	// 	previewLen = len(completeRecord)
+	// }
+	// fmt.Printf(" Would-send record: %x\n", completeRecord[:previewLen])
+	// fmt.Printf(" Record header: type=0x%02x version=0x%04x length=%d\n",
+	// 	completeRecord[0], uint16(completeRecord[1])<<8|uint16(completeRecord[2]), len(encryptedData))
 
-	fmt.Printf("[TEE_K] DEBUG: Complete TLS record that WOULD be sent (%d bytes):\n", len(completeRecord))
-	previewLen := 64
-	if len(completeRecord) < previewLen {
-		previewLen = len(completeRecord)
-	}
-	fmt.Printf(" Would-send record: %x\n", completeRecord[:previewLen])
-	fmt.Printf(" Record header: type=0x%02x version=0x%04x length=%d\n",
-		completeRecord[0], uint16(completeRecord[1])<<8|uint16(completeRecord[2]), len(encryptedData))
-
-	// The encrypted data is sent to TEE_T via sendEncryptedRequestToTEET()
-	// Client will receive the final result from TEE_T, not directly from TEE_K
 }
 
 // validateHTTPRequestFormat validates that the redacted request maintains proper HTTP format
@@ -936,75 +907,6 @@ func (t *TEEK) validateRedactionPositions(ranges []shared.RedactionRange, reques
 	return nil
 }
 
-// *** NEW: Compute standard GCM tag for comparison ***
-func (t *TEEK) computeStandardGCMTag(plaintext, additionalData []byte, key, nonce []byte) []byte {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		fmt.Printf("[TEE_K] Failed to create cipher for standard GCM: %v\n", err)
-		return nil
-	}
-
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		fmt.Printf("[TEE_K] Failed to create GCM for standard tag: %v\n", err)
-		return nil
-	}
-
-	// Encrypt with standard GCM
-	fullCiphertext := aead.Seal(nil, nonce, plaintext, additionalData)
-
-	// Extract just the tag (last 16 bytes)
-	if len(fullCiphertext) < 16 {
-		fmt.Printf("[TEE_K] Standard GCM ciphertext too short\n")
-		return nil
-	}
-
-	tagOnly := fullCiphertext[len(fullCiphertext)-16:]
-	fmt.Printf("[TEE_K] Standard GCM debug:\n")
-	fmt.Printf(" Input plaintext (%d bytes): %x\n", len(plaintext), plaintext[:min(32, len(plaintext))])
-	fmt.Printf(" Additional data: %x\n", additionalData)
-	fmt.Printf(" Nonce: %x\n", nonce)
-	fmt.Printf(" Full output (%d bytes): %x\n", len(fullCiphertext), fullCiphertext[:min(48, len(fullCiphertext))])
-
-	return tagOnly
-}
-
-// *** NEW: Compute manual GCM tag using exact same ciphertext as TEE_T ***
-func (t *TEEK) computeManualGCMTag(ciphertext, additionalData []byte, key, nonce []byte) []byte {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		fmt.Printf("[TEE_K] Failed to create cipher for manual GCM: %v\n", err)
-		return nil
-	}
-
-	// Step 1: Generate the same tag secrets we send to TEE_T
-	tagSecrets := make([]byte, 32)
-
-	// E_K(0^128) - GHASH key H
-	zeros := make([]byte, 16)
-	block.Encrypt(tagSecrets[0:16], zeros)
-
-	// E_K(nonce||1) - encrypted counter block
-	counterBlock := make([]byte, 16)
-	copy(counterBlock[:12], nonce)
-	counterBlock[15] = 1
-	block.Encrypt(tagSecrets[16:32], counterBlock)
-
-	fmt.Printf("[TEE_K] Manual GCM tag computation (using TEE_T's method):\n")
-	fmt.Printf(" Ciphertext: %x\n", ciphertext[:min(32, len(ciphertext))])
-	fmt.Printf(" Additional data: %x\n", additionalData)
-	fmt.Printf(" Tag secrets: %x\n", tagSecrets)
-
-	// Step 2: Use the same ComputeTagFromSecrets function as TEE_T
-	manualTag, err := minitls.ComputeTagFromSecrets(ciphertext, tagSecrets, 0x1302, additionalData)
-	if err != nil {
-		fmt.Printf("[TEE_K] Manual tag computation failed: %v\n", err)
-		return nil
-	}
-
-	return manualTag
-}
-
 func (t *TEEK) sendMessage(conn *websocket.Conn, msg *shared.Message) error {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
@@ -1060,6 +962,8 @@ func (w *WebSocketConn) Read(p []byte) (int, error) {
 }
 
 func (w *WebSocketConn) Write(p []byte) (int, error) {
+
+	fmt.Println("WRITE CALLED")
 
 	msg := shared.CreateMessage(shared.MsgSendTCPData, shared.TCPData{Data: p})
 
@@ -1264,257 +1168,6 @@ func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encrypted
 
 	msg := shared.CreateMessage(shared.MsgEncryptedRequest, encReq)
 	return t.sendMessageToTEETWithSession(sessionID, msg)
-}
-
-// Helper functions
-
-// isLikelyHTTP checks if data looks like HTTP response rather than binary TLS handshake data
-func isLikelyHTTP(data []byte) bool {
-	if len(data) < 4 {
-		return false
-	}
-
-	// Check for HTTP response status line patterns
-	httpPrefixes := []string{
-		"HTTP/1.0 ",
-		"HTTP/1.1 ",
-		"HTTP/2.0 ",
-	}
-
-	dataStr := string(data[:min(12, len(data))])
-	for _, prefix := range httpPrefixes {
-		if len(dataStr) >= len(prefix) && dataStr[:len(prefix)] == prefix {
-			return true
-		}
-	}
-
-	// Check for common HTTP headers at the start
-	httpHeaders := []string{
-		"Content-Type:",
-		"Content-Length:",
-		"Server:",
-		"Date:",
-	}
-
-	for _, header := range httpHeaders {
-		if len(dataStr) >= len(header) && dataStr[:len(header)] == header {
-			return true
-		}
-	}
-
-	// If data contains mostly printable characters, it's likely HTTP
-	printableCount := 0
-	for i := 0; i < min(32, len(data)); i++ {
-		b := data[i]
-		if (b >= 0x20 && b <= 0x7E) || b == 0x09 || b == 0x0A || b == 0x0D {
-			printableCount++
-		}
-	}
-
-	// If more than 80% of first 32 bytes are printable, likely HTTP
-	threshold := min(32, len(data))
-	return float64(printableCount)/float64(threshold) > 0.8
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-// decodeNewSessionTicket decodes and displays NewSessionTicket message contents
-func (t *TEEK) decodeNewSessionTicket(data []byte) {
-	if len(data) < 4 {
-		fmt.Printf("[TEE_K] NewSessionTicket too short: %d bytes\n", len(data))
-		return
-	}
-
-	// Skip handshake message header (type + length)
-	offset := 4
-	if offset+4 > len(data) {
-		fmt.Printf("[TEE_K] NewSessionTicket missing ticket lifetime\n")
-		return
-	}
-
-	ticketLifetime := uint32(data[offset])<<24 | uint32(data[offset+1])<<16 |
-		uint32(data[offset+2])<<8 | uint32(data[offset+3])
-	offset += 4
-
-	if offset+4 > len(data) {
-		fmt.Printf("[TEE_K] NewSessionTicket missing ticket age add\n")
-		return
-	}
-
-	ticketAgeAdd := uint32(data[offset])<<24 | uint32(data[offset+1])<<16 |
-		uint32(data[offset+2])<<8 | uint32(data[offset+3])
-	offset += 4
-
-	if offset+1 > len(data) {
-		fmt.Printf("[TEE_K] NewSessionTicket missing ticket nonce length\n")
-		return
-	}
-
-	nonceLen := int(data[offset])
-	offset++
-
-	if offset+nonceLen > len(data) {
-		fmt.Printf("[TEE_K] NewSessionTicket nonce too long\n")
-		return
-	}
-
-	nonce := data[offset : offset+nonceLen]
-	offset += nonceLen
-
-	if offset+2 > len(data) {
-		fmt.Printf("[TEE_K] NewSessionTicket missing ticket length\n")
-		return
-	}
-
-	ticketLen := int(data[offset])<<8 | int(data[offset+1])
-	offset += 2
-
-	if offset+ticketLen > len(data) {
-		fmt.Printf("[TEE_K] NewSessionTicket ticket too long\n")
-		return
-	}
-
-	ticket := data[offset : offset+ticketLen]
-	offset += ticketLen
-
-	fmt.Printf("[TEE_K] NewSessionTicket Details:\n")
-	fmt.Printf(" Lifetime: %d seconds\n", ticketLifetime)
-	fmt.Printf(" Age Add: 0x%08x\n", ticketAgeAdd)
-	fmt.Printf(" Nonce: %x (%d bytes)\n", nonce, len(nonce))
-	fmt.Printf(" Ticket: %x... (%d bytes)\n", ticket[:min(16, len(ticket))], len(ticket))
-
-	// Parse extensions if present
-	if offset+2 <= len(data) {
-		extLen := int(data[offset])<<8 | int(data[offset+1])
-		fmt.Printf(" Extensions: %d bytes\n", extLen)
-		if extLen > 0 && offset+2+extLen <= len(data) {
-			extensions := data[offset+2 : offset+2+extLen]
-			fmt.Printf(" Extension data: %x...\n", extensions[:min(16, len(extensions))])
-		}
-	}
-}
-
-// decodeServerHello decodes and displays ServerHello message contents
-func (t *TEEK) decodeServerHello(data []byte) {
-	if len(data) < 4 {
-		fmt.Printf("[TEE_K] ServerHello too short: %d bytes\n", len(data))
-		return
-	}
-
-	// Skip handshake message header (type + length)
-	offset := 4
-	if offset+2 > len(data) {
-		fmt.Printf("[TEE_K] ServerHello missing version\n")
-		return
-	}
-
-	version := uint16(data[offset])<<8 | uint16(data[offset+1])
-	offset += 2
-
-	if offset+32 > len(data) {
-		fmt.Printf("[TEE_K] ServerHello missing random\n")
-		return
-	}
-
-	random := data[offset : offset+32]
-	offset += 32
-
-	if offset+1 > len(data) {
-		fmt.Printf("[TEE_K] ServerHello missing session ID length\n")
-		return
-	}
-
-	sessionIDLen := int(data[offset])
-	offset++
-
-	if offset+sessionIDLen > len(data) {
-		fmt.Printf("[TEE_K] ServerHello session ID too long\n")
-		return
-	}
-
-	sessionID := data[offset : offset+sessionIDLen]
-	offset += sessionIDLen
-
-	if offset+2 > len(data) {
-		fmt.Printf("[TEE_K] ServerHello missing cipher suite\n")
-		return
-	}
-
-	cipherSuite := uint16(data[offset])<<8 | uint16(data[offset+1])
-	offset += 2
-
-	fmt.Printf("[TEE_K] ServerHello Details (UNEXPECTED IN APPLICATION PHASE):\n")
-	fmt.Printf(" Version: 0x%04x\n", version)
-	fmt.Printf(" Random: %x...\n", random[:min(16, len(random))])
-	fmt.Printf(" Session ID: %x (%d bytes)\n", sessionID[:min(16, len(sessionID))], len(sessionID))
-	fmt.Printf(" Cipher Suite: 0x%04x (%s)\n", cipherSuite, getCipherSuiteAlgorithm(cipherSuite))
-
-	if offset+1 <= len(data) {
-		compressionMethod := data[offset]
-		fmt.Printf(" Compression: 0x%02x\n", compressionMethod)
-		offset++
-
-		// Parse extensions if present
-		if offset+2 <= len(data) {
-			extLen := int(data[offset])<<8 | int(data[offset+1])
-			fmt.Printf(" Extensions: %d bytes\n", extLen)
-			if extLen > 0 && offset+2+extLen <= len(data) {
-				extensions := data[offset+2 : offset+2+extLen]
-				fmt.Printf(" Extension data: %x...\n", extensions[:min(32, len(extensions))])
-			}
-		}
-	}
-
-	fmt.Printf("[TEE_K] This suggests the server is trying to start a new handshake!\n")
-}
-
-// getAlertDescription returns the description string for TLS alert codes
-func getAlertDescription(code byte) string {
-	alertDescriptions := map[byte]string{
-		0:   "CLOSE_NOTIFY",
-		10:  "UNEXPECTED_MESSAGE",
-		20:  "BAD_RECORD_MAC",
-		21:  "DECRYPTION_FAILED",
-		22:  "RECORD_OVERFLOW",
-		30:  "DECOMPRESSION_FAILURE",
-		40:  "HANDSHAKE_FAILURE",
-		41:  "NO_CERTIFICATE",
-		42:  "BAD_CERTIFICATE",
-		43:  "UNSUPPORTED_CERTIFICATE",
-		44:  "CERTIFICATE_REVOKED",
-		45:  "CERTIFICATE_EXPIRED",
-		46:  "CERTIFICATE_UNKNOWN",
-		47:  "ILLEGAL_PARAMETER",
-		48:  "UNKNOWN_CA",
-		49:  "ACCESS_DENIED",
-		50:  "DECODE_ERROR",
-		51:  "DECRYPT_ERROR",
-		60:  "EXPORT_RESTRICTION",
-		70:  "PROTOCOL_VERSION",
-		71:  "INSUFFICIENT_SECURITY",
-		80:  "INTERNAL_ERROR",
-		90:  "USER_CANCELED",
-		100: "NO_RENEGOTIATION",
-		109: "MISSING_EXTENSION",
-		110: "UNSUPPORTED_EXTENSION",
-		111: "CERTIFICATE_UNOBTAINABLE",
-		112: "UNRECOGNIZED_NAME",
-		113: "BAD_CERTIFICATE_STATUS_RESPONSE",
-		114: "BAD_CERTIFICATE_HASH_VALUE",
-		115: "UNKNOWN_PSK_IDENTITY",
-		116: "CERTIFICATE_REQUIRED",
-		120: "NO_APPLICATION_PROTOCOL",
-	}
-
-	if desc, ok := alertDescriptions[code]; ok {
-		return desc
-	}
-	return fmt.Sprintf("UNKNOWN (%d)", code)
 }
 
 // Session-aware response handling methods
