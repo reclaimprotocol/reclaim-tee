@@ -1142,7 +1142,7 @@ type FinishedState struct {
 
 // Global map to track finished states per session
 var finishedStates = make(map[string]*FinishedState)
-var finishedStatesMutex sync.RWMutex
+var finishedStatesMutex sync.Mutex
 
 // handleFinishedFromClientSession handles finished messages from clients
 func (t *TEET) handleFinishedFromClientSession(sessionID string, msg *shared.Message) {
@@ -1210,9 +1210,9 @@ func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
 
 // checkFinishedCondition checks if both client and TEE_K have sent finished messages
 func (t *TEET) checkFinishedCondition(sessionID string) {
-	finishedStatesMutex.RLock()
+	finishedStatesMutex.Lock()
 	state := finishedStates[sessionID]
-	finishedStatesMutex.RUnlock()
+	finishedStatesMutex.Unlock()
 
 	if state == nil {
 		return

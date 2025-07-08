@@ -19,7 +19,7 @@ type VSockConnectionManager struct {
 	attestationCache *AttestationCache
 	memoryCache      *SmartMemoryCache
 
-	mu           sync.RWMutex
+	mu           sync.Mutex
 	isRunning    bool
 	shutdownOnce sync.Once
 }
