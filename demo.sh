@@ -46,7 +46,7 @@ TEET_PID=$!
 
 # Wait for services to start
 echo "⏳ Waiting for services to initialize..."
-sleep 3
+sleep 1
 
 # Check if services are still running
 if ! kill -0 $TEEK_PID 2>/dev/null; then
