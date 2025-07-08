@@ -346,8 +346,8 @@ func (em *EnclaveManager) createVSockHTTPSServer(handler http.Handler, tlsConfig
 	}
 }
 
-// GenerateAttestation creates an attestation document with certificate fingerprint
-func (em *EnclaveManager) GenerateAttestation(ctx context.Context) ([]byte, error) {
+// GenerateAttestation creates an attestation document with optional user data
+func (em *EnclaveManager) GenerateAttestation(ctx context.Context, userData ...[]byte) ([]byte, error) {
 
 	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
@@ -355,7 +355,13 @@ func (em *EnclaveManager) GenerateAttestation(ctx context.Context) ([]byte, erro
 
 	}
 
-	return handle.generateAttestation(nil)
+	// Use provided userData if available, otherwise nil for default
+	var userDataToUse []byte
+	if len(userData) > 0 {
+		userDataToUse = userData[0]
+	}
+
+	return handle.generateAttestation(userDataToUse)
 }
 
 // GetConnectionManager returns the VSock connection manager for KMS operations

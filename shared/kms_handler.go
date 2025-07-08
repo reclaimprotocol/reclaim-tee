@@ -173,16 +173,14 @@ func (c *KMSHandler) LoadAndDecryptCacheItem(ctx context.Context, filename strin
 	return decryptedData, nil
 }
 
-// decryptItem decrypts item data - EXACTLY matching nitro.go decryptItem function
+// decryptItem decrypts item data
 func (c *KMSHandler) decryptItem(ctx context.Context, encryptedData, ciphertextBlob []byte) ([]byte, error) {
-	// CRITICAL: Get global singleton handle safely (NO PANIC)
 	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
 		log.Printf("[KMS] Failed to get enclave handle: %v", err)
 		return nil, fmt.Errorf("failed to get enclave handle: %v", err)
 	}
 
-	// CRITICAL: Generate simple attestation document (matching nitro.go exactly)
 	attestationDoc, err := c.generateAttestation(handle, nil)
 	if err != nil {
 		log.Printf("[KMS] Failed to generate attestation: %v", err)
@@ -191,7 +189,6 @@ func (c *KMSHandler) decryptItem(ctx context.Context, encryptedData, ciphertextB
 
 	log.Printf("[KMS] Generated attestation document (%d bytes) for decrypt operation", len(attestationDoc))
 
-	// Create KMS Decrypt request with attestation (matching nitro.go exactly)
 	input := kms.DecryptInput{
 		KeyId:               aws.String(c.kmsKeyID),
 		CiphertextBlob:      ciphertextBlob,

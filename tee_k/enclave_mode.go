@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -116,20 +117,44 @@ func setupEnclaveRoutes(teek *TEEK, enclaveManager *shared.EnclaveManager) http.
 		fmt.Fprint(w, `{"status":"healthy","mode":"enclave"}`)
 	})
 
-	// Attestation endpoint with certificate fingerprint
+	// Attestation endpoint with ECDSA public key in user data
 	mux.HandleFunc("/attest", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[TEE_K] Attestation request from %s", r.RemoteAddr)
 
-		attestationDoc, err := enclaveManager.GenerateAttestation(r.Context())
+		// Get the ECDSA public key from the TEEK signing key pair
+		if teek.signingKeyPair == nil {
+			log.Printf("[TEE_K] No signing key pair available for attestation")
+			http.Error(w, "No signing key pair available", http.StatusInternalServerError)
+			return
+		}
+
+		publicKeyDER, err := teek.signingKeyPair.GetPublicKeyDER()
+		if err != nil {
+			log.Printf("[TEE_K] Failed to get public key DER: %v", err)
+			http.Error(w, "Failed to get public key", http.StatusInternalServerError)
+			return
+		}
+
+		// Create user data containing the hex-encoded ECDSA public key
+		userData := fmt.Sprintf("tee_k_public_key:%x", publicKeyDER)
+		log.Printf("[TEE_K] Including ECDSA public key in attestation (DER: %d bytes)", len(publicKeyDER))
+
+		attestationDoc, err := enclaveManager.GenerateAttestation(r.Context(), []byte(userData))
 		if err != nil {
 			log.Printf("[TEE_K] Attestation generation failed: %v", err)
 			http.Error(w, "Failed to generate attestation", http.StatusInternalServerError)
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/octet-stream")
+		// Encode attestation document as base64
+		attestationBase64 := base64.StdEncoding.EncodeToString(attestationDoc)
+		log.Printf("[TEE_K] Generated attestation document (%d bytes, base64: %d chars)",
+			len(attestationDoc), len(attestationBase64))
+
+		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("X-Enclave-Service", "tee_k")
-		w.Write(attestationDoc)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(attestationBase64))
 	})
 
 	// Default handler for the root
