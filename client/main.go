@@ -37,6 +37,11 @@ func main() {
 		log.Fatalf("[Client] Failed to connect to TEE_T: %v", err)
 	}
 
+	// Fetch and verify attestations from both enclaves (only in enclave mode)
+	if err := client.fetchAndVerifyAttestations(); err != nil {
+		log.Fatalf("[Client] Failed to fetch and verify attestations: %v", err)
+	}
+
 	// Request HTTP to example.com
 	if err := client.RequestHTTP("example.com", 443); err != nil {
 		log.Fatalf("[Client] Failed to request HTTP: %v", err)

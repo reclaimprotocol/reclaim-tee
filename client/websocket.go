@@ -445,6 +445,14 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 	log.Printf("[Client] 📝 Signature: %d bytes", len(signedTranscript.Signature))
 	log.Printf("[Client] 📝 Public Key: %d bytes (DER format)", len(signedTranscript.PublicKey))
 
+	// Store the public key for attestation verification
+	switch signedTranscript.Source {
+	case "tee_k":
+		c.teekTranscriptPublicKey = signedTranscript.PublicKey
+	case "tee_t":
+		c.teetTranscriptPublicKey = signedTranscript.PublicKey
+	}
+
 	// Calculate total size of all packets
 	totalSize := 0
 	for _, packet := range signedTranscript.Packets {
@@ -495,6 +503,18 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 		log.Printf("[Client] 📝 Marked TEE_T transcript as received (signature valid: %v)", verificationErr == nil)
 	default:
 		log.Printf("[Client] 📝 Unknown transcript source: %s", signedTranscript.Source)
+	}
+
+	// Check if we now have both transcript public keys and can verify against attestations
+	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.attestationVerified {
+		log.Printf("[Client] 🔒 Both transcript public keys received - verifying against attestations...")
+		if err := c.verifyAttestationPublicKeys(); err != nil {
+			log.Printf("[Client] ❌ Attestation public key verification failed: %v", err)
+			fmt.Printf("[Client] ❌ ATTESTATION VERIFICATION FAILED: %v\n", err)
+		} else {
+			log.Printf("[Client] ✅ Attestation public key verification successful")
+			fmt.Printf("[Client] ✅ ATTESTATION VERIFICATION SUCCESSFUL - transcripts are from verified enclaves\n")
+		}
 	}
 
 	transcriptsComplete := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)

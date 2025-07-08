@@ -18,6 +18,7 @@ require (
 )
 
 require (
+	github.com/anjuna-security/go-nitro-attestation v0.0.0-20250527214750-dc507eadb414 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.14.0 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.14.0 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.2.0 // indirect

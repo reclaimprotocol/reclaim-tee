@@ -1,3 +1,5 @@
+github.com/anjuna-security/go-nitro-attestation v0.0.0-20250527214750-dc507eadb414 h1:WXLYUZB2C2YaILH1sz2OnASXebVJNIloJ9pqaQaFRTY=
+github.com/anjuna-security/go-nitro-attestation v0.0.0-20250527214750-dc507eadb414/go.mod h1:zKpQdFHC98fJ5p7JjnEwu7wg2tjJ5cBiQrTI4XMJypo=
 github.com/austinast/nitro-enclaves-sdk-go v0.0.2 h1:zxG8p6MOLzElTwWEMbMMnK3Od5DuUFzxlmfx230kO1k=
 github.com/austinast/nitro-enclaves-sdk-go v0.0.2/go.mod h1:OMv6mKQGyjoRMrDusKtt9YyXbuNWuP7gUDNw1f4L52Q=
 github.com/aws/aws-sdk-go-v2 v1.16.7/go.mod h1:6CpKuLXg2w7If3ABZCl/qZ6rEgwtjZTn4eAf4RcEyuw=

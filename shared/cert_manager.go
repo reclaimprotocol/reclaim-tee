@@ -80,23 +80,79 @@ func (u *LegoUser) GetPrivateKey() crypto.PrivateKey {
 	return u.key
 }
 
+// isValidCachedCertificate checks if a cached certificate is valid and not expiring soon
+// This is a standalone version of isValidCertificate for use before creating a manager
+func isValidCachedCertificate(cert *tls.Certificate) bool {
+	if len(cert.Certificate) == 0 {
+		return false
+	}
+
+	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return false
+	}
+
+	// Check if certificate expires within 7 days
+	timeUntilExpiry := time.Until(x509Cert.NotAfter)
+	isValid := timeUntilExpiry > 7*24*time.Hour
+
+	if isValid {
+		log.Printf("Certificate validation: expires in %v (valid)", timeUntilExpiry.Round(time.Hour))
+	} else {
+		log.Printf("Certificate validation: expires in %v (needs renewal)", timeUntilExpiry.Round(time.Hour))
+	}
+
+	return isValid
+}
+
 // NewVSockLegoManager creates a new Lego manager that works with VSock
 func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLegoManager, error) {
 	log.Printf("[%s] Initializing Lego certificate manager with VSock support", config.ServiceName)
 	log.Printf("[%s] CA Directory: %s", config.ServiceName, config.CADirURL)
 	log.Printf("[%s] Domain: %s", config.ServiceName, config.Domain)
 
-	// TODO Check that cert exists in cache
-	/*
-		// Check if certificate exists in cache
-		if cert, err := em.certManager.getCachedCertificate(ctx, em.certManager.config.Domain); err == nil {
-			if em.certManager.isValidCertificate(cert) {
-				log.Printf("[%s] Valid certificate found in cache", em.certManager.config.ServiceName)
-				return nil
+	// PRIORITY: Check if valid certificate exists in cache BEFORE any ACME operations
+	log.Printf("[%s] Checking cache for existing certificate...", config.ServiceName)
+	if config.Cache != nil {
+		// Try to load certificate from cache
+		cacheKey := config.Domain
+		cachedData, err := config.Cache.Get(ctx, cacheKey)
+		if err == nil {
+			log.Printf("[%s] Found cached certificate data (%d bytes)", config.ServiceName, len(cachedData))
+
+			// Try to parse the cached certificate
+			cert, err := tls.X509KeyPair(cachedData, cachedData)
+			if err == nil {
+				// Validate the certificate
+				if isValidCachedCertificate(&cert) {
+					log.Printf("[%s] ✅ Valid certificate found in cache - skipping ACME operations!", config.ServiceName)
+
+					// Create a minimal manager that uses the cached certificate
+					manager := &VSockLegoManager{
+						config:       config,
+						client:       nil, // No ACME client needed for cached certificates
+						cache:        config.Cache,
+						certificates: make(map[string]*tls.Certificate),
+					}
+
+					// Store the valid certificate in memory
+					manager.mu.Lock()
+					manager.certificates[config.Domain] = &cert
+					manager.mu.Unlock()
+
+					return manager, nil
+				} else {
+					log.Printf("[%s] Cached certificate expired or invalid, will request new one", config.ServiceName)
+				}
+			} else {
+				log.Printf("[%s] Failed to parse cached certificate: %v", config.ServiceName, err)
 			}
-			log.Printf("[%s] Cached certificate expired or invalid, requesting new one", em.certManager.config.ServiceName)
+		} else {
+			log.Printf("[%s] No cached certificate found: %v", config.ServiceName, err)
 		}
-	*/
+	}
+
+	log.Printf("[%s] No valid cached certificate - proceeding with ACME operations", config.ServiceName)
 
 	// Create or load user private key
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -127,6 +183,7 @@ func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLe
 	}
 
 	// Register user account
+	log.Printf("[%s] Registering ACME user account...", config.ServiceName)
 	reg, err := legoClient.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to register user: %v", err)
