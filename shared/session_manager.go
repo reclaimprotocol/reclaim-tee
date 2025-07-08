@@ -28,7 +28,7 @@ type SessionManagerInterface interface {
 type SessionManager struct {
 	sessions       map[string]*Session
 	sessionsByConn map[Connection]*Session
-	mutex          sync.RWMutex
+	mutex          sync.Mutex
 	cleanupTicker  *time.Ticker
 	cleanupDone    chan bool
 	sessionTimeout time.Duration
@@ -127,8 +127,8 @@ func (sm *SessionManager) ActivateSession(sessionID string, clientConn Connectio
 
 // GetSession retrieves a session by ID
 func (sm *SessionManager) GetSession(sessionID string) (*Session, error) {
-	sm.mutex.RLock()
-	defer sm.mutex.RUnlock()
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
 
 	session, exists := sm.sessions[sessionID]
 	if !exists {
@@ -140,8 +140,8 @@ func (sm *SessionManager) GetSession(sessionID string) (*Session, error) {
 
 // GetSessionByConnection retrieves a session by connection
 func (sm *SessionManager) GetSessionByConnection(conn Connection) (*Session, error) {
-	sm.mutex.RLock()
-	defer sm.mutex.RUnlock()
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
 
 	session, exists := sm.sessionsByConn[conn]
 	if !exists {

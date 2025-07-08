@@ -33,10 +33,6 @@ type TEET struct {
 	// TEE_K connection (shared across all sessions)
 	teekConn *websocket.Conn
 
-	// WebSocket write mutexes - separate mutexes for each connection to avoid deadlocks
-	clientMutex sync.Mutex // Protects client connections writes only
-	teekMutex   sync.Mutex // Protects teekConn writes only
-
 	ready bool
 
 	// Legacy fields for backward compatibility during migration
@@ -717,9 +713,6 @@ func (t *TEET) sendMessageToClient(msg *shared.Message) error {
 		return fmt.Errorf("failed to marshal message: %v", err)
 	}
 
-	t.clientMutex.Lock()
-	defer t.clientMutex.Unlock()
-
 	return conn.WriteMessage(websocket.TextMessage, msgBytes)
 }
 
@@ -750,9 +743,6 @@ func (t *TEET) sendMessageToTEEK(msg *shared.Message) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %v", err)
 	}
-
-	t.teekMutex.Lock()
-	defer t.teekMutex.Unlock()
 
 	return conn.WriteMessage(websocket.TextMessage, msgBytes)
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 )
 
 // handleHandshakeComplete processes handshake completion messages from TEE_K
@@ -65,10 +66,8 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *Message) {
 	fmt.Printf("[Client] Sending redaction streams to TEE_T\n")
 
 	// Track that we're expecting redaction verification result
-	c.completionMutex.Lock()
-	c.expectingRedactionResult = true
+	c.setCompletionFlag(CompletionFlagRedactionExpected)
 	fmt.Printf("[Client] EXPECTING redaction verification result from TEE_T\n")
-	c.completionMutex.Unlock()
 
 	streamsMsg, err := CreateMessage(MsgRedactionStreams, streamsData)
 	if err != nil {
@@ -265,65 +264,9 @@ func (c *Client) parseCertificateMessage(data []byte) bool {
 	return false
 }
 
-// processCompleteRecords processes all complete TLS records in the buffer
-func (c *Client) processCompleteRecords() {
-	for {
-		// Lock the buffer while we search for a complete record
-		c.responseContentMutex.Lock()
-
-		if len(c.responseBuffer) < 5 {
-			// Not enough data for a full TLS record header, unlock and wait for more
-			c.responseContentMutex.Unlock()
-			return
-		}
-
-		// Peek at the record length from the header
-		recordLength := int(c.responseBuffer[3])<<8 | int(c.responseBuffer[4])
-		totalRecordLength := 5 + recordLength
-
-		if len(c.responseBuffer) < totalRecordLength {
-			// Not enough data for the full record, unlock and wait
-			c.responseContentMutex.Unlock()
-			return
-		}
-
-		// We have a complete record, extract it
-		record := make([]byte, totalRecordLength)
-		copy(record, c.responseBuffer[:totalRecordLength])
-
-		// Trim the buffer
-		c.responseBuffer = c.responseBuffer[totalRecordLength:]
-		c.responseContentMutex.Unlock()
-
-		// Now process the extracted record (no lock needed here)
-		recordType := record[0]
-		c.processSingleTLSRecord(record, recordType, recordLength)
-	}
-}
-
-// processAllRemainingRecords processes any data left in the buffer after EOF
-func (c *Client) processAllRemainingRecords() {
-	c.responseContentMutex.Lock()
-	defer c.responseContentMutex.Unlock()
-
-	if len(c.responseBuffer) > 0 {
-		log.Printf("[Client] Processing %d bytes of remaining buffered data...", len(c.responseBuffer))
-		// For simplicity, we'll treat the whole remaining buffer as one final record
-		// This might not be strictly correct for all TLS cases, but is sufficient for this protocol
-		record := make([]byte, len(c.responseBuffer))
-		copy(record, c.responseBuffer)
-		c.responseBuffer = nil // Clear buffer
-
-		// Process the final chunk of data
-		if len(record) >= 5 {
-			recordType := record[0]
-			recordLength := int(record[3])<<8 | int(record[4])
-			c.processSingleTLSRecord(record, recordType, recordLength)
-		}
-	} else {
-		log.Printf("[Client] No remaining data to process\n")
-	}
-}
+// NOTE: processCompleteRecords and processAllRemainingRecords functions removed
+// during atomic state machine refactoring. TLS record processing now happens
+// directly via processTLSRecordFromData() without buffering.
 
 // processSingleTLSRecord handles a single, complete TLS record
 func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLength int) {
@@ -433,10 +376,8 @@ func (c *Client) processTLSRecord(record []byte) {
 	}
 
 	// Track expected decryption stream ONLY if we successfully sent to TEE_T
-	c.completionMutex.Lock()
-	c.recordsSent++
-	fmt.Printf("[Client] EXPECTING decryption stream #%d\n", c.recordsSent)
-	c.completionMutex.Unlock()
+	atomic.AddInt64(&c.recordsSent, 1)
+	fmt.Printf("[Client] EXPECTING decryption stream #%d\n", atomic.LoadInt64(&c.recordsSent))
 	c.responseSeqNum++
 }
 
@@ -452,9 +393,7 @@ func (c *Client) handleResponseTagVerification(msg *Message) {
 		fmt.Printf("[Client] Response tag verification successful (seq=%d)\n", verificationData.SeqNum)
 
 		// *** FIX: Increment the processed records counter ***
-		c.completionMutex.Lock()
-		c.recordsProcessed++
-		c.completionMutex.Unlock()
+		atomic.AddInt64(&c.recordsProcessed, 1)
 
 		// Check for protocol completion now that a record has been fully processed by TEE_T
 		c.checkProtocolCompletion("response tag verified")
@@ -496,10 +435,9 @@ func (c *Client) handleResponseDecryptionStream(msg *Message) {
 	log.Printf("[Client] Successfully decrypted response (%d bytes, seq=%d)", len(plaintext), streamData.SeqNum)
 
 	// *** FIX: Increment the received streams counter ***
-	c.completionMutex.Lock()
-	c.decryptionStreamsReceived++
-	log.Printf("[Client] RECEIVED decryption stream #%d of %d expected", c.decryptionStreamsReceived, c.recordsSent)
-	c.completionMutex.Unlock()
+	atomic.AddInt64(&c.decryptionStreamsReceived, 1)
+	log.Printf("[Client] RECEIVED decryption stream #%d of %d expected",
+		atomic.LoadInt64(&c.decryptionStreamsReceived), atomic.LoadInt64(&c.recordsSent))
 
 	// Handle the decrypted content
 	c.handleDecryptedResponse(&Message{
@@ -568,12 +506,10 @@ func (c *Client) analyzeServerContent(content []byte, seqNum uint64) {
 		c.analyzeHTTPContent(actualContent)
 
 		// Track that HTTP response content has been received (but don't complete yet - wait for TCP EOF)
-		c.completionMutex.Lock()
 		if c.httpRequestSent && c.httpResponseExpected && !c.httpResponseReceived {
 			c.httpResponseReceived = true
 			fmt.Printf("[Client] HTTP response content received - waiting for TCP EOF to complete protocol\n")
 		}
-		c.completionMutex.Unlock()
 
 	case 0x15: // Alert
 		fmt.Printf("[Client] TLS ALERT:\n")
@@ -766,4 +702,52 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// State for processing TLS records directly from TCP data
+type tlsRecordState struct {
+	buffer       []byte
+	expectedSize int
+	recordType   byte
+}
+
+var recordProcessingState = &tlsRecordState{
+	buffer:       make([]byte, 0),
+	expectedSize: 0,
+}
+
+// processTLSRecordFromData processes TLS records directly from raw TCP data
+func (c *Client) processTLSRecordFromData(data []byte) {
+	// Add new data to our processing buffer
+	recordProcessingState.buffer = append(recordProcessingState.buffer, data...)
+
+	// Process all complete records in the buffer
+	for len(recordProcessingState.buffer) >= 5 {
+		// Check if we have a complete TLS record header
+		if recordProcessingState.expectedSize == 0 {
+			// Parse TLS record header: type (1) + version (2) + length (2)
+			recordProcessingState.recordType = recordProcessingState.buffer[0]
+			recordLength := int(recordProcessingState.buffer[3])<<8 | int(recordProcessingState.buffer[4])
+			recordProcessingState.expectedSize = 5 + recordLength
+		}
+
+		// Check if we have a complete record
+		if len(recordProcessingState.buffer) >= recordProcessingState.expectedSize {
+			// Extract the complete record
+			record := make([]byte, recordProcessingState.expectedSize)
+			copy(record, recordProcessingState.buffer[:recordProcessingState.expectedSize])
+
+			// Remove the processed record from buffer
+			recordProcessingState.buffer = recordProcessingState.buffer[recordProcessingState.expectedSize:]
+			recordProcessingState.expectedSize = 0
+
+			// Process the complete record
+			recordType := record[0]
+			recordLength := int(record[3])<<8 | int(record[4])
+			c.processSingleTLSRecord(record, recordType, recordLength)
+		} else {
+			// Not enough data for complete record, wait for more
+			break
+		}
+	}
 }

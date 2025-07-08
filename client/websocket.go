@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"tee-mpc/shared"
 	"time"
 
@@ -206,9 +207,6 @@ func (c *Client) handleTEETMessages() {
 
 // sendMessage sends a message to TEE_K
 func (c *Client) sendMessage(msg *Message) error {
-	c.wsConnMu.Lock()
-	defer c.wsConnMu.Unlock()
-
 	conn := c.wsConn
 
 	if conn == nil {
@@ -230,9 +228,6 @@ func (c *Client) sendMessage(msg *Message) error {
 
 // sendMessageToTEET sends a message to TEE_T
 func (c *Client) sendMessageToTEET(msg *Message) error {
-	c.teetConnMu.Lock()
-	defer c.teetConnMu.Unlock()
-
 	conn := c.teetConn
 
 	if conn == nil {
@@ -358,12 +353,10 @@ func (c *Client) handleEncryptedData(msg *Message) {
 	fmt.Printf("[Client] Received encrypted data (%d bytes) + tag (%d bytes)\n", len(encData.EncryptedData), len(encData.AuthTag))
 
 	// Track received redaction verification result but don't complete yet - wait for HTTP response
-	c.completionMutex.Lock()
-	if c.expectingRedactionResult && !c.receivedRedactionResult {
-		c.receivedRedactionResult = true
+	if c.hasCompletionFlag(CompletionFlagRedactionExpected) && !c.hasCompletionFlag(CompletionFlagRedactionReceived) {
+		c.setCompletionFlag(CompletionFlagRedactionReceived)
 		fmt.Printf("[Client] RECEIVED redaction verification result from TEE_T\n")
 	}
-	c.completionMutex.Unlock()
 
 	// Create TLS record with encrypted data and authentication tag
 	// TLS ApplicationData record format: [type(1)] [version(2)] [length(2)] [encrypted_payload + tag]
@@ -392,11 +385,9 @@ func (c *Client) handleEncryptedData(msg *Message) {
 		fmt.Printf("[Client] Sent %d bytes to website\n", n)
 
 		// Mark that HTTP request has been sent and we're expecting a response
-		c.completionMutex.Lock()
 		c.httpRequestSent = true
 		c.httpResponseExpected = true
 		fmt.Printf("[Client] HTTP request sent, now expecting HTTP response...\n")
-		c.completionMutex.Unlock()
 
 	} else {
 		log.Printf("[Client] No TCP connection available")
@@ -489,23 +480,25 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 	}
 
 	// Track transcript completion and signature validity
-	c.completionMutex.Lock()
 	switch signedTranscript.Source {
 	case "tee_k":
-		c.receivedTEEKTranscript = true
-		c.teeKSignatureValid = (verificationErr == nil)
-		log.Printf("[Client] 📝 Marked TEE_K transcript as received (signature valid: %v)", c.teeKSignatureValid)
+		c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
+		if verificationErr == nil {
+			c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+		}
+		log.Printf("[Client] 📝 Marked TEE_K transcript as received (signature valid: %v)", verificationErr == nil)
 	case "tee_t":
-		c.receivedTEETTranscript = true
-		c.teeTSignatureValid = (verificationErr == nil)
-		log.Printf("[Client] 📝 Marked TEE_T transcript as received (signature valid: %v)", c.teeTSignatureValid)
+		c.setCompletionFlag(CompletionFlagTEETTranscriptReceived)
+		if verificationErr == nil {
+			c.setCompletionFlag(CompletionFlagTEETSignatureValid)
+		}
+		log.Printf("[Client] 📝 Marked TEE_T transcript as received (signature valid: %v)", verificationErr == nil)
 	default:
 		log.Printf("[Client] 📝 Unknown transcript source: %s", signedTranscript.Source)
 	}
 
-	transcriptsComplete := c.receivedTEEKTranscript && c.receivedTEETTranscript
-	signaturesValid := c.teeKSignatureValid && c.teeTSignatureValid
-	c.completionMutex.Unlock()
+	transcriptsComplete := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
+	signaturesValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)
 
 	log.Printf("[Client] 📝 Signed transcript from %s processed successfully", signedTranscript.Source)
 
@@ -587,7 +580,7 @@ func (c *Client) printRedactedResponse() {
 	defer c.responseContentMutex.Unlock()
 
 	// Only print if we have received all expected redacted streams
-	if len(c.redactedPlaintextBySeq) < c.recordsSent {
+	if len(c.redactedPlaintextBySeq) < int(atomic.LoadInt64(&c.recordsSent)) {
 		return
 	}
 
@@ -620,21 +613,17 @@ func (c *Client) Close() {
 		c.tcpConn = nil
 	}
 
-	// Close TEE_K connection with mutex protection
-	c.wsConnMu.Lock()
+	// Close TEE_K connection
 	if c.wsConn != nil {
 		c.wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		c.wsConn.Close()
 		c.wsConn = nil
 	}
-	c.wsConnMu.Unlock()
 
-	// Close TEE_T connection with mutex protection
-	c.teetConnMu.Lock()
+	// Close TEE_T connection
 	if c.teetConn != nil {
 		c.teetConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		c.teetConn.Close()
 		c.teetConn = nil
 	}
-	c.teetConnMu.Unlock()
 }

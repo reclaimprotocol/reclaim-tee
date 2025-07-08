@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -138,12 +139,9 @@ func (c *Client) tcpToWebsocket() {
 			if err == io.EOF {
 				fmt.Printf("[Client] TCP connection closed by server (EOF)\n")
 				// Server closed connection - this is final
-				c.completionMutex.Lock()
-				c.eofReached = true
-				c.completionMutex.Unlock()
+				atomic.StoreInt64(&c.eofReached, 1)
 
-				fmt.Printf("[Client] EOF reached, processing any remaining buffered data...\n")
-				c.processAllRemainingRecords()
+				fmt.Printf("[Client] EOF reached, checking for protocol completion...\n")
 				break // <-- Break on EOF
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				// *** FIX: Timeout is normal, continue waiting for data ***
@@ -182,13 +180,8 @@ func (c *Client) tcpToWebsocket() {
 			// After handshake: Process raw TLS records for split AEAD response handling
 			fmt.Printf("[Client] Response data (%d bytes), processing for split AEAD\n", n)
 
-			// Add to response buffer
-			c.responseContentMutex.Lock()
-			c.responseBuffer = append(c.responseBuffer, buffer[:n]...)
-			c.responseContentMutex.Unlock()
-
-			// Process any complete TLS records in buffer
-			c.processCompleteRecords()
+			// Process TLS records directly without buffering
+			c.processTLSRecordFromData(buffer[:n])
 		}
 	}
 

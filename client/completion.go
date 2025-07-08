@@ -1,11 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"log"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"tee-mpc/shared"
 )
 
@@ -16,8 +16,11 @@ func (c *Client) WaitForCompletion() <-chan struct{} {
 
 // checkProtocolCompletion checks if all conditions are met and signals completion if so
 func (c *Client) checkProtocolCompletion(reason string) {
-	c.completionMutex.Lock()
-	defer c.completionMutex.Unlock()
+	// Use atomic operations to read state values
+	eofCondition := atomic.LoadInt64(&c.eofReached) == 1
+	recordsSent := atomic.LoadInt64(&c.recordsSent)
+	recordsProcessed := atomic.LoadInt64(&c.recordsProcessed)
+	streamsReceived := atomic.LoadInt64(&c.decryptionStreamsReceived)
 
 	// Completion conditions:
 	// 1. EOF reached (TCP connection closed)
@@ -25,12 +28,11 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	// 3. Redaction result received (if expected)
 	// 4. Signed transcripts received from both TEE_K and TEE_T (if expected)
 
-	eofCondition := c.eofReached
-	recordsCondition := c.recordsSent == 0 || c.recordsProcessed >= c.recordsSent
-	redactionCondition := !c.expectingRedactionResult || c.receivedRedactionResult
+	recordsCondition := recordsSent == 0 || recordsProcessed >= recordsSent
+	redactionCondition := !c.hasCompletionFlag(CompletionFlagRedactionExpected) || c.hasCompletionFlag(CompletionFlagRedactionReceived)
 
 	// *** FIX: Add condition to ensure all decryption streams are received ***
-	streamsCondition := c.recordsSent == 0 || c.decryptionStreamsReceived >= c.recordsSent
+	streamsCondition := recordsSent == 0 || streamsReceived >= recordsSent
 
 	// Check if split AEAD processing is complete (conditions 1-3 + new streams condition)
 	splitAEADComplete := eofCondition && recordsCondition && redactionCondition && streamsCondition
@@ -40,33 +42,34 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	// before we send redaction specs to TEE_K
 	if !eofCondition {
 		log.Printf("[Client] 🎯 Waiting for EOF before proceeding with redaction (records: %d/%d, streams: %d/%d, EOF: %v)",
-			c.recordsProcessed, c.recordsSent, c.decryptionStreamsReceived, c.recordsSent, c.eofReached)
+			recordsProcessed, recordsSent, streamsReceived, recordsSent, eofCondition)
 		return
 	}
 
 	// If split AEAD is complete but we haven't sent redaction spec yet, send it now
-	if splitAEADComplete && !c.expectingRedactedStreams && !c.expectingSignedTranscripts {
+	if splitAEADComplete && !c.hasCompletionFlag(CompletionFlagRedactedStreamsExpected) && !c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) {
 		log.Printf("[Client] 🎯 Split AEAD processing complete and EOF reached - sending redaction specification")
 		if err := c.sendRedactionSpec(); err != nil {
 			log.Printf("[Client] Failed to send redaction spec: %v", err)
 			return
 		}
-		// Note: expectingRedactedStreams is set to true in sendRedactionSpec
+		// Note: CompletionFlagRedactedStreamsExpected is set to true in sendRedactionSpec
 	}
 
 	// If redaction spec sent but we haven't sent finished command yet, send it now
 	// (For now, we'll skip waiting for redacted streams and proceed to finished command)
-	if splitAEADComplete && c.expectingRedactedStreams && !c.expectingSignedTranscripts {
+	if splitAEADComplete && c.hasCompletionFlag(CompletionFlagRedactedStreamsExpected) && !c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) {
 		log.Printf("[Client] 🎯 Redaction spec sent - sending finished command")
 		if err := c.sendFinishedCommand(); err != nil {
 			log.Printf("[Client] Failed to send finished command: %v", err)
 			return
 		}
-		// Note: expectingSignedTranscripts is set to true in sendFinishedCommand
+		// Note: CompletionFlagSignedTranscriptsExpected is set to true in sendFinishedCommand
 	}
 
 	// Final completion condition: signed transcripts received AND signatures valid
-	transcriptCondition := !c.expectingSignedTranscripts || (c.receivedTEEKTranscript && c.receivedTEETTranscript && c.teeKSignatureValid && c.teeTSignatureValid)
+	transcriptCondition := !c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) ||
+		(c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived | CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid))
 
 	allConditionsMet := splitAEADComplete && transcriptCondition
 
@@ -75,12 +78,12 @@ func (c *Client) checkProtocolCompletion(reason string) {
 			log.Printf("[Client] 🎯 All protocol conditions met (including signature validation) - completing client processing")
 			close(c.completionChan)
 		})
-	} else if splitAEADComplete && c.expectingSignedTranscripts &&
-		c.receivedTEEKTranscript && c.receivedTEETTranscript &&
-		(!c.teeKSignatureValid || !c.teeTSignatureValid) {
+	} else if splitAEADComplete && c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) &&
+		c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived|CompletionFlagTEETTranscriptReceived) &&
+		(!c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) || !c.hasCompletionFlag(CompletionFlagTEETSignatureValid)) {
 		// Special case: All transcripts received but signatures invalid
 		log.Printf("[Client] ❌ Protocol completion BLOCKED due to invalid signatures (TEE_K: %v, TEE_T: %v)",
-			c.teeKSignatureValid, c.teeTSignatureValid)
+			c.hasCompletionFlag(CompletionFlagTEEKSignatureValid), c.hasCompletionFlag(CompletionFlagTEETSignatureValid))
 	}
 }
 
@@ -89,7 +92,7 @@ func (c *Client) sendFinishedCommand() error {
 	log.Printf("[Client] Sending finished command to both TEE_K and TEE_T")
 
 	// Set flag to expect signed transcripts
-	c.expectingSignedTranscripts = true
+	c.setCompletionFlag(CompletionFlagSignedTranscriptsExpected)
 
 	finishedMsg := shared.FinishedMessage{
 		Source: "client",
@@ -120,9 +123,6 @@ func (c *Client) sendRedactionSpec() error {
 	// Analyze response content to identify redaction ranges
 	redactionSpec := c.analyzeResponseRedaction()
 
-	// *** ADDED: Verify the generated redaction spec before sending ***
-	c.verifyRedactionSpec(redactionSpec)
-
 	// Send redaction spec to TEE_K
 	msg := shared.CreateSessionMessage(shared.MsgRedactionSpec, c.sessionID, redactionSpec)
 	if err := c.wsConn.WriteJSON(msg); err != nil {
@@ -132,52 +132,9 @@ func (c *Client) sendRedactionSpec() error {
 	log.Printf("[Client] 📝 Sent redaction specification to TEE_K with %d ranges", len(redactionSpec.Ranges))
 
 	// Set flag to expect redacted streams
-	c.expectingRedactedStreams = true
+	c.setCompletionFlag(CompletionFlagRedactedStreamsExpected)
 
 	return nil
-}
-
-// *** ADDED: New function to verify the redaction spec locally ***
-func (c *Client) verifyRedactionSpec(spec shared.RedactionSpec) {
-	log.Printf("[Client] 🕵️  Verifying redaction spec locally before sending...")
-
-	c.responseContentMutex.Lock()
-	defer c.responseContentMutex.Unlock()
-
-	// 1. Reconstruct the full original ciphertext and the full PADDED plaintext
-	keys := make([]int, 0, len(c.ciphertextBySeq))
-	for k := range c.ciphertextBySeq {
-		keys = append(keys, int(k))
-	}
-	sort.Ints(keys)
-
-	var fullCiphertext, fullPaddedPlaintext bytes.Buffer
-	for _, k := range keys {
-		fullCiphertext.Write(c.ciphertextBySeq[uint64(k)])
-		fullPaddedPlaintext.Write(c.responseContentBySeq[uint64(k)])
-	}
-
-	// 2. Simulate the final XOR operation on the padded plaintext
-	simulatedPlaintext := fullPaddedPlaintext.Bytes()
-
-	for _, r := range spec.Ranges {
-		if r.Start+r.Length > len(simulatedPlaintext) || r.Start+r.Length > fullCiphertext.Len() {
-			log.Printf("[Client] 🕵️  VERIFICATION ERROR: Range [%d:%d] is out of bounds for simulated plaintext (%d) or ciphertext (%d)",
-				r.Start, r.Start+r.Length, len(simulatedPlaintext), fullCiphertext.Len())
-			continue
-		}
-
-		for i := 0; i < r.Length; i++ {
-			c := fullCiphertext.Bytes()[r.Start+i]
-			rb := r.RedactionBytes[i]
-
-			simulatedPlaintext[r.Start+i] = c ^ rb
-		}
-	}
-
-	log.Printf("[Client] 🕵️  --- LOCAL REDACTION VERIFICATION --- 🕵️")
-	fmt.Printf("%s\n", string(simulatedPlaintext))
-	log.Printf("[Client] 🕵️  --- END LOCAL VERIFICATION --- 🕵️")
 }
 
 // calculateRedactionBytes calculates what should replace parts of decryption stream to produce '*' when XORed with ciphertext
@@ -289,7 +246,6 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 		name    string
 	}{
 		{"ETag:", "etag"},
-		{"Date:", "date"},
 		{"Alt-Svc:", "alt_svc"},
 	}
 
@@ -326,19 +282,6 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 				start = lineEndIndex
 				continue
 			}
-
-			// *** ADDED: Detailed debug logging ***
-			log.Printf("[Client] 🕵️  DEBUG ---")
-			log.Printf("[Client] 🕵️  Pattern: '%s'", p.pattern)
-			log.Printf("[Client] 🕵️  Base Offset: %d", baseOffset)
-			log.Printf("[Client] 🕵️  Absolute Index (in httpData): %d", absoluteIndex)
-			log.Printf("[Client] 🕵️  Value Start Index (in httpData): %d", valueStartIndex)
-			log.Printf("[Client] 🕵️  Line End Index (in httpData): %d", lineEndIndex)
-			log.Printf("[Client] 🕵️  Redaction Start (Global): %d", rangeStart)
-			log.Printf("[Client] 🕵️  Redaction Length: %d", rangeLength)
-
-			log.Printf("[Client] 📝 Found sensitive pattern '%s' at offset %d-%d",
-				p.pattern, rangeStart, rangeStart+rangeLength-1)
 
 			// The ciphertext offset must also start where the value starts
 			ciphertextOffset := valueStartIndex

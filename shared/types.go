@@ -170,10 +170,9 @@ type Session struct {
 	ConnectionData interface{} // Store connection request data
 
 	// Connection management
-	ConnectionMutex sync.RWMutex
-	IsClosed        bool
-	Context         context.Context
-	Cancel          context.CancelFunc
+	IsClosed bool
+	Context  context.Context
+	Cancel   context.CancelFunc
 }
 
 // TLSSessionState holds TLS-specific state for each session

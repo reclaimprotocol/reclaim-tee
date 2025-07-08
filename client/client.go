@@ -8,18 +8,40 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
+)
+
+// Client state constants for atomic state machine
+const (
+	ClientStateInitial = iota
+	ClientStateConnecting
+	ClientStateHandshaking
+	ClientStateReady
+	ClientStateProcessingRecords
+	ClientStateEOFReached
+	ClientStateRedactionSent
+	ClientStateFinished
+	ClientStateCompleted
+)
+
+// Completion flags for atomic bit operations
+const (
+	CompletionFlagRedactionExpected = 1 << iota
+	CompletionFlagRedactionReceived
+	CompletionFlagSignedTranscriptsExpected
+	CompletionFlagTEEKTranscriptReceived
+	CompletionFlagTEETTranscriptReceived
+	CompletionFlagTEEKSignatureValid
+	CompletionFlagTEETSignatureValid
+	CompletionFlagRedactedStreamsExpected
 )
 
 type Client struct {
 	wsConn   *websocket.Conn
 	teetConn *websocket.Conn
 	tcpConn  net.Conn
-
-	// *** Add mutexes to prevent concurrent websocket writes ***
-	wsConnMu   sync.Mutex // Protects wsConn writes (TEE_K)
-	teetConnMu sync.Mutex // Protects teetConn writes (TEE_T)
 
 	// Session management
 	sessionID string // Session ID received from TEE_K
@@ -37,7 +59,6 @@ type Client struct {
 	connectionRequestPending bool
 
 	// Phase 4: Response handling
-	responseBuffer       []byte            // Buffer for accumulating TLS record data
 	responseSeqNum       uint64            // TLS sequence number for response AEAD
 	firstApplicationData bool              // Track if this is the first ApplicationData record
 	pendingResponsesData map[uint64][]byte // Encrypted response data by sequence number
@@ -48,63 +69,49 @@ type Client struct {
 	// *** Add sync.Once to prevent double-close panic ***
 	completionOnce sync.Once // Ensures completion channel is only closed once
 
-	// *** Track records sent vs processed instead of streams ***
-	recordsSent               int  // TLS records sent for split AEAD processing
-	recordsProcessed          int  // TLS records that completed split AEAD processing
-	decryptionStreamsReceived int  // *** FIX: Track received decryption streams to prevent premature redaction ***
-	eofReached                bool // Whether we've reached EOF on TCP connection
-	completionMutex           sync.Mutex
+	// *** Atomic state machine for lock-free protocol management ***
+	state int64 // Atomic state field using ClientState constants
 
-	// Track redaction verification completion
-	expectingRedactionResult bool
-	receivedRedactionResult  bool
+	// *** Track records sent vs processed instead of streams ***
+	recordsSent               int64 // TLS records sent for split AEAD processing (atomic)
+	recordsProcessed          int64 // TLS records that completed split AEAD processing (atomic)
+	decryptionStreamsReceived int64 // *** FIX: Track received decryption streams to prevent premature redaction *** (atomic)
+	eofReached                int64 // Whether we've reached EOF on TCP connection (atomic)
+
+	// *** Atomic completion flags (replaces multiple boolean fields) ***
+	completionFlags int64 // Atomic bit flags for completion state tracking
 
 	// Track HTTP request/response lifecycle
-	httpRequestSent      bool // Track if HTTP request has been sent
-	httpResponseExpected bool // Track if we should expect HTTP response
-	httpResponseReceived bool // Track if HTTP response content has been received
-
-	// Track signed transcript completion
-	expectingSignedTranscripts bool
-	receivedTEEKTranscript     bool
-	receivedTEETTranscript     bool
-	teeKSignatureValid         bool
-	teeTSignatureValid         bool
-
-	// Track response redaction
-	expectingRedactedStreams bool
-	responseContentBySeq     map[uint64][]byte // Store decrypted response content by sequence
-	responseContentMutex     sync.Mutex        // *** USE THIS MUTEX FOR ALL RESPONSE MAPS ***
-	ciphertextBySeq          map[uint64][]byte // Store encrypted response data by sequence
-	decryptionStreamBySeq    map[uint64][]byte // Store decryption streams by sequence
-	redactedPlaintextBySeq   map[uint64][]byte // *** ADDED: Store final redacted plaintext for ordered printing ***
+	httpRequestSent        bool              // Track if HTTP request has been sent
+	httpResponseExpected   bool              // Track if we should expect HTTP response
+	httpResponseReceived   bool              // Track if HTTP response content has been received
+	responseContentBySeq   map[uint64][]byte // Store decrypted response content by sequence
+	responseContentMutex   sync.Mutex        // *** USE THIS MUTEX FOR ALL RESPONSE MAPS ***
+	ciphertextBySeq        map[uint64][]byte // Store encrypted response data by sequence
+	decryptionStreamBySeq  map[uint64][]byte // Store decryption streams by sequence
+	redactedPlaintextBySeq map[uint64][]byte // *** ADDED: Store final redacted plaintext for ordered printing ***
 }
 
 func NewClient(teekURL string) *Client {
 	return &Client{
-		teekURL:                    teekURL,
-		teetURL:                    "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
-		pendingResponsesData:       make(map[uint64][]byte),
-		completionChan:             make(chan struct{}),
-		recordsSent:                0,
-		recordsProcessed:           0,
-		decryptionStreamsReceived:  0,
-		eofReached:                 false,
-		expectingRedactionResult:   false,
-		receivedRedactionResult:    false,
-		httpRequestSent:            false,
-		httpResponseExpected:       false,
-		httpResponseReceived:       false,
-		expectingSignedTranscripts: false,
-		receivedTEEKTranscript:     false,
-		receivedTEETTranscript:     false,
-		teeKSignatureValid:         false,
-		teeTSignatureValid:         false,
-		responseContentBySeq:       make(map[uint64][]byte),
-		responseContentMutex:       sync.Mutex{},
-		ciphertextBySeq:            make(map[uint64][]byte),
-		decryptionStreamBySeq:      make(map[uint64][]byte),
-		redactedPlaintextBySeq:     make(map[uint64][]byte),
+		teekURL:                   teekURL,
+		teetURL:                   "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
+		pendingResponsesData:      make(map[uint64][]byte),
+		completionChan:            make(chan struct{}),
+		state:                     ClientStateInitial,
+		recordsSent:               0,
+		recordsProcessed:          0,
+		decryptionStreamsReceived: 0,
+		eofReached:                0,
+		completionFlags:           0,
+		httpRequestSent:           false,
+		httpResponseExpected:      false,
+		httpResponseReceived:      false,
+		responseContentBySeq:      make(map[uint64][]byte),
+		responseContentMutex:      sync.Mutex{},
+		ciphertextBySeq:           make(map[uint64][]byte),
+		decryptionStreamBySeq:     make(map[uint64][]byte),
+		redactedPlaintextBySeq:    make(map[uint64][]byte),
 	}
 }
 
@@ -365,6 +372,33 @@ func (c *Client) validateRedactionRanges(ranges []RedactionRange, requestLen int
 		}
 	}
 	return nil
+}
+
+// *** Atomic completion flag helper functions ***
+
+// setCompletionFlag atomically sets a completion flag
+func (c *Client) setCompletionFlag(flag int64) {
+	atomic.StoreInt64(&c.completionFlags, atomic.LoadInt64(&c.completionFlags)|flag)
+}
+
+// clearCompletionFlag atomically clears a completion flag
+func (c *Client) clearCompletionFlag(flag int64) {
+	atomic.StoreInt64(&c.completionFlags, atomic.LoadInt64(&c.completionFlags)&^flag)
+}
+
+// hasCompletionFlag atomically checks if a completion flag is set
+func (c *Client) hasCompletionFlag(flag int64) bool {
+	return atomic.LoadInt64(&c.completionFlags)&flag != 0
+}
+
+// setCompletionFlags atomically sets multiple completion flags
+func (c *Client) setCompletionFlags(flags int64) {
+	atomic.StoreInt64(&c.completionFlags, atomic.LoadInt64(&c.completionFlags)|flags)
+}
+
+// hasAllCompletionFlags atomically checks if all specified completion flags are set
+func (c *Client) hasAllCompletionFlags(flags int64) bool {
+	return atomic.LoadInt64(&c.completionFlags)&flags == flags
 }
 
 // Phase 4: Response handling methods
