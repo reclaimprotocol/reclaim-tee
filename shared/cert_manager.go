@@ -300,6 +300,24 @@ func (m *VSockLegoManager) CreateVSockHTTPHandler(fallback http.Handler) http.Ha
 func (m *VSockLegoManager) BootstrapCertificates(ctx context.Context) error {
 	log.Printf("[%s] Bootstrapping certificates for domain: %s via VSock", m.config.ServiceName, m.config.Domain)
 
+	// Check if we already have a valid certificate loaded (from cache)
+	if m.client == nil {
+		log.Printf("[%s] Certificate manager has no ACME client - checking for cached certificate...", m.config.ServiceName)
+
+		// Check if we have a valid cached certificate in memory
+		m.mu.RLock()
+		if cert, exists := m.certificates[m.config.Domain]; exists {
+			if m.isValidCertificate(cert) {
+				m.mu.RUnlock()
+				log.Printf("[%s] ✅ Valid cached certificate already loaded - skipping bootstrap", m.config.ServiceName)
+				return nil
+			}
+		}
+		m.mu.RUnlock()
+
+		return fmt.Errorf("no ACME client available and no valid cached certificate found")
+	}
+
 	// Request new certificate
 	request := certificate.ObtainRequest{
 		Domains: []string{m.config.Domain},
