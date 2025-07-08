@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"tee-mpc/shared"
 )
@@ -27,15 +29,18 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	recordsCondition := c.recordsSent == 0 || c.recordsProcessed >= c.recordsSent
 	redactionCondition := !c.expectingRedactionResult || c.receivedRedactionResult
 
-	// Check if split AEAD processing is complete (conditions 1-3)
-	splitAEADComplete := eofCondition && recordsCondition && redactionCondition
+	// *** FIX: Add condition to ensure all decryption streams are received ***
+	streamsCondition := c.recordsSent == 0 || c.decryptionStreamsReceived >= c.recordsSent
+
+	// Check if split AEAD processing is complete (conditions 1-3 + new streams condition)
+	splitAEADComplete := eofCondition && recordsCondition && redactionCondition && streamsCondition
 
 	// IMPORTANT: Only proceed with redaction and completion if EOF has been reached
 	// This ensures all TLS records (including alerts) have been received and processed
 	// before we send redaction specs to TEE_K
 	if !eofCondition {
-		log.Printf("[Client] 🎯 Waiting for EOF before proceeding with redaction (records: %d/%d, EOF: %v)",
-			c.recordsProcessed, c.recordsSent, c.eofReached)
+		log.Printf("[Client] 🎯 Waiting for EOF before proceeding with redaction (records: %d/%d, streams: %d/%d, EOF: %v)",
+			c.recordsProcessed, c.recordsSent, c.decryptionStreamsReceived, c.recordsSent, c.eofReached)
 		return
 	}
 
@@ -115,6 +120,9 @@ func (c *Client) sendRedactionSpec() error {
 	// Analyze response content to identify redaction ranges
 	redactionSpec := c.analyzeResponseRedaction()
 
+	// *** ADDED: Verify the generated redaction spec before sending ***
+	c.verifyRedactionSpec(redactionSpec)
+
 	// Send redaction spec to TEE_K
 	msg := shared.CreateSessionMessage(shared.MsgRedactionSpec, c.sessionID, redactionSpec)
 	if err := c.wsConn.WriteJSON(msg); err != nil {
@@ -127,6 +135,49 @@ func (c *Client) sendRedactionSpec() error {
 	c.expectingRedactedStreams = true
 
 	return nil
+}
+
+// *** ADDED: New function to verify the redaction spec locally ***
+func (c *Client) verifyRedactionSpec(spec shared.RedactionSpec) {
+	log.Printf("[Client] 🕵️  Verifying redaction spec locally before sending...")
+
+	c.responseContentMutex.Lock()
+	defer c.responseContentMutex.Unlock()
+
+	// 1. Reconstruct the full original ciphertext and the full PADDED plaintext
+	keys := make([]int, 0, len(c.ciphertextBySeq))
+	for k := range c.ciphertextBySeq {
+		keys = append(keys, int(k))
+	}
+	sort.Ints(keys)
+
+	var fullCiphertext, fullPaddedPlaintext bytes.Buffer
+	for _, k := range keys {
+		fullCiphertext.Write(c.ciphertextBySeq[uint64(k)])
+		fullPaddedPlaintext.Write(c.responseContentBySeq[uint64(k)])
+	}
+
+	// 2. Simulate the final XOR operation on the padded plaintext
+	simulatedPlaintext := fullPaddedPlaintext.Bytes()
+
+	for _, r := range spec.Ranges {
+		if r.Start+r.Length > len(simulatedPlaintext) || r.Start+r.Length > fullCiphertext.Len() {
+			log.Printf("[Client] 🕵️  VERIFICATION ERROR: Range [%d:%d] is out of bounds for simulated plaintext (%d) or ciphertext (%d)",
+				r.Start, r.Start+r.Length, len(simulatedPlaintext), fullCiphertext.Len())
+			continue
+		}
+
+		for i := 0; i < r.Length; i++ {
+			c := fullCiphertext.Bytes()[r.Start+i]
+			rb := r.RedactionBytes[i]
+
+			simulatedPlaintext[r.Start+i] = c ^ rb
+		}
+	}
+
+	log.Printf("[Client] 🕵️  --- LOCAL REDACTION VERIFICATION --- 🕵️")
+	fmt.Printf("%s\n", string(simulatedPlaintext))
+	log.Printf("[Client] 🕵️  --- END LOCAL VERIFICATION --- 🕵️")
 }
 
 // calculateRedactionBytes calculates what should replace parts of decryption stream to produce '*' when XORed with ciphertext
@@ -156,12 +207,19 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 	var redactionRanges []shared.RedactionRange
 	totalOffset := 0
 
-	// Process each sequence number in order
-	for seqNum := uint64(0); seqNum < uint64(len(c.responseContentBySeq)); seqNum++ {
-		content, exists := c.responseContentBySeq[seqNum]
-		if !exists {
-			continue
-		}
+	// *** FIX: Iterate over map keys in sorted order to guarantee correctness ***
+	// 1. Get all sequence numbers (keys) from the map.
+	keys := make([]int, 0, len(c.responseContentBySeq))
+	for k := range c.responseContentBySeq {
+		keys = append(keys, int(k))
+	}
+	// 2. Sort the keys numerically.
+	sort.Ints(keys)
+
+	// 3. Process each sequence number in the correct order.
+	for _, k := range keys {
+		seqNum := uint64(k)
+		content := c.responseContentBySeq[seqNum]
 
 		// Get corresponding ciphertext for redaction byte calculation
 		ciphertext, ciphertextExists := c.ciphertextBySeq[seqNum]
@@ -171,29 +229,23 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 			continue
 		}
 
-		log.Printf("[Client] 📝 Analyzing sequence %d: %d bytes", seqNum, len(content))
+		// *** FIX: Correctly handle content/type separation and offset calculation ***
+		// 1. Separate actual content from its single-byte type identifier
+		actualContent, contentType := c.removeTLSPadding(content)
 
-		// Remove TLS padding and extract actual content
-		actualContent := c.removeTLSPadding(content)
-		if len(actualContent) == 0 {
-			totalOffset += len(content)
-			continue
-		}
-
-		// Check content type
-		contentType := actualContent[len(actualContent)-1]
-		actualData := actualContent[:len(actualContent)-1]
+		log.Printf("[Client] 📝 Analyzing sequence %d: %d bytes, content type 0x%02x", seqNum, len(actualContent), contentType)
 
 		switch contentType {
 		case 0x16: // Handshake message - likely NewSessionTicket
 			log.Printf("[Client] 📝 Found handshake message at offset %d (seq %d)", totalOffset, seqNum)
-			if len(actualData) >= 4 && actualData[0] == 0x04 { // NewSessionTicket
-				log.Printf("[Client] 📝 Redacting NewSessionTicket at offset %d-%d", totalOffset, totalOffset+len(content)-1)
+			if len(actualContent) >= 4 && actualContent[0] == 0x04 { // NewSessionTicket
+				log.Printf("[Client] 📝 Redacting NewSessionTicket at offset %d-%d", totalOffset, totalOffset+len(actualContent)-1)
 
-				redactionBytes := c.calculateRedactionBytes(ciphertext, 0, len(content))
+				// Redact the entire actual content of the handshake message
+				redactionBytes := c.calculateRedactionBytes(ciphertext, 0, len(actualContent))
 				redactionRanges = append(redactionRanges, shared.RedactionRange{
 					Start:          totalOffset,
-					Length:         len(content),
+					Length:         len(actualContent),
 					Type:           "session_ticket",
 					RedactionBytes: redactionBytes,
 				})
@@ -201,13 +253,14 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 
 		case 0x17: // ApplicationData - HTTP response
 			log.Printf("[Client] 📝 Found HTTP response at offset %d (seq %d)", totalOffset, seqNum)
-			httpRanges := c.analyzeHTTPRedactionWithBytes(actualData, totalOffset, ciphertext)
+			httpRanges := c.analyzeHTTPRedactionWithBytes(actualContent, totalOffset, ciphertext)
 			redactionRanges = append(redactionRanges, httpRanges...)
 
 		case 0x15: // Alert - usually safe to keep
 			log.Printf("[Client] 📝 Found TLS alert at offset %d (seq %d) - keeping visible", totalOffset, seqNum)
 		}
 
+		// *** FIX: Increment offset by the length of the ORIGINAL PADDED content ***
 		totalOffset += len(content)
 	}
 
@@ -235,11 +288,6 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 		pattern string
 		name    string
 	}{
-		{"Set-Cookie:", "cookie"},
-		{"Authorization:", "auth_header"},
-		{"X-Auth-Token:", "auth_token"},
-		{"X-Session-ID:", "session_id"},
-		{"X-CSRF-Token:", "csrf_token"},
 		{"ETag:", "etag"},
 		{"Date:", "date"},
 		{"Alt-Svc:", "alt_svc"},
@@ -255,23 +303,22 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 
 			absoluteIndex := start + index
 			// Find the end of the line
-			endIndex := strings.Index(httpStr[absoluteIndex:], "\r\n")
-			if endIndex == -1 {
-				endIndex = strings.Index(httpStr[absoluteIndex:], "\n")
-				if endIndex == -1 {
-					endIndex = len(httpStr) - absoluteIndex
-				}
+			lineEndIndex := strings.Index(httpStr[absoluteIndex:], "\r\n")
+			if lineEndIndex == -1 {
+				lineEndIndex = len(httpStr)
+			} else {
+				lineEndIndex = absoluteIndex + lineEndIndex
 			}
 
+			// The range to redact is the full line where the pattern was found
 			rangeStart := baseOffset + absoluteIndex
-			rangeLength := endIndex
+			rangeLength := lineEndIndex - absoluteIndex
 
 			log.Printf("[Client] 📝 Found sensitive pattern '%s' at offset %d-%d",
 				p.pattern, rangeStart, rangeStart+rangeLength-1)
 
-			// Calculate redaction bytes using ciphertext coordinates
-			// The HTTP data corresponds to the beginning of the ciphertext
-			ciphertextOffset := absoluteIndex // Position within the HTTP data portion
+			// The HTTP data corresponds to the beginning of the ciphertext for this record
+			ciphertextOffset := absoluteIndex
 			redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, rangeLength)
 
 			ranges = append(ranges, shared.RedactionRange{
@@ -281,7 +328,7 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 				RedactionBytes: redactionBytes,
 			})
 
-			start = absoluteIndex + endIndex + 1
+			start = lineEndIndex
 		}
 	}
 

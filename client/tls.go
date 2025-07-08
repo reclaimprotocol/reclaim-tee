@@ -494,9 +494,16 @@ func (c *Client) handleResponseTagVerification(msg *Message) {
 
 	if verificationData.Success {
 		fmt.Printf("[Client] Response tag verification successful (seq=%d)\n", verificationData.SeqNum)
-		// TEE_K will send decryption stream after receiving verification success from TEE_T
+
+		// *** FIX: Increment the processed records counter ***
+		c.completionMutex.Lock()
+		c.recordsProcessed++
+		c.completionMutex.Unlock()
+
+		// Check for protocol completion now that a record has been fully processed by TEE_T
+		c.checkProtocolCompletion("response tag verified")
 	} else {
-		fmt.Printf("[Client] Response tag verification failed (seq=%d): %s\n",
+		log.Printf("[Client] Response tag verification FAILED (seq=%d): %s",
 			verificationData.SeqNum, verificationData.Message)
 	}
 }
@@ -509,88 +516,76 @@ func (c *Client) handleResponseDecryptionStream(msg *Message) {
 		return
 	}
 
-	fmt.Printf("[Client] Received decryption stream (%d bytes) for seq=%d\n",
-		len(streamData.DecryptionStream), streamData.SeqNum)
+	log.Printf("[Client] Received decryption stream (%d bytes) for seq=%d", len(streamData.DecryptionStream), streamData.SeqNum)
 
-	// Retrieve stored encrypted data for this sequence number
-	encryptedData, exists := c.pendingResponsesData[streamData.SeqNum]
-	if exists {
-		delete(c.pendingResponsesData, streamData.SeqNum) // Clean up
-	}
-
-	if !exists {
-		log.Printf("[Client] No encrypted data found for seq=%d", streamData.SeqNum)
-		return
-	}
-
-	// Decrypt the response by XORing with the decryption stream
-	if len(streamData.DecryptionStream) != len(encryptedData) {
-		log.Printf("[Client] Decryption stream length (%d) doesn't match encrypted data length (%d)",
-			len(streamData.DecryptionStream), len(encryptedData))
-		return
-	}
-
-	// XOR encrypted data with decryption stream to get plaintext
-	plaintext := make([]byte, len(encryptedData))
-	for i := 0; i < len(encryptedData); i++ {
-		plaintext[i] = encryptedData[i] ^ streamData.DecryptionStream[i]
-	}
-
-	// Store decryption stream and decrypted content for redaction calculation
+	// Store the decryption stream
 	c.responseContentMutex.Lock()
-	c.decryptionStreamBySeq[streamData.SeqNum] = make([]byte, len(streamData.DecryptionStream))
-	copy(c.decryptionStreamBySeq[streamData.SeqNum], streamData.DecryptionStream)
-	c.responseContentBySeq[streamData.SeqNum] = make([]byte, len(plaintext))
-	copy(c.responseContentBySeq[streamData.SeqNum], plaintext)
+	c.decryptionStreamBySeq[streamData.SeqNum] = streamData.DecryptionStream
 	c.responseContentMutex.Unlock()
 
-	fmt.Printf("[Client] Successfully decrypted response (%d bytes, seq=%d)\n",
-		len(plaintext), streamData.SeqNum)
+	// Decrypt the corresponding pending response data
+	c.responseBufferMutex.Lock()
+	ciphertext, exists := c.ciphertextBySeq[streamData.SeqNum]
+	c.responseBufferMutex.Unlock()
 
-	// Track received decryption stream and check for completion
-	c.completionMutex.Lock()
-	c.recordsProcessed++
-	fmt.Printf("[Client] RECEIVED decryption stream #%d of %d expected\n", c.recordsProcessed, c.recordsSent)
-
-	// Check if all records processed and trigger completion check
-	if c.recordsProcessed >= c.recordsSent && c.recordsSent > 0 {
-		fmt.Printf("[Client] All split AEAD records processed (%d/%d)\n", c.recordsProcessed, c.recordsSent)
+	if !exists {
+		log.Printf("[Client] No pending response data found for sequence %d", streamData.SeqNum)
+		return
 	}
+
+	// XOR ciphertext with decryption stream to get plaintext
+	plaintext := make([]byte, len(ciphertext))
+	for i := 0; i < len(ciphertext); i++ {
+		plaintext[i] = ciphertext[i] ^ streamData.DecryptionStream[i]
+	}
+
+	log.Printf("[Client] Successfully decrypted response (%d bytes, seq=%d)", len(plaintext), streamData.SeqNum)
+
+	// *** FIX: Increment the received streams counter ***
+	c.completionMutex.Lock()
+	c.decryptionStreamsReceived++
+	log.Printf("[Client] RECEIVED decryption stream #%d of %d expected", c.decryptionStreamsReceived, c.recordsSent)
 	c.completionMutex.Unlock()
 
-	// Always check for protocol completion after processing a decryption stream
-	c.checkProtocolCompletion("decryption stream received")
-
-	// Analyze the server content to understand what we received
-	c.analyzeServerContent(plaintext, streamData.SeqNum)
+	// Handle the decrypted content
+	c.handleDecryptedResponse(&Message{
+		Type:      MsgDecryptedResponse,
+		SessionID: c.sessionID,
+		Data: DecryptedResponseData{
+			SeqNum:        streamData.SeqNum,
+			PlaintextData: plaintext,
+			Success:       true,
+		},
+	})
 }
 
 // handleDecryptedResponse handles final decrypted response
 func (c *Client) handleDecryptedResponse(msg *Message) {
 	var responseData DecryptedResponseData
 	if err := msg.UnmarshalData(&responseData); err != nil {
-		log.Printf("[Client] Failed to unmarshal decrypted response: %v", err)
+		log.Printf("[Client] Failed to unmarshal decrypted response data: %v", err)
 		return
 	}
 
-	if responseData.Success {
-		fmt.Printf("[Client] Received decrypted response (%d bytes, seq=%d)\n",
-			len(responseData.PlaintextData), responseData.SeqNum)
-
-		// Display the decrypted HTTP response
-		responseStr := string(responseData.PlaintextData)
-		if len(responseStr) > 500 {
-			fmt.Printf("[Client] HTTP Response:\n%s\n... (truncated, total %d bytes)\n",
-				responseStr[:500], len(responseData.PlaintextData))
-		} else {
-			fmt.Printf("[Client] HTTP Response:\n%s\n", responseStr)
-		}
-	} else {
-		fmt.Printf("[Client] Response decryption failed (seq=%d)\n", responseData.SeqNum)
+	if !responseData.Success {
+		log.Printf("[Client] Response decryption failed (seq=%d)", responseData.SeqNum)
+		return
 	}
+
+	// 1. Store decrypted response content
+	c.responseContentMutex.Lock()
+	c.responseContentBySeq[responseData.SeqNum] = responseData.PlaintextData
+	c.responseContentMutex.Unlock()
+
+	// 2. Analyze the content of the decrypted response
+	c.analyzeServerContent(responseData.PlaintextData, responseData.SeqNum)
+
+	// 3. Check for completion after storing and analyzing content
+	c.checkProtocolCompletion("decrypted response received")
 }
 
-// analyzeServerContent analyzes the content of the decrypted response to identify what we received
+// analyzeServerContent analyzes the decrypted server response to identify its type
+// (e.g., handshake, application data, alert) and handle it accordingly.
 func (c *Client) analyzeServerContent(content []byte, seqNum uint64) {
 	fmt.Printf("[Client] ANALYZING SERVER CONTENT (seq=%d, %d bytes):\n", seqNum, len(content))
 
@@ -600,27 +595,23 @@ func (c *Client) analyzeServerContent(content []byte, seqNum uint64) {
 	}
 
 	// Remove TLS padding and extract actual content
-	actualContent := c.removeTLSPadding(content)
+	actualContent, contentType := c.removeTLSPadding(content)
 	if len(actualContent) == 0 {
 		fmt.Printf("[Client] No content after removing TLS padding\n")
 		return
 	}
 
-	// Check content type (last byte before padding)
-	contentType := actualContent[len(actualContent)-1]
-	actualData := actualContent[:len(actualContent)-1]
-
-	fmt.Printf("[Client] Content type: 0x%02x, actual data: %d bytes\n", contentType, len(actualData))
+	fmt.Printf("[Client] Content type: 0x%02x, actual data: %d bytes\n", contentType, len(actualContent))
 
 	switch contentType {
 	case 0x16: // Handshake message in application data phase
 		fmt.Printf("[Client] POST-HANDSHAKE MESSAGE:\n")
-		c.analyzeHandshakeMessage(actualData)
+		c.analyzeHandshakeMessage(actualContent)
 		// This is NewSessionTicket - not the HTTP response we're waiting for
 
 	case 0x17: // ApplicationData - this should be the HTTP response
 		fmt.Printf("[Client] HTTP APPLICATION DATA:\n")
-		c.analyzeHTTPContent(actualData)
+		c.analyzeHTTPContent(actualContent)
 
 		// Track that HTTP response content has been received (but don't complete yet - wait for TCP EOF)
 		c.completionMutex.Lock()
@@ -632,11 +623,11 @@ func (c *Client) analyzeServerContent(content []byte, seqNum uint64) {
 
 	case 0x15: // Alert
 		fmt.Printf("[Client] TLS ALERT:\n")
-		c.analyzeAlertMessage(actualData)
+		c.analyzeAlertMessage(actualContent)
 
 	default:
 		fmt.Printf("[Client] UNKNOWN CONTENT TYPE: 0x%02x\n", contentType)
-		fmt.Printf("[Client] Raw data preview: %x\n", actualData[:min(64, len(actualData))])
+		fmt.Printf("[Client] Raw data preview: %x\n", actualContent[:min(64, len(actualContent))])
 	}
 }
 
@@ -791,27 +782,28 @@ func getClientAlertDescription(code byte) string {
 }
 
 // removeTLSPadding removes TLS 1.3 padding from decrypted content
-func (c *Client) removeTLSPadding(data []byte) []byte {
+func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 	if len(data) == 0 {
-		return data
+		return nil, 0
 	}
 
-	// TLS 1.3 padding consists of zero bytes at the end
-	// The actual content ends with a non-zero content type byte
-	i := len(data) - 1
-
-	// Skip trailing zero bytes (padding)
-	for i >= 0 && data[i] == 0 {
-		i--
+	// Find the last non-zero byte which indicates the content type
+	lastNonZero := len(data) - 1
+	for lastNonZero >= 0 && data[lastNonZero] == 0 {
+		lastNonZero--
 	}
 
-	// Return content including the content type byte
-	if i >= 0 {
-		return data[:i+1]
+	if lastNonZero < 0 {
+		// All zeros, likely a padding-only record
+		return nil, 0
 	}
 
-	// All bytes were zero - shouldn't happen in valid TLS 1.3
-	return []byte{}
+	// The byte at lastNonZero is the content type
+	contentType := data[lastNonZero]
+	// The data before that byte is the actual content
+	actualContent := data[:lastNonZero]
+
+	return actualContent, contentType
 }
 
 // min returns the minimum of two integers

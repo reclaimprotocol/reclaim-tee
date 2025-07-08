@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"sort"
 	"strings"
 	"tee-mpc/shared"
 	"time"
@@ -572,14 +573,40 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 	log.Printf("[Client] 📝 Generated redacted plaintext for seq %d (%d bytes)",
 		redactedStream.SeqNum, len(redactedPlaintext))
 
-	// Display redacted content
-	displayStr := string(redactedPlaintext)
-	if len(displayStr) > 500 {
-		fmt.Printf("[Client] 📝 Redacted Response (seq %d):\n%s\n... (truncated, total %d bytes)\n",
-			redactedStream.SeqNum, displayStr[:500], len(redactedPlaintext))
-	} else {
-		fmt.Printf("[Client] 📝 Redacted Response (seq %d):\n%s\n", redactedStream.SeqNum, displayStr)
+	// Store the redacted plaintext and check if we are ready to print
+	c.responseContentMutex.Lock()
+	c.redactedPlaintextBySeq[redactedStream.SeqNum] = redactedPlaintext
+	c.responseContentMutex.Unlock()
+
+	c.printRedactedResponse()
+}
+
+// printRedactedResponse prints the full redacted response in order once all parts are received
+func (c *Client) printRedactedResponse() {
+	c.responseContentMutex.Lock()
+	defer c.responseContentMutex.Unlock()
+
+	// Only print if we have received all expected redacted streams
+	if len(c.redactedPlaintextBySeq) < c.recordsSent {
+		return
 	}
+
+	log.Printf("[Client] 📝 All redacted streams received, printing full response...")
+
+	// Get keys and sort them to ensure correct order
+	keys := make([]int, 0, len(c.redactedPlaintextBySeq))
+	for k := range c.redactedPlaintextBySeq {
+		keys = append(keys, int(k))
+	}
+	sort.Ints(keys)
+
+	var fullResponse strings.Builder
+	for _, k := range keys {
+		fullResponse.Write(c.redactedPlaintextBySeq[uint64(k)])
+	}
+
+	// Print the final, ordered, redacted response
+	fmt.Printf("\n\n--- 📝 FINAL REDACTED RESPONSE 📝 ---\n%s\n--- END REDACTED RESPONSE ---\n\n", fullResponse.String())
 }
 
 // Close closes all WebSocket connections

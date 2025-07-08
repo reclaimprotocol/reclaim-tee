@@ -52,10 +52,11 @@ type Client struct {
 	completionOnce sync.Once // Ensures completion channel is only closed once
 
 	// *** Track records sent vs processed instead of streams ***
-	recordsSent      int  // TLS records sent for split AEAD processing
-	recordsProcessed int  // TLS records that completed split AEAD processing
-	eofReached       bool // Whether we've reached EOF on TCP connection
-	completionMutex  sync.Mutex
+	recordsSent               int  // TLS records sent for split AEAD processing
+	recordsProcessed          int  // TLS records that completed split AEAD processing
+	decryptionStreamsReceived int  // *** FIX: Track received decryption streams to prevent premature redaction ***
+	eofReached                bool // Whether we've reached EOF on TCP connection
+	completionMutex           sync.Mutex
 
 	// Track redaction verification completion
 	expectingRedactionResult bool
@@ -79,6 +80,7 @@ type Client struct {
 	responseContentMutex     sync.Mutex        // Protect response content storage
 	ciphertextBySeq          map[uint64][]byte // Store encrypted response data by sequence
 	decryptionStreamBySeq    map[uint64][]byte // Store decryption streams by sequence
+	redactedPlaintextBySeq   map[uint64][]byte // *** ADDED: Store final redacted plaintext for ordered printing ***
 }
 
 func NewClient(teekURL string) *Client {
@@ -104,6 +106,7 @@ func NewClient(teekURL string) *Client {
 		responseContentMutex:       sync.Mutex{},
 		ciphertextBySeq:            make(map[uint64][]byte),
 		decryptionStreamBySeq:      make(map[uint64][]byte),
+		redactedPlaintextBySeq:     make(map[uint64][]byte),
 	}
 }
 

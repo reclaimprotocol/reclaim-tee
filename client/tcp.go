@@ -138,31 +138,24 @@ func (c *Client) tcpToWebsocket() {
 			if err == io.EOF {
 				fmt.Printf("[Client] TCP connection closed by server (EOF)\n")
 				// Server closed connection - this is final
-				// Mark EOF reached and process any remaining buffered data
 				c.completionMutex.Lock()
 				c.eofReached = true
 				c.completionMutex.Unlock()
 
 				fmt.Printf("[Client] EOF reached, processing any remaining buffered data...\n")
 				c.processAllRemainingRecords()
-
-				// Check protocol completion - finished command will be sent when all conditions are met
-				c.checkProtocolCompletion("EOF reached")
-
-				break
+				break // <-- Break on EOF
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Timeout is normal when no data is available - continue waiting
+				// *** FIX: Timeout is normal, continue waiting for data ***
 				fmt.Printf("[Client] DEBUG: TCP read timeout (normal), continuing...\n")
-				continue
+				continue // <-- Continue on timeout
 			} else if !isClientNetworkShutdownError(err) {
 				fmt.Printf("[Client] TCP read error: %v\n", err)
 				fmt.Printf("[Client] DEBUG: Real TCP error, exiting tcpToWebsocket\n")
-				// Real error - exit
-				break
+				break // <-- Break on real error
 			} else {
 				fmt.Printf("[Client] DEBUG: Network shutdown error, exiting tcpToWebsocket\n")
-				// Network shutdown error during normal close
-				break
+				break // <-- Break on shutdown error
 			}
 		}
 
@@ -199,7 +192,8 @@ func (c *Client) tcpToWebsocket() {
 		}
 	}
 
-	// Final completion check after EOF
+	// Final completion check after the read loop has exited for any reason
+	log.Printf("[Client] 🎯 TCP read loop finished, performing final completion check...")
 	c.checkProtocolCompletion("TCP connection closed")
 }
 
