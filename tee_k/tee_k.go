@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,9 @@ type TEEK struct {
 	port int
 
 	// Session management
-	sessionManager shared.SessionManagerInterface
+	sessionManager        shared.SessionManagerInterface
+	sessionStateMutexes   map[string]*sync.Mutex
+	sessionStateMutexesMu sync.Mutex
 
 	// TEE_T connection (shared across all sessions)
 	teetConn *websocket.Conn
@@ -80,6 +83,7 @@ func NewTEEK(port int) *TEEK {
 	return &TEEK{
 		port:                port,
 		sessionManager:      shared.NewSessionManager(),
+		sessionStateMutexes: make(map[string]*sync.Mutex),
 		teetURL:             "ws://localhost:8081/teek", // Default TEE_T URL
 		tcpReady:            make(chan bool, 1),
 		responseLengthBySeq: make(map[uint64]int),
@@ -318,6 +322,27 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Clean up session when connection closes
 	log.Printf("[TEE_K] Cleaning up session %s", sessionID)
 	t.sessionManager.CloseSession(sessionID)
+	t.removeSessionStateMutex(sessionID)
+}
+
+// getSessionStateMutex safely retrieves or creates a mutex for a given session ID
+func (t *TEEK) getSessionStateMutex(sessionID string) *sync.Mutex {
+	t.sessionStateMutexesMu.Lock()
+	defer t.sessionStateMutexesMu.Unlock()
+
+	mu, ok := t.sessionStateMutexes[sessionID]
+	if !ok {
+		mu = &sync.Mutex{}
+		t.sessionStateMutexes[sessionID] = mu
+	}
+	return mu
+}
+
+// removeSessionStateMutex removes the mutex for a given session ID to prevent memory leaks
+func (t *TEEK) removeSessionStateMutex(sessionID string) {
+	t.sessionStateMutexesMu.Lock()
+	defer t.sessionStateMutexesMu.Unlock()
+	delete(t.sessionStateMutexes, sessionID)
 }
 
 // notifyTEETNewSession sends session registration to TEE_T
@@ -1224,6 +1249,10 @@ func (t *TEEK) handleResponseLengthSession(sessionID string, msg *shared.Message
 		return
 	}
 
+	// Lock session state during modification
+	mu := t.getSessionStateMutex(sessionID)
+	mu.Lock()
+
 	// Initialize response state if needed
 	if session.ResponseState == nil {
 		session.ResponseState = &shared.ResponseSessionState{
@@ -1233,6 +1262,7 @@ func (t *TEEK) handleResponseLengthSession(sessionID string, msg *shared.Message
 
 	// Store response length for this sequence number in session state
 	session.ResponseState.ResponseLengthBySeq[lengthData.SeqNum] = uint32(lengthData.Length)
+	mu.Unlock()
 
 	// Also store in global map for backward compatibility with legacy methods
 	if t.responseLengthBySeq == nil {
@@ -1748,6 +1778,10 @@ func rangesOverlap(r1, r2 shared.RedactionRange) bool {
 func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec shared.RedactionSpec) error {
 	log.Printf("[TEE_K] Session %s: Generating redacted decryption stream with %d ranges", sessionID, len(spec.Ranges))
 
+	mu := t.getSessionStateMutex(sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Get session to access response state
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
@@ -1767,6 +1801,11 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		totalLength += int(length) // Convert from uint32 to int
 		seqNumbers = append(seqNumbers, seqNum)
 	}
+
+	// *** CRITICAL FIX: Sort sequence numbers to ensure correct order ***
+	sort.Slice(seqNumbers, func(i, j int) bool {
+		return seqNumbers[i] < seqNumbers[j]
+	})
 
 	if totalLength == 0 {
 		return fmt.Errorf("no response data available for redaction in session %s", sessionID)

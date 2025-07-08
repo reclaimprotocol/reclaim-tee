@@ -42,9 +42,6 @@ type Client struct {
 	firstApplicationData bool              // Track if this is the first ApplicationData record
 	pendingResponsesData map[uint64][]byte // Encrypted response data by sequence number
 
-	// *** Add response buffer mutex to prevent race conditions ***
-	responseBufferMutex sync.Mutex // Protects responseBuffer access
-
 	// Protocol completion signaling
 	completionChan chan struct{} // Signals when protocol is complete
 
@@ -77,7 +74,7 @@ type Client struct {
 	// Track response redaction
 	expectingRedactedStreams bool
 	responseContentBySeq     map[uint64][]byte // Store decrypted response content by sequence
-	responseContentMutex     sync.Mutex        // Protect response content storage
+	responseContentMutex     sync.Mutex        // *** USE THIS MUTEX FOR ALL RESPONSE MAPS ***
 	ciphertextBySeq          map[uint64][]byte // Store encrypted response data by sequence
 	decryptionStreamBySeq    map[uint64][]byte // Store decryption streams by sequence
 	redactedPlaintextBySeq   map[uint64][]byte // *** ADDED: Store final redacted plaintext for ordered printing ***
@@ -91,6 +88,7 @@ func NewClient(teekURL string) *Client {
 		completionChan:             make(chan struct{}),
 		recordsSent:                0,
 		recordsProcessed:           0,
+		decryptionStreamsReceived:  0,
 		eofReached:                 false,
 		expectingRedactionResult:   false,
 		receivedRedactionResult:    false,

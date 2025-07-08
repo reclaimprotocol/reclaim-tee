@@ -302,23 +302,46 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 			}
 
 			absoluteIndex := start + index
+
+			// Find the start of the header value (after the pattern and whitespace)
+			valueStartIndex := absoluteIndex + len(p.pattern)
+			for valueStartIndex < len(httpStr) && (httpStr[valueStartIndex] == ' ' || httpStr[valueStartIndex] == '\t') {
+				valueStartIndex++
+			}
+
 			// Find the end of the line
-			lineEndIndex := strings.Index(httpStr[absoluteIndex:], "\r\n")
+			lineEndIndex := strings.Index(httpStr[valueStartIndex:], "\r\n")
 			if lineEndIndex == -1 {
 				lineEndIndex = len(httpStr)
 			} else {
-				lineEndIndex = absoluteIndex + lineEndIndex
+				lineEndIndex = valueStartIndex + lineEndIndex
 			}
 
-			// The range to redact is the full line where the pattern was found
-			rangeStart := baseOffset + absoluteIndex
-			rangeLength := lineEndIndex - absoluteIndex
+			// The range to redact is from the start of the value to the end of the line
+			rangeStart := baseOffset + valueStartIndex
+			rangeLength := lineEndIndex - valueStartIndex
+
+			// Skip if there's nothing to redact
+			if rangeLength <= 0 {
+				start = lineEndIndex
+				continue
+			}
+
+			// *** ADDED: Detailed debug logging ***
+			log.Printf("[Client] 🕵️  DEBUG ---")
+			log.Printf("[Client] 🕵️  Pattern: '%s'", p.pattern)
+			log.Printf("[Client] 🕵️  Base Offset: %d", baseOffset)
+			log.Printf("[Client] 🕵️  Absolute Index (in httpData): %d", absoluteIndex)
+			log.Printf("[Client] 🕵️  Value Start Index (in httpData): %d", valueStartIndex)
+			log.Printf("[Client] 🕵️  Line End Index (in httpData): %d", lineEndIndex)
+			log.Printf("[Client] 🕵️  Redaction Start (Global): %d", rangeStart)
+			log.Printf("[Client] 🕵️  Redaction Length: %d", rangeLength)
 
 			log.Printf("[Client] 📝 Found sensitive pattern '%s' at offset %d-%d",
 				p.pattern, rangeStart, rangeStart+rangeLength-1)
 
-			// The HTTP data corresponds to the beginning of the ciphertext for this record
-			ciphertextOffset := absoluteIndex
+			// The ciphertext offset must also start where the value starts
+			ciphertextOffset := valueStartIndex
 			redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, rangeLength)
 
 			ranges = append(ranges, shared.RedactionRange{
@@ -329,6 +352,38 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 			})
 
 			start = lineEndIndex
+		}
+	}
+
+	// *** ADDED: Redact content inside <title> tag ***
+	titleStartTag := "<title>"
+	titleEndTag := "</title>"
+	titleStartIndex := strings.Index(httpStr, titleStartTag)
+	if titleStartIndex != -1 {
+		titleContentStartIndex := titleStartIndex + len(titleStartTag)
+		titleEndIndex := strings.Index(httpStr[titleContentStartIndex:], titleEndTag)
+		if titleEndIndex != -1 {
+			// The end index is relative to the start of the substring, so we adjust it
+			titleEndIndex = titleContentStartIndex + titleEndIndex
+
+			// Calculate the range for the content *inside* the tags
+			rangeStart := baseOffset + titleContentStartIndex
+			rangeLength := titleEndIndex - titleContentStartIndex
+
+			if rangeLength > 0 {
+				log.Printf("[Client] 📝 Found sensitive pattern 'title' at offset %d-%d",
+					rangeStart, rangeStart+rangeLength-1)
+
+				ciphertextOffset := titleContentStartIndex
+				redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, rangeLength)
+
+				ranges = append(ranges, shared.RedactionRange{
+					Start:          rangeStart,
+					Length:         rangeLength,
+					Type:           "html_title",
+					RedactionBytes: redactionBytes,
+				})
+			}
 		}
 	}
 

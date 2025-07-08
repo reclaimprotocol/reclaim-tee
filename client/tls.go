@@ -267,104 +267,65 @@ func (c *Client) parseCertificateMessage(data []byte) bool {
 
 // processCompleteRecords processes all complete TLS records in the buffer
 func (c *Client) processCompleteRecords() {
-	c.responseBufferMutex.Lock()
-	defer c.responseBufferMutex.Unlock()
+	for {
+		// Lock the buffer while we search for a complete record
+		c.responseContentMutex.Lock()
 
-	offset := 0
-	processedRecords := 0
-
-	for offset+5 <= len(c.responseBuffer) {
-		// Parse TLS record header
-		recordType := c.responseBuffer[offset]
-		version := uint16(c.responseBuffer[offset+1])<<8 | uint16(c.responseBuffer[offset+2])
-		recordLength := int(c.responseBuffer[offset+3])<<8 | int(c.responseBuffer[offset+4])
-		totalLength := 5 + recordLength
-
-		if offset+totalLength > len(c.responseBuffer) {
-			// Incomplete record - leave it for next time
-			fmt.Printf("[Client] Incomplete record: need %d bytes, have %d bytes remaining\n",
-				totalLength, len(c.responseBuffer)-offset)
-			break
+		if len(c.responseBuffer) < 5 {
+			// Not enough data for a full TLS record header, unlock and wait for more
+			c.responseContentMutex.Unlock()
+			return
 		}
 
-		// Extract complete TLS record
-		record := c.responseBuffer[offset : offset+totalLength]
-		offset += totalLength
-		processedRecords++
+		// Peek at the record length from the header
+		recordLength := int(c.responseBuffer[3])<<8 | int(c.responseBuffer[4])
+		totalRecordLength := 5 + recordLength
 
-		fmt.Printf("[Client] Processing TLS record %d: type=0x%02x, version=0x%04x, length=%d bytes\n",
-			processedRecords, recordType, version, recordLength)
+		if len(c.responseBuffer) < totalRecordLength {
+			// Not enough data for the full record, unlock and wait
+			c.responseContentMutex.Unlock()
+			return
+		}
 
-		// Process the record based on type
+		// We have a complete record, extract it
+		record := make([]byte, totalRecordLength)
+		copy(record, c.responseBuffer[:totalRecordLength])
+
+		// Trim the buffer
+		c.responseBuffer = c.responseBuffer[totalRecordLength:]
+		c.responseContentMutex.Unlock()
+
+		// Now process the extracted record (no lock needed here)
+		recordType := record[0]
 		c.processSingleTLSRecord(record, recordType, recordLength)
-	}
-
-	// Remove processed bytes from buffer
-	if offset > 0 {
-		c.responseBuffer = c.responseBuffer[offset:]
-		fmt.Printf("[Client] Processed %d records, %d bytes remaining in buffer\n",
-			processedRecords, len(c.responseBuffer))
 	}
 }
 
-// processAllRemainingRecords processes any remaining data in buffer after EOF
+// processAllRemainingRecords processes any data left in the buffer after EOF
 func (c *Client) processAllRemainingRecords() {
-	c.responseBufferMutex.Lock()
-	defer c.responseBufferMutex.Unlock()
+	c.responseContentMutex.Lock()
+	defer c.responseContentMutex.Unlock()
 
-	if len(c.responseBuffer) == 0 {
-		fmt.Printf("[Client] No remaining data to process\n")
-		return
-	}
+	if len(c.responseBuffer) > 0 {
+		log.Printf("[Client] Processing %d bytes of remaining buffered data...", len(c.responseBuffer))
+		// For simplicity, we'll treat the whole remaining buffer as one final record
+		// This might not be strictly correct for all TLS cases, but is sufficient for this protocol
+		record := make([]byte, len(c.responseBuffer))
+		copy(record, c.responseBuffer)
+		c.responseBuffer = nil // Clear buffer
 
-	fmt.Printf("[Client] Processing remaining %d bytes in buffer\n", len(c.responseBuffer))
-
-	offset := 0
-	processedRecords := 0
-
-	// Process all complete records first
-	for offset+5 <= len(c.responseBuffer) {
-		recordType := c.responseBuffer[offset]
-		version := uint16(c.responseBuffer[offset+1])<<8 | uint16(c.responseBuffer[offset+2])
-		recordLength := int(c.responseBuffer[offset+3])<<8 | int(c.responseBuffer[offset+4])
-		totalLength := 5 + recordLength
-
-		if offset+totalLength > len(c.responseBuffer) {
-			// Incomplete record - log it but continue
-			fmt.Printf("[Client] Incomplete final record: type=0x%02x, need %d bytes, have %d bytes\n",
-				recordType, totalLength, len(c.responseBuffer)-offset)
-
-			// Check for partial CLOSE_NOTIFY
-			if recordType == 0x15 && offset+7 <= len(c.responseBuffer) {
-				alertLevel := c.responseBuffer[offset+5]
-				alertDescription := c.responseBuffer[offset+6]
-				if alertDescription == 0 {
-					fmt.Printf("[Client] *** PARTIAL CLOSE_NOTIFY DETECTED: level=%d, desc=%d ***\n",
-						alertLevel, alertDescription)
-				}
-			}
-			break
+		// Process the final chunk of data
+		if len(record) >= 5 {
+			recordType := record[0]
+			recordLength := int(record[3])<<8 | int(record[4])
+			c.processSingleTLSRecord(record, recordType, recordLength)
 		}
-
-		// Process complete record
-		record := c.responseBuffer[offset : offset+totalLength]
-		offset += totalLength
-		processedRecords++
-
-		fmt.Printf("[Client] Final processing TLS record %d: type=0x%02x, version=0x%04x, length=%d bytes\n",
-			processedRecords, recordType, version, recordLength)
-
-		c.processSingleTLSRecord(record, recordType, recordLength)
+	} else {
+		log.Printf("[Client] No remaining data to process\n")
 	}
-
-	// Clear processed data
-	c.responseBuffer = c.responseBuffer[offset:]
-
-	fmt.Printf("[Client] Final processing complete: %d records processed, %d bytes remaining\n",
-		processedRecords, len(c.responseBuffer))
 }
 
-// processSingleTLSRecord handles a single complete TLS record
+// processSingleTLSRecord handles a single, complete TLS record
 func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLength int) {
 	switch recordType {
 	case 0x17: // ApplicationData
@@ -438,8 +399,14 @@ func (c *Client) processTLSRecord(record []byte) {
 		return
 	}
 
-	// Send encrypted response to TEE_T for tag verification
-	encryptedResponse := EncryptedResponseData{
+	// Store ciphertext by sequence number for later decryption
+	// *** FIX: Use the correct shared mutex to prevent race conditions ***
+	c.responseContentMutex.Lock()
+	c.ciphertextBySeq[c.responseSeqNum] = encryptedData
+	c.responseContentMutex.Unlock()
+
+	// Prepare data to send to TEE_T for tag verification
+	encryptedResponseData := EncryptedResponseData{
 		EncryptedData: encryptedData,
 		Tag:           tag,
 		RecordHeader:  record[:5], // Include actual TLS record header from server
@@ -447,13 +414,7 @@ func (c *Client) processTLSRecord(record []byte) {
 		CipherSuite:   0x1302, // TLS_AES_256_GCM_SHA384 - TODO: get from handshake
 	}
 
-	// Store ciphertext for redaction calculation
-	c.responseContentMutex.Lock()
-	c.ciphertextBySeq[c.responseSeqNum] = make([]byte, len(encryptedData))
-	copy(c.ciphertextBySeq[c.responseSeqNum], encryptedData)
-	c.responseContentMutex.Unlock()
-
-	responseMsg, err := CreateMessage(MsgEncryptedResponse, encryptedResponse)
+	responseMsg, err := CreateMessage(MsgEncryptedResponse, encryptedResponseData)
 	if err != nil {
 		log.Printf("[Client] Failed to create encrypted response message: %v", err)
 		return
@@ -470,11 +431,6 @@ func (c *Client) processTLSRecord(record []byte) {
 		}
 		return
 	}
-
-	// Store encrypted data for later decryption (lock already held by caller)
-	c.pendingResponsesData[c.responseSeqNum] = encryptedData
-
-	fmt.Printf("[Client] Sent encrypted response to TEE_T for verification (seq=%d)\n", c.responseSeqNum)
 
 	// Track expected decryption stream ONLY if we successfully sent to TEE_T
 	c.completionMutex.Lock()
@@ -521,14 +477,11 @@ func (c *Client) handleResponseDecryptionStream(msg *Message) {
 	// Store the decryption stream
 	c.responseContentMutex.Lock()
 	c.decryptionStreamBySeq[streamData.SeqNum] = streamData.DecryptionStream
-	c.responseContentMutex.Unlock()
 
 	// Decrypt the corresponding pending response data
-	c.responseBufferMutex.Lock()
 	ciphertext, exists := c.ciphertextBySeq[streamData.SeqNum]
-	c.responseBufferMutex.Unlock()
-
 	if !exists {
+		c.responseContentMutex.Unlock()
 		log.Printf("[Client] No pending response data found for sequence %d", streamData.SeqNum)
 		return
 	}
@@ -538,6 +491,7 @@ func (c *Client) handleResponseDecryptionStream(msg *Message) {
 	for i := 0; i < len(ciphertext); i++ {
 		plaintext[i] = ciphertext[i] ^ streamData.DecryptionStream[i]
 	}
+	c.responseContentMutex.Unlock()
 
 	log.Printf("[Client] Successfully decrypted response (%d bytes, seq=%d)", len(plaintext), streamData.SeqNum)
 

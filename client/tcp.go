@@ -183,9 +183,9 @@ func (c *Client) tcpToWebsocket() {
 			fmt.Printf("[Client] Response data (%d bytes), processing for split AEAD\n", n)
 
 			// Add to response buffer
-			c.responseBufferMutex.Lock()
+			c.responseContentMutex.Lock()
 			c.responseBuffer = append(c.responseBuffer, buffer[:n]...)
-			c.responseBufferMutex.Unlock()
+			c.responseContentMutex.Unlock()
 
 			// Process any complete TLS records in buffer
 			c.processCompleteRecords()
