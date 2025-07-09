@@ -24,6 +24,7 @@ var teetUpgrader = websocket.Upgrader{
 	},
 }
 
+// TEET represents the TEE_T (Execution Environment for Transcript generation)
 type TEET struct {
 	port int
 
@@ -37,13 +38,15 @@ type TEET struct {
 	clientConn              *websocket.Conn
 	keyShare                []byte
 	cipherSuite             uint16
-	redactionStreams        [][]byte                                 // [Str_S, Str_SP]
-	commitmentKeys          [][]byte                                 // [K_S, K_SP]
-	redactionRanges         []shared.RedactionRange                  // Stored when encrypted request comes from TEE_K
-	pendingEncryptedRequest *shared.EncryptedRequestData             // Store encrypted request until streams arrive
-	teekConn_for_pending    *websocket.Conn                          // Store TEE_K connection for pending request
-	pendingResponses        map[uint64]*shared.EncryptedResponseData // Responses awaiting tag secrets by seq num
-	responsesMutex          sync.Mutex                               // Protects pendingResponses map access
+	redactionStreams        [][]byte                     // [Str_S, Str_SP]
+	commitmentKeys          [][]byte                     // [K_S, K_SP]
+	redactionRanges         []shared.RedactionRange      // Stored when encrypted request comes from TEE_K
+	pendingEncryptedRequest *shared.EncryptedRequestData // Store encrypted request until streams arrive
+	teekConn_for_pending    *websocket.Conn              // Store TEE_K connection for pending request
+
+	// Legacy global response storage for backward compatibility during transition
+	pendingResponses map[uint64]*shared.EncryptedResponseData // Responses awaiting tag secrets by seq num
+	responsesMutex   sync.Mutex                               // Protects pendingResponses map access
 
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
@@ -61,10 +64,11 @@ func NewTEET(port int) *TEET {
 	}
 
 	return &TEET{
-		port:             port,
-		sessionManager:   shared.NewSessionManager(),
-		pendingResponses: make(map[uint64]*shared.EncryptedResponseData),
-		signingKeyPair:   signingKeyPair,
+		port:                    port,
+		sessionManager:          shared.NewSessionManager(),
+		pendingEncryptedRequest: nil,
+		signingKeyPair:          signingKeyPair,
+		pendingResponses:        make(map[uint64]*shared.EncryptedResponseData),
 	}
 }
 
@@ -81,10 +85,11 @@ func NewTEETWithSessionManager(port int, sessionManager shared.SessionManagerInt
 	}
 
 	return &TEET{
-		port:             port,
-		sessionManager:   sessionManager,
-		pendingResponses: make(map[uint64]*shared.EncryptedResponseData),
-		signingKeyPair:   signingKeyPair,
+		port:                    port,
+		sessionManager:          sessionManager,
+		pendingEncryptedRequest: nil,
+		signingKeyPair:          signingKeyPair,
+		pendingResponses:        make(map[uint64]*shared.EncryptedResponseData),
 	}
 }
 
@@ -298,19 +303,31 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	// Store streams and keys for later use when encrypted request arrives
-	t.redactionStreams = streamsData.Streams
-	t.commitmentKeys = streamsData.CommitmentKeys
+	// Get session to store streams and keys
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s for redaction streams: %v", sessionID, err)
+		return
+	}
+
+	// Initialize RedactionState if needed
+	if session.RedactionState == nil {
+		session.RedactionState = &shared.RedactionSessionState{}
+	}
+
+	// Store streams and keys in session for later use when encrypted request arrives
+	session.RedactionState.RedactionStreams = streamsData.Streams
+	session.RedactionState.CommitmentKeys = streamsData.CommitmentKeys
 
 	fmt.Printf("[TEE_T] Redaction streams stored and verified for session %s\n", sessionID)
 
 	// Process pending encrypted request if available
-	if t.pendingEncryptedRequest != nil && t.teekConn_for_pending != nil {
+	if session.ResponseState != nil && session.ResponseState.PendingEncryptedRequest != nil {
 		fmt.Printf("[TEE_T] Processing pending encrypted request with newly received streams for session %s\n", sessionID)
-		t.processEncryptedRequestWithStreamsForSession(sessionID, t.pendingEncryptedRequest, t.teekConn_for_pending)
+		t.processEncryptedRequestWithStreamsForSession(sessionID, session.ResponseState.PendingEncryptedRequest, t.teekConn_for_pending)
 
 		// Clear pending request
-		t.pendingEncryptedRequest = nil
+		session.ResponseState.PendingEncryptedRequest = nil
 		t.teekConn_for_pending = nil
 	}
 
@@ -329,38 +346,53 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 }
 
 func (t *TEET) handleEncryptedResponseSession(sessionID string, msg *shared.Message) {
-	if sessionID == "" {
-		log.Printf("[TEE_T] Encrypted response message missing session ID")
-		return
-	}
-
-	log.Printf("[TEE_T] Handling encrypted response for session %s", sessionID)
+	fmt.Printf("[TEE_T] Handling encrypted response for session %s\n", sessionID)
 
 	var encryptedResp shared.EncryptedResponseData
 	if err := msg.UnmarshalData(&encryptedResp); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal encrypted response for session %s: %v", sessionID, err)
+		log.Printf("[TEE_T] Failed to unmarshal encrypted response: %v", err)
 		return
 	}
 
-	log.Printf("[TEE_T] DEBUG: Received encrypted response message from client")
-	fmt.Printf("[TEE_T] Received encrypted response (%d bytes encrypted data, %d bytes tag, seq=%d)\n",
-		len(encryptedResp.EncryptedData), len(encryptedResp.Tag), encryptedResp.SeqNum)
-	fmt.Printf("[TEE_T] RECEIVED FROM CLIENT: encrypted=%x, tag=%x\n",
-		encryptedResp.EncryptedData[:min(16, len(encryptedResp.EncryptedData))],
-		encryptedResp.Tag)
+	// Get session to access response state
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s for encrypted response: %v", sessionID, err)
+		return
+	}
 
-	// Single Session Mode: Collect response packet for transcript
-	// Reconstruct the complete TLS record for transcript
-	completeRecord := make([]byte, len(encryptedResp.RecordHeader)+len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
-	copy(completeRecord, encryptedResp.RecordHeader)
-	copy(completeRecord[len(encryptedResp.RecordHeader):], encryptedResp.EncryptedData)
-	copy(completeRecord[len(encryptedResp.RecordHeader)+len(encryptedResp.EncryptedData):], encryptedResp.Tag)
-	t.addToTranscriptForSession(sessionID, completeRecord)
+	// Initialize ResponseState if needed
+	if session.ResponseState == nil {
+		session.ResponseState = &shared.ResponseSessionState{
+			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
+		}
+	}
+
+	fmt.Printf("[TEE_T] Received encrypted response (seq=%d, %d bytes) for session %s\n", encryptedResp.SeqNum, len(encryptedResp.EncryptedData), sessionID)
+
+	// Session-aware transcript collection
+	lengthHeader := []byte{0x17, 0x03, 0x03, 0x00, 0x00} // TLS 1.2 ApplicationData header
+	totalLength := len(encryptedResp.EncryptedData) + len(encryptedResp.Tag)
+	if totalLength > 0xFFFF {
+		log.Printf("[TEE_T] Warning: TLS record too large (%d bytes), truncating length", totalLength)
+		totalLength = 0xFFFF
+	}
+	lengthHeader[3] = byte(totalLength >> 8)
+	lengthHeader[4] = byte(totalLength & 0xFF)
+
+	// Build the complete TLS record
+	record := make([]byte, 0, len(lengthHeader)+len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
+	record = append(record, lengthHeader...)
+	record = append(record, encryptedResp.EncryptedData...)
+	record = append(record, encryptedResp.Tag...)
+
+	// Add to session transcript
+	t.addToTranscriptForSession(sessionID, record)
 
 	// Store the encrypted response for processing when tag secrets arrive
-	t.responsesMutex.Lock()
-	t.pendingResponses[encryptedResp.SeqNum] = &encryptedResp
-	t.responsesMutex.Unlock()
+	session.ResponseState.ResponsesMutex.Lock()
+	session.ResponseState.PendingEncryptedResponses[encryptedResp.SeqNum] = &encryptedResp
+	session.ResponseState.ResponsesMutex.Unlock()
 
 	// Send response length to TEE_K with session ID
 	lengthData := shared.ResponseLengthData{
@@ -440,20 +472,30 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 
 	fmt.Printf("[TEE_T] Computing tag for %d byte ciphertext using seq=%d with %d redaction ranges for session %s\n", len(encReq.EncryptedData), encReq.SeqNum, len(encReq.RedactionRanges), sessionID)
 
+	// Get session to access redaction state
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s: %v", sessionID, err)
+		return
+	}
+
+	// Initialize states if needed
+	if session.RedactionState == nil {
+		session.RedactionState = &shared.RedactionSessionState{}
+	}
+	if session.ResponseState == nil {
+		session.ResponseState = &shared.ResponseSessionState{
+			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
+		}
+	}
+
 	// Store redaction ranges for stream application
-	t.redactionRanges = encReq.RedactionRanges
+	session.RedactionState.Ranges = encReq.RedactionRanges
 
 	// Check if redaction streams are available
-	if len(t.redactionStreams) == 0 {
+	if len(session.RedactionState.RedactionStreams) == 0 {
 		// No redaction streams available yet - store request and wait
-		t.pendingEncryptedRequest = &encReq
-
-		// Get session to access TEE_K connection
-		session, err := t.sessionManager.GetSession(sessionID)
-		if err != nil {
-			log.Printf("[TEE_T] Failed to get session %s: %v", sessionID, err)
-			return
-		}
+		session.ResponseState.PendingEncryptedRequest = &encReq
 
 		// Store TEE_K connection for pending request
 		wsConn := session.TEEKConn.(*shared.WSConnection)
@@ -463,13 +505,6 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 	}
 
 	// Process immediately if streams are already available
-	// Get session to access TEE_K connection
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s: %v", sessionID, err)
-		return
-	}
-
 	// Get underlying websocket connection
 	wsConn := session.TEEKConn.(*shared.WSConnection)
 	t.processEncryptedRequestWithStreamsForSession(sessionID, &encReq, wsConn.GetWebSocketConn())
@@ -493,13 +528,27 @@ func (t *TEET) handleResponseTagSecretsSession(msg *shared.Message) {
 	fmt.Printf("[TEE_T] Received tag secrets for seq=%d (%d bytes) for session %s\n",
 		tagSecrets.SeqNum, len(tagSecrets.TagSecrets), sessionID)
 
-	// Find the pending response
-	t.responsesMutex.Lock()
-	encryptedResp, exists := t.pendingResponses[tagSecrets.SeqNum]
-	if exists {
-		delete(t.pendingResponses, tagSecrets.SeqNum)
+	// Get session to access pending responses
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s for response tag secrets: %v", sessionID, err)
+		return
 	}
-	t.responsesMutex.Unlock()
+
+	// Initialize ResponseState if needed
+	if session.ResponseState == nil {
+		session.ResponseState = &shared.ResponseSessionState{
+			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
+		}
+	}
+
+	// Find the pending response in session state
+	session.ResponseState.ResponsesMutex.Lock()
+	encryptedResp, exists := session.ResponseState.PendingEncryptedResponses[tagSecrets.SeqNum]
+	if exists {
+		delete(session.ResponseState.PendingEncryptedResponses, tagSecrets.SeqNum)
+	}
+	session.ResponseState.ResponsesMutex.Unlock()
 
 	if !exists {
 		log.Printf("[TEE_T] No pending response found for seq=%d in session %s", tagSecrets.SeqNum, sessionID)
@@ -523,9 +572,7 @@ func (t *TEET) handleResponseTagSecretsSession(msg *shared.Message) {
 		verificationData.Message = "Authentication tag verification failed"
 	}
 
-	// Send to Client with session routing
-	verificationMsg := shared.CreateMessage(shared.MsgResponseTagVerification, verificationData)
-	if err := t.sessionManager.RouteToClient(sessionID, verificationMsg); err != nil {
+	if err := t.sessionManager.RouteToClient(sessionID, shared.CreateMessage(shared.MsgResponseTagVerification, verificationData)); err != nil {
 		log.Printf("[TEE_T] Failed to send verification to client for session %s: %v", sessionID, err)
 	}
 
@@ -664,8 +711,22 @@ func (t *TEET) processEncryptedRequestWithStreams(encReq *shared.EncryptedReques
 func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, encReq *shared.EncryptedRequestData, conn *websocket.Conn) {
 	fmt.Printf("[TEE_T] Processing encrypted request with available redaction streams for session %s\n", sessionID)
 
+	// Get session to access redaction streams
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s: %v", sessionID, err)
+		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to get session: %v", err))
+		return
+	}
+
+	if session.RedactionState == nil {
+		log.Printf("[TEE_T] No redaction state available for session %s", sessionID)
+		t.sendErrorToTEEK(conn, "No redaction state available")
+		return
+	}
+
 	// Apply redaction streams to reconstruct the full request for tag computation
-	reconstructedData, err := t.reconstructFullRequest(encReq.EncryptedData, encReq.RedactionRanges)
+	reconstructedData, err := t.reconstructFullRequestWithStreams(encReq.EncryptedData, encReq.RedactionRanges, session.RedactionState.RedactionStreams)
 	if err != nil {
 		log.Printf("[TEE_T] Failed to reconstruct full request: %v", err)
 		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to reconstruct full request: %v", err))
@@ -937,6 +998,35 @@ func (t *TEET) reconstructFullRequest(encryptedRedacted []byte, ranges []shared.
 	return reconstructed, nil
 }
 
+// reconstructFullRequestWithStreams is session-aware version that accepts redaction streams as parameter
+func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, ranges []shared.RedactionRange, redactionStreams [][]byte) ([]byte, error) {
+	// Make a copy of the encrypted redacted data
+	reconstructed := make([]byte, len(encryptedRedacted))
+	copy(reconstructed, encryptedRedacted)
+
+	fmt.Printf("[TEE_T] BEFORE stream application: %x\n", encryptedRedacted[:min(64, len(encryptedRedacted))])
+
+	// Apply streams to redacted ranges (this reverses the XOR redaction)
+	for i, r := range ranges {
+		if i >= len(redactionStreams) {
+			continue
+		}
+
+		stream := redactionStreams[i]
+
+		fmt.Printf("[TEE_T] Applying stream %d to range [%d:%d]: %x\n", i, r.Start, r.Start+r.Length, stream[:min(16, len(stream))])
+
+		// Apply XOR stream to undo redaction (this gives us back the original sensitive data)
+		for j := 0; j < r.Length && r.Start+j < len(reconstructed) && j < len(stream); j++ {
+			reconstructed[r.Start+j] ^= stream[j]
+		}
+	}
+
+	fmt.Printf("[TEE_T] AFTER stream application: %x\n", reconstructed[:min(64, len(reconstructed))])
+	fmt.Printf("[TEE_T] Reconstructed full request (%d bytes) from redacted data\n", len(reconstructed))
+	return reconstructed, nil
+}
+
 // This is where the full encrypted request would be reconstructed from the redacted version
 func (t *TEET) reconstructFullEncryptedRequest(encryptedRedacted []byte, ranges []shared.RedactionRange) ([]byte, error) {
 	// Make a copy of the encrypted redacted data
@@ -989,6 +1079,8 @@ func (t *TEET) handleEncryptedResponse(conn *websocket.Conn, msg *shared.Message
 	// TODO: This legacy method should be refactored to use session-aware transcript collection
 
 	// Store the encrypted response for processing when tag secrets arrive
+	// This logic needs to be moved to the session's ResponseState
+	// For now, we'll just send the length and rely on the session's state
 	t.responsesMutex.Lock()
 	t.pendingResponses[encryptedResp.SeqNum] = &encryptedResp
 	t.responsesMutex.Unlock()
@@ -1033,7 +1125,7 @@ func (t *TEET) handleResponseTagSecrets(conn *websocket.Conn, msg *shared.Messag
 	fmt.Printf("[TEE_T] Received tag secrets for seq=%d (%d bytes)\n",
 		tagSecrets.SeqNum, len(tagSecrets.TagSecrets))
 
-	// Find the pending response
+	// Find the pending response in global map (legacy approach)
 	t.responsesMutex.Lock()
 	encryptedResp, exists := t.pendingResponses[tagSecrets.SeqNum]
 	if exists {
@@ -1047,7 +1139,7 @@ func (t *TEET) handleResponseTagSecrets(conn *websocket.Conn, msg *shared.Messag
 	}
 
 	// Verify the authentication tag
-	success, err := t.verifyResponseTag(encryptedResp, tagSecrets.TagSecrets, encryptedResp.CipherSuite)
+	success, err := t.verifyResponseTag(encryptedResp, tagSecrets.TagSecrets, tagSecrets.CipherSuite)
 	if err != nil {
 		log.Printf("[TEE_T] Failed to verify response tag: %v", err)
 		success = false
@@ -1229,16 +1321,6 @@ func (t *TEET) getTranscriptForSession(sessionID string) [][]byte {
 }
 
 // Single Session Mode: Finished command tracking
-type FinishedState struct {
-	SessionID      string
-	ClientFinished bool
-	TEEKFinished   bool
-	mutex          sync.Mutex
-}
-
-// Global map to track finished states per session
-var finishedStates = make(map[string]*FinishedState)
-var finishedStatesMutex sync.Mutex
 
 // handleFinishedFromClientSession handles finished messages from clients
 func (t *TEET) handleFinishedFromClientSession(sessionID string, msg *shared.Message) {
@@ -1258,14 +1340,15 @@ func (t *TEET) handleFinishedFromClientSession(sessionID string, msg *shared.Mes
 	log.Printf("[TEE_T] Received finished command from client")
 
 	// Update finished state for this session
-	finishedStatesMutex.Lock()
-	if finishedStates[sessionID] == nil {
-		finishedStates[sessionID] = &FinishedState{
-			SessionID: sessionID,
-		}
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s for finished tracking: %v", sessionID, err)
+		return
 	}
-	finishedStates[sessionID].ClientFinished = true
-	finishedStatesMutex.Unlock()
+
+	session.FinishedStateMutex.Lock()
+	session.ClientFinished = true
+	session.FinishedStateMutex.Unlock()
 
 	// Check if we should process the finished command
 	t.checkFinishedCondition(sessionID)
@@ -1291,14 +1374,15 @@ func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
 	sessionID := msg.SessionID
 
 	// Update finished state for this session
-	finishedStatesMutex.Lock()
-	if finishedStates[sessionID] == nil {
-		finishedStates[sessionID] = &FinishedState{
-			SessionID: sessionID,
-		}
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s for finished tracking: %v", sessionID, err)
+		return
 	}
-	finishedStates[sessionID].TEEKFinished = true
-	finishedStatesMutex.Unlock()
+
+	session.FinishedStateMutex.Lock()
+	session.TEEKFinished = true
+	session.FinishedStateMutex.Unlock()
 
 	// Check if we should process the finished command
 	t.checkFinishedCondition(sessionID)
@@ -1306,18 +1390,18 @@ func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
 
 // checkFinishedCondition checks if both client and TEE_K have sent finished messages
 func (t *TEET) checkFinishedCondition(sessionID string) {
-	finishedStatesMutex.Lock()
-	state := finishedStates[sessionID]
-	finishedStatesMutex.Unlock()
-
-	if state == nil {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s for finished condition check: %v", sessionID, err)
 		return
 	}
 
-	state.mutex.Lock()
-	defer state.mutex.Unlock()
+	session.FinishedStateMutex.Lock()
+	clientFinished := session.ClientFinished
+	teekFinished := session.TEEKFinished
+	session.FinishedStateMutex.Unlock()
 
-	if state.ClientFinished && state.TEEKFinished {
+	if clientFinished && teekFinished {
 		log.Printf("[TEE_T] Both client and TEE_K have sent finished - starting transcript signing")
 
 		// Generate and sign transcript from session
@@ -1378,12 +1462,9 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 
 		log.Printf("[TEE_T] Sent signed transcript to client")
 
-		// Clean up finished state
-		finishedStatesMutex.Lock()
-		delete(finishedStates, sessionID)
-		finishedStatesMutex.Unlock()
+		// No need to clean up finished state - it will be cleaned up when session is closed
 	} else {
 		log.Printf("[TEE_T] Waiting for finished from both parties (client: %v, TEE_K: %v)",
-			state.ClientFinished, state.TEEKFinished)
+			clientFinished, teekFinished)
 	}
 }

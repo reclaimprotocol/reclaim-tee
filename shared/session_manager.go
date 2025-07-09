@@ -65,8 +65,9 @@ func (sm *SessionManager) CreateSession(clientConn Connection) (string, error) {
 		TLSState:       &TLSSessionState{},
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
-			PendingResponses:    make(map[string][]byte),
-			ResponseLengthBySeq: make(map[uint64]uint32),
+			PendingResponses:          make(map[string][]byte),
+			ResponseLengthBySeq:       make(map[uint64]uint32),
+			PendingEncryptedResponses: make(map[uint64]*EncryptedResponseData),
 		},
 		Context: ctx,
 		Cancel:  cancel,
@@ -96,8 +97,9 @@ func (sm *SessionManager) RegisterSession(sessionID string) error {
 		TLSState:       &TLSSessionState{},
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
-			PendingResponses:    make(map[string][]byte),
-			ResponseLengthBySeq: make(map[uint64]uint32),
+			PendingResponses:          make(map[string][]byte),
+			ResponseLengthBySeq:       make(map[uint64]uint32),
+			PendingEncryptedResponses: make(map[uint64]*EncryptedResponseData),
 		},
 		Context: ctx,
 		Cancel:  cancel,

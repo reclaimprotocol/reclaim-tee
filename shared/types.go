@@ -174,6 +174,11 @@ type Session struct {
 	TranscriptPackets [][]byte   // Collect all packets for transcript signing
 	TranscriptMutex   sync.Mutex // Protect transcript collection
 
+	// Per-session finished state tracking
+	ClientFinished     bool       // Whether client has sent finished message
+	TEEKFinished       bool       // Whether TEE_K has sent finished message
+	FinishedStateMutex sync.Mutex // Protect finished state
+
 	// Connection management
 	IsClosed bool
 	Context  context.Context
@@ -208,6 +213,10 @@ type ResponseSessionState struct {
 	LastResponseTime        time.Time
 	ResponseLengthBySeq     map[uint64]uint32
 	PendingEncryptedRequest *EncryptedRequestData
+
+	// Per-session pending encrypted responses
+	PendingEncryptedResponses map[uint64]*EncryptedResponseData // Responses awaiting tag secrets by seq num
+	ResponsesMutex            sync.Mutex                        // Protects PendingEncryptedResponses map access
 }
 
 // Protocol data structures

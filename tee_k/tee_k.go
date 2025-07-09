@@ -1233,7 +1233,8 @@ func (t *TEEK) handleResponseLengthSession(sessionID string, msg *shared.Message
 	// Initialize response state if needed
 	if session.ResponseState == nil {
 		session.ResponseState = &shared.ResponseSessionState{
-			ResponseLengthBySeq: make(map[uint64]uint32),
+			ResponseLengthBySeq:       make(map[uint64]uint32),
+			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
 		}
 	}
 
