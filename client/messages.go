@@ -124,21 +124,24 @@ type ErrorData struct {
 }
 
 // Helper functions for message creation
-func CreateMessage(msgType MessageType, data interface{}) (*Message, error) {
-	return &Message{
+func CreateMessage(msgType MessageType, data interface{}, sessionID ...string) (*Message, error) {
+	msg := &Message{
 		Type:      msgType,
 		Data:      data,
 		Timestamp: time.Now(),
-	}, nil
+	}
+
+	// If sessionID is provided and not empty, set it
+	if len(sessionID) > 0 && sessionID[0] != "" {
+		msg.SessionID = sessionID[0]
+	}
+
+	return msg, nil
 }
 
+// CreateSessionMessage is kept for backward compatibility but now calls CreateMessage
 func CreateSessionMessage(msgType MessageType, sessionID string, data interface{}) (*Message, error) {
-	return &Message{
-		Type:      msgType,
-		SessionID: sessionID,
-		Data:      data,
-		Timestamp: time.Now(),
-	}, nil
+	return CreateMessage(msgType, data, sessionID)
 }
 
 func ParseMessage(msgBytes []byte) (*Message, error) {

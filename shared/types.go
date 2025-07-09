@@ -545,21 +545,24 @@ func (kp *SigningKeyPair) SignTranscript(packets [][]byte) ([]byte, error) {
 }
 
 // Helper functions
-func CreateMessage(msgType MessageType, data interface{}) *Message {
-	return &Message{
+func CreateMessage(msgType MessageType, data interface{}, sessionID ...string) *Message {
+	msg := &Message{
 		Type:      msgType,
 		Data:      data,
 		Timestamp: time.Now(),
 	}
+
+	// If sessionID is provided and not empty, set it
+	if len(sessionID) > 0 && sessionID[0] != "" {
+		msg.SessionID = sessionID[0]
+	}
+
+	return msg
 }
 
+// CreateSessionMessage is kept for backward compatibility but now calls CreateMessage
 func CreateSessionMessage(msgType MessageType, sessionID string, data interface{}) *Message {
-	return &Message{
-		Type:      msgType,
-		SessionID: sessionID,
-		Data:      data,
-		Timestamp: time.Now(),
-	}
+	return CreateMessage(msgType, data, sessionID)
 }
 
 // Helper functions for message creation and parsing

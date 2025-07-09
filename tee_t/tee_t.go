@@ -745,6 +745,27 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 
 	fmt.Printf("[TEE_T] COMPUTED SPLIT AEAD TAG: %x\n", authTag)
 
+	// *** CRITICAL FIX: Add complete TLS record to transcript ***
+	// Construct the complete TLS record that will be sent to the server
+	tagSize := 16 // GCM tag size
+	recordLength := len(reconstructedData) + tagSize
+	tlsRecord := make([]byte, 5+len(reconstructedData)+tagSize) // header + data + tag
+
+	// TLS record header
+	tlsRecord[0] = 0x17                      // ApplicationData
+	tlsRecord[1] = 0x03                      // TLS version major
+	tlsRecord[2] = 0x03                      // TLS version minor
+	tlsRecord[3] = byte(recordLength >> 8)   // Length high byte
+	tlsRecord[4] = byte(recordLength & 0xFF) // Length low byte
+
+	// Copy encrypted data and tag
+	copy(tlsRecord[5:], reconstructedData)
+	copy(tlsRecord[5+len(reconstructedData):], authTag)
+
+	// Add the complete TLS record to TEE_T's transcript
+	t.addToTranscriptForSession(sessionID, tlsRecord)
+	fmt.Printf("[TEE_T] Added complete TLS request record to session %s transcript (%d bytes)\n", sessionID, len(tlsRecord))
+
 	// Send the RECONSTRUCTED encrypted data with tag to client using session routing
 	response := shared.EncryptedDataResponse{
 		EncryptedData: reconstructedData, // Send the full reconstructed encrypted request
@@ -854,7 +875,7 @@ func (t *TEET) sendMessageToTEEKForSession(sessionID string, msg *shared.Message
 }
 
 func (t *TEET) sendErrorToTEEKForSession(sessionID string, conn *websocket.Conn, errMsg string) {
-	errorMsg := shared.CreateMessage(shared.MsgError, shared.ErrorData{Message: errMsg})
+	errorMsg := shared.CreateSessionMessage(shared.MsgError, sessionID, shared.ErrorData{Message: errMsg})
 	msgBytes, err := json.Marshal(errorMsg)
 	if err != nil {
 		log.Printf("[TEE_T] Failed to marshal error message: %v", err)
