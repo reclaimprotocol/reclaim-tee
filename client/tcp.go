@@ -37,7 +37,7 @@ func (c *Client) parseAndCaptureHandshakeRecords(data []byte) {
 		// Store handshake and other relevant records for transcript validation
 		if recordType == 0x16 || recordType == 0x17 || recordType == 0x15 || recordType == 0x14 {
 			c.capturedTraffic = append(c.capturedTraffic, record)
-			fmt.Printf("[Client] 📦 Captured handshake-phase TLS record: type 0x%02x, %d bytes\n", recordType, len(record))
+			fmt.Printf("[Client] Captured handshake-phase TLS record: type 0x%02x, %d bytes\n", recordType, len(record))
 		}
 
 		offset += totalRecordLength
@@ -71,7 +71,7 @@ func (c *Client) parseAndCaptureOutgoingRecords(data []byte) {
 		// Store all outgoing TLS records for transcript validation
 		if recordType == 0x16 || recordType == 0x17 || recordType == 0x15 || recordType == 0x14 {
 			c.capturedTraffic = append(c.capturedTraffic, record)
-			fmt.Printf("[Client] 📤 Captured outgoing TLS record: type 0x%02x, %d bytes\n", recordType, len(record))
+			fmt.Printf("[Client] Captured outgoing TLS record: type 0x%02x, %d bytes\n", recordType, len(record))
 		}
 
 		offset += totalRecordLength
@@ -152,8 +152,8 @@ func (c *Client) handleSendTCPData(msg *Message) {
 	rawTCPData := make([]byte, len(tcpData.Data))
 	copy(rawTCPData, tcpData.Data)
 	c.capturedTraffic = append(c.capturedTraffic, rawTCPData)
-	fmt.Printf("[Client] 📤 Captured outgoing raw TCP chunk: %d bytes\n", len(rawTCPData))
-	fmt.Printf("[Client] 📊 Total captured chunks now: %d\n", len(c.capturedTraffic))
+	fmt.Printf("[Client] Captured outgoing raw TCP chunk: %d bytes\n", len(rawTCPData))
+	fmt.Printf("[Client] Total captured chunks now: %d\n", len(c.capturedTraffic))
 
 	// Forward TLS data from TEE_K to website via our TCP connection
 	conn := c.tcpConn
@@ -220,8 +220,6 @@ func (c *Client) tcpToWebsocket() {
 				fmt.Printf("[Client] EOF reached, checking for protocol completion...\n")
 				break // <-- Break on EOF
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// *** FIX: Timeout is normal, continue waiting for data ***
-				fmt.Printf("[Client] DEBUG: TCP read timeout (normal), continuing...\n")
 				continue // <-- Continue on timeout
 			} else if !isClientNetworkShutdownError(err) {
 				fmt.Printf("[Client] TCP read error: %v\n", err)
@@ -240,15 +238,15 @@ func (c *Client) tcpToWebsocket() {
 
 		if !c.handshakeComplete {
 			// During handshake: Forward raw data to TEE_K
-			fmt.Printf("[Client] 📥 Handshake phase: received %d bytes from server\n", n)
+			fmt.Printf("[Client] Handshake phase: received %d bytes from server\n", n)
 
 			// *** CAPTURE RAW TCP DATA EXACTLY AS TEE_K SEES IT ***
 			// Don't parse into individual TLS records - capture the raw TCP chunk
 			rawTCPData := make([]byte, n)
 			copy(rawTCPData, buffer[:n])
 			c.capturedTraffic = append(c.capturedTraffic, rawTCPData)
-			fmt.Printf("[Client] 📦 Captured raw TCP chunk: %d bytes (handshake phase)\n", len(rawTCPData))
-			fmt.Printf("[Client] 📊 Total captured chunks now: %d\n", len(c.capturedTraffic))
+			fmt.Printf("[Client] Captured raw TCP chunk: %d bytes (handshake phase)\n", len(rawTCPData))
+			fmt.Printf("[Client] Total captured chunks now: %d\n", len(c.capturedTraffic))
 
 			tcpDataMsg, err := CreateMessage(MsgTCPData, TCPData{Data: buffer[:n]})
 			if err != nil {
@@ -272,7 +270,7 @@ func (c *Client) tcpToWebsocket() {
 	}
 
 	// Final completion check after the read loop has exited for any reason
-	log.Printf("[Client] 🎯 TCP read loop finished, performing final completion check...")
+	log.Printf("[Client] TCP read loop finished, performing final completion check...")
 	c.checkProtocolCompletion("TCP connection closed")
 }
 

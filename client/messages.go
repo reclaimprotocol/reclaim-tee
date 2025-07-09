@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Message types for websocket communication
+// MessageType for websocket communication
 type MessageType string
 
 const (
@@ -22,16 +22,6 @@ const (
 	MsgHandshakeKeyDisclosure MessageType = "handshake_key_disclosure"
 	MsgHTTPResponse           MessageType = "http_response"
 
-	// Phase 2: Split AEAD messages
-	// TEE_K to TEE_T messages
-	MsgKeyShareRequest   MessageType = "key_share_request"
-	MsgEncryptedRequest  MessageType = "encrypted_request"
-	MsgTagSecretsRequest MessageType = "tag_secrets_request"
-
-	// TEE_T to TEE_K messages
-	MsgKeyShareResponse    MessageType = "key_share_response"
-	MsgTagComputationReady MessageType = "tag_computation_ready"
-
 	// TEE_T to Client messages
 	MsgEncryptedData MessageType = "encrypted_data"
 
@@ -46,22 +36,17 @@ const (
 	MsgRedactionStreams      MessageType = "redaction_streams"
 	MsgRedactionVerification MessageType = "redaction_verification"
 
-	// Phase 4: Split AEAD response handling messages
+	// Split AEAD response handling messages
 	MsgEncryptedResponse        MessageType = "encrypted_response"
-	MsgResponseLength           MessageType = "response_length"
-	MsgResponseTagSecrets       MessageType = "response_tag_secrets"
 	MsgResponseTagVerification  MessageType = "response_tag_verification"
 	MsgResponseDecryptionStream MessageType = "response_decryption_stream"
 	MsgDecryptedResponse        MessageType = "decrypted_response"
 
 	// Session management messages
-	MsgSessionCreated MessageType = "session_created"
-	MsgSessionReady   MessageType = "session_ready"
+	MsgSessionReady MessageType = "session_ready"
 
 	// Single Session Mode message types
-	MsgFinished                       MessageType = "finished"
 	MsgSignedTranscript               MessageType = "signed_transcript"
-	MsgRedactionSpec                  MessageType = "redaction_spec"
 	MsgSignedRedactedDecryptionStream MessageType = "signed_redacted_decryption_stream"
 )
 

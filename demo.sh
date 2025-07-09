@@ -10,7 +10,7 @@ echo ""
 echo "🔨 Building services..."
 ./build.sh
 if [ $? -ne 0 ]; then
-    echo "❌ Build failed"
+    echo "Build failed"
     exit 1
 fi
 echo " All services built successfully"
@@ -35,12 +35,12 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 # Start TEE_K service
-echo "🚀 Starting TEE_K service (port 8080)..."
+echo "Starting TEE_K service (port 8080)..."
 ./bin/tee_k > /tmp/demo_teek.log 2>&1 &
 TEEK_PID=$!
 
 # Start TEE_T service
-echo "🚀 Starting TEE_T service (port 8081)..."
+echo "Starting TEE_T service (port 8081)..."
 ./bin/tee_t > /tmp/demo_teet.log 2>&1 &
 TEET_PID=$!
 
@@ -50,7 +50,7 @@ sleep 1
 
 # Check if services are still running
 if ! kill -0 $TEEK_PID 2>/dev/null; then
-    echo "❌ TEE_K service failed to start"
+    echo "TEE_K service failed to start"
     echo "TEE_K log:"
     cat /tmp/demo_teek.log
     cleanup
@@ -58,7 +58,7 @@ if ! kill -0 $TEEK_PID 2>/dev/null; then
 fi
 
 if ! kill -0 $TEET_PID 2>/dev/null; then
-    echo "❌ TEE_T service failed to start"
+    echo "TEE_T service failed to start"
     echo "TEE_T log:"
     cat /tmp/demo_teet.log
     cleanup
@@ -71,19 +71,19 @@ echo "   TEE_T running on port 8081 (PID: $TEET_PID)"
 echo ""
 
 # Start Client and wait for completion
-echo "🚀 Starting Client..."
+echo "Starting Client..."
 echo "   Connecting to TEE_K at ws://localhost:8080/ws"
 echo ""
 ./bin/client ws://localhost:8080/ws
 CLIENT_EXIT_CODE=$?
 
 echo ""
-echo "🎯 Client finished with exit code: $CLIENT_EXIT_CODE"
+echo "Client finished with exit code: $CLIENT_EXIT_CODE"
 
 # Show service logs if client failed
 if [ $CLIENT_EXIT_CODE -ne 0 ]; then
     echo ""
-    echo "📋 Service logs for debugging:"
+    echo "Service logs for debugging:"
     echo "--- TEE_K log ---"
     cat /tmp/demo_teek.log
     echo ""

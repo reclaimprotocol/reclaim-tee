@@ -125,7 +125,7 @@ func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLe
 			if err == nil {
 				// Validate the certificate
 				if isValidCachedCertificate(&cert) {
-					log.Printf("[%s] ✅ Valid certificate found in cache - skipping ACME operations!", config.ServiceName)
+					log.Printf("[%s] Valid certificate found in cache - skipping ACME operations!", config.ServiceName)
 
 					// Create a minimal manager that uses the cached certificate
 					manager := &VSockLegoManager{
@@ -309,7 +309,7 @@ func (m *VSockLegoManager) BootstrapCertificates(ctx context.Context) error {
 		if cert, exists := m.certificates[m.config.Domain]; exists {
 			if m.isValidCertificate(cert) {
 				m.mu.RUnlock()
-				log.Printf("[%s] ✅ Valid cached certificate already loaded - skipping bootstrap", m.config.ServiceName)
+				log.Printf("[%s] Valid cached certificate already loaded - skipping bootstrap", m.config.ServiceName)
 				return nil
 			}
 		}

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"log"
 	"tee-mpc/shared"
+
+	"github.com/joho/godotenv"
 )
 
 type TEETConfig struct {
@@ -15,6 +18,10 @@ type TEETConfig struct {
 }
 
 func LoadTEETConfig() *TEETConfig {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
 	return &TEETConfig{
 		Port:        shared.GetEnvIntOrDefault("PORT", 8081),
 		EnclaveMode: shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true",

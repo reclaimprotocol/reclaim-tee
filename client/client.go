@@ -487,15 +487,15 @@ func (c *Client) isStandaloneMode() bool {
 // fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T and verifies them
 func (c *Client) fetchAndVerifyAttestations() error {
 	if c.isStandaloneMode() {
-		fmt.Printf("[Client] 🔒 Standalone mode detected - skipping attestation verification\n")
+		fmt.Printf("[Client] Standalone mode detected - skipping attestation verification\n")
 		return nil
 	}
 
-	fmt.Printf("[Client] 🔒 Enclave mode detected - fetching attestations from both TEE_K and TEE_T\n")
+	fmt.Printf("[Client] Enclave mode detected - fetching attestations from both TEE_K and TEE_T\n")
 
 	// Fetch attestation from TEE_K
 	teekAttestationURL := c.getAttestationURL(c.teekURL)
-	fmt.Printf("[Client] 🔒 Fetching TEE_K attestation from: %s\n", teekAttestationURL)
+	fmt.Printf("[Client] Fetching TEE_K attestation from: %s\n", teekAttestationURL)
 
 	teekAttestation, err := c.fetchAttestation(teekAttestationURL)
 	if err != nil {
@@ -504,7 +504,7 @@ func (c *Client) fetchAndVerifyAttestations() error {
 
 	// Fetch attestation from TEE_T
 	teetAttestationURL := c.getAttestationURL(c.teetURL)
-	fmt.Printf("[Client] 🔒 Fetching TEE_T attestation from: %s\n", teetAttestationURL)
+	fmt.Printf("[Client] Fetching TEE_T attestation from: %s\n", teetAttestationURL)
 
 	teetAttestation, err := c.fetchAttestation(teetAttestationURL)
 	if err != nil {
@@ -525,7 +525,7 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	}
 	c.teetAttestationPublicKey = teetPublicKey
 
-	fmt.Printf("[Client] 🔒 ✅ Successfully verified both TEE_K and TEE_T attestations\n")
+	fmt.Printf("[Client] Successfully verified both TEE_K and TEE_T attestations\n")
 
 	// Display public keys in a more distinguishable way
 	// For P-256 keys, skip the common DER header (first ~26 bytes) and show the actual key material
@@ -539,10 +539,10 @@ func (c *Client) fetchAndVerifyAttestations() error {
 		teetDisplayBytes = teetPublicKey[26:] // Skip DER header, show actual key material
 	}
 
-	fmt.Printf("[Client] 🔒 TEE_K public key (key material): %x\n", teekDisplayBytes[:min(32, len(teekDisplayBytes))])
-	fmt.Printf("[Client] 🔒 TEE_T public key (key material): %x\n", teetDisplayBytes[:min(32, len(teetDisplayBytes))])
-	fmt.Printf("[Client] 🔒 TEE_K full key length: %d bytes\n", len(teekPublicKey))
-	fmt.Printf("[Client] 🔒 TEE_T full key length: %d bytes\n", len(teetPublicKey))
+	fmt.Printf("[Client] TEE_K public key (key material): %x\n", teekDisplayBytes[:min(32, len(teekDisplayBytes))])
+	fmt.Printf("[Client] TEE_T public key (key material): %x\n", teetDisplayBytes[:min(32, len(teetDisplayBytes))])
+	fmt.Printf("[Client] TEE_K full key length: %d bytes\n", len(teekPublicKey))
+	fmt.Printf("[Client] TEE_T full key length: %d bytes\n", len(teetPublicKey))
 
 	c.attestationVerified = true
 	return nil
@@ -585,7 +585,7 @@ func (c *Client) fetchAttestation(url string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decode base64 attestation: %v", err)
 	}
 
-	fmt.Printf("[Client] 🔒 Fetched attestation document: %d bytes\n", len(attestationDoc))
+	fmt.Printf("[Client] Fetched attestation document: %d bytes\n", len(attestationDoc))
 	return attestationDoc, nil
 }
 
@@ -602,7 +602,7 @@ func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string)
 		return nil, fmt.Errorf("attestation validation failed: %v", err)
 	}
 
-	fmt.Printf("[Client] 🔒 ✅ Attestation root of trust validation passed for %s\n", expectedSource)
+	fmt.Printf("[Client] Attestation root of trust validation passed for %s\n", expectedSource)
 
 	// Extract user data from the attestation
 	userData := signedReport.Document.UserData
@@ -625,14 +625,14 @@ func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string)
 		return nil, fmt.Errorf("failed to decode hex public key: %v", err)
 	}
 
-	fmt.Printf("[Client] 🔒 ✅ Extracted public key from %s attestation: %d bytes\n", expectedSource, len(publicKey))
+	fmt.Printf("[Client] Extracted public key from %s attestation: %d bytes\n", expectedSource, len(publicKey))
 	return publicKey, nil
 }
 
 // verifyAttestationPublicKeys compares the public keys from attestations with those from signed transcripts
 func (c *Client) verifyAttestationPublicKeys() error {
 	if c.isStandaloneMode() {
-		fmt.Printf("[Client] 🔒 Standalone mode - skipping attestation vs transcript public key comparison\n")
+		fmt.Printf("[Client] Standalone mode - skipping attestation vs transcript public key comparison\n")
 		return nil
 	}
 
@@ -658,9 +658,9 @@ func (c *Client) verifyAttestationPublicKeys() error {
 			c.teetAttestationPublicKey[:16], c.teetTranscriptPublicKey[:16])
 	}
 
-	fmt.Printf("[Client] 🔒 ✅ Public key verification SUCCESS!\n")
-	fmt.Printf("[Client] 🔒 ✅ TEE_K: attestation and transcript public keys match\n")
-	fmt.Printf("[Client] 🔒 ✅ TEE_T: attestation and transcript public keys match\n")
+	fmt.Printf("[Client] Public key verification SUCCESS!\n")
+	fmt.Printf("[Client] TEE_K: attestation and transcript public keys match\n")
+	fmt.Printf("[Client] TEE_T: attestation and transcript public keys match\n")
 
 	c.publicKeyComparisonDone = true
 	return nil

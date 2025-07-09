@@ -379,8 +379,8 @@ func (c *Client) handleEncryptedData(msg *Message) {
 	// *** CAPTURE OUTGOING APPLICATION DATA RECORD FOR TRANSCRIPT VALIDATION ***
 	// TEE_T expects individual TLS records for application data, not raw TCP chunks
 	c.capturedTraffic = append(c.capturedTraffic, tlsRecord)
-	fmt.Printf("[Client] 📦 Captured outgoing application data record: type 0x%02x, %d bytes\n", tlsRecord[0], len(tlsRecord))
-	fmt.Printf("[Client] 📊 Total captured records now: %d\n", len(c.capturedTraffic))
+	fmt.Printf("[Client] Captured outgoing application data record: type 0x%02x, %d bytes\n", tlsRecord[0], len(tlsRecord))
+	fmt.Printf("[Client] Total captured records now: %d\n", len(c.capturedTraffic))
 
 	// Send to website via TCP connection
 	if c.tcpConn != nil {
@@ -447,10 +447,10 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 		return
 	}
 
-	log.Printf("[Client] 📝 Received signed transcript from %s", signedTranscript.Source)
-	log.Printf("[Client] 📝 Transcript contains %d packets", len(signedTranscript.Packets))
-	log.Printf("[Client] 📝 Signature: %d bytes", len(signedTranscript.Signature))
-	log.Printf("[Client] 📝 Public Key: %d bytes (DER format)", len(signedTranscript.PublicKey))
+	log.Printf("[Client] Received signed transcript from %s", signedTranscript.Source)
+	log.Printf("[Client] Transcript contains %d packets", len(signedTranscript.Packets))
+	log.Printf("[Client] Signature: %d bytes", len(signedTranscript.Signature))
+	log.Printf("[Client] Public Key: %d bytes (DER format)", len(signedTranscript.PublicKey))
 
 	// Store the public key for attestation verification
 	switch signedTranscript.Source {
@@ -468,31 +468,31 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 		totalSize += len(packet)
 	}
 
-	log.Printf("[Client] 📝 Total transcript size: %d bytes", totalSize)
+	log.Printf("[Client] Total transcript size: %d bytes", totalSize)
 
 	// Display signature for verification
 	if len(signedTranscript.Signature) > 0 {
-		fmt.Printf("[Client] 📝 %s signature (first 16 bytes): %x\n",
+		fmt.Printf("[Client] %s signature (first 16 bytes): %x\n",
 			strings.ToUpper(signedTranscript.Source), signedTranscript.Signature[:min(16, len(signedTranscript.Signature))])
 	}
 
 	// Display public key for verification
 	if len(signedTranscript.PublicKey) > 0 {
-		fmt.Printf("[Client] 📝 %s public key (first 16 bytes): %x\n",
+		fmt.Printf("[Client] %s public key (first 16 bytes): %x\n",
 			strings.ToUpper(signedTranscript.Source), signedTranscript.PublicKey[:min(16, len(signedTranscript.PublicKey))])
 	}
 
 	// Verify signature
-	log.Printf("[Client] 🔐 Verifying signature for %s transcript...", signedTranscript.Source)
+	log.Printf("[Client] Verifying signature for %s transcript...", signedTranscript.Source)
 	verificationErr := shared.VerifyTranscriptSignature(&signedTranscript)
 	if verificationErr != nil {
-		log.Printf("[Client] ❌ Signature verification FAILED for %s: %v", signedTranscript.Source, verificationErr)
-		fmt.Printf("[Client] ❌ %s signature verification FAILED: %v\n",
+		log.Printf("[Client] Signature verification FAILED for %s: %v", signedTranscript.Source, verificationErr)
+		fmt.Printf("[Client] %s signature verification FAILED: %v\n",
 			strings.ToUpper(signedTranscript.Source), verificationErr)
 		// Don't return here - continue processing but mark signature as invalid
 	} else {
-		log.Printf("[Client] ✅ Signature verification SUCCESS for %s", signedTranscript.Source)
-		fmt.Printf("[Client] ✅ %s signature verification SUCCESS\n",
+		log.Printf("[Client] Signature verification SUCCESS for %s", signedTranscript.Source)
+		fmt.Printf("[Client] %s signature verification SUCCESS\n",
 			strings.ToUpper(signedTranscript.Source))
 	}
 
@@ -503,36 +503,36 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 		if verificationErr == nil {
 			c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
 		}
-		log.Printf("[Client] 📝 Marked TEE_K transcript as received (signature valid: %v)", verificationErr == nil)
+		log.Printf("[Client] Marked TEE_K transcript as received (signature valid: %v)", verificationErr == nil)
 	case "tee_t":
 		c.setCompletionFlag(CompletionFlagTEETTranscriptReceived)
 		if verificationErr == nil {
 			c.setCompletionFlag(CompletionFlagTEETSignatureValid)
 		}
-		log.Printf("[Client] 📝 Marked TEE_T transcript as received (signature valid: %v)", verificationErr == nil)
+		log.Printf("[Client] Marked TEE_T transcript as received (signature valid: %v)", verificationErr == nil)
 	default:
-		log.Printf("[Client] 📝 Unknown transcript source: %s", signedTranscript.Source)
+		log.Printf("[Client] Unknown transcript source: %s", signedTranscript.Source)
 	}
 
 	// Check if we now have both transcript public keys and can verify against attestations
 	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
-		log.Printf("[Client] 🔒 Both transcript public keys received - verifying against attestations...")
+		log.Printf("[Client] Both transcript public keys received - verifying against attestations...")
 		if err := c.verifyAttestationPublicKeys(); err != nil {
-			log.Printf("[Client] ❌ Attestation public key verification failed: %v", err)
-			fmt.Printf("[Client] ❌ ATTESTATION VERIFICATION FAILED: %v\n", err)
+			log.Printf("[Client] Attestation public key verification failed: %v", err)
+			fmt.Printf("[Client] ATTESTATION VERIFICATION FAILED: %v\n", err)
 		} else {
-			log.Printf("[Client] ✅ Attestation public key verification successful")
-			fmt.Printf("[Client] ✅ ATTESTATION VERIFICATION SUCCESSFUL - transcripts are from verified enclaves\n")
+			log.Printf("[Client] Attestation public key verification successful")
+			fmt.Printf("[Client] ATTESTATION VERIFICATION SUCCESSFUL - transcripts are from verified enclaves\n")
 		}
 	}
 
 	transcriptsComplete := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
 	signaturesValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)
 
-	log.Printf("[Client] 📝 Signed transcript from %s processed successfully", signedTranscript.Source)
+	log.Printf("[Client] Signed transcript from %s processed successfully", signedTranscript.Source)
 
 	// Show packet summary
-	fmt.Printf("[Client] 📝 %s transcript summary:\n", strings.ToUpper(signedTranscript.Source))
+	fmt.Printf("[Client] %s transcript summary:\n", strings.ToUpper(signedTranscript.Source))
 	for i, packet := range signedTranscript.Packets {
 		if len(packet) > 0 {
 			fmt.Printf("[Client]   Packet %d: %d bytes (starts with %02x)\n", i+1, len(packet), packet[0])
@@ -541,15 +541,15 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 
 	// *** CRITICAL VALIDATION: Compare TEE transcripts with client's captured traffic ***
 	if transcriptsComplete && signaturesValid {
-		log.Printf("[Client] 🔍 Both transcripts received with valid signatures - performing transcript validation...")
+		log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")
 		c.validateTranscriptsAgainstCapturedTraffic()
 	}
 
 	if transcriptsComplete {
 		if signaturesValid {
-			log.Printf("[Client] 📝 ✅ Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+			log.Printf("[Client] Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
 		} else {
-			log.Printf("[Client] 📝 ❌ Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
+			log.Printf("[Client] Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
 		}
 	}
 
@@ -560,21 +560,21 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 // validateTranscriptsAgainstCapturedTraffic performs comprehensive validation of signed transcripts
 // against the client's captured TLS traffic to ensure integrity and completeness
 func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
-	fmt.Printf("\n🔍 ===== TRANSCRIPT VALIDATION REPORT =====\n")
+	fmt.Printf("\n===== TRANSCRIPT VALIDATION REPORT =====\n")
 
-	log.Printf("[Client] 🔍 Validating transcripts against %d captured TLS records", len(c.capturedTraffic))
+	log.Printf("[Client] Validating transcripts against %d captured TLS records", len(c.capturedTraffic))
 
 	// Since we now capture raw TCP chunks exactly as TEE_K sees them,
 	// we should compare them directly without trying to categorize by TLS record type
-	fmt.Printf("[Client] 🔍 DEBUG: Analyzing each captured TCP chunk:\n")
+	fmt.Printf("[Client] DEBUG: Analyzing each captured TCP chunk:\n")
 
 	for i, chunk := range c.capturedTraffic {
 		if len(chunk) < 1 {
-			fmt.Printf("[Client] 🔍 Chunk %d: EMPTY (length: 0)\n", i)
+			fmt.Printf("[Client] Chunk %d: EMPTY (length: 0)\n", i)
 			continue
 		}
 
-		fmt.Printf("[Client] 🔍 Chunk %d: %d bytes, First 16 bytes: %x\n",
+		fmt.Printf("[Client] Chunk %d: %d bytes, First 16 bytes: %x\n",
 			i, len(chunk), chunk[:min(16, len(chunk))])
 	}
 
@@ -584,12 +584,12 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 		totalCapturedSize += len(chunk)
 	}
 
-	fmt.Printf("[Client] 🔍 Client captured traffic analysis:\n")
-	fmt.Printf("[Client]   📊 Total chunks: %d\n", len(c.capturedTraffic))
-	fmt.Printf("[Client]   📊 Total captured size: %d bytes\n", totalCapturedSize)
+	fmt.Printf("[Client] Client captured traffic analysis:\n")
+	fmt.Printf("[Client]   Total chunks: %d\n", len(c.capturedTraffic))
+	fmt.Printf("[Client]   Total captured size: %d bytes\n", totalCapturedSize)
 
 	// Perform detailed comparison with TEE transcripts
-	fmt.Printf("\n[Client] 🔍 Detailed transcript comparison:\n")
+	fmt.Printf("\n[Client] Detailed transcript comparison:\n")
 
 	// Validate TEE_K transcript (should contain raw TCP chunks - bidirectional)
 	teekValidation := c.validateTEEKTranscriptRaw()
@@ -598,44 +598,44 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 	teetValidation := c.validateTEETTranscriptRaw()
 
 	// Summary
-	fmt.Printf("\n[Client] 🔍 📝 VALIDATION RESULTS:\n")
-	fmt.Printf("[Client]   ✅ Both TEE_K and TEE_T transcripts received\n")
-	fmt.Printf("[Client]   ✅ Both transcript signatures verified successfully\n")
-	fmt.Printf("[Client]   ✅ Client captured %d TCP chunks during session (bidirectional)\n", len(c.capturedTraffic))
+	fmt.Printf("\n[Client] VALIDATION RESULTS:\n")
+	fmt.Printf("[Client]   Both TEE_K and TEE_T transcripts received\n")
+	fmt.Printf("[Client]   Both transcript signatures verified successfully\n")
+	fmt.Printf("[Client]   Client captured %d TCP chunks during session (bidirectional)\n", len(c.capturedTraffic))
 
 	if teekValidation && teetValidation {
-		fmt.Printf("[Client]   ✅ TRANSCRIPT VALIDATION PASSED - All packets match!\n")
+		fmt.Printf("[Client]   TRANSCRIPT VALIDATION PASSED - All packets match!\n")
 	} else {
-		fmt.Printf("[Client]   ❌ TRANSCRIPT VALIDATION FAILED - Packet mismatches detected!\n")
+		fmt.Printf("[Client]   TRANSCRIPT VALIDATION FAILED - Packet mismatches detected!\n")
 	}
 
-	fmt.Printf("🔍 ===== VALIDATION COMPLETE =====\n\n")
+	fmt.Printf("===== VALIDATION COMPLETE =====\n\n")
 }
 
 // validateTEEKTranscriptRaw validates TEE_K transcript against client raw TCP chunks
 func (c *Client) validateTEEKTranscriptRaw() bool {
-	fmt.Printf("[Client] 🔍 Validating TEE_K transcript (%d packets) against client captures\n",
+	fmt.Printf("[Client] Validating TEE_K transcript (%d packets) against client captures\n",
 		len(c.teekTranscriptPackets))
 
 	if c.teekTranscriptPackets == nil {
-		fmt.Printf("[Client] ❌ TEE_K transcript packets not available\n")
+		fmt.Printf("[Client] TEE_K transcript packets not available\n")
 		return false
 	}
 
 	// TEE_K captures raw TCP chunks during handshake, so we should compare against
 	// the raw TCP chunks we captured (not the individual TLS records from application phase)
-	fmt.Printf("[Client] 🔍 TEE_K transcript analysis:\n")
+	fmt.Printf("[Client] TEE_K transcript analysis:\n")
 
 	handshakePacketsMatched := 0
 	for i, teekPacket := range c.teekTranscriptPackets {
-		fmt.Printf("[Client]   📦 TEE_K packet %d: %d bytes (type: 0x%02x)\n",
+		fmt.Printf("[Client]   TEE_K packet %d: %d bytes (type: 0x%02x)\n",
 			i+1, len(teekPacket), teekPacket[0])
 
 		// Check if this packet matches any of the client's captured data
 		found := false
 		for j, chunk := range c.capturedTraffic {
 			if len(teekPacket) == len(chunk) && bytes.Equal(teekPacket, chunk) {
-				fmt.Printf("[Client]     ✅ Exactly matches client capture %d\n", j+1)
+				fmt.Printf("[Client]     Exactly matches client capture %d\n", j+1)
 				handshakePacketsMatched++
 				found = true
 				break
@@ -643,13 +643,13 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 		}
 
 		if !found {
-			fmt.Printf("[Client]     ❌ NOT found in client captures\n")
+			fmt.Printf("[Client]     NOT found in client captures\n")
 			// Show first 32 bytes of TEE_K packet for debugging
 			fmt.Printf("[Client]       TEE_K packet: %x...\n", teekPacket[:min(32, len(teekPacket))])
 		}
 	}
 
-	fmt.Printf("[Client] 🔍 TEE_K validation result: %d/%d packets matched exactly\n",
+	fmt.Printf("[Client] TEE_K validation result: %d/%d packets matched exactly\n",
 		handshakePacketsMatched, len(c.teekTranscriptPackets))
 
 	// For TEE_K, we expect exact matches since it should see the same raw TCP data
@@ -658,27 +658,27 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 
 // validateTEETTranscriptRaw validates TEE_T transcript against client application data records
 func (c *Client) validateTEETTranscriptRaw() bool {
-	fmt.Printf("[Client] 🔍 Validating TEE_T transcript (%d packets) against client captures\n",
+	fmt.Printf("[Client] Validating TEE_T transcript (%d packets) against client captures\n",
 		len(c.teetTranscriptPackets))
 
 	if c.teetTranscriptPackets == nil {
-		fmt.Printf("[Client] ❌ TEE_T transcript packets not available\n")
+		fmt.Printf("[Client] TEE_T transcript packets not available\n")
 		return false
 	}
 
 	// TEE_T captures individual TLS records during application phase
-	fmt.Printf("[Client] 🔍 TEE_T transcript analysis:\n")
+	fmt.Printf("[Client] TEE_T transcript analysis:\n")
 
 	applicationPacketsMatched := 0
 	for i, teetPacket := range c.teetTranscriptPackets {
-		fmt.Printf("[Client]   📦 TEE_T packet %d: %d bytes (type: 0x%02x)\n",
+		fmt.Printf("[Client]   TEE_T packet %d: %d bytes (type: 0x%02x)\n",
 			i+1, len(teetPacket), teetPacket[0])
 
 		// Check if this packet matches any of the client's captured data
 		found := false
 		for j, chunk := range c.capturedTraffic {
 			if len(teetPacket) == len(chunk) && bytes.Equal(teetPacket, chunk) {
-				fmt.Printf("[Client]     ✅ Exactly matches client capture %d\n", j+1)
+				fmt.Printf("[Client]     Exactly matches client capture %d\n", j+1)
 				applicationPacketsMatched++
 				found = true
 				break
@@ -686,13 +686,13 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 		}
 
 		if !found {
-			fmt.Printf("[Client]     ❌ NOT found in client captures\n")
+			fmt.Printf("[Client]     NOT found in client captures\n")
 			// Show first 32 bytes of TEE_T packet for debugging
 			fmt.Printf("[Client]       TEE_T packet: %x...\n", teetPacket[:min(32, len(teetPacket))])
 		}
 	}
 
-	fmt.Printf("[Client] 🔍 TEE_T validation result: %d/%d packets matched exactly\n",
+	fmt.Printf("[Client] TEE_T validation result: %d/%d packets matched exactly\n",
 		applicationPacketsMatched, len(c.teetTranscriptPackets))
 
 	// For TEE_T, we expect exact matches since it should see the same TLS records
@@ -707,15 +707,15 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 		return
 	}
 
-	log.Printf("[Client] 📝 Received redacted decryption stream for seq %d (%d bytes)",
+	log.Printf("[Client] Received redacted decryption stream for seq %d (%d bytes)",
 		redactedStream.SeqNum, len(redactedStream.RedactedStream))
 
 	// Verify signature if present
 	if len(redactedStream.Signature) > 0 {
-		log.Printf("[Client] 🔐 Verifying signature for redacted stream seq %d...", redactedStream.SeqNum)
+		log.Printf("[Client] Verifying signature for redacted stream seq %d...", redactedStream.SeqNum)
 		// TODO: Implement signature verification for redacted streams
 		// For now, just log that we received a signed stream
-		log.Printf("[Client] 📝 Redacted stream signature received: %d bytes", len(redactedStream.Signature))
+		log.Printf("[Client] Redacted stream signature received: %d bytes", len(redactedStream.Signature))
 	}
 
 	// Apply redacted stream to ciphertext to get redacted plaintext
@@ -724,12 +724,12 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 	c.responseContentMutex.Unlock()
 
 	if !exists {
-		log.Printf("[Client] 📝 No ciphertext found for seq %d", redactedStream.SeqNum)
+		log.Printf("[Client] No ciphertext found for seq %d", redactedStream.SeqNum)
 		return
 	}
 
 	if len(redactedStream.RedactedStream) != len(ciphertext) {
-		log.Printf("[Client] 📝 Stream length mismatch for seq %d: stream=%d, ciphertext=%d",
+		log.Printf("[Client] Stream length mismatch for seq %d: stream=%d, ciphertext=%d",
 			redactedStream.SeqNum, len(redactedStream.RedactedStream), len(ciphertext))
 		return
 	}
@@ -740,7 +740,7 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 		redactedPlaintext[i] = ciphertext[i] ^ redactedStream.RedactedStream[i]
 	}
 
-	log.Printf("[Client] 📝 Generated redacted plaintext for seq %d (%d bytes)",
+	log.Printf("[Client] Generated redacted plaintext for seq %d (%d bytes)",
 		redactedStream.SeqNum, len(redactedPlaintext))
 
 	// Store the redacted plaintext and check if we are ready to print
@@ -761,7 +761,7 @@ func (c *Client) printRedactedResponse() {
 		return
 	}
 
-	log.Printf("[Client] 📝 All redacted streams received, printing full response...")
+	log.Printf("[Client] All redacted streams received, printing full response...")
 
 	// Get keys and sort them to ensure correct order
 	keys := make([]int, 0, len(c.redactedPlaintextBySeq))
@@ -776,7 +776,7 @@ func (c *Client) printRedactedResponse() {
 	}
 
 	// Print the final, ordered, redacted response
-	fmt.Printf("\n\n--- 📝 FINAL REDACTED RESPONSE 📝 ---\n%s\n--- END REDACTED RESPONSE ---\n\n", fullResponse.String())
+	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", fullResponse.String())
 }
 
 // Close closes all WebSocket connections

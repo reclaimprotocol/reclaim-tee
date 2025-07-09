@@ -41,14 +41,14 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	// This ensures all TLS records (including alerts) have been received and processed
 	// before we send redaction specs to TEE_K
 	if !eofCondition {
-		log.Printf("[Client] 🎯 Waiting for EOF before proceeding with redaction (records: %d/%d, streams: %d/%d, EOF: %v)",
+		log.Printf("[Client] Waiting for EOF before proceeding with redaction (records: %d/%d, streams: %d/%d, EOF: %v)",
 			recordsProcessed, recordsSent, streamsReceived, recordsSent, eofCondition)
 		return
 	}
 
 	// If split AEAD is complete but we haven't sent redaction spec yet, send it now
 	if splitAEADComplete && !c.hasCompletionFlag(CompletionFlagRedactedStreamsExpected) && !c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) {
-		log.Printf("[Client] 🎯 Split AEAD processing complete and EOF reached - sending redaction specification")
+		log.Printf("[Client] Split AEAD processing complete and EOF reached - sending redaction specification")
 		if err := c.sendRedactionSpec(); err != nil {
 			log.Printf("[Client] Failed to send redaction spec: %v", err)
 			return
@@ -59,7 +59,7 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	// If redaction spec sent but we haven't sent finished command yet, send it now
 	// (For now, we'll skip waiting for redacted streams and proceed to finished command)
 	if splitAEADComplete && c.hasCompletionFlag(CompletionFlagRedactedStreamsExpected) && !c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) {
-		log.Printf("[Client] 🎯 Redaction spec sent - sending finished command")
+		log.Printf("[Client] Redaction spec sent - sending finished command")
 		if err := c.sendFinishedCommand(); err != nil {
 			log.Printf("[Client] Failed to send finished command: %v", err)
 			return
@@ -75,14 +75,14 @@ func (c *Client) checkProtocolCompletion(reason string) {
 
 	if allConditionsMet {
 		c.completionOnce.Do(func() {
-			log.Printf("[Client] 🎯 All protocol conditions met (including signature validation) - completing client processing")
+			log.Printf("[Client] All protocol conditions met (including signature validation) - completing client processing")
 			close(c.completionChan)
 		})
 	} else if splitAEADComplete && c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) &&
 		c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived|CompletionFlagTEETTranscriptReceived) &&
 		(!c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) || !c.hasCompletionFlag(CompletionFlagTEETSignatureValid)) {
 		// Special case: All transcripts received but signatures invalid
-		log.Printf("[Client] ❌ Protocol completion BLOCKED due to invalid signatures (TEE_K: %v, TEE_T: %v)",
+		log.Printf("[Client] Protocol completion BLOCKED due to invalid signatures (TEE_K: %v, TEE_T: %v)",
 			c.hasCompletionFlag(CompletionFlagTEEKSignatureValid), c.hasCompletionFlag(CompletionFlagTEETSignatureValid))
 	}
 }
@@ -111,14 +111,14 @@ func (c *Client) sendFinishedCommand() error {
 	}
 	log.Printf("[Client] Sent finished command to TEE_T")
 
-	log.Printf("[Client] 📝 Now waiting for signed transcripts from both TEE_K and TEE_T...")
+	log.Printf("[Client] Now waiting for signed transcripts from both TEE_K and TEE_T...")
 
 	return nil
 }
 
 // sendRedactionSpec sends redaction specification to TEE_K
 func (c *Client) sendRedactionSpec() error {
-	log.Printf("[Client] 📝 Generating and sending redaction specification to TEE_K...")
+	log.Printf("[Client] Generating and sending redaction specification to TEE_K...")
 
 	// Analyze response content to identify redaction ranges
 	redactionSpec := c.analyzeResponseRedaction()
@@ -129,7 +129,7 @@ func (c *Client) sendRedactionSpec() error {
 		return fmt.Errorf("failed to send redaction spec to TEE_K: %v", err)
 	}
 
-	log.Printf("[Client] 📝 Sent redaction specification to TEE_K with %d ranges", len(redactionSpec.Ranges))
+	log.Printf("[Client] Sent redaction specification to TEE_K with %d ranges", len(redactionSpec.Ranges))
 
 	// Set flag to expect redacted streams
 	c.setCompletionFlag(CompletionFlagRedactedStreamsExpected)
@@ -156,7 +156,7 @@ func (c *Client) calculateRedactionBytes(ciphertext []byte, startOffset, length 
 
 // analyzeResponseRedaction analyzes all response content to identify redaction ranges and calculate redaction bytes
 func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
-	log.Printf("[Client] 📝 Analyzing response content for redaction ranges...")
+	log.Printf("[Client] Analyzing response content for redaction ranges...")
 
 	c.responseContentMutex.Lock()
 	defer c.responseContentMutex.Unlock()
@@ -181,7 +181,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 		// Get corresponding ciphertext for redaction byte calculation
 		ciphertext, ciphertextExists := c.ciphertextBySeq[seqNum]
 		if !ciphertextExists {
-			log.Printf("[Client] 📝 Warning: No ciphertext found for seq %d", seqNum)
+			log.Printf("[Client] Warning: No ciphertext found for seq %d", seqNum)
 			totalOffset += len(content)
 			continue
 		}
@@ -190,13 +190,13 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 		// 1. Separate actual content from its single-byte type identifier
 		actualContent, contentType := c.removeTLSPadding(content)
 
-		log.Printf("[Client] 📝 Analyzing sequence %d: %d bytes, content type 0x%02x", seqNum, len(actualContent), contentType)
+		log.Printf("[Client] Analyzing sequence %d: %d bytes, content type 0x%02x", seqNum, len(actualContent), contentType)
 
 		switch contentType {
 		case 0x16: // Handshake message - likely NewSessionTicket
-			log.Printf("[Client] 📝 Found handshake message at offset %d (seq %d)", totalOffset, seqNum)
+			log.Printf("[Client] Found handshake message at offset %d (seq %d)", totalOffset, seqNum)
 			if len(actualContent) >= 4 && actualContent[0] == 0x04 { // NewSessionTicket
-				log.Printf("[Client] 📝 Redacting NewSessionTicket at offset %d-%d", totalOffset, totalOffset+len(actualContent)-1)
+				log.Printf("[Client] Redacting NewSessionTicket at offset %d-%d", totalOffset, totalOffset+len(actualContent)-1)
 
 				// Redact the entire actual content of the handshake message
 				redactionBytes := c.calculateRedactionBytes(ciphertext, 0, len(actualContent))
@@ -209,12 +209,12 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 			}
 
 		case 0x17: // ApplicationData - HTTP response
-			log.Printf("[Client] 📝 Found HTTP response at offset %d (seq %d)", totalOffset, seqNum)
+			log.Printf("[Client] Found HTTP response at offset %d (seq %d)", totalOffset, seqNum)
 			httpRanges := c.analyzeHTTPRedactionWithBytes(actualContent, totalOffset, ciphertext)
 			redactionRanges = append(redactionRanges, httpRanges...)
 
 		case 0x15: // Alert - usually safe to keep
-			log.Printf("[Client] 📝 Found TLS alert at offset %d (seq %d) - keeping visible", totalOffset, seqNum)
+			log.Printf("[Client] Found TLS alert at offset %d (seq %d) - keeping visible", totalOffset, seqNum)
 		}
 
 		// *** FIX: Increment offset by the length of the ORIGINAL PADDED content ***
@@ -226,9 +226,9 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 		AlwaysRedactSessionTickets: true,
 	}
 
-	log.Printf("[Client] 📝 Generated redaction spec with %d ranges", len(redactionRanges))
+	log.Printf("[Client] Generated redaction spec with %d ranges", len(redactionRanges))
 	for i, r := range redactionRanges {
-		log.Printf("[Client] 📝 Range %d: [%d:%d] type=%s (%d redaction bytes)", i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
+		log.Printf("[Client] Range %d: [%d:%d] type=%s (%d redaction bytes)", i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
 	}
 
 	return spec
@@ -314,7 +314,7 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 			rangeLength := titleEndIndex - titleContentStartIndex
 
 			if rangeLength > 0 {
-				log.Printf("[Client] 📝 Found sensitive pattern 'title' at offset %d-%d",
+				log.Printf("[Client] Found sensitive pattern 'title' at offset %d-%d",
 					rangeStart, rangeStart+rangeLength-1)
 
 				ciphertextOffset := titleContentStartIndex

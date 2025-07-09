@@ -1,7 +1,10 @@
 package main
 
 import (
+	"log"
 	"tee-mpc/shared"
+
+	"github.com/joho/godotenv"
 )
 
 type TEEKConfig struct {
@@ -16,6 +19,10 @@ type TEEKConfig struct {
 }
 
 func LoadTEEKConfig() *TEEKConfig {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
 	enclaveMode := shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true"
 
 	// Set TEETURL based on mode
