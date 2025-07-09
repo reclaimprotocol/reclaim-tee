@@ -79,13 +79,17 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 	p.logger.Info("Internet proxy connection established",
 		zap.String("remote", enclaveConn.RemoteAddr().String()))
 
-	// Read target address from enclave
-	// Expected format: "hostname:port\n" or "ip:port\n"
-	enclaveConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	// Read target address with a reasonable timeout
+	enclaveConn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	reader := bufio.NewReader(enclaveConn)
 	targetLine, _, err := reader.ReadLine()
 	if err != nil {
-		p.logger.Error("Failed to read target address", zap.Error(err))
+		if isTimeoutError(err) {
+			p.logger.Info("Connection timed out waiting for target address",
+				zap.String("remote", enclaveConn.RemoteAddr().String()))
+		} else {
+			p.logger.Error("Failed to read target address", zap.Error(err))
+		}
 		return
 	}
 
@@ -103,8 +107,12 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 
 	p.logger.Info("Connecting to target", zap.String("target", target))
 
-	// Make outbound connection to target
-	targetConn, err := net.DialTimeout("tcp", target, 10*time.Second)
+	// Make outbound connection to target with timeout
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	targetConn, err := dialer.DialContext(ctx, "tcp", target)
 	if err != nil {
 		p.logger.Error("Failed to connect to target",
 			zap.String("target", target),
@@ -113,24 +121,23 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 	}
 	defer targetConn.Close()
 
-	// Clear read deadline and start bidirectional copy
+	// Clear read deadline and set reasonable idle timeouts
 	enclaveConn.SetReadDeadline(time.Time{})
+	enclaveConn.SetWriteDeadline(time.Time{})
+	targetConn.SetReadDeadline(time.Time{})
+	targetConn.SetWriteDeadline(time.Time{})
 
-	// Set reasonable timeouts for both connections
-	deadline := time.Now().Add(10 * time.Minute)
-	enclaveConn.SetDeadline(deadline)
-	targetConn.SetDeadline(deadline)
-
-	p.logger.Info("Starting bidirectional copy", zap.String("target", target))
+	// Use context for cancellation
+	copyCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	// Bidirectional copy between enclave and target
-	done := make(chan struct{}, 2)
+	done := make(chan error, 2)
 
 	// Copy from enclave to target
 	go func() {
-		defer func() { done <- struct{}{} }()
 		written, err := io.Copy(targetConn, enclaveConn)
-		if err != nil {
+		if err != nil && !isConnectionClosed(err) {
 			p.logger.Debug("Enclave->Target copy ended",
 				zap.String("target", target),
 				zap.Int64("bytes", written),
@@ -140,13 +147,14 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 				zap.String("target", target),
 				zap.Int64("bytes", written))
 		}
+		done <- err
+		cancel() // Cancel context to stop other goroutine
 	}()
 
 	// Copy from target to enclave
 	go func() {
-		defer func() { done <- struct{}{} }()
 		written, err := io.Copy(enclaveConn, targetConn)
-		if err != nil {
+		if err != nil && !isConnectionClosed(err) {
 			p.logger.Debug("Target->Enclave copy ended",
 				zap.String("target", target),
 				zap.Int64("bytes", written),
@@ -156,15 +164,39 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 				zap.String("target", target),
 				zap.Int64("bytes", written))
 		}
+		done <- err
+		cancel() // Cancel context to stop other goroutine
 	}()
 
 	// Wait for either copy to complete or context cancellation
 	select {
-	case <-done:
-		p.logger.Info("Internet proxy connection completed", zap.String("target", target))
-	case <-ctx.Done():
-		p.logger.Info("Internet proxy connection cancelled", zap.String("target", target))
-	case <-time.After(10 * time.Minute):
-		p.logger.Info("Internet proxy connection timeout", zap.String("target", target))
+	case err := <-done:
+		if err != nil && !isConnectionClosed(err) {
+			p.logger.Error("Copy error",
+				zap.String("target", target),
+				zap.Error(err))
+		}
+	case <-copyCtx.Done():
+		p.logger.Info("Connection cancelled", zap.String("target", target))
+	case <-time.After(24 * time.Hour): // Maximum connection lifetime
+		p.logger.Info("Connection maximum lifetime reached", zap.String("target", target))
 	}
+}
+
+// Helper functions for error handling
+func isTimeoutError(err error) bool {
+	if netErr, ok := err.(net.Error); ok {
+		return netErr.Timeout()
+	}
+	return false
+}
+
+func isConnectionClosed(err error) bool {
+	if err == io.EOF {
+		return true
+	}
+	if netErr, ok := err.(net.Error); ok {
+		return !netErr.Temporary()
+	}
+	return false
 }

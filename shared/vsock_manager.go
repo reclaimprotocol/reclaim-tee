@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"sync"
 	"time"
+
+	"github.com/mdlayher/vsock"
 )
 
 // VSockConnectionManager provides production-grade VSock connection management
-// with advanced features from nitro.go
 type VSockConnectionManager struct {
 	kmsPool      *VSockPool
-	internetPool *VSockPool
+	parentCID    uint32
+	internetPort uint32
 
 	// Caching components
 	attestationCache *AttestationCache
@@ -40,7 +43,7 @@ type VSockConfig struct {
 	MemoryCacheTTL      time.Duration
 }
 
-// NewVSockConnectionManager creates a new  connection manager
+// NewVSockConnectionManager creates a new connection manager
 func NewVSockConnectionManager(config *VSockConfig) *VSockConnectionManager {
 	if config == nil {
 		config = &VSockConfig{
@@ -67,24 +70,10 @@ func NewVSockConnectionManager(config *VSockConfig) *VSockConnectionManager {
 		}
 	}
 
-	// Initialize Internet pool
-	internetPoolConfig := config.InternetPoolConfig
-	if internetPoolConfig == nil {
-		internetPoolConfig = &ProductionVSockPoolConfig{
-			CID:              config.ParentCID,
-			Port:             config.InternetPort,
-			MinPoolSize:      3,
-			MaxPoolSize:      15,
-			ConnectionTTL:    3 * time.Minute,
-			IdleTimeout:      30 * time.Second,
-			ValidationPeriod: 30 * time.Second,
-			CleanupInterval:  60 * time.Second,
-		}
-	}
-
 	manager := &VSockConnectionManager{
 		kmsPool:      NewProductionVSockPool(kmsPoolConfig),
-		internetPool: NewProductionVSockPool(internetPoolConfig),
+		parentCID:    config.ParentCID,
+		internetPort: config.InternetPort,
 	}
 
 	// Initialize attestation cache using global singleton handle
@@ -104,20 +93,14 @@ func (evm *VSockConnectionManager) Start(ctx context.Context) error {
 	defer evm.mu.Unlock()
 
 	if evm.isRunning {
-		return fmt.Errorf(" connection manager is already running")
+		return fmt.Errorf("connection manager is already running")
 	}
 
-	log.Printf("[VSock] Starting  VSock connection manager")
+	log.Printf("[VSock] Starting VSock connection manager")
 
 	// Start KMS pool
 	if err := evm.kmsPool.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start KMS pool: %v", err)
-	}
-
-	// Start Internet pool
-	if err := evm.internetPool.Start(ctx); err != nil {
-		evm.kmsPool.Shutdown(ctx)
-		return fmt.Errorf("failed to start Internet pool: %v", err)
 	}
 
 	// Start attestation cache
@@ -135,8 +118,30 @@ func (evm *VSockConnectionManager) Start(ctx context.Context) error {
 	}
 
 	evm.isRunning = true
-	log.Printf("[VSock]  connection manager started successfully")
+	log.Printf("[VSock] Connection manager started successfully")
 	return nil
+}
+
+// CreateInternetConnection creates a new VSock connection to the internet proxy with the specified target
+func (evm *VSockConnectionManager) CreateInternetConnection(ctx context.Context, target string) (net.Conn, error) {
+	conn, err := vsock.Dial(evm.parentCID, evm.internetPort, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to internet proxy: %v", err)
+	}
+
+	// Set a deadline for sending the target address
+	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+
+	// Send target address to internet proxy
+	if _, err := fmt.Fprintf(conn, "%s\n", target); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to send target address: %v", err)
+	}
+
+	// Clear the write deadline
+	conn.SetWriteDeadline(time.Time{})
+
+	return conn, nil
 }
 
 // SendKMSRequestWithService sends a request to KMS with service name for cache grouping
@@ -190,41 +195,6 @@ func (evm *VSockConnectionManager) SendKMSRequest(ctx context.Context, operation
 	return result, nil
 }
 
-// SendInternetRequest sends a request to the internet proxy
-func (evm *VSockConnectionManager) SendInternetRequest(ctx context.Context, url string) ([]byte, error) {
-
-	// Use crypto-secure retry logic
-	var result []byte
-	err := RetryWithBackoff(DefaultRetryConfig(), func() error {
-		conn, err := evm.internetPool.GetConnection(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get internet connection: %v", err)
-		}
-		defer evm.internetPool.ReturnConnection(conn)
-
-		// Send URL to proxy
-		if _, err := fmt.Fprintf(conn, "%s\n", url); err != nil {
-			return fmt.Errorf("failed to send URL: %v", err)
-		}
-
-		// Read response
-		response := make([]byte, 8192)
-		n, err := conn.Read(response)
-		if err != nil {
-			return fmt.Errorf("failed to read response: %v", err)
-		}
-
-		result = response[:n]
-		return nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("internet request failed after retries: %v", err)
-	}
-
-	return result, nil
-}
-
 // GetCachedAttestation retrieves an attestation document with caching
 func (evm *VSockConnectionManager) GetCachedAttestation(ctx context.Context, userData []byte) ([]byte, error) {
 	if evm.attestationCache == nil {
@@ -261,7 +231,7 @@ func (evm *VSockConnectionManager) Shutdown(ctx context.Context) error {
 			return
 		}
 
-		log.Printf("[VSock] Shutting down  connection manager")
+		log.Printf("[VSock] Shutting down connection manager")
 
 		// Shutdown memory cache
 		if evm.memoryCache != nil {
@@ -278,16 +248,12 @@ func (evm *VSockConnectionManager) Shutdown(ctx context.Context) error {
 		}
 
 		// Shutdown pools
-		if err := evm.internetPool.Shutdown(ctx); err != nil {
-			log.Printf("[VSock] Internet pool shutdown error: %v", err)
-		}
-
 		if err := evm.kmsPool.Shutdown(ctx); err != nil {
 			log.Printf("[VSock] KMS pool shutdown error: %v", err)
 		}
 
 		evm.isRunning = false
-		log.Printf("[VSock]  connection manager shutdown completed")
+		log.Printf("[VSock] Connection manager shutdown completed")
 	})
 
 	return shutdownErr

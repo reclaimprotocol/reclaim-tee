@@ -26,6 +26,11 @@ type EnclaveManager struct {
 	connectionMgr *VSockConnectionManager
 	certManager   *VSockLegoManager
 	cache         *EnclaveCache
+	certCache     struct {
+		cert     *tls.Certificate
+		mu       sync.RWMutex
+		lastSync time.Time
+	}
 }
 
 type EnclaveConfig struct {
@@ -296,26 +301,39 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 
 // CreateHTTPSServer creates an HTTPS server with  TLS configuration and debugging
 func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *VSockHTTPSServer {
+	tlsConfig := &tls.Config{
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			em.certCache.mu.RLock()
+			if em.certCache.cert != nil && time.Since(em.certCache.lastSync) < 1*time.Hour {
+				cert := em.certCache.cert
+				em.certCache.mu.RUnlock()
+				log.Printf("[%s] Using cached certificate for domain: %s", em.config.ServiceName, hello.ServerName)
+				return cert, nil
+			}
+			em.certCache.mu.RUnlock()
 
-	tlsConfig := em.certManager.CreateTLSConfig()
+			// Get fresh certificate
+			em.certCache.mu.Lock()
+			defer em.certCache.mu.Unlock()
 
-	// Wrap the GetCertificate function to add debugging
-	originalGetCertificate := tlsConfig.GetCertificate
-	tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		log.Printf("[%s] TLS GetCertificate called for SNI: %s", em.config.ServiceName, hello.ServerName)
+			// Double check if another goroutine updated the cache while we were waiting
+			if em.certCache.cert != nil && time.Since(em.certCache.lastSync) < 1*time.Hour {
+				return em.certCache.cert, nil
+			}
 
-		cert, err := originalGetCertificate(hello)
-		if err != nil {
-			log.Printf("[%s] TLS GetCertificate FAILED for %s: %v", em.config.ServiceName, hello.ServerName, err)
-		} else {
-			log.Printf("[%s] TLS GetCertificate SUCCESS for %s (cert chain length: %d)",
-				em.config.ServiceName, hello.ServerName, len(cert.Certificate))
-		}
+			cert, err := em.certManager.GetCertificate(hello)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get certificate: %v", err)
+			}
 
-		return cert, err
+			em.certCache.cert = cert
+			em.certCache.lastSync = time.Now()
+			log.Printf("[%s] Updated certificate cache for domain: %s", em.config.ServiceName, hello.ServerName)
+			return cert, nil
+		},
+		MinVersion: tls.VersionTLS12,
 	}
 
-	// Create VSock HTTPS server for enclave mode
 	return em.createVSockHTTPSServer(handler, tlsConfig, em.config.HTTPSPort)
 }
 
@@ -494,23 +512,17 @@ func (e *EnclaveHandle) PrivateKey() *rsa.PrivateKey {
 	return e.key
 }
 
+// createVSockHTTPClient creates an HTTP client that uses VSock for internet connections
 func createVSockHTTPClient(parentCID, internetPort uint32) *http.Client {
+	manager := &VSockConnectionManager{
+		parentCID:    parentCID,
+		internetPort: internetPort,
+	}
+
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				conn, err := vsock.Dial(parentCID, internetPort, nil)
-				if err != nil {
-					return nil, err
-				}
-
-				// Send target address to internet proxy
-				_, err = fmt.Fprintf(conn, "%s\n", addr)
-				if err != nil {
-					conn.Close()
-					return nil, err
-				}
-
-				return conn, nil
+				return manager.CreateInternetConnection(ctx, addr)
 			},
 			IdleConnTimeout: 30 * time.Second,
 		},

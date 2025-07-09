@@ -30,6 +30,7 @@ type VSockPool struct {
 	maxPoolSize   int
 	connectionTTL time.Duration
 	idleTimeout   time.Duration
+	config        *ProductionVSockPoolConfig // Store the full config
 
 	// Connection pool and management
 	idleConns    []*pooledConnection
@@ -84,6 +85,7 @@ type ProductionVSockPoolConfig struct {
 	IdleTimeout      time.Duration
 	ValidationPeriod time.Duration
 	CleanupInterval  time.Duration
+	IsInternetProxy  bool // Flag to indicate if this pool is for internet proxy
 }
 
 // NewProductionVSockPool creates a new production-grade VSock connection pool
@@ -106,6 +108,7 @@ func NewProductionVSockPool(config *ProductionVSockPoolConfig) *VSockPool {
 		maxPoolSize:   config.MaxPoolSize,
 		connectionTTL: config.ConnectionTTL,
 		idleTimeout:   config.IdleTimeout,
+		config:        config,
 
 		idleConns:   make([]*pooledConnection, 0, config.MaxPoolSize),
 		activeConns: make(map[*pooledConnection]time.Time),
@@ -278,10 +281,19 @@ func (p *VSockPool) Shutdown(ctx context.Context) error {
 // Private methods for pool management
 
 func (p *VSockPool) prePopulatePool(ctx context.Context) error {
+	// Don't pre-populate for internet proxy pool since each connection needs a target address
+	if p.config.IsInternetProxy {
+		return nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Create minimum number of connections
 	for i := 0; i < p.minPoolSize; i++ {
-		conn, err := p.createConnection(ctx)
+		conn, err := vsock.Dial(p.cid, p.port, nil)
 		if err != nil {
-			return fmt.Errorf("failed to create initial connection %d: %v", i, err)
+			return fmt.Errorf("failed to create connection: %v", err)
 		}
 
 		pooledConn := &pooledConnection{
@@ -294,10 +306,8 @@ func (p *VSockPool) prePopulatePool(ctx context.Context) error {
 
 		p.idleConns = append(p.idleConns, pooledConn)
 		atomic.AddInt32(&p.connCount, 1)
-		atomic.AddInt64(&p.metrics.ConnectionsCreated, 1)
 	}
 
-	atomic.StoreInt32(&p.maxConnCount, int32(p.maxPoolSize))
 	return nil
 }
 
@@ -413,33 +423,34 @@ func (p *VSockPool) connectionManager(ctx context.Context) {
 }
 
 func (p *VSockPool) maintainPoolSize(ctx context.Context) {
-	p.mu.RLock()
-	currentIdle := len(p.idleConns)
-	currentActive := len(p.activeConns)
-	p.mu.RUnlock()
+	// Don't maintain pool size for internet proxy
+	if p.config.IsInternetProxy {
+		return
+	}
 
-	currentTotal := currentIdle + currentActive
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	// Ensure minimum pool size
-	if currentTotal < p.minPoolSize {
-		needed := p.minPoolSize - currentTotal
+	currentSize := len(p.idleConns) + len(p.activeConns)
+	if currentSize < p.minPoolSize {
+		needed := p.minPoolSize - currentSize
 		for i := 0; i < needed; i++ {
-			if conn, err := p.createConnection(ctx); err == nil {
-				pooledConn := &pooledConnection{
-					conn:        conn,
-					createdAt:   time.Now(),
-					lastUsedAt:  time.Now(),
-					isValid:     true,
-					validatedAt: time.Now(),
-				}
-
-				p.mu.Lock()
-				p.idleConns = append(p.idleConns, pooledConn)
-				p.mu.Unlock()
-
-				atomic.AddInt32(&p.connCount, 1)
-				atomic.AddInt64(&p.metrics.ConnectionsCreated, 1)
+			conn, err := vsock.Dial(p.cid, p.port, nil)
+			if err != nil {
+				log.Printf("[VSockPool] Failed to create connection during maintenance: %v", err)
+				continue
 			}
+
+			pooledConn := &pooledConnection{
+				conn:        conn,
+				createdAt:   time.Now(),
+				lastUsedAt:  time.Now(),
+				isValid:     true,
+				validatedAt: time.Now(),
+			}
+
+			p.idleConns = append(p.idleConns, pooledConn)
+			atomic.AddInt32(&p.connCount, 1)
 		}
 	}
 }
