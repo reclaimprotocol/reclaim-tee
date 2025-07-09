@@ -838,30 +838,19 @@ func (t *TEET) sendMessageToClientSession(sessionID string, msg *shared.Message)
 }
 
 func (t *TEET) sendMessageToTEEKForSession(sessionID string, msg *shared.Message) error {
-	if sessionID == "" {
-		return fmt.Errorf("session ID is required")
-	}
-
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		return fmt.Errorf("session %s not found: %v", sessionID, err)
+		return fmt.Errorf("failed to get session %s: %v", sessionID, err)
 	}
 
 	if session.TEEKConn == nil {
-		return fmt.Errorf("no TEE_K connection available for session %s", sessionID)
+		return fmt.Errorf("no TEE_K connection in session %s", sessionID)
 	}
 
-	// Add session ID to message
 	msg.SessionID = sessionID
 
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %v", err)
-	}
-
-	// Use the underlying websocket connection
-	wsConn := session.TEEKConn.(*shared.WSConnection)
-	return wsConn.GetWebSocketConn().WriteMessage(websocket.TextMessage, msgBytes)
+	// Use the thread-safe WriteJSON method instead of bypassing the mutex
+	return session.TEEKConn.WriteJSON(msg)
 }
 
 func (t *TEET) sendErrorToTEEKForSession(sessionID string, conn *websocket.Conn, errMsg string) {

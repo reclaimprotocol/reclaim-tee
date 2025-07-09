@@ -506,7 +506,7 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 	}
 
 	// Check if we now have both transcript public keys and can verify against attestations
-	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.attestationVerified {
+	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
 		log.Printf("[Client] 🔒 Both transcript public keys received - verifying against attestations...")
 		if err := c.verifyAttestationPublicKeys(); err != nil {
 			log.Printf("[Client] ❌ Attestation public key verification failed: %v", err)

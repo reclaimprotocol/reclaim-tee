@@ -103,6 +103,7 @@ type Client struct {
 	teekTranscriptPublicKey  []byte // Public key from TEE_K signed transcript
 	teetTranscriptPublicKey  []byte // Public key from TEE_T signed transcript
 	attestationVerified      bool   // Flag to track if attestation verification passed
+	publicKeyComparisonDone  bool   // Flag to track if public key comparison was completed
 }
 
 func NewClient(teekURL string) *Client {
@@ -130,6 +131,7 @@ func NewClient(teekURL string) *Client {
 		teekTranscriptPublicKey:   nil,
 		teetTranscriptPublicKey:   nil,
 		attestationVerified:       false,
+		publicKeyComparisonDone:   false,
 	}
 }
 
@@ -654,6 +656,6 @@ func (c *Client) verifyAttestationPublicKeys() error {
 	fmt.Printf("[Client] 🔒 ✅ TEE_K: attestation and transcript public keys match\n")
 	fmt.Printf("[Client] 🔒 ✅ TEE_T: attestation and transcript public keys match\n")
 
-	c.attestationVerified = true
+	c.publicKeyComparisonDone = true
 	return nil
 }
