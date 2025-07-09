@@ -161,7 +161,7 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 		ParentCID:    config.ParentCID,
 		KMSPort:      config.KMSPort,
 		InternetPort: config.InternetPort,
-		KMSKeyID:     config.KMSKey,
+		KMSKeyID:     kmsKeyID, // Use the kmsKeyID parameter instead of config.KMSKey
 	})
 
 	err := connectionMgr.Start(ctx)
