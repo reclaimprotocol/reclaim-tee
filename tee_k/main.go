@@ -51,22 +51,9 @@ func startStandaloneMode(config *TEEKConfig) {
 		}
 	}()
 
-	// Connect to TEE_T
-	go func() {
-		time.Sleep(1 * time.Second) // Wait a moment for TEE_T to start
-		log.Printf("[TEE_K] Standalone mode: Connecting to TEE_T at URL: %s", config.TEETURL)
-		teek.SetTEETURL(config.TEETURL)
-		for i := 0; i < 10; i++ {
-			log.Printf("[TEE_K] Attempting to connect to TEE_T (attempt %d/10) at %s", i+1, config.TEETURL)
-			if err := teek.ConnectToTEET(); err == nil {
-				log.Printf("[TEE_K] Successfully connected to TEE_T at %s", config.TEETURL)
-				break
-			} else {
-				log.Printf("[TEE_K] Failed to connect to TEE_T (attempt %d/10): %v", i+1, err)
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-	}()
+	// Set TEE_T URL for per-session connections
+	teek.SetTEETURL(config.TEETURL)
+	log.Printf("[TEE_K] Standalone mode: TEE_T URL set to %s, will create per-session connections", config.TEETURL)
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)

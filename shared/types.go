@@ -159,6 +159,7 @@ type Session struct {
 	ID           string
 	ClientConn   Connection
 	TEEKConn     Connection
+	TEETConn     Connection // Per-session connection to TEE_T
 	CreatedAt    time.Time
 	LastActiveAt time.Time
 	State        SessionState

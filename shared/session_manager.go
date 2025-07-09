@@ -174,6 +174,11 @@ func (sm *SessionManager) CloseSession(sessionID string) error {
 		delete(sm.sessionsByConn, session.ClientConn)
 	}
 
+	// Close per-session TEE_T connection if it exists
+	if session.TEETConn != nil {
+		session.TEETConn.Close()
+	}
+
 	delete(sm.sessions, sessionID)
 	return nil
 }

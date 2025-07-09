@@ -32,9 +32,8 @@ type TEEK struct {
 	// Session management
 	sessionManager shared.SessionManagerInterface
 
-	// TEE_T connection (shared across all sessions)
-	teetConn *websocket.Conn
-	teetURL  string
+	// TEE_T connection settings
+	teetURL string
 
 	tlsClient      *minitls.Client
 	wsConn2TLS     *WebSocketConn
@@ -122,9 +121,9 @@ func createVSockWebSocketDialer() *websocket.Dialer {
 	}
 }
 
-// ConnectToTEET establishes connection to TEE_T
-func (t *TEEK) ConnectToTEET() error {
-	log.Printf("[TEE_K] Attempting WebSocket connection to TEE_T at: %s", t.teetURL)
+// connectToTEETForSession establishes a per-session connection to TEE_T
+func (t *TEEK) connectToTEETForSession(sessionID string) (*websocket.Conn, error) {
+	log.Printf("[TEE_K] Session %s: Attempting WebSocket connection to TEE_T at: %s", sessionID, t.teetURL)
 
 	// Check if using TLS (wss://)
 	if strings.HasPrefix(t.teetURL, "wss://") {
@@ -149,78 +148,66 @@ func (t *TEEK) ConnectToTEET() error {
 	}
 
 	if err != nil {
-		log.Printf("[TEE_K] WebSocket dial failed for %s: %v", t.teetURL, err)
-		return fmt.Errorf("failed to connect to TEE_T: %v", err)
+		log.Printf("[TEE_K] Session %s: WebSocket dial failed for %s: %v", sessionID, t.teetURL, err)
+		return nil, fmt.Errorf("failed to connect to TEE_T: %v", err)
 	}
 
-	t.teetConn = conn
-	log.Printf("[TEE_K] WebSocket connection established successfully to %s", t.teetURL)
-
-	// Start message handling
-	go t.handleTEETMessages()
-	return nil
+	log.Printf("[TEE_K] Session %s: WebSocket connection established successfully to %s", sessionID, t.teetURL)
+	return conn, nil
 }
 
-// handleTEETMessages handles messages from TEE_T
-func (t *TEEK) handleTEETMessages() {
-	for {
-		if t.teetConn == nil {
-			break
-		}
+// handleTEETMessagesForSession handles messages from TEE_T for a specific session
+func (t *TEEK) handleTEETMessagesForSession(sessionID string, conn *websocket.Conn) {
+	defer conn.Close()
 
-		_, msgBytes, err := t.teetConn.ReadMessage()
+	for {
+		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("[TEE_K] Session %s: TEE_T disconnected normally", sessionID)
 			} else if !isNetworkShutdownError(err) {
-				log.Printf("[TEE_K] Failed to read TEE_T message: %v", err)
+				log.Printf("[TEE_K] Session %s: Failed to read TEE_T message: %v", sessionID, err)
 			}
 			break
 		}
 
 		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
-			log.Printf("[TEE_K] Failed to parse TEE_T message: %v", err)
+			log.Printf("[TEE_K] Session %s: Failed to parse TEE_T message: %v", sessionID, err)
 			continue
 		}
 
-		// Route based on whether message has session ID (session-aware vs legacy)
-		if msg.SessionID != "" {
-			// Session-aware message routing
-			switch msg.Type {
-			case shared.MsgResponseLength:
-				t.handleResponseLengthSession(msg.SessionID, msg)
-			case shared.MsgResponseTagVerification:
-				t.handleResponseTagVerificationSession(msg.SessionID, msg)
-			case shared.MsgFinished:
-				t.handleFinishedFromTEETSession(msg.SessionID, msg)
-			default:
-				log.Printf("[TEE_K] Unknown session-aware TEE_T message type: %s", msg.Type)
-			}
-		} else {
-			log.Printf("[TEE_K] MESSAGE WITHOUT SESSION ID: %s", msg)
+		// Ensure message has the correct session ID
+		if msg.SessionID != sessionID {
+			log.Printf("[TEE_K] Session %s: Message has wrong session ID: %s", sessionID, msg.SessionID)
 			continue
 		}
+
+		// Route session-aware messages
+		switch msg.Type {
+		case shared.MsgResponseLength:
+			t.handleResponseLengthSession(msg.SessionID, msg)
+		case shared.MsgResponseTagVerification:
+			t.handleResponseTagVerificationSession(msg.SessionID, msg)
+		case shared.MsgFinished:
+			t.handleFinishedFromTEETSession(msg.SessionID, msg)
+		default:
+			log.Printf("[TEE_K] Session %s: Unknown TEE_T message type: %s", sessionID, msg.Type)
+		}
 	}
+
+	log.Printf("[TEE_K] Session %s: TEE_T message handler stopped", sessionID)
 }
 
-// sendMessageToTEET sends a message to TEE_T
-func (t *TEEK) sendMessageToTEET(msg *shared.Message) error {
-	if t.teetConn == nil {
-		return fmt.Errorf("no TEE_T connection available")
-	}
-
-	msgBytes, err := json.Marshal(msg)
+// sendMessageToTEETForSession sends a message to TEE_T for a specific session
+func (t *TEEK) sendMessageToTEETForSession(sessionID string, msg *shared.Message) error {
+	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		return fmt.Errorf("failed to marshal message: %v", err)
+		return fmt.Errorf("session %s not found: %v", sessionID, err)
 	}
 
-	return t.teetConn.WriteMessage(websocket.TextMessage, msgBytes)
-}
-
-// sendMessageToTEETWithSession sends a message to TEE_T with session ID
-func (t *TEEK) sendMessageToTEETWithSession(sessionID string, msg *shared.Message) error {
-	if t.teetConn == nil {
-		return fmt.Errorf("no TEE_T connection available")
+	if session.TEETConn == nil {
+		return fmt.Errorf("no TEE_T connection available for session %s", sessionID)
 	}
 
 	// Add session ID to message
@@ -231,7 +218,9 @@ func (t *TEEK) sendMessageToTEETWithSession(sessionID string, msg *shared.Messag
 		return fmt.Errorf("failed to marshal message: %v", err)
 	}
 
-	return t.teetConn.WriteMessage(websocket.TextMessage, msgBytes)
+	// Use the underlying websocket connection
+	wsConn := session.TEETConn.(*shared.WSConnection)
+	return wsConn.GetWebSocketConn().WriteMessage(websocket.TextMessage, msgBytes)
 }
 
 func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -321,12 +310,27 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	t.sessionManager.CloseSession(sessionID)
 }
 
-// notifyTEETNewSession sends session registration to TEE_T
+// notifyTEETNewSession creates per-session connection and sends session registration to TEE_T
 func (t *TEEK) notifyTEETNewSession(sessionID string) error {
-	if t.teetConn == nil {
-		return fmt.Errorf("no TEE_T connection available")
+	// Create per-session connection to TEE_T
+	teetConn, err := t.connectToTEETForSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to create TEE_T connection for session %s: %v", sessionID, err)
 	}
 
+	// Store the connection in the session
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		teetConn.Close()
+		return fmt.Errorf("session %s not found: %v", sessionID, err)
+	}
+
+	session.TEETConn = shared.NewWSConnection(teetConn)
+
+	// Start message handler for this session
+	go t.handleTEETMessagesForSession(sessionID, teetConn)
+
+	// Send session registration to TEE_T
 	msg := shared.CreateSessionMessage(shared.MsgSessionCreated, sessionID, map[string]interface{}{
 		"session_id": sessionID,
 	})
@@ -336,7 +340,12 @@ func (t *TEEK) notifyTEETNewSession(sessionID string) error {
 		return fmt.Errorf("failed to marshal session notification: %v", err)
 	}
 
-	return t.teetConn.WriteMessage(websocket.TextMessage, msgBytes)
+	if err := teetConn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
+		return fmt.Errorf("failed to send session notification: %v", err)
+	}
+
+	log.Printf("[TEE_K] Session %s: Successfully created TEE_T connection and sent session registration", sessionID)
+	return nil
 }
 
 // sendErrorToSession sends an error message to a specific session
@@ -1147,7 +1156,7 @@ func (t *TEEK) requestKeyShareFromTEET(cipherSuite uint16) error {
 	}
 
 	msg := shared.CreateMessage(shared.MsgKeyShareRequest, keyReq)
-	return t.sendMessageToTEET(msg)
+	return t.sendMessageToTEETForSession("", msg)
 }
 
 // requestKeyShareFromTEETWithSession requests a key share from TEE_T for split AEAD with session ID
@@ -1175,7 +1184,7 @@ func (t *TEEK) requestKeyShareFromTEETWithSession(sessionID string, cipherSuite 
 	}
 
 	msg := shared.CreateMessage(shared.MsgKeyShareRequest, keyReq)
-	return t.sendMessageToTEETWithSession(sessionID, msg)
+	return t.sendMessageToTEETForSession(sessionID, msg)
 }
 
 // sendEncryptedRequestToTEET sends encrypted request data and tag secrets to TEE_T
@@ -1191,7 +1200,7 @@ func (t *TEEK) sendEncryptedRequestToTEET(encryptedData, tagSecrets []byte, ciph
 	}
 
 	msg := shared.CreateMessage(shared.MsgEncryptedRequest, encReq)
-	return t.sendMessageToTEET(msg)
+	return t.sendMessageToTEETForSession("", msg)
 }
 
 // sendEncryptedRequestToTEETWithSession sends encrypted request data and tag secrets to TEE_T with session ID
@@ -1207,7 +1216,7 @@ func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encrypted
 	}
 
 	msg := shared.CreateMessage(shared.MsgEncryptedRequest, encReq)
-	return t.sendMessageToTEETWithSession(sessionID, msg)
+	return t.sendMessageToTEETForSession(sessionID, msg)
 }
 
 // Session-aware response handling methods
@@ -1260,7 +1269,7 @@ func (t *TEEK) handleResponseLengthSession(sessionID string, msg *shared.Message
 
 	secretsMsg := shared.CreateSessionMessage(shared.MsgResponseTagSecrets, sessionID, secretsData)
 
-	if err := t.sendMessageToTEETWithSession(sessionID, secretsMsg); err != nil {
+	if err := t.sendMessageToTEETForSession(sessionID, secretsMsg); err != nil {
 		log.Printf("[TEE_K] Failed to send tag secrets to TEE_T for session %s: %v", sessionID, err)
 		return
 	}
@@ -1462,7 +1471,7 @@ func (t *TEEK) handleResponseLength(msg *shared.Message) {
 
 	secretsMsg := shared.CreateMessage(shared.MsgResponseTagSecrets, secretsData)
 
-	if err := t.sendMessageToTEET(secretsMsg); err != nil {
+	if err := t.sendMessageToTEETForSession("", secretsMsg); err != nil {
 		log.Printf("[TEE_K] Failed to send tag secrets to TEE_T: %v", err)
 		return
 	}
@@ -1672,7 +1681,7 @@ func (t *TEEK) handleFinishedFromClientSession(sessionID string, msg *shared.Mes
 	}
 
 	forwardMsg := shared.CreateSessionMessage(shared.MsgFinished, sessionID, teekFinishedMsg)
-	if err := t.sendMessageToTEETWithSession(sessionID, forwardMsg); err != nil {
+	if err := t.sendMessageToTEETForSession(sessionID, forwardMsg); err != nil {
 		log.Printf("[TEE_K] Failed to forward finished message to TEE_T: %v", err)
 		return
 	}
