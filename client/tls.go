@@ -309,11 +309,6 @@ func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLe
 func (c *Client) processTLSRecord(record []byte) {
 	fmt.Printf("[Client] ENTERING processTLSRecord with responseSeqNum=%d\n", c.responseSeqNum)
 
-	// *** ALWAYS store record for transcript creation ***
-	c.capturedTraffic = append(c.capturedTraffic, record)
-	fmt.Printf("[Client] Stored TLS record for transcript (%d bytes, total records: %d)\n",
-		len(record), len(c.capturedTraffic))
-
 	// Extract encrypted payload and tag (skip 5-byte header)
 	encryptedPayload := record[5:]
 
