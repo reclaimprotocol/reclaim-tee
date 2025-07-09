@@ -107,7 +107,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[TEE_T] DEBUG: WebSocket local addr: %s, remote addr: %s\n",
 		conn.LocalAddr().String(), conn.RemoteAddr().String())
 
-	var isClosing bool
 	var sessionID string
 
 	fmt.Printf("[TEE_T] DEBUG: Client connection stored, starting message loop\n")
@@ -117,13 +116,11 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
-			if !isClosing {
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					fmt.Printf("[TEE_T] DEBUG: Client connection closed normally: %v\n", err)
-				} else if !isNetworkShutdownError(err) {
-					log.Printf("[TEE_T] Failed to read client websocket message: %v", err)
-					fmt.Printf("[TEE_T] DEBUG: Unexpected read error: %v\n", err)
-				}
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				fmt.Printf("[TEE_T] DEBUG: Client connection closed normally: %v\n", err)
+			} else if !isNetworkShutdownError(err) {
+				log.Printf("[TEE_T] Failed to read client websocket message: %v", err)
+				fmt.Printf("[TEE_T] DEBUG: Unexpected read error: %v\n", err)
 			}
 			break
 		}
@@ -134,11 +131,9 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
-			if !isClosing {
-				log.Printf("[TEE_T] Failed to parse client message: %v", err)
-				fmt.Printf("[TEE_T] DEBUG: Parse error for message: %v\n", err)
-				t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
-			}
+			log.Printf("[TEE_T] Failed to parse client message: %v", err)
+			fmt.Printf("[TEE_T] DEBUG: Parse error for message: %v\n", err)
+			t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
 			continue
 		}
 
@@ -177,11 +172,9 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("[TEE_T] DEBUG: Handling MsgFinished from client\n")
 			t.handleFinishedFromClientSession(sessionID, msg)
 		default:
-			if !isClosing {
-				log.Printf("[TEE_T] Unknown client message type: %s", msg.Type)
-				fmt.Printf("[TEE_T] DEBUG: Unknown message type: %s\n", msg.Type)
-				t.sendErrorToClient(conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
-			}
+			log.Printf("[TEE_T] Unknown client message type: %s", msg.Type)
+			fmt.Printf("[TEE_T] DEBUG: Unknown message type: %s\n", msg.Type)
+			t.sendErrorToClient(conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
 		}
 	}
 
@@ -199,7 +192,6 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var isClosing bool
 	var sessionID string
 
 	log.Printf("[TEE_T] TEE_K connection established from %s", conn.RemoteAddr())
@@ -207,22 +199,18 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
-			if !isClosing {
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Printf("[TEE_T] TEE_K disconnected normally for session %s", sessionID)
-				} else if !isNetworkShutdownError(err) {
-					log.Printf("[TEE_T] Failed to read TEE_K websocket message: %v", err)
-				}
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("[TEE_T] TEE_K disconnected normally for session %s", sessionID)
+			} else if !isNetworkShutdownError(err) {
+				log.Printf("[TEE_T] Failed to read TEE_K websocket message: %v", err)
 			}
 			break
 		}
 
 		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
-			if !isClosing {
-				log.Printf("[TEE_T] Failed to parse TEE_K message: %v", err)
-				t.sendErrorToTEEKForSession("", conn, fmt.Sprintf("Failed to parse message: %v", err))
-			}
+			log.Printf("[TEE_T] Failed to parse TEE_K message: %v", err)
+			t.sendErrorToTEEKForSession("", conn, fmt.Sprintf("Failed to parse message: %v", err))
 			continue
 		}
 
@@ -260,10 +248,8 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgFinished:
 			t.handleFinishedFromTEEKSession(msg)
 		default:
-			if !isClosing {
-				log.Printf("[TEE_T] Unknown TEE_K message type: %s", msg.Type)
-				t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
-			}
+			log.Printf("[TEE_T] Unknown TEE_K message type: %s", msg.Type)
+			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
 		}
 	}
 
