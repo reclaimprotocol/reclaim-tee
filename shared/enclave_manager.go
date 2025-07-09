@@ -26,11 +26,6 @@ type EnclaveManager struct {
 	connectionMgr *VSockConnectionManager
 	certManager   *VSockLegoManager
 	cache         *EnclaveCache
-	certCache     struct {
-		cert     *tls.Certificate
-		mu       sync.RWMutex
-		lastSync time.Time
-	}
 }
 
 type EnclaveConfig struct {
@@ -204,6 +199,15 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	log.Printf("[%s] Bootstrapping certificates for domain: %s", em.config.ServiceName, em.config.Domain)
 
+	// First check if we already have a valid certificate
+	cert, err := em.certManager.GetCertificate(&tls.ClientHelloInfo{
+		ServerName: em.config.Domain,
+	})
+	if err == nil && cert != nil {
+		log.Printf("[%s] Found valid certificate - skipping ACME process", em.config.ServiceName)
+		return nil
+	}
+
 	log.Printf("[%s] Starting ACME challenge for %s", em.config.ServiceName, em.config.Domain)
 
 	// Create VSock HTTP server for ACME challenges
@@ -224,7 +228,7 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	log.Printf("[%s] Starting ACME certificate request for %s...", em.config.ServiceName, em.config.Domain)
 	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.certManager.config.CADirURL)
 
-	err := em.certManager.BootstrapCertificates(ctx)
+	err = em.certManager.BootstrapCertificates(ctx)
 	if err != nil {
 		return err
 	}
@@ -299,39 +303,11 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	return nil
 }
 
-// CreateHTTPSServer creates an HTTPS server with  TLS configuration and debugging
+// CreateHTTPSServer creates an HTTPS server with TLS configuration and debugging
 func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *VSockHTTPSServer {
 	tlsConfig := &tls.Config{
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			em.certCache.mu.RLock()
-			if em.certCache.cert != nil && time.Since(em.certCache.lastSync) < 1*time.Hour {
-				cert := em.certCache.cert
-				em.certCache.mu.RUnlock()
-				log.Printf("[%s] Using cached certificate for domain: %s", em.config.ServiceName, hello.ServerName)
-				return cert, nil
-			}
-			em.certCache.mu.RUnlock()
-
-			// Get fresh certificate
-			em.certCache.mu.Lock()
-			defer em.certCache.mu.Unlock()
-
-			// Double check if another goroutine updated the cache while we were waiting
-			if em.certCache.cert != nil && time.Since(em.certCache.lastSync) < 1*time.Hour {
-				return em.certCache.cert, nil
-			}
-
-			cert, err := em.certManager.GetCertificate(hello)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get certificate: %v", err)
-			}
-
-			em.certCache.cert = cert
-			em.certCache.lastSync = time.Now()
-			log.Printf("[%s] Updated certificate cache for domain: %s", em.config.ServiceName, hello.ServerName)
-			return cert, nil
-		},
-		MinVersion: tls.VersionTLS12,
+		GetCertificate: em.certManager.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
 	}
 
 	return em.createVSockHTTPSServer(handler, tlsConfig, em.config.HTTPSPort)

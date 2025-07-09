@@ -347,6 +347,7 @@ func (m *VSockLegoManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Cert
 		domain = m.config.Domain
 	}
 
+	// First try in-memory cache
 	m.mu.RLock()
 	if cert, exists := m.certificates[domain]; exists {
 		if m.isValidCertificate(cert) {
@@ -356,7 +357,7 @@ func (m *VSockLegoManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Cert
 	}
 	m.mu.RUnlock()
 
-	// Load from cache
+	// Then try persistent cache
 	cert, err := m.getCachedCertificate(context.Background(), domain)
 	if err == nil && m.isValidCertificate(cert) {
 		m.mu.Lock()
@@ -365,7 +366,44 @@ func (m *VSockLegoManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Cert
 		return cert, nil
 	}
 
-	return nil, fmt.Errorf("no valid certificate available for domain %s", domain)
+	// No valid certificate found - attempt renewal
+	log.Printf("[%s] No valid certificate found for %s, attempting renewal", m.config.ServiceName, domain)
+
+	if m.client == nil {
+		return nil, fmt.Errorf("no ACME client available for certificate renewal")
+	}
+
+	// Request new certificate
+	request := certificate.ObtainRequest{
+		Domains: []string{domain},
+		Bundle:  true,
+	}
+
+	certificates, err := m.client.Certificate.Obtain(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to renew certificate: %v", err)
+	}
+
+	// Store in persistent cache
+	err = m.storeCertificate(context.Background(), domain, certificates)
+	if err != nil {
+		log.Printf("[%s] Warning: failed to cache renewed certificate: %v", m.config.ServiceName, err)
+	}
+
+	// Parse and store in memory
+	certPEM := certificates.Certificate
+	keyPEM := certificates.PrivateKey
+	newCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse renewed certificate: %v", err)
+	}
+
+	m.mu.Lock()
+	m.certificates[domain] = &newCert
+	m.mu.Unlock()
+
+	log.Printf("[%s] Successfully renewed certificate for %s", m.config.ServiceName, domain)
+	return &newCert, nil
 }
 
 // CreateTLSConfig creates a TLS configuration with certificate management
