@@ -10,6 +10,74 @@ import (
 	"time"
 )
 
+// parseAndCaptureHandshakeRecords parses TLS records from handshake data and stores them for transcript validation
+func (c *Client) parseAndCaptureHandshakeRecords(data []byte) {
+	offset := 0
+
+	for offset < len(data) {
+		// Need at least 5 bytes for TLS record header
+		if offset+5 > len(data) {
+			break
+		}
+
+		// Parse TLS record header: type (1) + version (2) + length (2)
+		recordType := data[offset]
+		recordLength := int(data[offset+3])<<8 | int(data[offset+4])
+		totalRecordLength := 5 + recordLength
+
+		// Check if we have the complete record
+		if offset+totalRecordLength > len(data) {
+			break
+		}
+
+		// Extract the complete record
+		record := make([]byte, totalRecordLength)
+		copy(record, data[offset:offset+totalRecordLength])
+
+		// Store handshake and other relevant records for transcript validation
+		if recordType == 0x16 || recordType == 0x17 || recordType == 0x15 || recordType == 0x14 {
+			c.capturedTraffic = append(c.capturedTraffic, record)
+			fmt.Printf("[Client] 📦 Captured handshake-phase TLS record: type 0x%02x, %d bytes\n", recordType, len(record))
+		}
+
+		offset += totalRecordLength
+	}
+}
+
+// parseAndCaptureOutgoingRecords parses TLS records from outgoing data and stores them for transcript validation
+func (c *Client) parseAndCaptureOutgoingRecords(data []byte) {
+	offset := 0
+
+	for offset < len(data) {
+		// Need at least 5 bytes for TLS record header
+		if offset+5 > len(data) {
+			break
+		}
+
+		// Parse TLS record header: type (1) + version (2) + length (2)
+		recordType := data[offset]
+		recordLength := int(data[offset+3])<<8 | int(data[offset+4])
+		totalRecordLength := 5 + recordLength
+
+		// Check if we have the complete record
+		if offset+totalRecordLength > len(data) {
+			break
+		}
+
+		// Extract the complete record
+		record := make([]byte, totalRecordLength)
+		copy(record, data[offset:offset+totalRecordLength])
+
+		// Store all outgoing TLS records for transcript validation
+		if recordType == 0x16 || recordType == 0x17 || recordType == 0x15 || recordType == 0x14 {
+			c.capturedTraffic = append(c.capturedTraffic, record)
+			fmt.Printf("[Client] 📤 Captured outgoing TLS record: type 0x%02x, %d bytes\n", recordType, len(record))
+		}
+
+		offset += totalRecordLength
+	}
+}
+
 // handleConnectionReady processes connection ready messages from TEE_K
 func (c *Client) handleConnectionReady(msg *Message) {
 	var readyData ConnectionReadyData
@@ -78,6 +146,14 @@ func (c *Client) handleSendTCPData(msg *Message) {
 	}
 
 	fmt.Printf("[Client] DEBUG: Received TCP data with %d bytes\n", len(tcpData.Data))
+
+	// *** CAPTURE RAW TCP DATA EXACTLY AS TEE_K SEES IT ***
+	// Don't parse into individual TLS records - capture the raw TCP chunk
+	rawTCPData := make([]byte, len(tcpData.Data))
+	copy(rawTCPData, tcpData.Data)
+	c.capturedTraffic = append(c.capturedTraffic, rawTCPData)
+	fmt.Printf("[Client] 📤 Captured outgoing raw TCP chunk: %d bytes\n", len(rawTCPData))
+	fmt.Printf("[Client] 📊 Total captured chunks now: %d\n", len(c.capturedTraffic))
 
 	// Forward TLS data from TEE_K to website via our TCP connection
 	conn := c.tcpConn
@@ -164,6 +240,16 @@ func (c *Client) tcpToWebsocket() {
 
 		if !c.handshakeComplete {
 			// During handshake: Forward raw data to TEE_K
+			fmt.Printf("[Client] 📥 Handshake phase: received %d bytes from server\n", n)
+
+			// *** CAPTURE RAW TCP DATA EXACTLY AS TEE_K SEES IT ***
+			// Don't parse into individual TLS records - capture the raw TCP chunk
+			rawTCPData := make([]byte, n)
+			copy(rawTCPData, buffer[:n])
+			c.capturedTraffic = append(c.capturedTraffic, rawTCPData)
+			fmt.Printf("[Client] 📦 Captured raw TCP chunk: %d bytes (handshake phase)\n", len(rawTCPData))
+			fmt.Printf("[Client] 📊 Total captured chunks now: %d\n", len(c.capturedTraffic))
+
 			tcpDataMsg, err := CreateMessage(MsgTCPData, TCPData{Data: buffer[:n]})
 			if err != nil {
 				log.Printf("[Client] Failed to create TCP data message: %v", err)

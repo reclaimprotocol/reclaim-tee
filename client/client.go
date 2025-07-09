@@ -104,6 +104,10 @@ type Client struct {
 	teetTranscriptPublicKey  []byte // Public key from TEE_T signed transcript
 	attestationVerified      bool   // Flag to track if attestation verification passed
 	publicKeyComparisonDone  bool   // Flag to track if public key comparison was completed
+
+	// Transcript validation fields
+	teekTranscriptPackets [][]byte // Packets from TEE_K signed transcript for validation
+	teetTranscriptPackets [][]byte // Packets from TEE_T signed transcript for validation
 }
 
 func NewClient(teekURL string) *Client {
@@ -132,6 +136,8 @@ func NewClient(teekURL string) *Client {
 		teetTranscriptPublicKey:   nil,
 		attestationVerified:       false,
 		publicKeyComparisonDone:   false,
+		teekTranscriptPackets:     nil,
+		teetTranscriptPackets:     nil,
 	}
 }
 
