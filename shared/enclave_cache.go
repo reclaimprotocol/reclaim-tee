@@ -12,10 +12,15 @@ type EnclaveCache struct {
 	serviceName string // Service name prefix (tee_k or tee_t)
 	mu          sync.RWMutex
 	memoryCache map[string][]byte
+	stats       struct {
+		hits   int
+		misses int
+	}
 }
 
 // NewEnclaveCache creates a new enclave cache with comprehensive KMS encryption and service-specific prefixes
 func NewEnclaveCache(connectionMgr *VSockConnectionManager, kmsKeyID string, serviceName string) *EnclaveCache {
+	log.Printf("[EnclaveCache:%s] Creating new enclave cache", serviceName)
 	return &EnclaveCache{
 		kmsHandler:  NewKMSHandler(connectionMgr, kmsKeyID, serviceName),
 		serviceName: serviceName,
@@ -25,18 +30,23 @@ func NewEnclaveCache(connectionMgr *VSockConnectionManager, kmsKeyID string, ser
 
 // Get retrieves and decrypts a cached item using comprehensive KMS handler
 func (c *EnclaveCache) Get(ctx context.Context, key string) ([]byte, error) {
-	log.Printf("[EnclaveCache:%s] GET CALLED - Looking for %s", c.serviceName, key)
+	stack := getStackTrace()
+	log.Printf("[EnclaveCache:%s] GET CALLED - Looking for %s - STACK: %s", c.serviceName, key, stack)
 
 	c.mu.RLock()
 	// Check memory cache first
 	if data, exists := c.memoryCache[key]; exists {
 		c.mu.RUnlock()
-		log.Printf("[EnclaveCache:%s] Found %s in memory cache (%d bytes)", c.serviceName, key, len(data))
+		c.stats.hits++
+		log.Printf("[EnclaveCache:%s] CACHE HIT (%d hits/%d misses) - Found %s in memory cache (%d bytes)",
+			c.serviceName, c.stats.hits, c.stats.misses, key, len(data))
 		return data, nil
 	}
 	c.mu.RUnlock()
 
-	log.Printf("[EnclaveCache:%s] %s not in memory cache, loading from KMS", c.serviceName, key)
+	c.stats.misses++
+	log.Printf("[EnclaveCache:%s] CACHE MISS (%d hits/%d misses) - %s not in memory cache, loading from KMS",
+		c.serviceName, c.stats.hits, c.stats.misses, key)
 
 	// Attempt to load from persistent storage using comprehensive KMS handler with attestation
 	data, err := c.kmsHandler.LoadAndDecryptCacheItem(ctx, key)
@@ -56,7 +66,9 @@ func (c *EnclaveCache) Get(ctx context.Context, key string) ([]byte, error) {
 
 // Put encrypts and stores a cached item using comprehensive KMS handler
 func (c *EnclaveCache) Put(ctx context.Context, key string, data []byte) error {
-	log.Printf("[EnclaveCache:%s] PUT CALLED - Storing %s in cache (%d bytes)", c.serviceName, key, len(data))
+	stack := getStackTrace()
+	log.Printf("[EnclaveCache:%s] PUT CALLED - Storing %s in cache (%d bytes) - STACK: %s",
+		c.serviceName, key, len(data), stack)
 
 	// Store in memory cache first
 	c.mu.Lock()
@@ -77,11 +89,13 @@ func (c *EnclaveCache) Put(ctx context.Context, key string, data []byte) error {
 
 // Delete removes a cached item using comprehensive KMS handler
 func (c *EnclaveCache) Delete(ctx context.Context, key string) error {
+	stack := getStackTrace()
+	log.Printf("[EnclaveCache:%s] DELETE CALLED - Removing %s from cache - STACK: %s",
+		c.serviceName, key, stack)
+
 	c.mu.Lock()
 	delete(c.memoryCache, key)
 	c.mu.Unlock()
-
-	log.Printf("[EnclaveCache:%s] Deleting %s from cache", c.serviceName, key)
 
 	// Delete from persistent storage using comprehensive KMS handler
 	return c.kmsHandler.DeleteCacheItem(ctx, key)
