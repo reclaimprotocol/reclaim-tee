@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"tee-mpc/minitls"
@@ -49,10 +48,6 @@ type TEEK struct {
 	responseLengthBySeq map[uint64]int // Store response lengths by sequence number
 	serverSequenceNum   uint64         // Track server's actual sequence number manually
 
-	// Single Session Mode: Transcript collection
-	transcriptPackets [][]byte   // Collect all packets for transcript signing
-	transcriptMutex   sync.Mutex // Protect transcript collection
-
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
 }
@@ -63,7 +58,8 @@ type WebSocketConn struct {
 	readBuffer  []byte
 	readOffset  int
 	pendingData chan []byte
-	teek        *TEEK // Reference to TEEK for transcript collection
+	teek        *TEEK  // Reference to TEEK for transcript collection
+	sessionID   string // Session ID for per-session transcript collection
 }
 
 func NewTEEK(port int) *TEEK {
@@ -83,7 +79,6 @@ func NewTEEK(port int) *TEEK {
 		teetURL:             "ws://localhost:8081/teek", // Default TEE_T URL
 		tcpReady:            make(chan bool, 1),
 		responseLengthBySeq: make(map[uint64]int),
-		transcriptPackets:   make([][]byte, 0),
 		signingKeyPair:      signingKeyPair,
 	}
 }
@@ -435,7 +430,8 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	tlsConn := &WebSocketConn{
 		wsConn:      wsConn.GetWebSocketConn(),
 		pendingData: make(chan []byte, 10),
-		teek:        t, // Add TEEK reference for transcript collection
+		teek:        t,         // Add TEEK reference for transcript collection
+		sessionID:   sessionID, // Add session ID for per-session transcript collection
 	}
 
 	// Initialize TLS client for this session
@@ -984,8 +980,8 @@ func (w *WebSocketConn) Read(p []byte) (int, error) {
 	case data := <-w.pendingData:
 		// Single Session Mode: Collect all incoming handshake packets for transcript
 		// TEE_K only sees handshake packets - application data goes directly to TEE_T
-		if w.teek != nil {
-			w.teek.addToTranscript(data)
+		if w.teek != nil && w.sessionID != "" {
+			w.teek.addToTranscriptForSession(w.sessionID, data)
 		}
 
 		w.readBuffer = data
@@ -1008,8 +1004,8 @@ func (w *WebSocketConn) Read(p []byte) (int, error) {
 
 func (w *WebSocketConn) Write(p []byte) (int, error) {
 	// Single Session Mode: Collect outgoing packets for transcript
-	if w.teek != nil {
-		w.teek.addToTranscript(p)
+	if w.teek != nil && w.sessionID != "" {
+		w.teek.addToTranscriptForSession(w.sessionID, p)
 	}
 
 	fmt.Println("WRITE CALLED")
@@ -1559,28 +1555,40 @@ func (t *TEEK) generateAndSendDecryptionStream(seqNum uint64) error {
 
 // Single Session Mode: Transcript collection methods
 
-// addToTranscript safely adds a packet to the transcript collection
-func (t *TEEK) addToTranscript(packet []byte) {
-	t.transcriptMutex.Lock()
-	defer t.transcriptMutex.Unlock()
+// addToTranscriptForSession safely adds a packet to the session's transcript collection
+func (t *TEEK) addToTranscriptForSession(sessionID string, packet []byte) {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_K] Failed to get session %s for transcript: %v", sessionID, err)
+		return
+	}
+
+	session.TranscriptMutex.Lock()
+	defer session.TranscriptMutex.Unlock()
 
 	// Make a copy to avoid issues with reused buffers
 	packetCopy := make([]byte, len(packet))
 	copy(packetCopy, packet)
 
-	t.transcriptPackets = append(t.transcriptPackets, packetCopy)
-	fmt.Printf("[TEE_K] Added packet to transcript (%d bytes, total packets: %d)\n",
-		len(packet), len(t.transcriptPackets))
+	session.TranscriptPackets = append(session.TranscriptPackets, packetCopy)
+	fmt.Printf("[TEE_K] Added packet to session %s transcript (%d bytes, total packets: %d)\n",
+		sessionID, len(packet), len(session.TranscriptPackets))
 }
 
-// getTranscript safely returns a copy of the current transcript
-func (t *TEEK) getTranscript() [][]byte {
-	t.transcriptMutex.Lock()
-	defer t.transcriptMutex.Unlock()
+// getTranscriptForSession safely returns a copy of the session's transcript
+func (t *TEEK) getTranscriptForSession(sessionID string) [][]byte {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_K] Failed to get session %s for transcript: %v", sessionID, err)
+		return nil
+	}
+
+	session.TranscriptMutex.Lock()
+	defer session.TranscriptMutex.Unlock()
 
 	// Return a copy to avoid external modification
-	transcriptCopy := make([][]byte, len(t.transcriptPackets))
-	for i, packet := range t.transcriptPackets {
+	transcriptCopy := make([][]byte, len(session.TranscriptPackets))
+	for i, packet := range session.TranscriptPackets {
 		packetCopy := make([]byte, len(packet))
 		copy(packetCopy, packet)
 		transcriptCopy[i] = packetCopy
@@ -1606,10 +1614,10 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 
 	log.Printf("[TEE_K] Received finished confirmation from TEE_T, starting transcript signing")
 
-	// Generate and sign transcript
-	transcript := t.getTranscript()
+	// Generate and sign transcript from session
+	transcript := t.getTranscriptForSession(sessionID)
 	if len(transcript) == 0 {
-		log.Printf("[TEE_K] No transcript packets to sign")
+		log.Printf("[TEE_K] No transcript packets to sign for session %s", sessionID)
 		return
 	}
 

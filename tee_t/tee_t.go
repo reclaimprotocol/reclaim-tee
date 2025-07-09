@@ -45,10 +45,6 @@ type TEET struct {
 	pendingResponses        map[uint64]*shared.EncryptedResponseData // Responses awaiting tag secrets by seq num
 	responsesMutex          sync.Mutex                               // Protects pendingResponses map access
 
-	// Single Session Mode: Transcript collection
-	transcriptPackets [][]byte   // Collect all packets for transcript signing
-	transcriptMutex   sync.Mutex // Protect transcript collection
-
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
 }
@@ -65,11 +61,10 @@ func NewTEET(port int) *TEET {
 	}
 
 	return &TEET{
-		port:              port,
-		sessionManager:    shared.NewSessionManager(),
-		pendingResponses:  make(map[uint64]*shared.EncryptedResponseData),
-		transcriptPackets: make([][]byte, 0),
-		signingKeyPair:    signingKeyPair,
+		port:             port,
+		sessionManager:   shared.NewSessionManager(),
+		pendingResponses: make(map[uint64]*shared.EncryptedResponseData),
+		signingKeyPair:   signingKeyPair,
 	}
 }
 
@@ -86,11 +81,10 @@ func NewTEETWithSessionManager(port int, sessionManager shared.SessionManagerInt
 	}
 
 	return &TEET{
-		port:              port,
-		sessionManager:    sessionManager,
-		pendingResponses:  make(map[uint64]*shared.EncryptedResponseData),
-		transcriptPackets: make([][]byte, 0),
-		signingKeyPair:    signingKeyPair,
+		port:             port,
+		sessionManager:   sessionManager,
+		pendingResponses: make(map[uint64]*shared.EncryptedResponseData),
+		signingKeyPair:   signingKeyPair,
 	}
 }
 
@@ -361,7 +355,7 @@ func (t *TEET) handleEncryptedResponseSession(sessionID string, msg *shared.Mess
 	copy(completeRecord, encryptedResp.RecordHeader)
 	copy(completeRecord[len(encryptedResp.RecordHeader):], encryptedResp.EncryptedData)
 	copy(completeRecord[len(encryptedResp.RecordHeader)+len(encryptedResp.EncryptedData):], encryptedResp.Tag)
-	t.addToTranscript(completeRecord)
+	t.addToTranscriptForSession(sessionID, completeRecord)
 
 	// Store the encrypted response for processing when tag secrets arrive
 	t.responsesMutex.Lock()
@@ -991,13 +985,8 @@ func (t *TEET) handleEncryptedResponse(conn *websocket.Conn, msg *shared.Message
 		encryptedResp.EncryptedData[:min(16, len(encryptedResp.EncryptedData))],
 		encryptedResp.Tag)
 
-	// Single Session Mode: Collect response packet for transcript
-	// Reconstruct the complete TLS record for transcript
-	completeRecord := make([]byte, len(encryptedResp.RecordHeader)+len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
-	copy(completeRecord, encryptedResp.RecordHeader)
-	copy(completeRecord[len(encryptedResp.RecordHeader):], encryptedResp.EncryptedData)
-	copy(completeRecord[len(encryptedResp.RecordHeader)+len(encryptedResp.EncryptedData):], encryptedResp.Tag)
-	t.addToTranscript(completeRecord)
+	// Legacy method: transcript collection disabled as it should use session-aware methods
+	// TODO: This legacy method should be refactored to use session-aware transcript collection
 
 	// Store the encrypted response for processing when tag secrets arrive
 	t.responsesMutex.Lock()
@@ -1197,28 +1186,40 @@ func isNetworkShutdownError(err error) bool {
 
 // Single Session Mode: Transcript collection methods
 
-// addToTranscript safely adds a packet to the transcript collection
-func (t *TEET) addToTranscript(packet []byte) {
-	t.transcriptMutex.Lock()
-	defer t.transcriptMutex.Unlock()
+// addToTranscriptForSession safely adds a packet to the session's transcript collection
+func (t *TEET) addToTranscriptForSession(sessionID string, packet []byte) {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s for transcript: %v", sessionID, err)
+		return
+	}
+
+	session.TranscriptMutex.Lock()
+	defer session.TranscriptMutex.Unlock()
 
 	// Make a copy to avoid issues with reused buffers
 	packetCopy := make([]byte, len(packet))
 	copy(packetCopy, packet)
 
-	t.transcriptPackets = append(t.transcriptPackets, packetCopy)
-	fmt.Printf("[TEE_T] Added packet to transcript (%d bytes, total packets: %d)\n",
-		len(packet), len(t.transcriptPackets))
+	session.TranscriptPackets = append(session.TranscriptPackets, packetCopy)
+	fmt.Printf("[TEE_T] Added packet to session %s transcript (%d bytes, total packets: %d)\n",
+		sessionID, len(packet), len(session.TranscriptPackets))
 }
 
-// getTranscript safely returns a copy of the current transcript
-func (t *TEET) getTranscript() [][]byte {
-	t.transcriptMutex.Lock()
-	defer t.transcriptMutex.Unlock()
+// getTranscriptForSession safely returns a copy of the session's transcript
+func (t *TEET) getTranscriptForSession(sessionID string) [][]byte {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to get session %s for transcript: %v", sessionID, err)
+		return nil
+	}
+
+	session.TranscriptMutex.Lock()
+	defer session.TranscriptMutex.Unlock()
 
 	// Return a copy to avoid external modification
-	transcriptCopy := make([][]byte, len(t.transcriptPackets))
-	for i, packet := range t.transcriptPackets {
+	transcriptCopy := make([][]byte, len(session.TranscriptPackets))
+	for i, packet := range session.TranscriptPackets {
 		packetCopy := make([]byte, len(packet))
 		copy(packetCopy, packet)
 		transcriptCopy[i] = packetCopy
@@ -1319,10 +1320,10 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 	if state.ClientFinished && state.TEEKFinished {
 		log.Printf("[TEE_T] Both client and TEE_K have sent finished - starting transcript signing")
 
-		// Generate and sign transcript
-		transcript := t.getTranscript()
+		// Generate and sign transcript from session
+		transcript := t.getTranscriptForSession(sessionID)
 		if len(transcript) == 0 {
-			log.Printf("[TEE_T] No transcript packets to sign")
+			log.Printf("[TEE_T] No transcript packets to sign for session %s", sessionID)
 			return
 		}
 

@@ -170,6 +170,10 @@ type Session struct {
 	ResponseState  *ResponseSessionState
 	ConnectionData interface{} // Store connection request data
 
+	// Per-session transcript storage
+	TranscriptPackets [][]byte   // Collect all packets for transcript signing
+	TranscriptMutex   sync.Mutex // Protect transcript collection
+
 	// Connection management
 	IsClosed bool
 	Context  context.Context

@@ -468,7 +468,12 @@ func (c *Client) hasAllCompletionFlags(flags int64) bool {
 
 // isStandaloneMode checks if the client is running in standalone mode
 func (c *Client) isStandaloneMode() bool {
-	return strings.HasPrefix(c.teekURL, "ws://") || strings.HasPrefix(c.teetURL, "ws://")
+
+	standalone := strings.HasPrefix(c.teekURL, "ws://") || strings.HasPrefix(c.teetURL, "ws://")
+
+	fmt.Printf("[Client] STANDALONE MODE: %t %s %s\n", standalone, c.teekURL, c.teetURL)
+
+	return standalone
 }
 
 // fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T and verifies them
