@@ -666,20 +666,19 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 		return false
 	}
 
-	// TEE_T captures individual TLS records during application phase
 	fmt.Printf("[Client] TEE_T transcript analysis:\n")
 
-	applicationPacketsMatched := 0
+	packetsMatched := 0
 	for i, teetPacket := range c.teetTranscriptPackets {
 		fmt.Printf("[Client]   TEE_T packet %d: %d bytes (type: 0x%02x)\n",
 			i+1, len(teetPacket), teetPacket[0])
 
-		// Check if this packet matches any of the client's captured data
+		// Check if this packet matches any of our captured packets
 		found := false
-		for j, chunk := range c.capturedTraffic {
-			if len(teetPacket) == len(chunk) && bytes.Equal(teetPacket, chunk) {
+		for j, clientPacket := range c.capturedTraffic {
+			if len(teetPacket) == len(clientPacket) && bytes.Equal(teetPacket, clientPacket) {
 				fmt.Printf("[Client]     Exactly matches client capture %d\n", j+1)
-				applicationPacketsMatched++
+				packetsMatched++
 				found = true
 				break
 			}
@@ -693,10 +692,9 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 	}
 
 	fmt.Printf("[Client] TEE_T validation result: %d/%d packets matched exactly\n",
-		applicationPacketsMatched, len(c.teetTranscriptPackets))
+		packetsMatched, len(c.teetTranscriptPackets))
 
-	// For TEE_T, we expect exact matches since it should see the same TLS records
-	return applicationPacketsMatched == len(c.teetTranscriptPackets)
+	return packetsMatched == len(c.teetTranscriptPackets)
 }
 
 // handleSignedRedactedDecryptionStream handles redacted decryption streams from TEE_K

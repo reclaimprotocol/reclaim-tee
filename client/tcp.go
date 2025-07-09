@@ -183,8 +183,6 @@ func (c *Client) tcpToWebsocket() {
 
 	defer func() {
 		fmt.Printf("[Client] DEBUG: tcpToWebsocket defer called\n")
-		// Only close if we're shutting down or there was a real error
-		// Don't close on initial read timeouts when no data is available
 		if c.isClosing && c.tcpConn != nil {
 			fmt.Printf("[Client] DEBUG: Closing TCP connection on shutdown\n")
 			c.tcpConn.Close()
@@ -195,15 +193,14 @@ func (c *Client) tcpToWebsocket() {
 	}()
 
 	buffer := make([]byte, 4096)
+	var pending []byte // Buffer for incomplete TLS packets
 
 	for {
-		// Don't close connection on first error - might just be no data available yet
 		if c.isClosing {
 			fmt.Printf("[Client] DEBUG: tcpToWebsocket exiting because c.isClosing=true\n")
 			break
 		}
 
-		// Set a reasonable read timeout to avoid blocking forever
 		if c.tcpConn != nil {
 			c.tcpConn.SetReadDeadline(time.Now().Add(1 * time.Second))
 		}
@@ -211,65 +208,79 @@ func (c *Client) tcpToWebsocket() {
 		n, err := c.tcpConn.Read(buffer)
 
 		if err != nil {
-			// Handle different types of errors
 			if err == io.EOF {
 				fmt.Printf("[Client] TCP connection closed by server (EOF)\n")
-				// Server closed connection - this is final
 				atomic.StoreInt64(&c.eofReached, 1)
-
 				fmt.Printf("[Client] EOF reached, checking for protocol completion...\n")
-				break // <-- Break on EOF
+				break
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue // <-- Continue on timeout
+				continue
 			} else if !isClientNetworkShutdownError(err) {
 				fmt.Printf("[Client] TCP read error: %v\n", err)
 				fmt.Printf("[Client] DEBUG: Real TCP error, exiting tcpToWebsocket\n")
-				break // <-- Break on real error
+				break
 			} else {
 				fmt.Printf("[Client] DEBUG: Network shutdown error, exiting tcpToWebsocket\n")
-				break // <-- Break on shutdown error
+				break
 			}
 		}
 
-		// Clear read deadline for successful reads
 		if c.tcpConn != nil {
 			c.tcpConn.SetReadDeadline(time.Time{})
 		}
 
-		if !c.handshakeComplete {
-			// During handshake: Forward raw data to TEE_K
-			fmt.Printf("[Client] Handshake phase: received %d bytes from server\n", n)
+		// Append new data to any pending data
+		data := append(pending, buffer[:n]...)
+		pending = nil
+		offset := 0
 
-			// *** CAPTURE RAW TCP DATA EXACTLY AS TEE_K SEES IT ***
-			// Don't parse into individual TLS records - capture the raw TCP chunk
-			rawTCPData := make([]byte, n)
-			copy(rawTCPData, buffer[:n])
-			c.capturedTraffic = append(c.capturedTraffic, rawTCPData)
-			fmt.Printf("[Client] Captured raw TCP chunk: %d bytes (handshake phase)\n", len(rawTCPData))
-			fmt.Printf("[Client] Total captured chunks now: %d\n", len(c.capturedTraffic))
-
-			tcpDataMsg, err := CreateMessage(MsgTCPData, TCPData{Data: buffer[:n]})
-			if err != nil {
-				log.Printf("[Client] Failed to create TCP data message: %v", err)
-				continue
-			}
-
-			if err := c.sendMessage(tcpDataMsg); err != nil {
-				if !isClientNetworkShutdownError(err) {
-					log.Printf("[Client] Failed to send TCP data to TEE_K: %v", err)
-				}
+		// Process complete TLS packets
+		for offset < len(data) {
+			// Need at least 5 bytes for TLS record header
+			if offset+5 > len(data) {
+				pending = data[offset:]
 				break
 			}
-		} else {
-			// After handshake: Process raw TLS records for split AEAD response handling
-			fmt.Printf("[Client] Response data (%d bytes), processing for split AEAD\n", n)
 
-			// Process TLS records directly without buffering
-			c.processTLSRecordFromData(buffer[:n])
+			// Get packet length from TLS header
+			length := int(data[offset+3])<<8 | int(data[offset+4])
+			fullLength := length + 5
+
+			// Check if we have the complete packet
+			if offset+fullLength > len(data) {
+				pending = data[offset:]
+				break
+			}
+
+			// Extract the complete TLS packet
+			packet := make([]byte, fullLength)
+			copy(packet, data[offset:offset+fullLength])
+			c.capturedTraffic = append(c.capturedTraffic, packet)
+			fmt.Printf("[Client] Captured TLS packet: type=0x%02x, length=%d\n", packet[0], length)
+
+			if !c.handshakeComplete {
+				// During handshake: Forward to TEE_K
+				tcpDataMsg, err := CreateMessage(MsgTCPData, TCPData{Data: packet})
+				if err != nil {
+					log.Printf("[Client] Failed to create TCP data message: %v", err)
+					continue
+				}
+
+				if err := c.sendMessage(tcpDataMsg); err != nil {
+					if !isClientNetworkShutdownError(err) {
+						log.Printf("[Client] Failed to send TCP data to TEE_K: %v", err)
+					}
+					break
+				}
+			} else {
+				// After handshake: Process for split AEAD
+				c.processTLSRecordFromData(packet)
+			}
+
+			offset += fullLength
 		}
 	}
 
-	// Final completion check after the read loop has exited for any reason
 	log.Printf("[Client] TCP read loop finished, performing final completion check...")
 	c.checkProtocolCompletion("TCP connection closed")
 }
