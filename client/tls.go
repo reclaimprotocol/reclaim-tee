@@ -603,6 +603,9 @@ func (c *Client) analyzeHTTPContent(data []byte) {
 		} else {
 			fmt.Printf("[Client] Response content:\n%s\n", dataStr)
 		}
+
+		// Trigger response callback if configured
+		c.triggerResponseCallback(data)
 	} else {
 		fmt.Printf("[Client] NON-HTTP APPLICATION DATA (binary content):\n")
 
@@ -689,14 +692,6 @@ func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 	actualContent := data[:lastNonZero]
 
 	return actualContent, contentType
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // State for processing TLS records directly from TCP data

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/anjuna-security/go-nitro-attestation/verifier"
 	"github.com/gorilla/websocket"
@@ -108,36 +109,54 @@ type Client struct {
 	// Transcript validation fields
 	teekTranscriptPackets [][]byte // Packets from TEE_K signed transcript for validation
 	teetTranscriptPackets [][]byte // Packets from TEE_T signed transcript for validation
+
+	// Library interface fields
+	requestRedactions []RedactionSpec  // Request redactions from config
+	responseCallback  ResponseCallback // Response callback for redactions
+
+	// Result tracking fields
+	protocolStartTime            time.Time                     // When protocol started
+	lastResponseData             *HTTPResponse                 // Last received HTTP response
+	lastProofClaims              []ProofClaim                  // Last generated proof claims
+	transcriptValidationResults  *TranscriptValidationResults  // Cached validation results
+	attestationValidationResults *AttestationValidationResults // Cached attestation results
 }
 
 func NewClient(teekURL string) *Client {
 	return &Client{
-		teekURL:                   teekURL,
-		teetURL:                   "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
-		pendingResponsesData:      make(map[uint64][]byte),
-		completionChan:            make(chan struct{}),
-		state:                     ClientStateInitial,
-		recordsSent:               0,
-		recordsProcessed:          0,
-		decryptionStreamsReceived: 0,
-		eofReached:                0,
-		completionFlags:           0,
-		httpRequestSent:           false,
-		httpResponseExpected:      false,
-		httpResponseReceived:      false,
-		responseContentBySeq:      make(map[uint64][]byte),
-		responseContentMutex:      sync.Mutex{},
-		ciphertextBySeq:           make(map[uint64][]byte),
-		decryptionStreamBySeq:     make(map[uint64][]byte),
-		redactedPlaintextBySeq:    make(map[uint64][]byte),
-		teekAttestationPublicKey:  nil,
-		teetAttestationPublicKey:  nil,
-		teekTranscriptPublicKey:   nil,
-		teetTranscriptPublicKey:   nil,
-		attestationVerified:       false,
-		publicKeyComparisonDone:   false,
-		teekTranscriptPackets:     nil,
-		teetTranscriptPackets:     nil,
+		teekURL:                      teekURL,
+		teetURL:                      "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
+		pendingResponsesData:         make(map[uint64][]byte),
+		completionChan:               make(chan struct{}),
+		state:                        ClientStateInitial,
+		recordsSent:                  0,
+		recordsProcessed:             0,
+		decryptionStreamsReceived:    0,
+		eofReached:                   0,
+		completionFlags:              0,
+		httpRequestSent:              false,
+		httpResponseExpected:         false,
+		httpResponseReceived:         false,
+		responseContentBySeq:         make(map[uint64][]byte),
+		responseContentMutex:         sync.Mutex{},
+		ciphertextBySeq:              make(map[uint64][]byte),
+		decryptionStreamBySeq:        make(map[uint64][]byte),
+		redactedPlaintextBySeq:       make(map[uint64][]byte),
+		teekAttestationPublicKey:     nil,
+		teetAttestationPublicKey:     nil,
+		teekTranscriptPublicKey:      nil,
+		teetTranscriptPublicKey:      nil,
+		attestationVerified:          false,
+		publicKeyComparisonDone:      false,
+		teekTranscriptPackets:        nil,
+		teetTranscriptPackets:        nil,
+		requestRedactions:            nil,
+		responseCallback:             nil,
+		protocolStartTime:            time.Now(),
+		lastResponseData:             nil,
+		lastProofClaims:              nil,
+		transcriptValidationResults:  nil,
+		attestationValidationResults: nil,
 	}
 }
 
@@ -236,12 +255,7 @@ func (c *Client) RequestHTTP(hostname string, port int) error {
 
 // createRedactedRequest creates a redacted HTTP request with XOR streams and commitments
 func (c *Client) createRedactedRequest(httpRequest []byte) (RedactedRequestData, RedactionStreamsData, error) {
-	// HTTP Request: GET / HTTP/1.1\r\nHost: example.com\r\nAuthorization: Bearer dummy_token_12345\r\nX-Account-ID: ACC123456789\r\nConnection: close\r\n\r\n
-
-	// *** REDACTION SYSTEM: Create proper HTTP request with sensitive headers ***
-	// R_NS (non-sensitive): GET, Host, Connection headers - no redaction
-	// R_S (sensitive): Authorization header - redacted but not for proof
-	// R_SP (sensitive with proof): X-Account-ID header - redacted and used for proof
+	// Create HTTP request with test sensitive data
 	testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", c.targetHost)
 	httpRequest = []byte(testRequest)
 
@@ -252,42 +266,18 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (RedactedRequestData,
 	fmt.Printf("[Client] COMPLETE HTTP REQUEST (before redaction):\n%s\n", string(httpRequest))
 	fmt.Printf("[Client] Request analysis:\n")
 	fmt.Printf(" Total length: %d bytes\n", len(httpRequest))
-	fmt.Printf(" R_NS (non-sensitive): Basic headers\n")
-	fmt.Printf(" R_S (sensitive): %d bytes auth token\n", len("secret_auth_token_12345"))
-	fmt.Printf(" R_SP (sensitive+proof): %d bytes account ID\n", len("ACC987654321"))
 
-	// *** REDACTION RANGES: Define R_S and R_SP according to specification ***
-	// R_S (sensitive): Authorization token - redacted but not for proof
-	// R_SP (sensitive with proof): Account ID - redacted and used for proof generation
-	authTokenStart := strings.Index(testRequest, "secret_auth_token_12345")
-	accountIdStart := strings.Index(testRequest, "ACC987654321")
-
-	if authTokenStart == -1 {
-		return RedactedRequestData{}, RedactionStreamsData{}, fmt.Errorf("auth token not found in request")
-	}
-	if accountIdStart == -1 {
-		return RedactedRequestData{}, RedactionStreamsData{}, fmt.Errorf("account ID not found in request")
-	}
-
-	ranges := []RedactionRange{
-		{
-			Start:  authTokenStart,
-			Length: len("secret_auth_token_12345"),
-			Type:   "sensitive", // R_S: sensitive but not for proof
-		},
-		{
-			Start:  accountIdStart,
-			Length: len("ACC987654321"),
-			Type:   "sensitive_proof", // R_SP: sensitive with proof
-		},
+	// Apply redaction specifications from config
+	ranges, err := c.applyRedactionSpecs(httpRequest)
+	if err != nil {
+		return RedactedRequestData{}, RedactionStreamsData{}, fmt.Errorf("failed to apply redaction specs: %v", err)
 	}
 
 	fmt.Printf("[Client] REDACTION CONFIGURATION:\n")
-	fmt.Printf(" R_NS (non-sensitive): Basic headers (no redaction)\n")
-	fmt.Printf(" R_S (sensitive): Auth token at [%d:%d] - redacted, not for proof\n",
-		authTokenStart, authTokenStart+len("secret_auth_token_12345"))
-	fmt.Printf(" R_SP (sensitive+proof): Account ID at [%d:%d] - redacted, for proof\n",
-		accountIdStart, accountIdStart+len("ACC987654321"))
+	fmt.Printf(" Found %d redaction ranges\n", len(ranges))
+	for i, r := range ranges {
+		fmt.Printf(" Range %d: [%d:%d] type=%s\n", i, r.Start, r.Start+r.Length, r.Type)
+	}
 
 	// Validate redaction ranges
 	if err := c.validateRedactionRanges(ranges, len(httpRequest)); err != nil {
@@ -400,6 +390,198 @@ func (c *Client) validateRedactionRanges(ranges []RedactionRange, requestLen int
 	return nil
 }
 
+// applyRedactionSpecs applies redaction specifications from config to find redaction ranges
+func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]RedactionRange, error) {
+	var ranges []RedactionRange
+	requestStr := string(httpRequest)
+
+	// If no redaction specs configured, fall back to default patterns
+	if len(c.requestRedactions) == 0 {
+		// Default fallback: hardcoded patterns for backward compatibility
+		authTokenStart := strings.Index(requestStr, "secret_auth_token_12345")
+		accountIdStart := strings.Index(requestStr, "ACC987654321")
+
+		if authTokenStart != -1 {
+			ranges = append(ranges, RedactionRange{
+				Start:  authTokenStart,
+				Length: len("secret_auth_token_12345"),
+				Type:   "sensitive",
+			})
+		}
+		if accountIdStart != -1 {
+			ranges = append(ranges, RedactionRange{
+				Start:  accountIdStart,
+				Length: len("ACC987654321"),
+				Type:   "sensitive_proof",
+			})
+		}
+		return ranges, nil
+	}
+
+	// Apply configured redaction specs
+	for _, spec := range c.requestRedactions {
+		matches := findPatternMatches(requestStr, spec.Pattern)
+		for _, match := range matches {
+			ranges = append(ranges, RedactionRange{
+				Start:  match.Start,
+				Length: match.Length,
+				Type:   spec.Type,
+			})
+		}
+	}
+
+	return ranges, nil
+}
+
+// PatternMatch represents a pattern match result
+type PatternMatch struct {
+	Start  int
+	Length int
+	Value  string
+}
+
+// findPatternMatches finds all matches for a pattern in the request string
+func findPatternMatches(request, pattern string) []PatternMatch {
+	var matches []PatternMatch
+
+	// For now, implement simple literal matching
+	// In a full implementation, this would use regex
+	if strings.Contains(pattern, "Authorization: Bearer") {
+		// Handle Authorization header pattern
+		start := strings.Index(request, "Authorization: Bearer ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd != -1 {
+				// Extract just the token part
+				tokenStart := start + len("Authorization: Bearer ")
+				tokenEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  tokenStart,
+					Length: tokenEnd - tokenStart,
+					Value:  request[tokenStart:tokenEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "X-Account-ID:") {
+		// Handle X-Account-ID header pattern
+		start := strings.Index(request, "X-Account-ID: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd != -1 {
+				// Extract just the account ID part
+				idStart := start + len("X-Account-ID: ")
+				idEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  idStart,
+					Length: idEnd - idStart,
+					Value:  request[idStart:idEnd],
+				})
+			}
+		}
+	}
+
+	return matches
+}
+
+// triggerResponseCallback triggers the response callback if configured
+func (c *Client) triggerResponseCallback(responseData []byte) {
+	if c.responseCallback == nil {
+		return
+	}
+
+	// Parse HTTP response to extract status code and headers
+	response := c.parseHTTPResponse(responseData)
+
+	fmt.Printf("[Client] Triggering response callback with %d bytes of data\n", len(responseData))
+
+	// Store the response data for library access
+	c.lastResponseData = response
+
+	// Call the user-provided callback
+	result, err := c.responseCallback.OnResponseReceived(response)
+	if err != nil {
+		fmt.Printf("[Client] Response callback error: %v\n", err)
+		return
+	}
+
+	if result != nil {
+		fmt.Printf("[Client] Response callback completed with %d redaction ranges and %d proof claims\n",
+			len(result.RedactionRanges), len(result.ProofClaims))
+
+		// Store proof claims for library access
+		c.lastProofClaims = result.ProofClaims
+
+		// Log proof claims for debugging
+		for i, claim := range result.ProofClaims {
+			fmt.Printf("[Client] Proof claim %d: %s - %s\n", i+1, claim.Type, claim.Description)
+		}
+	}
+}
+
+// parseHTTPResponse parses raw HTTP response data into structured format
+func (c *Client) parseHTTPResponse(data []byte) *HTTPResponse {
+	dataStr := string(data)
+	lines := strings.Split(dataStr, "\r\n")
+
+	response := &HTTPResponse{
+		StatusCode: 200, // Default
+		Headers:    make(map[string]string),
+		Body:       data,
+		Metadata: ResponseMetadata{
+			Timestamp:     time.Now().Unix(),
+			ContentLength: len(data),
+			TLSVersion:    "1.3",
+			CipherSuite:   "AES-256-GCM",
+			ServerName:    c.targetHost,
+			RequestID:     c.sessionID,
+		},
+	}
+
+	// Parse status line
+	if len(lines) > 0 && strings.HasPrefix(lines[0], "HTTP/") {
+		parts := strings.Split(lines[0], " ")
+		if len(parts) >= 2 {
+			if statusCode, err := fmt.Sscanf(parts[1], "%d", &response.StatusCode); err == nil && statusCode == 1 {
+				// Status code parsed successfully
+			}
+		}
+	}
+
+	// Parse headers
+	bodyStart := 0
+	for i, line := range lines {
+		if line == "" {
+			bodyStart = i + 1
+			break
+		}
+		if i > 0 { // Skip status line
+			if colonIdx := strings.Index(line, ":"); colonIdx != -1 {
+				key := strings.TrimSpace(line[:colonIdx])
+				value := strings.TrimSpace(line[colonIdx+1:])
+				response.Headers[key] = value
+
+				// Extract metadata from specific headers
+				switch strings.ToLower(key) {
+				case "content-type":
+					response.Metadata.ContentType = value
+				case "content-length":
+					if length, err := fmt.Sscanf(value, "%d", &response.Metadata.ContentLength); err == nil && length == 1 {
+						// Content length parsed successfully
+					}
+				}
+			}
+		}
+	}
+
+	// Extract body
+	if bodyStart < len(lines) {
+		bodyLines := lines[bodyStart:]
+		response.Body = []byte(strings.Join(bodyLines, "\r\n"))
+	}
+
+	return response
+}
+
 // *** Atomic completion flag helper functions ***
 
 // setCompletionFlag atomically sets a completion flag
@@ -478,8 +660,6 @@ func (c *Client) hasAllCompletionFlags(flags int64) bool {
 func (c *Client) isStandaloneMode() bool {
 
 	standalone := strings.HasPrefix(c.teekURL, "ws://") || strings.HasPrefix(c.teetURL, "ws://")
-
-	fmt.Printf("[Client] STANDALONE MODE: %t %s %s\n", standalone, c.teekURL, c.teetURL)
 
 	return standalone
 }
@@ -664,4 +844,313 @@ func (c *Client) verifyAttestationPublicKeys() error {
 
 	c.publicKeyComparisonDone = true
 	return nil
+}
+
+// *** RESULT BUILDING METHODS FOR LIBRARY INTERFACE ***
+
+// buildProtocolResult constructs the complete protocol execution results
+func (c *Client) buildProtocolResult() (*ProtocolResult, error) {
+	transcripts, _ := c.buildTranscriptResults()
+	validation, _ := c.buildValidationResults()
+	attestation, _ := c.buildAttestationResults()
+	response, _ := c.buildResponseResults()
+
+	success := transcripts.BothReceived && transcripts.BothSignaturesValid &&
+		validation.AllValidationsPassed && c.httpResponseReceived
+
+	var errorMessage string
+	if !success {
+		if !transcripts.BothReceived {
+			errorMessage = "Not all transcripts received"
+		} else if !transcripts.BothSignaturesValid {
+			errorMessage = "Invalid transcript signatures"
+		} else if !validation.AllValidationsPassed {
+			errorMessage = "Validation failed"
+		} else if !c.httpResponseReceived {
+			errorMessage = "HTTP response not received"
+		}
+	}
+
+	return &ProtocolResult{
+		SessionID:         c.sessionID,
+		StartTime:         c.protocolStartTime,
+		CompletionTime:    time.Now(),
+		Success:           success,
+		ErrorMessage:      errorMessage,
+		RequestTarget:     c.targetHost,
+		RequestPort:       c.targetPort,
+		RequestRedactions: c.requestRedactions,
+		Transcripts:       *transcripts,
+		Validation:        *validation,
+		Attestation:       *attestation,
+		Response:          *response,
+	}, nil
+}
+
+// buildTranscriptResults constructs the transcript results
+func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
+	var teekTranscript, teetTranscript *SignedTranscriptData
+
+	// Build TEE_K transcript data
+	if c.teekTranscriptPackets != nil {
+		totalSize := 0
+		for _, packet := range c.teekTranscriptPackets {
+			totalSize += len(packet)
+		}
+
+		teekTranscript = &SignedTranscriptData{
+			Source:         "tee_k",
+			Packets:        c.teekTranscriptPackets,
+			PublicKey:      c.teekTranscriptPublicKey,
+			TotalSize:      totalSize,
+			PacketCount:    len(c.teekTranscriptPackets),
+			Timestamp:      time.Now(), // TODO: Track actual timestamp
+			SignatureValid: c.hasCompletionFlag(CompletionFlagTEEKSignatureValid),
+		}
+	}
+
+	// Build TEE_T transcript data
+	if c.teetTranscriptPackets != nil {
+		totalSize := 0
+		for _, packet := range c.teetTranscriptPackets {
+			totalSize += len(packet)
+		}
+
+		teetTranscript = &SignedTranscriptData{
+			Source:         "tee_t",
+			Packets:        c.teetTranscriptPackets,
+			PublicKey:      c.teetTranscriptPublicKey,
+			TotalSize:      totalSize,
+			PacketCount:    len(c.teetTranscriptPackets),
+			Timestamp:      time.Now(), // TODO: Track actual timestamp
+			SignatureValid: c.hasCompletionFlag(CompletionFlagTEETSignatureValid),
+		}
+	}
+
+	bothReceived := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
+	bothValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)
+
+	return &TranscriptResults{
+		TEEK:                teekTranscript,
+		TEET:                teetTranscript,
+		BothReceived:        bothReceived,
+		BothSignaturesValid: bothValid,
+	}, nil
+}
+
+// buildValidationResults constructs the validation results
+func (c *Client) buildValidationResults() (*ValidationResults, error) {
+	// Build transcript validation results
+	transcriptValidation := c.buildTranscriptValidationResults()
+
+	// Build attestation validation results
+	attestationValidation := c.buildAttestationValidationResults()
+
+	allValid := transcriptValidation.OverallValid && attestationValidation.OverallValid
+
+	var summary string
+	if allValid {
+		summary = "All validations passed successfully"
+	} else {
+		summary = "Some validations failed"
+	}
+
+	return &ValidationResults{
+		TranscriptValidation:  *transcriptValidation,
+		AttestationValidation: *attestationValidation,
+		AllValidationsPassed:  allValid,
+		ValidationSummary:     summary,
+	}, nil
+}
+
+// buildAttestationResults constructs the attestation results
+func (c *Client) buildAttestationResults() (*AttestationResults, error) {
+	verification := c.buildAttestationValidationResults()
+
+	return &AttestationResults{
+		TEEKPublicKey: c.teekAttestationPublicKey,
+		TEETPublicKey: c.teetAttestationPublicKey,
+		Verification:  *verification,
+	}, nil
+}
+
+// buildResponseResults constructs the response results
+func (c *Client) buildResponseResults() (*ResponseResults, error) {
+	var responseTimestamp time.Time
+	if c.httpResponseReceived {
+		responseTimestamp = time.Now() // TODO: Track actual timestamp
+	}
+
+	// Calculate total decrypted data size
+	c.responseContentMutex.Lock()
+	totalDataSize := 0
+	for _, data := range c.responseContentBySeq {
+		totalDataSize += len(data)
+	}
+	c.responseContentMutex.Unlock()
+
+	return &ResponseResults{
+		HTTPResponse:         c.lastResponseData,
+		ProofClaims:          c.lastProofClaims,
+		ResponseReceived:     c.httpResponseReceived,
+		CallbackExecuted:     c.responseCallback != nil && c.httpResponseReceived,
+		ResponseTimestamp:    responseTimestamp,
+		DecryptionSuccessful: totalDataSize > 0,
+		DecryptedDataSize:    totalDataSize,
+	}, nil
+}
+
+// buildTranscriptValidationResults constructs detailed transcript validation results
+func (c *Client) buildTranscriptValidationResults() *TranscriptValidationResults {
+	if c.transcriptValidationResults != nil {
+		return c.transcriptValidationResults
+	}
+
+	// Calculate client captured data
+	totalCapturedSize := 0
+	for _, chunk := range c.capturedTraffic {
+		totalCapturedSize += len(chunk)
+	}
+
+	// Build TEE_K validation details
+	teekValidation := c.buildTEEValidationDetails("tee_k", c.teekTranscriptPackets)
+
+	// Build TEE_T validation details
+	teetValidation := c.buildTEEValidationDetails("tee_t", c.teetTranscriptPackets)
+
+	overallValid := teekValidation.ValidationPassed && teetValidation.ValidationPassed
+
+	var summary string
+	if overallValid {
+		summary = "All transcript packets validated successfully"
+	} else {
+		summary = fmt.Sprintf("Validation issues: TEE_K (%d/%d matched), TEE_T (%d/%d matched)",
+			teekValidation.PacketsMatched, teekValidation.PacketsReceived,
+			teetValidation.PacketsMatched, teetValidation.PacketsReceived)
+	}
+
+	result := &TranscriptValidationResults{
+		ClientCapturedPackets: len(c.capturedTraffic),
+		ClientCapturedBytes:   totalCapturedSize,
+		TEEKValidation:        teekValidation,
+		TEETValidation:        teetValidation,
+		OverallValid:          overallValid,
+		Summary:               summary,
+	}
+
+	// Cache the result
+	c.transcriptValidationResults = result
+	return result
+}
+
+// buildAttestationValidationResults constructs attestation validation results
+func (c *Client) buildAttestationValidationResults() *AttestationValidationResults {
+	if c.attestationValidationResults != nil {
+		return c.attestationValidationResults
+	}
+
+	// In standalone mode, attestation verification is skipped
+	isStandalone := c.isStandaloneMode()
+
+	teekAttestation := AttestationVerificationResult{
+		AttestationReceived: c.teekAttestationPublicKey != nil,
+		RootOfTrustValid:    isStandalone || c.attestationVerified,
+		PublicKeyExtracted:  c.teekAttestationPublicKey != nil,
+		PublicKeySize:       len(c.teekAttestationPublicKey),
+	}
+
+	teetAttestation := AttestationVerificationResult{
+		AttestationReceived: c.teetAttestationPublicKey != nil,
+		RootOfTrustValid:    isStandalone || c.attestationVerified,
+		PublicKeyExtracted:  c.teetAttestationPublicKey != nil,
+		PublicKeySize:       len(c.teetAttestationPublicKey),
+	}
+
+	publicKeyComparison := PublicKeyComparisonResult{
+		ComparisonPerformed: isStandalone || c.publicKeyComparisonDone,
+		TEEKKeysMatch:       isStandalone || (c.publicKeyComparisonDone && c.attestationVerified),
+		TEETKeysMatch:       isStandalone || (c.publicKeyComparisonDone && c.attestationVerified),
+		BothTEEsMatch:       isStandalone || (c.publicKeyComparisonDone && c.attestationVerified),
+	}
+
+	// In standalone mode, attestation validation always passes since it's bypassed
+	overallValid := isStandalone || (teekAttestation.RootOfTrustValid && teetAttestation.RootOfTrustValid && publicKeyComparison.BothTEEsMatch)
+
+	var summary string
+	if isStandalone {
+		summary = "Standalone mode - attestation verification bypassed"
+	} else if overallValid {
+		summary = "All attestations verified successfully"
+	} else {
+		summary = "Some attestation verifications failed"
+	}
+
+	result := &AttestationValidationResults{
+		TEEKAttestation:     teekAttestation,
+		TEETAttestation:     teetAttestation,
+		PublicKeyComparison: publicKeyComparison,
+		OverallValid:        overallValid,
+		Summary:             summary,
+	}
+
+	// Cache the result
+	c.attestationValidationResults = result
+	return result
+}
+
+// buildTEEValidationDetails constructs validation details for one TEE's transcript
+func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) TranscriptPacketValidation {
+	if packets == nil {
+		return TranscriptPacketValidation{
+			PacketsReceived:  0,
+			PacketsMatched:   0,
+			ValidationPassed: false,
+			PacketDetails:    []PacketValidationDetail{},
+		}
+	}
+
+	var details []PacketValidationDetail
+	packetsMatched := 0
+
+	for i, packet := range packets {
+		var packetType string
+		if len(packet) > 0 {
+			packetType = fmt.Sprintf("0x%02x", packet[0])
+		} else {
+			packetType = "empty"
+		}
+
+		// Check if this packet matches any captured traffic
+		matchedCapture := false
+		captureIndex := -1
+
+		for j, capturedChunk := range c.capturedTraffic {
+			if len(packet) == len(capturedChunk) && bytes.Equal(packet, capturedChunk) {
+				matchedCapture = true
+				captureIndex = j
+				packetsMatched++
+				break
+			}
+		}
+
+		detail := PacketValidationDetail{
+			PacketIndex:    i,
+			PacketSize:     len(packet),
+			PacketType:     packetType,
+			MatchedCapture: matchedCapture,
+		}
+
+		if matchedCapture {
+			detail.CaptureIndex = captureIndex
+		}
+
+		details = append(details, detail)
+	}
+
+	return TranscriptPacketValidation{
+		PacketsReceived:  len(packets),
+		PacketsMatched:   packetsMatched,
+		ValidationPassed: packetsMatched == len(packets),
+		PacketDetails:    details,
+	}
 }

@@ -19,27 +19,27 @@ func main() {
 
 	fmt.Printf(" Starting Client, connecting to TEE_K at %s\n", teekURL)
 
-	client := NewClient(teekURL)
-	defer client.Close()
-
 	// Auto-detect TEE_T URL based on TEE_K URL
 	teetURL := autoDetectTEETURL(teekURL)
 	fmt.Printf(" Auto-detected TEE_T URL: %s\n", teetURL)
-	client.SetTEETURL(teetURL)
 
-	// Connect to TEE_K
-	if err := client.ConnectToTEEK(); err != nil {
-		log.Fatalf("[Client] Failed to connect to TEE_K: %v", err)
+	// Create client configuration
+	config := ClientConfig{
+		TEEKURL:           teekURL,
+		TEETURL:           teetURL,
+		Timeout:           30 * time.Second,
+		Mode:              ModeAuto,
+		RequestRedactions: getDemoRequestRedactions(),
+		ResponseCallback:  &DemoResponseCallback{},
 	}
 
-	// Connect to TEE_T
-	if err := client.ConnectToTEET(); err != nil {
-		log.Fatalf("[Client] Failed to connect to TEE_T: %v", err)
-	}
+	// Create client using library interface
+	client := NewReclaimClient(config)
+	defer client.Close()
 
-	// Fetch and verify attestations from both enclaves (only in enclave mode)
-	if err := client.fetchAndVerifyAttestations(); err != nil {
-		log.Fatalf("[Client] Failed to fetch and verify attestations: %v", err)
+	// Connect to both TEE_K and TEE_T
+	if err := client.Connect(); err != nil {
+		log.Fatalf("[Client] Failed to connect: %v", err)
 	}
 
 	// Request HTTP to example.com
@@ -58,7 +58,74 @@ func main() {
 		fmt.Println("⏰ Processing timeout - may indicate an issue")
 	}
 
-	fmt.Println(" Client processing completed!")
+	// *** NEW: Demonstrate accessing protocol results ***
+	fmt.Println("\n===== PROTOCOL RESULTS =====")
+
+	// Get complete protocol results
+	result, err := client.GetProtocolResult()
+	if err != nil {
+		fmt.Printf("❌ Error getting protocol result: %v\n", err)
+	} else {
+		fmt.Printf("✅ Protocol Success: %v\n", result.Success)
+		fmt.Printf("📋 Session ID: %s\n", result.SessionID)
+		fmt.Printf("🎯 Target: %s:%d\n", result.RequestTarget, result.RequestPort)
+		fmt.Printf("⏱️  Duration: %v\n", result.CompletionTime.Sub(result.StartTime))
+
+		if !result.Success && result.ErrorMessage != "" {
+			fmt.Printf("❌ Error: %s\n", result.ErrorMessage)
+		}
+	}
+
+	// Get transcript results
+	transcripts, err := client.GetTranscripts()
+	if err != nil {
+		fmt.Printf("❌ Error getting transcripts: %v\n", err)
+	} else {
+		fmt.Printf("\n📜 TRANSCRIPT RESULTS:\n")
+		fmt.Printf("   Both Received: %v\n", transcripts.BothReceived)
+		fmt.Printf("   Both Valid: %v\n", transcripts.BothSignaturesValid)
+
+		if transcripts.TEEK != nil {
+			fmt.Printf("   TEE_K: %d packets, %d bytes, signature valid: %v\n",
+				transcripts.TEEK.PacketCount, transcripts.TEEK.TotalSize, transcripts.TEEK.SignatureValid)
+		}
+
+		if transcripts.TEET != nil {
+			fmt.Printf("   TEE_T: %d packets, %d bytes, signature valid: %v\n",
+				transcripts.TEET.PacketCount, transcripts.TEET.TotalSize, transcripts.TEET.SignatureValid)
+		}
+	}
+
+	// Get validation results
+	validation, err := client.GetValidationResults()
+	if err != nil {
+		fmt.Printf("❌ Error getting validation results: %v\n", err)
+	} else {
+		fmt.Printf("\n🔍 VALIDATION RESULTS:\n")
+		fmt.Printf("   All Validations Passed: %v\n", validation.AllValidationsPassed)
+		fmt.Printf("   Summary: %s\n", validation.ValidationSummary)
+		fmt.Printf("   Transcript Validation: %v\n", validation.TranscriptValidation.OverallValid)
+		fmt.Printf("   Attestation Validation: %v\n", validation.AttestationValidation.OverallValid)
+	}
+
+	// Get response results
+	response, err := client.GetResponseResults()
+	if err != nil {
+		fmt.Printf("❌ Error getting response results: %v\n", err)
+	} else {
+		fmt.Printf("\n📨 RESPONSE RESULTS:\n")
+		fmt.Printf("   Response Received: %v\n", response.ResponseReceived)
+		fmt.Printf("   Callback Executed: %v\n", response.CallbackExecuted)
+		fmt.Printf("   Decryption Successful: %v\n", response.DecryptionSuccessful)
+		fmt.Printf("   Data Size: %d bytes\n", response.DecryptedDataSize)
+		fmt.Printf("   Proof Claims: %d\n", len(response.ProofClaims))
+
+		for i, claim := range response.ProofClaims {
+			fmt.Printf("     %d. %s: %s\n", i+1, claim.Type, claim.Description)
+		}
+	}
+
+	fmt.Println("\n Client processing completed!")
 }
 
 // autoDetectTEETURL automatically detects the appropriate TEE_T URL based on TEE_K URL
@@ -79,4 +146,57 @@ func autoDetectTEETURL(teekURL string) string {
 			return "ws://localhost:8081/ws"
 		}
 	}
+}
+
+// getDemoRequestRedactions returns demo request redaction specifications
+func getDemoRequestRedactions() []RedactionSpec {
+	return []RedactionSpec{
+		{
+			Pattern: "Authorization: Bearer [^\\r\\n]+",
+			Type:    "sensitive",
+		},
+		{
+			Pattern: "X-Account-ID: [^\\r\\n]+",
+			Type:    "sensitive_proof",
+		},
+	}
+}
+
+// DemoResponseCallback provides a demo implementation showing response redaction
+type DemoResponseCallback struct{}
+
+// OnResponseReceived implements the ResponseCallback interface with demo redactions
+func (d *DemoResponseCallback) OnResponseReceived(response *HTTPResponse) (*RedactionResult, error) {
+	// For demo purposes, we'll create some basic redactions and claims
+	redactedBody := make([]byte, len(response.Body))
+	copy(redactedBody, response.Body)
+
+	var redactionRanges []RedactionRange
+	var proofClaims []ProofClaim
+
+	// Example: If this is an HTTP response, create some demo proof claims
+	if response.StatusCode == 200 {
+		proofClaims = append(proofClaims, ProofClaim{
+			Type:        "status_code",
+			Field:       "status_code",
+			Value:       "200",
+			Description: "Response status code is 200 OK",
+		})
+	}
+
+	// Example: Create a claim about the server name
+	if response.Metadata.ServerName != "" {
+		proofClaims = append(proofClaims, ProofClaim{
+			Type:        "server_name",
+			Field:       "server_name",
+			Value:       response.Metadata.ServerName,
+			Description: "Connected to the specified server",
+		})
+	}
+
+	return &RedactionResult{
+		RedactedBody:    redactedBody,
+		RedactionRanges: redactionRanges,
+		ProofClaims:     proofClaims,
+	}, nil
 }
