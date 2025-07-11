@@ -108,7 +108,7 @@ In the case of TLS 1.2 this step can be avoided due to the lack of encryption in
 - **Process**:
     1. After the final response, the User sends a special message “finished” to TEE_K and TEE_T.
     2. Upon receiveng, TEE_K sends “finished” to TEE_T.
-    3. If TEE_T already received “final” from User, it responds to TEE_K with “finished”, and “not finished” otherwise.
+    3. If TEE_T already received “finished” from User, it responds to TEE_K with “finished”, and “not finished” otherwise.
     4. If TEE_K receives “not finished” from TEE_K, it ignores the request from User and the Step 5 stops.
     5. TEE_K concatenates all the redacted requests, commitment to streams comm_sp, and signs all it. Further we call it request_transcript.
     6. TEE_T concatenates all the encrypted ciphertexts and signs it. Further we call it response_transcript.
@@ -138,3 +138,39 @@ In the case of TLS 1.2 this step can be avoided due to the lack of encryption in
         - Validates the ZKP to verify the Claim.
 
 ---
+
+## Single response-request TLS sessions
+
+In the most cases it is enough for a User to run TLS through Reclaim for only a single (target) request-response pair. In this case, we simplify the protocol to make it even more efficient and more robust. The protocol acts as in the multiple request-response case up to the Step 3 (including). Steps 4-6 for this case are described below (note that in this case there is no separation between steps 4 and 5 as it becomes a single process):
+
+### 4-5. Response Handling, Transcript Generation and Key Disclosure
+
+- **Goal**: Process encrypted responses from the Website, commit to them, decrypt and verify the Tag.
+- **Process**:
+    1. The User receives an encrypted response Resp_Enc and Tag from the Website.
+    2. The User sends the Resp_Enc, Tag to TEE_T.
+    3. TEE_T sends the length of Resp_Enc to TEE_K.
+    4. TEE_K sends Tag Secrets (analogously to request handling) to TEE_T. 
+    5. TEE_T computes the Tag for Resp_Enc and compares it with the original Tag. If everything is correct, TEE_T sends “success” messages to TEE_K and the User.
+    6. TEE_T signs the concatenation of Resp_Enc and Tag (further we call it request_transcript), and sends it to the User.
+    7. TEE_K computes Str_Dec of the length of Resp for decryption of the Resp_Enc.
+    8. TEE_K signs the concatenation of redacted requests, commitment to streams comm_sp (further we call it request_transcript), and sends it along with Str_Dec to the User.
+    9. The User decrypts Resp_Enc (through XOR with Str_Dec), thus getting Resp.
+    10. The User identifies a set of symbols that contain secret data (analogously to the request), however, the data that is going to be proven is now treated non-secret data. User sends the structure SecretData, specifying all the beginning and end each of the ranges with secret data, to TEE_K.
+    11. TEE_K replaces in the stream Str_Dec all the symbol in ranges, specified in SecretData, with a gibberish symbol “*” (transforming Str_Dec into Str_Dec_Red), signs it and sends it to the User.
+    12. The Output of the User contains:
+        1. Signed request_transcript
+        2. Signed reponse_transcript
+        3. Request streams Str_SP and their commitment key K_SP
+        4. Signed Str_Dec_Red
+
+### 6. Verification
+
+- **Goal**: Enable the Verifier to confirm the TLS transcript's authenticity and Claim correctness.
+- **Process**:
+    1. The User submits to the Verifier the Output.
+    2. The Verifier:
+        - Checks the request_transcript’s, response_transcript’s and Str_Dec_Red signatures to confirm their authenticity.
+        - Verifies request stream commitment and applies Stream Str_SP to the corresponding parts of request
+        - Applies Str_Dec_Red to the Resp_Dec, thus getting redacted response Resp_Red
+        - Validates that Resp_Red contains claim target data and verifies its location through XPath (since only some secrets are hidden in the response but its structure is explicitly visible).

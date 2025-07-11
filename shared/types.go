@@ -171,8 +171,9 @@ type Session struct {
 	ConnectionData interface{} // Store connection request data
 
 	// Per-session transcript storage
-	TranscriptPackets [][]byte   // Collect all packets for transcript signing
-	TranscriptMutex   sync.Mutex // Protect transcript collection
+	TranscriptPackets     [][]byte   `json:"-"` // Collect all packets for transcript signing
+	TranscriptPacketTypes []string   `json:"-"` // Parallel slice describing packet types
+	TranscriptMutex       sync.Mutex // Protect transcript collection
 
 	// Per-session finished state tracking
 	ClientFinished     bool       // Whether client has sent finished message
@@ -398,11 +399,25 @@ type FinishedMessage struct {
 
 // SignedTranscript represents a signed transcript with packets, signature, and public key
 type SignedTranscript struct {
-	Packets   [][]byte `json:"packets"`    // All packets in chronological order (binary data)
-	Signature []byte   `json:"signature"`  // Cryptographic signature (binary data)
-	PublicKey []byte   `json:"public_key"` // Public key in DER format (binary data)
-	Source    string   `json:"source"`     // "tee_k" or "tee_t"
+	Packets [][]byte `json:"packets"` // All packets in chronological order (binary data)
+	// PacketTypes describes what each entry in Packets represents.
+	// It is aligned by index with Packets. Example values:
+	//   "tls_record"            – bytes that were sent/received on the TCP connection as TLS records
+	//   "http_request_redacted" – plaintext redacted HTTP request added before encryption
+	//   "commitment"            – commitment bytes inserted into transcript
+	// Additional values may be defined later; verifiers MUST ignore unknown strings.
+	PacketTypes []string `json:"packet_types,omitempty"`
+	Signature   []byte   `json:"signature"`  // Cryptographic signature (binary data)
+	PublicKey   []byte   `json:"public_key"` // Public key in DER format (binary data)
+	Source      string   `json:"source"`     // "tee_k" or "tee_t"
 }
+
+// Transcript packet type constants – exported so both client and TEEs can reference them.
+const (
+	TranscriptPacketTypeTLSRecord           = "tls_record"
+	TranscriptPacketTypeHTTPRequestRedacted = "http_request_redacted"
+	TranscriptPacketTypeCommitment          = "commitment"
+)
 
 // RedactionSpec specifies which parts of the response should be redacted
 type RedactionSpec struct {

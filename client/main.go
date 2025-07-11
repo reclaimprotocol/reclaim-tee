@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	proofverifier "tee-mpc/proofverifier" // add new import
 	"time"
 )
 
@@ -126,6 +127,22 @@ func main() {
 	}
 
 	fmt.Println("\n Client processing completed!")
+
+	// Build verification bundle and save to file
+	bundlePath := "verification_bundle.json"
+	if err := client.(*reclaimClientImpl).client.BuildVerificationBundle(bundlePath); err != nil {
+		fmt.Printf("\n🔴 Failed to build verification bundle: %v\n", err)
+	} else {
+		fmt.Printf("\n💾 Verification bundle written to %s\n", bundlePath)
+	}
+
+	// Run offline verification using the new verifier package
+	if err := proofverifier.Validate(bundlePath); err != nil {
+		log.Fatalf("\n🔴 Offline verification failed: %v\n", err)
+	} else {
+		fmt.Println("\n✅ Offline verification succeeded")
+	}
+
 }
 
 // autoDetectTEETURL automatically detects the appropriate TEE_T URL based on TEE_K URL

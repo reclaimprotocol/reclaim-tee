@@ -39,6 +39,9 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *Message) {
 	// Mark handshake as complete for response handling
 	c.handshakeComplete = true
 
+	// Store disclosure for verification bundle
+	c.handshakeDisclosure = &disclosureData
+
 	// Phase 3: Redaction System - Send redacted HTTP request to TEE_K for encryption
 
 	// Create redacted HTTP request using the redaction system

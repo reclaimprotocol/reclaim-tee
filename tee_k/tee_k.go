@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"tee-mpc/minitls"
-	"tee-mpc/shared" //  Keep shared for session management
+	"tee-mpc/shared"
 
 	"github.com/gorilla/websocket"
 	"github.com/mdlayher/vsock"
@@ -529,6 +529,17 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		log.Printf("[TEE_K] Failed to validate redaction positions: %v", err)
 		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to validate redaction positions: %v", err))
 		return
+	}
+
+	// --- Add redacted request and comm_sp to transcript before encryption ---
+	t.addToTranscriptForSessionWithType(sessionID, redactedRequest.RedactedRequest, shared.TranscriptPacketTypeHTTPRequestRedacted)
+
+	for idx, r := range redactedRequest.RedactionRanges {
+		if strings.Contains(r.Type, "proof") && idx < len(redactedRequest.Commitments) {
+			t.addToTranscriptForSessionWithType(sessionID, redactedRequest.Commitments[idx], shared.TranscriptPacketTypeCommitment)
+			fmt.Printf("[TEE_K] Added comm_sp to transcript (len=%d)\n", len(redactedRequest.Commitments[idx]))
+			break
+		}
 	}
 
 	fmt.Printf("[TEE_K] Session %s: Split AEAD: encrypting redacted request %d bytes\n", sessionID, len(redactedRequest.RedactedRequest))
@@ -1556,8 +1567,8 @@ func (t *TEEK) generateAndSendDecryptionStream(seqNum uint64) error {
 
 // Single Session Mode: Transcript collection methods
 
-// addToTranscriptForSession safely adds a packet to the session's transcript collection
-func (t *TEEK) addToTranscriptForSession(sessionID string, packet []byte) {
+// addToTranscriptForSessionWithType safely adds a packet with explicit type to the session's transcript.
+func (t *TEEK) addToTranscriptForSessionWithType(sessionID string, packet []byte, packetType string) {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		log.Printf("[TEE_K] Failed to get session %s for transcript: %v", sessionID, err)
@@ -1567,13 +1578,21 @@ func (t *TEEK) addToTranscriptForSession(sessionID string, packet []byte) {
 	session.TranscriptMutex.Lock()
 	defer session.TranscriptMutex.Unlock()
 
-	// Make a copy to avoid issues with reused buffers
-	packetCopy := make([]byte, len(packet))
-	copy(packetCopy, packet)
+	// Copy buffer to avoid unexpected mutation
+	pktCopy := make([]byte, len(packet))
+	copy(pktCopy, packet)
 
-	session.TranscriptPackets = append(session.TranscriptPackets, packetCopy)
-	fmt.Printf("[TEE_K] Added packet to session %s transcript (%d bytes, total packets: %d)\n",
-		sessionID, len(packet), len(session.TranscriptPackets))
+	session.TranscriptPackets = append(session.TranscriptPackets, pktCopy)
+	session.TranscriptPacketTypes = append(session.TranscriptPacketTypes, packetType)
+
+	fmt.Printf("[TEE_K] Added packet to session %s transcript (%d bytes, type=%s, total packets: %d)\n",
+		sessionID, len(packet), packetType, len(session.TranscriptPackets))
+}
+
+// addToTranscriptForSession safely adds a packet to the session's transcript collection
+func (t *TEEK) addToTranscriptForSession(sessionID string, packet []byte) {
+	// Default to TLS record type for backwards compatibility
+	t.addToTranscriptForSessionWithType(sessionID, packet, shared.TranscriptPacketTypeTLSRecord)
 }
 
 // getTranscriptForSession safely returns a copy of the session's transcript
@@ -1643,12 +1662,21 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	// Create signed transcript response
+	// Retrieve packet types in the same order
+	sessionForSigned, err := t.sessionManager.GetSession(sessionID)
+	var pktTypes []string
+	if err == nil {
+		sessionForSigned.TranscriptMutex.Lock()
+		pktTypes = append([]string(nil), sessionForSigned.TranscriptPacketTypes...)
+		sessionForSigned.TranscriptMutex.Unlock()
+	}
+
 	signedTranscript := shared.SignedTranscript{
-		Packets:   transcript,
-		Signature: signature,
-		PublicKey: publicKeyDER,
-		Source:    "tee_k",
+		Packets:     transcript,
+		PacketTypes: pktTypes,
+		Signature:   signature,
+		PublicKey:   publicKeyDER,
+		Source:      "tee_k",
 	}
 
 	// Send signed transcript to client

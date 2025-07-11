@@ -387,7 +387,7 @@ func (t *TEET) handleEncryptedResponseSession(sessionID string, msg *shared.Mess
 	record = append(record, encryptedResp.Tag...)
 
 	// Add to session transcript
-	t.addToTranscriptForSession(sessionID, record)
+	t.addToTranscriptForSessionWithType(sessionID, record, shared.TranscriptPacketTypeTLSRecord)
 
 	// Store the encrypted response for processing when tag secrets arrive
 	session.ResponseState.ResponsesMutex.Lock()
@@ -763,7 +763,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	copy(tlsRecord[5+len(reconstructedData):], authTag)
 
 	// Add the complete TLS record to TEE_T's transcript
-	t.addToTranscriptForSession(sessionID, tlsRecord)
+	t.addToTranscriptForSessionWithType(sessionID, tlsRecord, shared.TranscriptPacketTypeTLSRecord)
 	fmt.Printf("[TEE_T] Added complete TLS request record to session %s transcript (%d bytes)\n", sessionID, len(tlsRecord))
 
 	// Send the RECONSTRUCTED encrypted data with tag to client using session routing
@@ -1288,8 +1288,8 @@ func isNetworkShutdownError(err error) bool {
 
 // Single Session Mode: Transcript collection methods
 
-// addToTranscriptForSession safely adds a packet to the session's transcript collection
-func (t *TEET) addToTranscriptForSession(sessionID string, packet []byte) {
+// addToTranscriptForSessionWithType safely adds a packet with explicit type to the session's transcript.
+func (t *TEET) addToTranscriptForSessionWithType(sessionID string, packet []byte, packetType string) {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		log.Printf("[TEE_T] Failed to get session %s for transcript: %v", sessionID, err)
@@ -1299,13 +1299,19 @@ func (t *TEET) addToTranscriptForSession(sessionID string, packet []byte) {
 	session.TranscriptMutex.Lock()
 	defer session.TranscriptMutex.Unlock()
 
-	// Make a copy to avoid issues with reused buffers
-	packetCopy := make([]byte, len(packet))
-	copy(packetCopy, packet)
+	pktCopy := make([]byte, len(packet))
+	copy(pktCopy, packet)
 
-	session.TranscriptPackets = append(session.TranscriptPackets, packetCopy)
-	fmt.Printf("[TEE_T] Added packet to session %s transcript (%d bytes, total packets: %d)\n",
-		sessionID, len(packet), len(session.TranscriptPackets))
+	session.TranscriptPackets = append(session.TranscriptPackets, pktCopy)
+	session.TranscriptPacketTypes = append(session.TranscriptPacketTypes, packetType)
+
+	fmt.Printf("[TEE_T] Added packet to session %s transcript (%d bytes, type=%s, total packets: %d)\n",
+		sessionID, len(packet), packetType, len(session.TranscriptPackets))
+}
+
+// addToTranscriptForSession safely adds a packet to the session's transcript collection
+func (t *TEET) addToTranscriptForSession(sessionID string, packet []byte) {
+	t.addToTranscriptForSessionWithType(sessionID, packet, shared.TranscriptPacketTypeTLSRecord)
 }
 
 // getTranscriptForSession safely returns a copy of the session's transcript
@@ -1455,12 +1461,17 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			return
 		}
 
-		// Create signed transcript for client
+		// Retrieve packet types in order (should all be TLS records)
+		session.TranscriptMutex.Lock()
+		pktTypes := append([]string(nil), session.TranscriptPacketTypes...)
+		session.TranscriptMutex.Unlock()
+
 		signedTranscript := shared.SignedTranscript{
-			Packets:   transcript,
-			Signature: signature,
-			PublicKey: publicKeyDER,
-			Source:    "tee_t",
+			Packets:     transcript,
+			PacketTypes: pktTypes,
+			Signature:   signature,
+			PublicKey:   publicKeyDER,
+			Source:      "tee_t",
 		}
 
 		// Send signed transcript to client

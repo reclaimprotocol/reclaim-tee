@@ -456,10 +456,14 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 	switch signedTranscript.Source {
 	case "tee_k":
 		c.teekTranscriptPublicKey = signedTranscript.PublicKey
+		c.teekSignedTranscript = &signedTranscript
 		c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
+		c.teekTranscriptPacketTypes = signedTranscript.PacketTypes
 	case "tee_t":
 		c.teetTranscriptPublicKey = signedTranscript.PublicKey
+		c.teetSignedTranscript = &signedTranscript
 		c.teetTranscriptPackets = signedTranscript.Packets // Store packets for validation
+		c.teetTranscriptPacketTypes = signedTranscript.PacketTypes
 	}
 
 	// Calculate total size of all packets
@@ -627,9 +631,61 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 	fmt.Printf("[Client] TEE_K transcript analysis:\n")
 
 	handshakePacketsMatched := 0
+	// We only compare packets that represent *well-formed* TLS records. Recent changes augmented
+	// the TEE_K transcript with extra plaintext artifacts (e.g. the redacted HTTP request or
+	// custom commitment markers) that never travel over the network. Instead of guessing by the
+	// first byte, we validate the full 5-byte TLS record header:
+	//   byte 0   : ContentType ∈ {0x14, 0x15, 0x16, 0x17, 0x18}
+	//   byte 1-2 : Version    == 0x03 0x03 (TLS1.2 record carrying TLS1.3 data) OR 0x03 0x04
+	//   byte 3-4 : Length     (<= len(packet)-5)
+	// Anything that fails this structural check is treated as an internal/non-wire packet and
+	// ignored for validation.
+	isTLSRecord := func(pkt []byte) bool {
+		if len(pkt) < 5 {
+			return false
+		}
+		ct := pkt[0]
+		switch ct {
+		case 0x14, 0x15, 0x16, 0x17, 0x18: // ChangeCipherSpec, Alert, Handshake, ApplicationData, Heartbeat
+		default:
+			return false
+		}
+		major := pkt[1]
+		minor := pkt[2]
+		if major != 0x03 {
+			return false
+		}
+		if minor != 0x03 && minor != 0x04 {
+			return false
+		}
+		length := int(pkt[3])<<8 | int(pkt[4])
+		if length < 0 || length > len(pkt)-5 {
+			return false
+		}
+		return true
+	}
+
+	totalCompared := 0 // number of transcript packets that we actually compared against captures
 	for i, teekPacket := range c.teekTranscriptPackets {
 		fmt.Printf("[Client]   TEE_K packet %d: %d bytes (type: 0x%02x)\n",
 			i+1, len(teekPacket), teekPacket[0])
+
+		// If transcript carries explicit type annotations, respect them.
+		if len(c.teekTranscriptPacketTypes) > i {
+			pktType := c.teekTranscriptPacketTypes[i]
+			if pktType != shared.TranscriptPacketTypeTLSRecord {
+				fmt.Printf("[Client]     (skipped – packet type %s not compared)\n", pktType)
+				continue
+			}
+		}
+
+		// Fallback structural check when no annotation present
+		if !isTLSRecord(teekPacket) {
+			fmt.Printf("[Client]     (skipped – not a TLS record on the wire)\n")
+			continue
+		}
+
+		totalCompared++
 
 		// Check if this packet matches any of the client's captured data
 		found := false
@@ -649,11 +705,11 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 		}
 	}
 
-	fmt.Printf("[Client] TEE_K validation result: %d/%d packets matched exactly\n",
-		handshakePacketsMatched, len(c.teekTranscriptPackets))
+	fmt.Printf("[Client] TEE_K validation result: %d/%d TLS packets matched exactly (ignored %d non-TLS packets)\n",
+		handshakePacketsMatched, totalCompared, len(c.teekTranscriptPackets)-totalCompared)
 
-	// For TEE_K, we expect exact matches since it should see the same raw TCP data
-	return handshakePacketsMatched == len(c.teekTranscriptPackets)
+	// We only fail validation if *TLS* packets are mismatched.
+	return handshakePacketsMatched == totalCompared
 }
 
 // validateTEETTranscriptRaw validates TEE_T transcript against client application data records
@@ -707,6 +763,9 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 
 	log.Printf("[Client] Received redacted decryption stream for seq %d (%d bytes)",
 		redactedStream.SeqNum, len(redactedStream.RedactedStream))
+
+	// Add to collection for verification bundle
+	c.signedRedactedStreams = append(c.signedRedactedStreams, redactedStream)
 
 	// Verify signature if present
 	if len(redactedStream.Signature) > 0 {
@@ -772,6 +831,8 @@ func (c *Client) printRedactedResponse() {
 	for _, k := range keys {
 		fullResponse.Write(c.redactedPlaintextBySeq[uint64(k)])
 	}
+
+	c.fullRedactedResponse = []byte(fullResponse.String())
 
 	// Print the final, ordered, redacted response
 	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", fullResponse.String())
