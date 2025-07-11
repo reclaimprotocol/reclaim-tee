@@ -563,6 +563,15 @@ func VerifyMasterSignature(transcript *SignedTranscript, redactedStreams []Signe
 	if transcript.RequestMetadata != nil {
 		buffer.Write(transcript.RequestMetadata.RedactedRequest)
 		buffer.Write(transcript.RequestMetadata.CommSP)
+
+		// Include redaction ranges in signature verification (same as signing)
+		if len(transcript.RequestMetadata.RedactionRanges) > 0 {
+			redactionRangesBytes, err := json.Marshal(transcript.RequestMetadata.RedactionRanges)
+			if err != nil {
+				return fmt.Errorf("failed to marshal redaction ranges for verification: %v", err)
+			}
+			buffer.Write(redactionRangesBytes)
+		}
 	}
 
 	// Add concatenated redacted streams
