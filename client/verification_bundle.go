@@ -50,6 +50,23 @@ func (c *Client) BuildVerificationBundle(path string) error {
 		bundle.ProofKey = c.proofKey
 	}
 
+	// Pretty-print helpers
+	if c.redactedRequestPlain != nil {
+		bundle.RedactedRequest = c.redactedRequestPlain
+	}
+	if len(c.requestRedactionRanges) > 0 {
+		// Convert to shared.RedactionRange to avoid import cycles
+		var sharedRanges []shared.RedactionRange
+		for _, r := range c.requestRedactionRanges {
+			sharedRanges = append(sharedRanges, shared.RedactionRange{
+				Start:  r.Start,
+				Length: r.Length,
+				Type:   r.Type,
+			})
+		}
+		bundle.RedactionRanges = sharedRanges
+	}
+
 	// Attestations (if any; nil slices marshal as null, omit empty)
 	bundle.AttestationTEEK = c.teekAttestationPublicKey // TODO: replace with full doc when available
 	bundle.AttestationTEET = c.teetAttestationPublicKey

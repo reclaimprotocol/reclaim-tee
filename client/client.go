@@ -100,6 +100,8 @@ type Client struct {
 	decryptionStreamBySeq  map[uint64][]byte // Store decryption streams by sequence
 	redactedPlaintextBySeq map[uint64][]byte // *** ADDED: Store final redacted plaintext for ordered printing ***
 
+	// Track redaction ranges so we can prettify later and include in bundle
+	requestRedactionRanges []RedactionRange
 	// Attestation verification fields
 	teekAttestationPublicKey []byte // Public key extracted from TEE_K attestation
 	teetAttestationPublicKey []byte // Public key extracted from TEE_T attestation
@@ -158,6 +160,7 @@ func NewClient(teekURL string) *Client {
 		ciphertextBySeq:              make(map[uint64][]byte),
 		decryptionStreamBySeq:        make(map[uint64][]byte),
 		redactedPlaintextBySeq:       make(map[uint64][]byte),
+		requestRedactionRanges:       nil,
 		teekAttestationPublicKey:     nil,
 		teetAttestationPublicKey:     nil,
 		teekTranscriptPublicKey:      nil,
@@ -314,7 +317,18 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (RedactedRequestData,
 	// Apply redaction using XOR streams
 	redactedRequest := c.applyRedaction(httpRequest, ranges, streams)
 
-	fmt.Printf("[Client] REDACTED REQUEST:\n%s\n", string(redactedRequest))
+	// Pretty-print: overlay '*' over redacted ranges so output is readable.
+	prettyReq := append([]byte(nil), redactedRequest...)
+	for _, r := range ranges {
+		end := r.Start + r.Length
+		if r.Start < 0 || end > len(prettyReq) {
+			continue
+		}
+		for i := r.Start; i < end; i++ {
+			prettyReq[i] = '*'
+		}
+	}
+	fmt.Printf("[Client] REDACTED REQUEST (pretty):\n%s\n", string(prettyReq))
 
 	// Show non-sensitive parts remain unchanged
 	fmt.Printf("[Client] NON-SENSITIVE PARTS (unchanged):\n")
@@ -344,6 +358,7 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (RedactedRequestData,
 	fmt.Printf(" Redaction ranges: %d\n", len(ranges))
 
 	c.redactedRequestPlain = redactedRequest
+	c.requestRedactionRanges = ranges // Save redaction ranges
 
 	return RedactedRequestData{
 			RedactedRequest: redactedRequest,

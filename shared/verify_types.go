@@ -38,6 +38,12 @@ type VerificationBundle struct {
 	// Attestation documents (optional in standalone mode)
 	AttestationTEEK []byte `json:"attestation_tee_k,omitempty"`
 	AttestationTEET []byte `json:"attestation_tee_t,omitempty"`
+
+	// ---- Optional pretty-printing helpers ----
+	// Plaintext redacted HTTP request as sent to TEE_K (R_red)
+	RedactedRequest []byte `json:"redacted_request,omitempty"`
+	// Exact ranges that were XOR-redacted; same coordinates used by client & TEEs.
+	RedactionRanges []RedactionRange `json:"redaction_ranges,omitempty"`
 }
 
 // Report captures the result of offline verification. The verifier returns it

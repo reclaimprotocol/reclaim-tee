@@ -122,7 +122,22 @@ func Validate(bundlePath string) error {
 	fmt.Println("[Verifier] Redacted streams applied successfully ✅")
 
 	// --- Try to locate the redacted HTTP request inside TEE_K transcript and print it ---
-	if bundle.Transcripts.TEEK != nil {
+	// Pretty-print using bundle.RedactedRequest if available, otherwise fall back to scan.
+	if len(bundle.RedactedRequest) > 0 {
+		pretty := append([]byte(nil), bundle.RedactedRequest...)
+		for _, r := range bundle.RedactionRanges {
+			end := r.Start + r.Length
+			if r.Start < 0 || end > len(pretty) {
+				continue
+			}
+			for i := r.Start; i < end; i++ {
+				pretty[i] = '*'
+			}
+		}
+		fmt.Println("[Verifier] Redacted HTTP request (pretty):\n---")
+		fmt.Println(string(pretty))
+		fmt.Println("---")
+	} else if bundle.Transcripts.TEEK != nil {
 		for _, pkt := range bundle.Transcripts.TEEK.Packets {
 			if len(pkt) > 4 && (string(pkt[:3]) == "GET" || string(pkt[:4]) == "POST" || string(pkt[:3]) == "PUT" || string(pkt[:6]) == "DELETE") {
 				fmt.Println("[Verifier] Redacted HTTP request (from transcript):\n---")
