@@ -111,10 +111,8 @@ type Client struct {
 	publicKeyComparisonDone  bool   // Flag to track if public key comparison was completed
 
 	// Transcript validation fields
-	teekTranscriptPackets     [][]byte // Packets from TEE_K signed transcript for validation
-	teetTranscriptPackets     [][]byte // Packets from TEE_T signed transcript for validation
-	teekTranscriptPacketTypes []string // Packet type annotations from TEE_K transcript
-	teetTranscriptPacketTypes []string // Packet type annotations from TEE_T transcript
+	teekTranscriptPackets [][]byte // Packets from TEE_K signed transcript for validation
+	teetTranscriptPackets [][]byte // Packets from TEE_T signed transcript for validation
 
 	// Library interface fields
 	requestRedactions []RedactionSpec  // Request redactions from config
@@ -169,8 +167,6 @@ func NewClient(teekURL string) *Client {
 		publicKeyComparisonDone:      false,
 		teekTranscriptPackets:        nil,
 		teetTranscriptPackets:        nil,
-		teekTranscriptPacketTypes:    nil,
-		teetTranscriptPacketTypes:    nil,
 		requestRedactions:            nil,
 		responseCallback:             nil,
 		protocolStartTime:            time.Now(),
@@ -1147,12 +1143,7 @@ func (c *Client) buildAttestationValidationResults() *AttestationValidationResul
 
 // buildTEEValidationDetails constructs validation details for one TEE's transcript
 func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) TranscriptPacketValidation {
-	var packetTypes []string
-	if source == "tee_k" {
-		packetTypes = c.teekTranscriptPacketTypes
-	} else if source == "tee_t" {
-		packetTypes = c.teetTranscriptPacketTypes
-	}
+	// All transcript packets are now TLS records
 
 	if packets == nil {
 		return TranscriptPacketValidation{
@@ -1167,14 +1158,7 @@ func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) Tran
 	packetsMatched := 0
 
 	for i, packet := range packets {
-		// Decide whether this packet must have a matching capture.
-		mustMatch := true
-		if len(packetTypes) > i {
-			if packetTypes[i] != shared.TranscriptPacketTypeTLSRecord {
-				mustMatch = false
-			}
-		}
-
+		// With the new structure, all packets in the Packets array are TLS records
 		var packetType string
 		if len(packet) > 0 {
 			packetType = fmt.Sprintf("0x%02x", packet[0])
@@ -1186,18 +1170,13 @@ func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) Tran
 		matchedCapture := false
 		captureIndex := -1
 
-		if mustMatch {
-			for j, capturedChunk := range c.capturedTraffic {
-				if len(packet) == len(capturedChunk) && bytes.Equal(packet, capturedChunk) {
-					matchedCapture = true
-					captureIndex = j
-					packetsMatched++
-					break
-				}
+		for j, capturedChunk := range c.capturedTraffic {
+			if len(packet) == len(capturedChunk) && bytes.Equal(packet, capturedChunk) {
+				matchedCapture = true
+				captureIndex = j
+				packetsMatched++
+				break
 			}
-		} else {
-			// Non-TLS packet types are considered matched by definition
-			matchedCapture = true
 		}
 
 		detail := PacketValidationDetail{
@@ -1214,17 +1193,8 @@ func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) Tran
 		details = append(details, detail)
 	}
 
-	// Only require TLSRecord packets to be matched.
-	requiredMatches := 0
-	for i := range packets {
-		need := true
-		if len(packetTypes) > i && packetTypes[i] != shared.TranscriptPacketTypeTLSRecord {
-			need = false
-		}
-		if need {
-			requiredMatches++
-		}
-	}
+	// All packets are now TLS records and should be matched
+	requiredMatches := len(packets)
 
 	return TranscriptPacketValidation{
 		PacketsReceived:  len(packets),

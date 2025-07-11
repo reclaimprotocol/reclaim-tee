@@ -1461,17 +1461,11 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			return
 		}
 
-		// Retrieve packet types in order (should all be TLS records)
-		session.TranscriptMutex.Lock()
-		pktTypes := append([]string(nil), session.TranscriptPacketTypes...)
-		session.TranscriptMutex.Unlock()
-
 		signedTranscript := shared.SignedTranscript{
-			Packets:     transcript,
-			PacketTypes: pktTypes,
-			Signature:   signature,
-			PublicKey:   publicKeyDER,
-			Source:      "tee_t",
+			Packets:   transcript,
+			Signature: signature,
+			PublicKey: publicKeyDER,
+			Source:    "tee_t",
 		}
 
 		// Send signed transcript to client

@@ -44,14 +44,14 @@ NOTE: due to the need to divide AEAD into two processes (encryption and MAC comp
 
 - **Goal**: Establish a secure TLS connection between the User and the Website with the help of TEE_K.
 - **Process**:
-1. User sends a request to the TEE_K to establish a connection with a Website, providing all the data necessary to know for TLS Handshake: 
+1. User sends a request to the TEE_K to establish a connection with a Website, providing all the data necessary to know for TLS Handshake:
     - **Hostname/IP address**
     - **Port number** (usually 443 for HTTPS/TLS)
     - **SNI (Server Name Indication)**
     - **ALPN (Application-Layer Protocol Negotiation)** - What protocols you support after TLS (like HTTP/2, HTTP/1.1)
 2. TEE_K conducts the TLS handshake with the Website through the User (i.e. the User is a proxy that sends data back and forth) on behalf of the User, establishing TLS session keys (further referred to as TLS keys). Note that the User learns nothing about the session keys at this stage.
-3. TEE_K discloses to the User the key used for Handshake, thus proving the validity of the connection (to avoid phishing) and, especially, the chain of certificates that appeared in the TLS handshake (this key is never used in the Record phase!). 
-In the case of TLS 1.2 this step can be avoided due to the lack of encryption in the Handshake
+3. TEE_K discloses to the User the key used for Handshake, thus proving the validity of the connection (to avoid phishing) and, especially, the chain of certificates that appeared in the TLS handshake (this key is never used in the Record phase!).
+   In the case of TLS 1.2 this step can be avoided due to the lack of encryption in the Handshake
 - **Flow scheme**
 1. User → TEE_K: request for proof creation
 2. TEE_K → User: TLS Client Hello
@@ -62,8 +62,8 @@ In the case of TLS 1.2 this step can be avoided due to the lack of encryption in
 
 - **Goal**: Enable the User to send authenticated requests to the Website while keeping each party’s sensitive data private.
 - **Process**:
-    1. The User constructs a request R, dividing it into 3 parts: non-sensitive R_NS (will go as a plaintext), sensitive R_S that is *not* going to be used in a proof, sensitive R_SP that is going to be used in a proof. 
-    2. The User generates two random streams: Str_S, Str_SP, and two commitment keys: K_S, K_SP. Then the User applies Str_S to R_S (i.e. computing R_S \oplus Str_S) and Str_SP to R_SP without changing R_NS, thus producing R_red. Additionally, the User computes two commitments: 
+    1. The User constructs a request R, dividing it into 3 parts: non-sensitive R_NS (will go as a plaintext), sensitive R_S that is *not* going to be used in a proof, sensitive R_SP that is going to be used in a proof.
+    2. The User generates two random streams: Str_S, Str_SP, and two commitment keys: K_S, K_SP. Then the User applies Str_S to R_S (i.e. computing R_S \oplus Str_S) and Str_SP to R_SP without changing R_NS, thus producing R_red. Additionally, the User computes two commitments:
         1. comm_s = HMAC(Str_S, K_S);
         2. comm_sp = HMAC(Str_SP, K_SP).
     3. The User sends R_red, comm_s and comm_sp to TEE_K (specifying the division into parts).
@@ -90,7 +90,7 @@ In the case of TLS 1.2 this step can be avoided due to the lack of encryption in
     1. The User receives an encrypted response Resp_Enc and Tag from the Website.
     2. The User sends the Resp_Enc, Tag to TEE_T.
     3. TEE_T sends the length of Resp_Enc to TEE_K.
-    4. TEE_K sends Tag Secrets (analogously to request handling) to TEE_T. 
+    4. TEE_K sends Tag Secrets (analogously to request handling) to TEE_T.
     5. TEE_T computes the Tag for Resp_Enc and compares it with the original Tag. If everything is correct, TEE_T sends “success” messages to TEE_K and the User.
     6. TEE_K computes the stream Str_Dec of the length of Resp for decryption of the Resp_Enc and sends it to the User.
     7. The User decrypts Resp_Enc (via computing XOR with the Str_Dec), thus getting Resp.
@@ -150,7 +150,7 @@ In the most cases it is enough for a User to run TLS through Reclaim for only a 
     1. The User receives an encrypted response Resp_Enc and Tag from the Website.
     2. The User sends the Resp_Enc, Tag to TEE_T.
     3. TEE_T sends the length of Resp_Enc to TEE_K.
-    4. TEE_K sends Tag Secrets (analogously to request handling) to TEE_T. 
+    4. TEE_K sends Tag Secrets (analogously to request handling) to TEE_T.
     5. TEE_T computes the Tag for Resp_Enc and compares it with the original Tag. If everything is correct, TEE_T sends “success” messages to TEE_K and the User.
     6. TEE_T signs the concatenation of Resp_Enc and Tag (further we call it request_transcript), and sends it to the User.
     7. TEE_K computes Str_Dec of the length of Resp for decryption of the Resp_Enc.

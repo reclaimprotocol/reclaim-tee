@@ -1,5 +1,13 @@
 package shared
 
+// RequestMetadata contains the redacted request and commitment data
+// that was previously included in the SignedTranscript packets
+type RequestMetadata struct {
+	RedactedRequest []byte `json:"redacted_request"` // The redacted HTTP request (R_red)
+	CommSP          []byte `json:"comm_sp"`          // Commitment to proof stream (comm_sp)
+	Signature       []byte `json:"signature"`        // Signature over the metadata
+}
+
 // VerificationBundle is the single JSON artefact that the client produces
 // and that the offline verifier consumes to reproduce all checks.
 // The fields mirror the outputs of the protocol phases.

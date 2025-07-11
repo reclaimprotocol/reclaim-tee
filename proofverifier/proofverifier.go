@@ -1,6 +1,7 @@
 package proofverifier
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
@@ -38,6 +39,13 @@ func Validate(bundlePath string) error {
 		if err := shared.VerifyTranscriptSignature(bundle.Transcripts.TEEK); err != nil {
 			return fmt.Errorf("TEE_K transcript signature invalid: %v", err)
 		}
+
+		// Verify request metadata signature if present
+		if bundle.Transcripts.TEEK.RequestMetadata != nil {
+			if err := shared.VerifyRequestMetadataSignature(bundle.Transcripts.TEEK.RequestMetadata, bundle.Transcripts.TEEK.PublicKey); err != nil {
+				return fmt.Errorf("TEE_K request metadata signature invalid: %v", err)
+			}
+		}
 	}
 	if bundle.Transcripts.TEET != nil {
 		if err := shared.VerifyTranscriptSignature(bundle.Transcripts.TEET); err != nil {
@@ -47,34 +55,48 @@ func Validate(bundlePath string) error {
 
 	fmt.Println("[Verifier] Transcript signatures valid ✅")
 
+	// --- Redacted decryption stream signature verification ---
+	if len(bundle.RedactedStreams) > 0 {
+		if bundle.Transcripts.TEEK == nil {
+			return fmt.Errorf("redacted streams present but no TEE_K transcript available for signature verification")
+		}
+
+		for _, stream := range bundle.RedactedStreams {
+			if len(stream.Signature) == 0 {
+				return fmt.Errorf("redacted stream seq %d has empty signature", stream.SeqNum)
+			}
+
+			// Verify signature using TEE_K public key
+			if err := shared.VerifySignatureWithDER(stream.RedactedStream, stream.Signature, bundle.Transcripts.TEEK.PublicKey); err != nil {
+				return fmt.Errorf("redacted stream seq %d signature invalid: %v", stream.SeqNum, err)
+			}
+		}
+		fmt.Printf("[Verifier] Redacted stream signatures valid ✅ (%d streams)\n", len(bundle.RedactedStreams))
+	}
+
 	// --- Commitment verification for proof stream ---
 	if bundle.ProofStream != nil && bundle.ProofKey != nil && bundle.Transcripts.TEEK != nil {
 		mac := hmac.New(sha256.New, bundle.ProofKey)
 		mac.Write(bundle.ProofStream)
-		commitment := mac.Sum(nil)
+		expectedCommitment := mac.Sum(nil)
 
-		// Search commitment bytes inside TEE_K transcript
-		found := false
-		var offset int
-		for _, pkt := range bundle.Transcripts.TEEK.Packets {
-			if len(pkt) >= len(commitment) {
-				// naive search
-				for i := 0; i <= len(pkt)-len(commitment); i++ {
-					if string(pkt[i:i+len(commitment)]) == string(commitment) {
-						found = true
-						offset = i
-						break
-					}
-				}
-			}
-			if found {
-				break
-			}
+		// Verify commitment directly from request metadata
+		if bundle.Transcripts.TEEK.RequestMetadata == nil {
+			return fmt.Errorf("TEE_K request metadata missing")
 		}
-		if !found {
-			return fmt.Errorf("commitment for proof stream not found in request transcript")
+
+		actualCommitment := bundle.Transcripts.TEEK.RequestMetadata.CommSP
+		if len(actualCommitment) != len(expectedCommitment) {
+			return fmt.Errorf("commitment length mismatch: expected %d bytes, got %d bytes",
+				len(expectedCommitment), len(actualCommitment))
 		}
-		fmt.Printf("[Verifier] Commitment verified ✅ (len=%d, first16=%x, offset=%d)\n", len(commitment), commitment[:min(16, len(commitment))], offset)
+
+		if !bytes.Equal(expectedCommitment, actualCommitment) {
+			return fmt.Errorf("commitment verification failed: values do not match")
+		}
+
+		fmt.Printf("[Verifier] Commitment verified ✅ (len=%d, first16=%x)\n",
+			len(expectedCommitment), expectedCommitment[:min(16, len(expectedCommitment))])
 		fmt.Printf("[Verifier]   ProofStream len=%d, ProofKey len=%d\n", len(bundle.ProofStream), len(bundle.ProofKey))
 	} else {
 		fmt.Println("[Verifier] Proof stream/key or TEE_K transcript missing – skipping commitment verification")
@@ -121,9 +143,9 @@ func Validate(bundlePath string) error {
 	fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + string(reconstructed) + "\n---")
 	fmt.Println("[Verifier] Redacted streams applied successfully ✅")
 
-	// --- Try to locate the redacted HTTP request inside TEE_K transcript and print it ---
-	// Pretty-print using bundle.RedactedRequest if available, otherwise fall back to scan.
+	// --- Display the redacted HTTP request ---
 	if len(bundle.RedactedRequest) > 0 {
+		// Create pretty-printed version with redactions applied
 		pretty := append([]byte(nil), bundle.RedactedRequest...)
 		for _, r := range bundle.RedactionRanges {
 			end := r.Start + r.Length
@@ -137,15 +159,13 @@ func Validate(bundlePath string) error {
 		fmt.Println("[Verifier] Redacted HTTP request (pretty):\n---")
 		fmt.Println(string(pretty))
 		fmt.Println("---")
-	} else if bundle.Transcripts.TEEK != nil {
-		for _, pkt := range bundle.Transcripts.TEEK.Packets {
-			if len(pkt) > 4 && (string(pkt[:3]) == "GET" || string(pkt[:4]) == "POST" || string(pkt[:3]) == "PUT" || string(pkt[:6]) == "DELETE") {
-				fmt.Println("[Verifier] Redacted HTTP request (from transcript):\n---")
-				fmt.Println(string(pkt))
-				fmt.Println("---")
-				break
-			}
-		}
+	} else if bundle.Transcripts.TEEK != nil && bundle.Transcripts.TEEK.RequestMetadata != nil {
+		// Display redacted request from transcript metadata
+		fmt.Println("[Verifier] Redacted HTTP request (from metadata):\n---")
+		fmt.Println(string(bundle.Transcripts.TEEK.RequestMetadata.RedactedRequest))
+		fmt.Println("---")
+	} else {
+		fmt.Println("[Verifier] No redacted request data available")
 	}
 
 	fmt.Println("[Verifier] Offline verification complete – success 🥳")

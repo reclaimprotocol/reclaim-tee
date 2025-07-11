@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/json"
@@ -1634,11 +1635,51 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 
 	log.Printf("[TEE_K] Received finished confirmation from TEE_T, starting transcript signing")
 
-	// Generate and sign transcript from session
-	transcript := t.getTranscriptForSession(sessionID)
-	if len(transcript) == 0 {
+	// Get session for transcript data
+	sessionForSigned, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_K] Failed to get session %s: %v", sessionID, err)
+		return
+	}
+
+	sessionForSigned.TranscriptMutex.Lock()
+	defer sessionForSigned.TranscriptMutex.Unlock()
+
+	if len(sessionForSigned.TranscriptPackets) == 0 {
 		log.Printf("[TEE_K] No transcript packets to sign for session %s", sessionID)
 		return
+	}
+
+	// Separate TLS packets from metadata
+	tlsPackets := make([][]byte, 0)
+	tlsPacketTypes := make([]string, 0)
+	var requestMetadata *shared.RequestMetadata
+
+	for i, packet := range sessionForSigned.TranscriptPackets {
+		packetType := ""
+		if i < len(sessionForSigned.TranscriptPacketTypes) {
+			packetType = sessionForSigned.TranscriptPacketTypes[i]
+		}
+
+		switch packetType {
+		case shared.TranscriptPacketTypeTLSRecord:
+			tlsPackets = append(tlsPackets, packet)
+			tlsPacketTypes = append(tlsPacketTypes, packetType)
+		case shared.TranscriptPacketTypeHTTPRequestRedacted:
+			if requestMetadata == nil {
+				requestMetadata = &shared.RequestMetadata{}
+			}
+			requestMetadata.RedactedRequest = packet
+		case shared.TranscriptPacketTypeCommitment:
+			if requestMetadata == nil {
+				requestMetadata = &shared.RequestMetadata{}
+			}
+			requestMetadata.CommSP = packet
+		default:
+			// Default to TLS record for unknown types
+			tlsPackets = append(tlsPackets, packet)
+			tlsPacketTypes = append(tlsPacketTypes, shared.TranscriptPacketTypeTLSRecord)
+		}
 	}
 
 	if t.signingKeyPair == nil {
@@ -1646,14 +1687,34 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	signature, err := t.signingKeyPair.SignTranscript(transcript)
+	// Create data to sign for transcript (TLS packets only)
+	var buffer bytes.Buffer
+	for _, packet := range tlsPackets {
+		buffer.Write(packet)
+	}
+
+	signature, err := t.signingKeyPair.SignData(buffer.Bytes())
 	if err != nil {
 		log.Printf("[TEE_K] Failed to sign transcript: %v", err)
 		return
 	}
 
-	log.Printf("[TEE_K] Successfully signed transcript (%d packets, %d bytes signature)",
-		len(transcript), len(signature))
+	// Generate signature for request metadata if present
+	if requestMetadata != nil {
+		var metadataBuffer bytes.Buffer
+		metadataBuffer.Write(requestMetadata.RedactedRequest)
+		metadataBuffer.Write(requestMetadata.CommSP)
+
+		metadataSignature, err := t.signingKeyPair.SignData(metadataBuffer.Bytes())
+		if err != nil {
+			log.Printf("[TEE_K] Failed to sign request metadata: %v", err)
+			return
+		}
+		requestMetadata.Signature = metadataSignature
+	}
+
+	log.Printf("[TEE_K] Successfully signed transcript (%d TLS packets, metadata present: %v, %d bytes signature)",
+		len(tlsPackets), requestMetadata != nil, len(signature))
 
 	// Get public key in DER format
 	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
@@ -1662,21 +1723,12 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	// Retrieve packet types in the same order
-	sessionForSigned, err := t.sessionManager.GetSession(sessionID)
-	var pktTypes []string
-	if err == nil {
-		sessionForSigned.TranscriptMutex.Lock()
-		pktTypes = append([]string(nil), sessionForSigned.TranscriptPacketTypes...)
-		sessionForSigned.TranscriptMutex.Unlock()
-	}
-
 	signedTranscript := shared.SignedTranscript{
-		Packets:     transcript,
-		PacketTypes: pktTypes,
-		Signature:   signature,
-		PublicKey:   publicKeyDER,
-		Source:      "tee_k",
+		Packets:         tlsPackets,
+		RequestMetadata: requestMetadata,
+		Signature:       signature,
+		PublicKey:       publicKeyDER,
+		Source:          "tee_k",
 	}
 
 	// Send signed transcript to client

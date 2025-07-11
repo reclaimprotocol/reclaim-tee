@@ -399,17 +399,14 @@ type FinishedMessage struct {
 
 // SignedTranscript represents a signed transcript with packets, signature, and public key
 type SignedTranscript struct {
-	Packets [][]byte `json:"packets"` // All packets in chronological order (binary data)
-	// PacketTypes describes what each entry in Packets represents.
-	// It is aligned by index with Packets. Example values:
-	//   "tls_record"            – bytes that were sent/received on the TCP connection as TLS records
-	//   "http_request_redacted" – plaintext redacted HTTP request added before encryption
-	//   "commitment"            – commitment bytes inserted into transcript
-	// Additional values may be defined later; verifiers MUST ignore unknown strings.
-	PacketTypes []string `json:"packet_types,omitempty"`
-	Signature   []byte   `json:"signature"`  // Cryptographic signature (binary data)
-	PublicKey   []byte   `json:"public_key"` // Public key in DER format (binary data)
-	Source      string   `json:"source"`     // "tee_k" or "tee_t"
+	Packets [][]byte `json:"packets"` // TLS packets only (binary data)
+
+	// Request metadata (formerly included in packets for TEE_K)
+	RequestMetadata *RequestMetadata `json:"request_metadata,omitempty"`
+
+	Signature []byte `json:"signature"`  // Cryptographic signature (binary data)
+	PublicKey []byte `json:"public_key"` // Public key in DER format (binary data)
+	Source    string `json:"source"`     // "tee_k" or "tee_t"
 }
 
 // Transcript packet type constants – exported so both client and TEEs can reference them.
@@ -533,11 +530,10 @@ func VerifySignatureWithDER(data []byte, signature []byte, publicKeyDER []byte) 
 
 // VerifyTranscriptSignature verifies a signed transcript's signature
 func VerifyTranscriptSignature(transcript *SignedTranscript) error {
-	// Reconstruct the original data that was signed
-	// This should match the SignTranscript function logic
+	// Reconstruct the original data that was signed (TLS packets only)
 	var buffer bytes.Buffer
 
-	// Write each packet to buffer
+	// Write each TLS packet to buffer
 	for _, packet := range transcript.Packets {
 		buffer.Write(packet)
 	}
@@ -546,6 +542,27 @@ func VerifyTranscriptSignature(transcript *SignedTranscript) error {
 
 	// Verify signature using the public key
 	return VerifySignatureWithDER(originalData, transcript.Signature, transcript.PublicKey)
+}
+
+// VerifyRequestMetadataSignature verifies the signature on request metadata
+func VerifyRequestMetadataSignature(metadata *RequestMetadata, publicKey []byte) error {
+	if metadata == nil {
+		return fmt.Errorf("request metadata is nil")
+	}
+
+	if len(metadata.Signature) == 0 {
+		return fmt.Errorf("request metadata signature is empty")
+	}
+
+	// Reconstruct the original data that was signed
+	var buffer bytes.Buffer
+	buffer.Write(metadata.RedactedRequest)
+	buffer.Write(metadata.CommSP)
+
+	originalData := buffer.Bytes()
+
+	// Verify signature using the public key
+	return VerifySignatureWithDER(originalData, metadata.Signature, publicKey)
 }
 
 // SignTranscript signs a transcript of packets and returns the signature
