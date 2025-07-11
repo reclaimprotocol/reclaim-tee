@@ -41,19 +41,12 @@ type TranscriptResults struct {
 	BothSignaturesValid bool `json:"both_signatures_valid"`
 }
 
-// SignedTranscriptData contains the complete signed transcript from a TEE
+// SignedTranscriptData represents a signed transcript in the results
 type SignedTranscriptData struct {
-	Source      string    `json:"source"`       // "tee_k" or "tee_t"
-	Packets     [][]byte  `json:"packets"`      // Raw packet data
-	Signature   []byte    `json:"signature"`    // Digital signature
-	PublicKey   []byte    `json:"public_key"`   // Public key (DER format)
-	TotalSize   int       `json:"total_size"`   // Total bytes in all packets
-	PacketCount int       `json:"packet_count"` // Number of packets
-	Timestamp   time.Time `json:"timestamp"`    // When transcript was received
-
-	// Signature verification result
-	SignatureValid bool   `json:"signature_valid"`
-	SignatureError string `json:"signature_error,omitempty"`
+	Packets         [][]byte `json:"packets"`                    // Array of TLS packets
+	Signature       []byte   `json:"signature"`                  // Cryptographic signature
+	MasterSignature []byte   `json:"master_signature,omitempty"` // Combined signature for TEE_K
+	PublicKey       []byte   `json:"public_key"`                 // Public key in DER format
 }
 
 // ValidationResults contains the results of transcript validation

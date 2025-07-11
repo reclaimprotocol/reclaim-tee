@@ -1348,10 +1348,7 @@ func (t *TEET) handleFinishedFromClientSession(sessionID string, msg *shared.Mes
 		return
 	}
 
-	if finishedMsg.Source != "client" {
-		log.Printf("[TEE_T] Received finished message from unexpected source: %s", finishedMsg.Source)
-		return
-	}
+	// Note: Source field removed - message context determines source
 
 	log.Printf("[TEE_T] Received finished command from client")
 
@@ -1380,10 +1377,7 @@ func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
 		return
 	}
 
-	if finishedMsg.Source != "tee_k" {
-		log.Printf("[TEE_T] Received finished message from unexpected source: %s", finishedMsg.Source)
-		return
-	}
+	// Note: Source field removed - message context determines source
 
 	log.Printf("[TEE_T] Received finished command from TEE_K")
 
@@ -1442,9 +1436,7 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			len(transcript), len(signature))
 
 		// Send "finished" response to TEE_K
-		responseMsg := shared.FinishedMessage{
-			Source: "tee_t",
-		}
+		responseMsg := shared.FinishedMessage{}
 
 		finishedResponse := shared.CreateSessionMessage(shared.MsgFinished, sessionID, responseMsg)
 		if err := t.sendMessageToTEEKForSession(sessionID, finishedResponse); err != nil {
@@ -1465,7 +1457,6 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			Packets:   transcript,
 			Signature: signature,
 			PublicKey: publicKeyDER,
-			Source:    "tee_t",
 		}
 
 		// Send signed transcript to client

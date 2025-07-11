@@ -942,13 +942,8 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 		}
 
 		teekTranscript = &SignedTranscriptData{
-			Source:         "tee_k",
-			Packets:        c.teekTranscriptPackets,
-			PublicKey:      c.teekTranscriptPublicKey,
-			TotalSize:      totalSize,
-			PacketCount:    len(c.teekTranscriptPackets),
-			Timestamp:      time.Now(), // TODO: Track actual timestamp
-			SignatureValid: c.hasCompletionFlag(CompletionFlagTEEKSignatureValid),
+			Packets:   c.teekTranscriptPackets,
+			PublicKey: c.teekTranscriptPublicKey,
 		}
 	}
 
@@ -960,13 +955,8 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 		}
 
 		teetTranscript = &SignedTranscriptData{
-			Source:         "tee_t",
-			Packets:        c.teetTranscriptPackets,
-			PublicKey:      c.teetTranscriptPublicKey,
-			TotalSize:      totalSize,
-			PacketCount:    len(c.teetTranscriptPackets),
-			Timestamp:      time.Now(), // TODO: Track actual timestamp
-			SignatureValid: c.hasCompletionFlag(CompletionFlagTEETSignatureValid),
+			Packets:   c.teetTranscriptPackets,
+			PublicKey: c.teetTranscriptPublicKey,
 		}
 	}
 

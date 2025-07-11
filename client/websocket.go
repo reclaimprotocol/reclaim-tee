@@ -447,18 +447,20 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 		return
 	}
 
-	log.Printf("[Client] Received signed transcript from %s", signedTranscript.Source)
+	log.Printf("[Client] Received signed transcript")
 	log.Printf("[Client] Transcript contains %d packets", len(signedTranscript.Packets))
 	log.Printf("[Client] Signature: %d bytes", len(signedTranscript.Signature))
 	log.Printf("[Client] Public Key: %d bytes (DER format)", len(signedTranscript.PublicKey))
 
 	// Store the public key for attestation verification
-	switch signedTranscript.Source {
-	case "tee_k":
+	// Determine source based on transcript structure: TEE_K has RequestMetadata, TEE_T doesn't
+	if signedTranscript.RequestMetadata != nil {
+		// This is from TEE_K
 		c.teekTranscriptPublicKey = signedTranscript.PublicKey
 		c.teekSignedTranscript = &signedTranscript
 		c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
-	case "tee_t":
+	} else {
+		// This is from TEE_T
 		c.teetTranscriptPublicKey = signedTranscript.PublicKey
 		c.teetSignedTranscript = &signedTranscript
 		c.teetTranscriptPackets = signedTranscript.Packets // Store packets for validation
@@ -472,48 +474,53 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 
 	log.Printf("[Client] Total transcript size: %d bytes", totalSize)
 
+	// Determine source name for logging
+	sourceName := "TEE_T"
+	if signedTranscript.RequestMetadata != nil {
+		sourceName = "TEE_K"
+	}
+
 	// Display signature for verification
 	if len(signedTranscript.Signature) > 0 {
 		fmt.Printf("[Client] %s signature (first 16 bytes): %x\n",
-			strings.ToUpper(signedTranscript.Source), signedTranscript.Signature[:min(16, len(signedTranscript.Signature))])
+			sourceName, signedTranscript.Signature[:min(16, len(signedTranscript.Signature))])
 	}
 
 	// Display public key for verification
 	if len(signedTranscript.PublicKey) > 0 {
 		fmt.Printf("[Client] %s public key (first 16 bytes): %x\n",
-			strings.ToUpper(signedTranscript.Source), signedTranscript.PublicKey[:min(16, len(signedTranscript.PublicKey))])
+			sourceName, signedTranscript.PublicKey[:min(16, len(signedTranscript.PublicKey))])
 	}
 
 	// Verify signature
-	log.Printf("[Client] Verifying signature for %s transcript...", signedTranscript.Source)
+	log.Printf("[Client] Verifying signature for %s transcript...", sourceName)
 	verificationErr := shared.VerifyTranscriptSignature(&signedTranscript)
 	if verificationErr != nil {
-		log.Printf("[Client] Signature verification FAILED for %s: %v", signedTranscript.Source, verificationErr)
+		log.Printf("[Client] Signature verification FAILED for %s: %v", sourceName, verificationErr)
 		fmt.Printf("[Client] %s signature verification FAILED: %v\n",
-			strings.ToUpper(signedTranscript.Source), verificationErr)
+			sourceName, verificationErr)
 		// Don't return here - continue processing but mark signature as invalid
 	} else {
-		log.Printf("[Client] Signature verification SUCCESS for %s", signedTranscript.Source)
+		log.Printf("[Client] Signature verification SUCCESS for %s", sourceName)
 		fmt.Printf("[Client] %s signature verification SUCCESS\n",
-			strings.ToUpper(signedTranscript.Source))
+			sourceName)
 	}
 
 	// Track transcript completion and signature validity
-	switch signedTranscript.Source {
-	case "tee_k":
+	if signedTranscript.RequestMetadata != nil {
+		// This is from TEE_K
 		c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
 		if verificationErr == nil {
 			c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
 		}
 		log.Printf("[Client] Marked TEE_K transcript as received (signature valid: %v)", verificationErr == nil)
-	case "tee_t":
+	} else {
+		// This is from TEE_T
 		c.setCompletionFlag(CompletionFlagTEETTranscriptReceived)
 		if verificationErr == nil {
 			c.setCompletionFlag(CompletionFlagTEETSignatureValid)
 		}
 		log.Printf("[Client] Marked TEE_T transcript as received (signature valid: %v)", verificationErr == nil)
-	default:
-		log.Printf("[Client] Unknown transcript source: %s", signedTranscript.Source)
 	}
 
 	// Check if we now have both transcript public keys and can verify against attestations
@@ -531,10 +538,10 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 	transcriptsComplete := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
 	signaturesValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)
 
-	log.Printf("[Client] Signed transcript from %s processed successfully", signedTranscript.Source)
+	log.Printf("[Client] Signed transcript from %s processed successfully", sourceName)
 
 	// Show packet summary
-	fmt.Printf("[Client] %s transcript summary:\n", strings.ToUpper(signedTranscript.Source))
+	fmt.Printf("[Client] %s transcript summary:\n", sourceName)
 	for i, packet := range signedTranscript.Packets {
 		if len(packet) > 0 {
 			fmt.Printf("[Client]   Packet %d: %d bytes (starts with %02x)\n", i+1, len(packet), packet[0])
@@ -556,7 +563,7 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 	}
 
 	// Check protocol completion (function will only proceed if all conditions are met)
-	c.checkProtocolCompletion("signed transcript received from " + signedTranscript.Source)
+	c.checkProtocolCompletion("signed transcript received from " + sourceName)
 }
 
 // validateTranscriptsAgainstCapturedTraffic performs comprehensive validation of signed transcripts
@@ -716,13 +723,7 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 	// Add to collection for verification bundle
 	c.signedRedactedStreams = append(c.signedRedactedStreams, redactedStream)
 
-	// Verify signature if present
-	if len(redactedStream.Signature) > 0 {
-		log.Printf("[Client] Verifying signature for redacted stream seq %d...", redactedStream.SeqNum)
-		// TODO: Implement signature verification for redacted streams
-		// For now, just log that we received a signed stream
-		log.Printf("[Client] Redacted stream signature received: %d bytes", len(redactedStream.Signature))
-	}
+	// Note: Individual stream signatures removed - using master signature verification
 
 	// Apply redacted stream to ciphertext to get redacted plaintext
 	c.responseContentMutex.Lock()

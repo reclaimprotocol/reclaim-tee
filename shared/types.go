@@ -180,6 +180,10 @@ type Session struct {
 	TEEKFinished       bool       // Whether TEE_K has sent finished message
 	FinishedStateMutex sync.Mutex // Protect finished state
 
+	// Master signature generation
+	RedactedStreams []SignedRedactedDecryptionStream `json:"-"` // Collect streams for master signature
+	StreamsMutex    sync.Mutex                       // Protect streams collection
+
 	// Connection management
 	IsClosed bool
 	Context  context.Context
@@ -222,10 +226,10 @@ type ResponseSessionState struct {
 
 // Protocol data structures
 type RedactionRange struct {
-	Start          int    `json:"start"`           // Start position in the decryption stream
-	Length         int    `json:"length"`          // Length of the range to redact
-	Type           string `json:"type"`            // "sensitive" or "sensitive_proof", etc.
-	RedactionBytes []byte `json:"redaction_bytes"` // Bytes to use in redacted stream (calculated to produce '*' when XORed with ciphertext)
+	Start          int    `json:"start"`                     // Start position in the decryption stream
+	Length         int    `json:"length"`                    // Length of the range to redact
+	Type           string `json:"type"`                      // "sensitive" or "sensitive_proof", etc.
+	RedactionBytes []byte `json:"redaction_bytes,omitempty"` // Bytes to use in redacted stream (calculated to produce '*' when XORed with ciphertext)
 }
 
 // Client to TEE_K: Request to establish connection
@@ -392,9 +396,8 @@ type EncryptedResponseData struct {
 
 // Single Session Mode data structures
 
-// FinishedMessage represents a finished command from client or coordination between TEEs
+// FinishedMessage represents a finished message from any party
 type FinishedMessage struct {
-	Source string `json:"source"` // "client", "tee_k", "tee_t"
 }
 
 // SignedTranscript represents a signed transcript with packets, signature, and public key
@@ -404,9 +407,9 @@ type SignedTranscript struct {
 	// Request metadata (formerly included in packets for TEE_K)
 	RequestMetadata *RequestMetadata `json:"request_metadata,omitempty"`
 
-	Signature []byte `json:"signature"`  // Cryptographic signature (binary data)
-	PublicKey []byte `json:"public_key"` // Public key in DER format (binary data)
-	Source    string `json:"source"`     // "tee_k" or "tee_t"
+	Signature       []byte `json:"signature"`                  // Cryptographic signature (binary data)
+	MasterSignature []byte `json:"master_signature,omitempty"` // Combined signature for TEE_K over all data
+	PublicKey       []byte `json:"public_key"`                 // Public key in DER format (binary data)
 }
 
 // Transcript packet type constants – exported so both client and TEEs can reference them.
@@ -422,10 +425,9 @@ type RedactionSpec struct {
 	AlwaysRedactSessionTickets bool             `json:"always_redact_session_tickets"` // Always redact session tickets
 }
 
-// SignedRedactedDecryptionStream represents a signed redacted decryption stream
+// SignedRedactedDecryptionStream represents a redacted decryption stream
 type SignedRedactedDecryptionStream struct {
 	RedactedStream []byte `json:"redacted_stream"` // Decryption stream with "*" for redacted parts
-	Signature      []byte `json:"signature"`       // Cryptographic signature
 	SeqNum         uint64 `json:"seq_num"`         // TLS sequence number
 }
 
@@ -544,25 +546,39 @@ func VerifyTranscriptSignature(transcript *SignedTranscript) error {
 	return VerifySignatureWithDER(originalData, transcript.Signature, transcript.PublicKey)
 }
 
-// VerifyRequestMetadataSignature verifies the signature on request metadata
-func VerifyRequestMetadataSignature(metadata *RequestMetadata, publicKey []byte) error {
-	if metadata == nil {
-		return fmt.Errorf("request metadata is nil")
+// VerifyMasterSignature verifies TEE_K's master signature over all data
+func VerifyMasterSignature(transcript *SignedTranscript, redactedStreams []SignedRedactedDecryptionStream) error {
+	if transcript == nil {
+		return fmt.Errorf("transcript is nil")
 	}
 
-	if len(metadata.Signature) == 0 {
-		return fmt.Errorf("request metadata signature is empty")
+	if len(transcript.MasterSignature) == 0 {
+		return fmt.Errorf("master signature is empty")
 	}
 
 	// Reconstruct the original data that was signed
 	var buffer bytes.Buffer
-	buffer.Write(metadata.RedactedRequest)
-	buffer.Write(metadata.CommSP)
+
+	// Add request metadata
+	if transcript.RequestMetadata != nil {
+		buffer.Write(transcript.RequestMetadata.RedactedRequest)
+		buffer.Write(transcript.RequestMetadata.CommSP)
+	}
+
+	// Add concatenated redacted streams
+	for _, stream := range redactedStreams {
+		buffer.Write(stream.RedactedStream)
+	}
+
+	// Add TLS packets
+	for _, packet := range transcript.Packets {
+		buffer.Write(packet)
+	}
 
 	originalData := buffer.Bytes()
 
 	// Verify signature using the public key
-	return VerifySignatureWithDER(originalData, metadata.Signature, publicKey)
+	return VerifySignatureWithDER(originalData, transcript.MasterSignature, transcript.PublicKey)
 }
 
 // SignTranscript signs a transcript of packets and returns the signature

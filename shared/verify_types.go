@@ -3,9 +3,9 @@ package shared
 // RequestMetadata contains the redacted request and commitment data
 // that was previously included in the SignedTranscript packets
 type RequestMetadata struct {
-	RedactedRequest []byte `json:"redacted_request"` // The redacted HTTP request (R_red)
-	CommSP          []byte `json:"comm_sp"`          // Commitment to proof stream (comm_sp)
-	Signature       []byte `json:"signature"`        // Signature over the metadata
+	RedactedRequest []byte           `json:"redacted_request"` // The redacted HTTP request (R_red)
+	CommSP          []byte           `json:"comm_sp"`          // Commitment to proof stream (comm_sp)
+	RedactionRanges []RedactionRange `json:"redaction_ranges"` // Ranges used for request redaction (signed by TEE_K)
 }
 
 // VerificationBundle is the single JSON artefact that the client produces

@@ -40,10 +40,10 @@ func Validate(bundlePath string) error {
 			return fmt.Errorf("TEE_K transcript signature invalid: %v", err)
 		}
 
-		// Verify request metadata signature if present
-		if bundle.Transcripts.TEEK.RequestMetadata != nil {
-			if err := shared.VerifyRequestMetadataSignature(bundle.Transcripts.TEEK.RequestMetadata, bundle.Transcripts.TEEK.PublicKey); err != nil {
-				return fmt.Errorf("TEE_K request metadata signature invalid: %v", err)
+		// Verify master signature over all TEE_K data
+		if len(bundle.Transcripts.TEEK.MasterSignature) > 0 {
+			if err := shared.VerifyMasterSignature(bundle.Transcripts.TEEK, bundle.RedactedStreams); err != nil {
+				return fmt.Errorf("TEE_K master signature invalid: %v", err)
 			}
 		}
 	}
@@ -53,25 +53,10 @@ func Validate(bundlePath string) error {
 		}
 	}
 
-	fmt.Println("[Verifier] Transcript signatures valid ✅")
-
-	// --- Redacted decryption stream signature verification ---
-	if len(bundle.RedactedStreams) > 0 {
-		if bundle.Transcripts.TEEK == nil {
-			return fmt.Errorf("redacted streams present but no TEE_K transcript available for signature verification")
-		}
-
-		for _, stream := range bundle.RedactedStreams {
-			if len(stream.Signature) == 0 {
-				return fmt.Errorf("redacted stream seq %d has empty signature", stream.SeqNum)
-			}
-
-			// Verify signature using TEE_K public key
-			if err := shared.VerifySignatureWithDER(stream.RedactedStream, stream.Signature, bundle.Transcripts.TEEK.PublicKey); err != nil {
-				return fmt.Errorf("redacted stream seq %d signature invalid: %v", stream.SeqNum, err)
-			}
-		}
-		fmt.Printf("[Verifier] Redacted stream signatures valid ✅ (%d streams)\n", len(bundle.RedactedStreams))
+	if len(bundle.Transcripts.TEEK.MasterSignature) > 0 {
+		fmt.Println("[Verifier] Master signature verification successful")
+	} else {
+		fmt.Println("[Verifier] Transcript signatures valid")
 	}
 
 	// --- Commitment verification for proof stream ---
@@ -142,6 +127,30 @@ func Validate(bundlePath string) error {
 
 	fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + string(reconstructed) + "\n---")
 	fmt.Println("[Verifier] Redacted streams applied successfully ✅")
+
+	// --- Verify redaction ranges authenticity ---
+	if bundle.Transcripts.TEEK != nil && bundle.Transcripts.TEEK.RequestMetadata != nil {
+		signedRanges := bundle.Transcripts.TEEK.RequestMetadata.RedactionRanges
+		bundleRanges := bundle.RedactionRanges
+
+		// Check if redaction ranges in bundle match the ones signed by TEE_K
+		if len(bundleRanges) != len(signedRanges) {
+			return fmt.Errorf("redaction ranges mismatch: bundle has %d ranges, TEE_K signed %d ranges", len(bundleRanges), len(signedRanges))
+		}
+
+		for i, bundleRange := range bundleRanges {
+			signedRange := signedRanges[i]
+			if bundleRange.Start != signedRange.Start || bundleRange.Length != signedRange.Length || bundleRange.Type != signedRange.Type {
+				return fmt.Errorf("redaction range %d mismatch: bundle=[%d:%d,%s] vs signed=[%d:%d,%s]",
+					i, bundleRange.Start, bundleRange.Length, bundleRange.Type,
+					signedRange.Start, signedRange.Length, signedRange.Type)
+			}
+		}
+
+		fmt.Printf("[Verifier] Redaction ranges verified ✅ (TEE_K signed %d ranges)\n", len(signedRanges))
+	} else if len(bundle.RedactionRanges) > 0 {
+		fmt.Println("[Verifier] Warning: Bundle contains redaction ranges but no signed ranges from TEE_K")
+	}
 
 	// --- Display the redacted HTTP request ---
 	if len(bundle.RedactedRequest) > 0 {

@@ -94,9 +94,7 @@ func (c *Client) sendFinishedCommand() error {
 	// Set flag to expect signed transcripts
 	c.setCompletionFlag(CompletionFlagSignedTranscriptsExpected)
 
-	finishedMsg := shared.FinishedMessage{
-		Source: "client",
-	}
+	finishedMsg := shared.FinishedMessage{}
 
 	// Send to TEE_K
 	msg := shared.CreateSessionMessage(shared.MsgFinished, c.sessionID, finishedMsg)

@@ -87,13 +87,13 @@ func main() {
 		fmt.Printf("   Both Valid: %v\n", transcripts.BothSignaturesValid)
 
 		if transcripts.TEEK != nil {
-			fmt.Printf("   TEE_K: %d packets, %d bytes, signature valid: %v\n",
-				transcripts.TEEK.PacketCount, transcripts.TEEK.TotalSize, transcripts.TEEK.SignatureValid)
+			fmt.Printf("   TEE_K: %d packets, %d bytes\n",
+				len(transcripts.TEEK.Packets), len(transcripts.TEEK.Signature))
 		}
 
 		if transcripts.TEET != nil {
-			fmt.Printf("   TEE_T: %d packets, %d bytes, signature valid: %v\n",
-				transcripts.TEET.PacketCount, transcripts.TEET.TotalSize, transcripts.TEET.SignatureValid)
+			fmt.Printf("   TEE_T: %d packets, %d bytes\n",
+				len(transcripts.TEET.Packets), len(transcripts.TEET.Signature))
 		}
 	}
 

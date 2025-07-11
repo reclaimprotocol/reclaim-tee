@@ -532,8 +532,18 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		return
 	}
 
-	// --- Add redacted request and comm_sp to transcript before encryption ---
+	// --- Add redacted request, comm_sp, and redaction ranges to transcript before encryption ---
 	t.addToTranscriptForSessionWithType(sessionID, redactedRequest.RedactedRequest, shared.TranscriptPacketTypeHTTPRequestRedacted)
+
+	// Store redaction ranges in transcript for signing
+	redactionRangesBytes, err := json.Marshal(redactedRequest.RedactionRanges)
+	if err != nil {
+		log.Printf("[TEE_K] Failed to marshal redaction ranges: %v", err)
+		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to marshal redaction ranges: %v", err))
+		return
+	}
+	t.addToTranscriptForSessionWithType(sessionID, redactionRangesBytes, "redaction_ranges")
+	log.Printf("[TEE_K] Session %s: Stored %d redaction ranges in transcript (%d bytes)", sessionID, len(redactedRequest.RedactionRanges), len(redactionRangesBytes))
 
 	for idx, r := range redactedRequest.RedactionRanges {
 		if strings.Contains(r.Type, "proof") && idx < len(redactedRequest.Commitments) {
@@ -542,6 +552,8 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 			break
 		}
 	}
+
+	fmt.Printf("[TEE_K] Session %s: Added redaction ranges to transcript for signing\n", sessionID)
 
 	fmt.Printf("[TEE_K] Session %s: Split AEAD: encrypting redacted request %d bytes\n", sessionID, len(redactedRequest.RedactedRequest))
 
@@ -1628,10 +1640,7 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	if finishedMsg.Source != "tee_t" {
-		log.Printf("[TEE_K] Received finished message from unexpected source: %s", finishedMsg.Source)
-		return
-	}
+	// Note: Source field removed - message context determines source
 
 	log.Printf("[TEE_K] Received finished confirmation from TEE_T, starting transcript signing")
 
@@ -1675,6 +1684,18 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 				requestMetadata = &shared.RequestMetadata{}
 			}
 			requestMetadata.CommSP = packet
+		case "redaction_ranges":
+			if requestMetadata == nil {
+				requestMetadata = &shared.RequestMetadata{}
+			}
+			// Unmarshal the redaction ranges from JSON
+			var ranges []shared.RedactionRange
+			if err := json.Unmarshal(packet, &ranges); err != nil {
+				log.Printf("[TEE_K] Failed to unmarshal redaction ranges from transcript: %v", err)
+			} else {
+				requestMetadata.RedactionRanges = ranges
+				log.Printf("[TEE_K] Loaded %d redaction ranges from transcript", len(ranges))
+			}
 		default:
 			// Default to TLS record for unknown types
 			tlsPackets = append(tlsPackets, packet)
@@ -1699,19 +1720,7 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	// Generate signature for request metadata if present
-	if requestMetadata != nil {
-		var metadataBuffer bytes.Buffer
-		metadataBuffer.Write(requestMetadata.RedactedRequest)
-		metadataBuffer.Write(requestMetadata.CommSP)
-
-		metadataSignature, err := t.signingKeyPair.SignData(metadataBuffer.Bytes())
-		if err != nil {
-			log.Printf("[TEE_K] Failed to sign request metadata: %v", err)
-			return
-		}
-		requestMetadata.Signature = metadataSignature
-	}
+	// Note: Master signature will be generated later after redacted streams are collected
 
 	log.Printf("[TEE_K] Successfully signed transcript (%d TLS packets, metadata present: %v, %d bytes signature)",
 		len(tlsPackets), requestMetadata != nil, len(signature))
@@ -1728,7 +1737,6 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 		RequestMetadata: requestMetadata,
 		Signature:       signature,
 		PublicKey:       publicKeyDER,
-		Source:          "tee_k",
 	}
 
 	// Send signed transcript to client
@@ -1757,17 +1765,12 @@ func (t *TEEK) handleFinishedFromClientSession(sessionID string, msg *shared.Mes
 		return
 	}
 
-	if finishedMsg.Source != "client" {
-		log.Printf("[TEE_K] Received finished message from unexpected source: %s", finishedMsg.Source)
-		return
-	}
+	// Note: Source field removed - message context determines source
 
 	log.Printf("[TEE_K] Received finished command from client, forwarding to TEE_T")
 
-	// Forward finished message to TEE_T with TEE_K as source
-	teekFinishedMsg := shared.FinishedMessage{
-		Source: "tee_k",
-	}
+	// Forward finished message to TEE_T
+	teekFinishedMsg := shared.FinishedMessage{}
 
 	forwardMsg := shared.CreateSessionMessage(shared.MsgFinished, sessionID, teekFinishedMsg)
 	if err := t.sendMessageToTEETForSession(sessionID, forwardMsg); err != nil {
@@ -1879,6 +1882,11 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 	log.Printf("[TEE_K] Session %s: Total response length: %d bytes across %d sequences",
 		sessionID, totalLength, len(seqNumbers))
 
+	// Clear any existing redacted streams for this session
+	session.StreamsMutex.Lock()
+	session.RedactedStreams = make([]shared.SignedRedactedDecryptionStream, 0)
+	session.StreamsMutex.Unlock()
+
 	// Create redacted decryption stream for each sequence
 	currentOffset := 0
 	for _, seqNum := range seqNumbers {
@@ -1943,33 +1951,168 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 			}
 		}
 
-		// Send redacted decryption stream to client
+		// Store redacted stream in session for master signature generation
 		streamData := shared.SignedRedactedDecryptionStream{
 			RedactedStream: redactedStream,
 			SeqNum:         seqNum,
 		}
 
-		// Sign the redacted stream
-		if t.signingKeyPair != nil {
-			signature, err := t.signingKeyPair.SignData(redactedStream)
-			if err != nil {
-				log.Printf("[TEE_K] Session %s: Failed to sign redacted stream for seq %d: %v", sessionID, seqNum, err)
-			} else {
-				streamData.Signature = signature
-			}
-		}
+		session.StreamsMutex.Lock()
+		session.RedactedStreams = append(session.RedactedStreams, streamData)
+		session.StreamsMutex.Unlock()
 
-		// Send to client
-		streamMsg := shared.CreateSessionMessage(shared.MsgSignedRedactedDecryptionStream, sessionID, streamData)
-		if err := t.sessionManager.RouteToClient(sessionID, streamMsg); err != nil {
-			return fmt.Errorf("failed to send redacted stream for seq %d: %v", seqNum, err)
-		}
-
-		log.Printf("[TEE_K] Session %s: Sent redacted decryption stream for seq %d (%d bytes)",
+		log.Printf("[TEE_K] Session %s: Generated redacted decryption stream for seq %d (%d bytes)",
 			sessionID, seqNum, len(redactedStream))
 
 		currentOffset += length
 	}
 
+	// Generate master signature over all collected data
+	if err := t.generateMasterSignatureAndSendTranscript(sessionID); err != nil {
+		return fmt.Errorf("failed to generate master signature: %v", err)
+	}
+
+	return nil
+}
+
+// generateMasterSignatureAndSendTranscript creates master signature and sends all verification data to client
+func (t *TEEK) generateMasterSignatureAndSendTranscript(sessionID string) error {
+	log.Printf("[TEE_K] Session %s: Generating master signature", sessionID)
+
+	// Get session
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("session %s not found: %v", sessionID, err)
+	}
+
+	if t.signingKeyPair == nil {
+		return fmt.Errorf("no signing key pair available")
+	}
+
+	// Get transcript data
+	session.TranscriptMutex.Lock()
+	defer session.TranscriptMutex.Unlock()
+
+	// Get redacted streams
+	session.StreamsMutex.Lock()
+	defer session.StreamsMutex.Unlock()
+
+	// Separate TLS packets from metadata
+	tlsPackets := make([][]byte, 0)
+	var requestMetadata *shared.RequestMetadata
+
+	for i, packet := range session.TranscriptPackets {
+		packetType := ""
+		if i < len(session.TranscriptPacketTypes) {
+			packetType = session.TranscriptPacketTypes[i]
+		}
+
+		switch packetType {
+		case shared.TranscriptPacketTypeTLSRecord:
+			tlsPackets = append(tlsPackets, packet)
+		case shared.TranscriptPacketTypeHTTPRequestRedacted:
+			if requestMetadata == nil {
+				requestMetadata = &shared.RequestMetadata{}
+			}
+			requestMetadata.RedactedRequest = packet
+		case shared.TranscriptPacketTypeCommitment:
+			if requestMetadata == nil {
+				requestMetadata = &shared.RequestMetadata{}
+			}
+			requestMetadata.CommSP = packet
+		case "redaction_ranges":
+			if requestMetadata == nil {
+				requestMetadata = &shared.RequestMetadata{}
+			}
+			// Unmarshal the redaction ranges from JSON
+			var ranges []shared.RedactionRange
+			if err := json.Unmarshal(packet, &ranges); err != nil {
+				log.Printf("[TEE_K] Failed to unmarshal redaction ranges from transcript: %v", err)
+			} else {
+				requestMetadata.RedactionRanges = ranges
+				log.Printf("[TEE_K] Session %s: Loaded %d redaction ranges from transcript", sessionID, len(ranges))
+			}
+		default:
+			// Default to TLS record for unknown types
+			tlsPackets = append(tlsPackets, packet)
+		}
+	}
+
+	// Generate master signature over: request metadata + redacted streams + TLS packets
+	var masterBuffer bytes.Buffer
+
+	// Add request metadata
+	if requestMetadata != nil {
+		masterBuffer.Write(requestMetadata.RedactedRequest)
+		masterBuffer.Write(requestMetadata.CommSP)
+		// Include redaction ranges in signature to prevent manipulation
+		if len(requestMetadata.RedactionRanges) > 0 {
+			redactionRangesBytes, err := json.Marshal(requestMetadata.RedactionRanges)
+			if err != nil {
+				return fmt.Errorf("failed to marshal redaction ranges for signature: %v", err)
+			}
+			masterBuffer.Write(redactionRangesBytes)
+		}
+	}
+
+	// Add redacted streams
+	for _, stream := range session.RedactedStreams {
+		masterBuffer.Write(stream.RedactedStream)
+	}
+
+	// Add TLS packets
+	for _, packet := range tlsPackets {
+		masterBuffer.Write(packet)
+	}
+
+	masterSignature, err := t.signingKeyPair.SignData(masterBuffer.Bytes())
+	if err != nil {
+		return fmt.Errorf("failed to generate master signature: %v", err)
+	}
+
+	// Generate regular transcript signature (for backwards compatibility)
+	var tlsBuffer bytes.Buffer
+	for _, packet := range tlsPackets {
+		tlsBuffer.Write(packet)
+	}
+
+	transcriptSignature, err := t.signingKeyPair.SignData(tlsBuffer.Bytes())
+	if err != nil {
+		return fmt.Errorf("failed to generate transcript signature: %v", err)
+	}
+
+	// Get public key in DER format
+	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
+	if err != nil {
+		return fmt.Errorf("failed to get public key DER: %v", err)
+	}
+
+	// Create signed transcript with master signature
+	signedTranscript := shared.SignedTranscript{
+		Packets:         tlsPackets,
+		RequestMetadata: requestMetadata,
+		Signature:       transcriptSignature,
+		MasterSignature: masterSignature,
+		PublicKey:       publicKeyDER,
+	}
+
+	log.Printf("[TEE_K] Session %s: Generated master signature over %d TLS packets, %d redacted streams, metadata present: %v",
+		sessionID, len(tlsPackets), len(session.RedactedStreams), requestMetadata != nil)
+
+	// Send signed transcript to client
+	transcriptMsg := shared.CreateSessionMessage(shared.MsgSignedTranscript, sessionID, signedTranscript)
+	if err := session.ClientConn.WriteJSON(transcriptMsg); err != nil {
+		return fmt.Errorf("failed to send signed transcript: %v", err)
+	}
+
+	// Send redacted streams to client
+	for _, stream := range session.RedactedStreams {
+		streamMsg := shared.CreateSessionMessage(shared.MsgSignedRedactedDecryptionStream, sessionID, stream)
+		if err := session.ClientConn.WriteJSON(streamMsg); err != nil {
+			return fmt.Errorf("failed to send redacted stream seq %d: %v", stream.SeqNum, err)
+		}
+	}
+
+	log.Printf("[TEE_K] Session %s: Sent signed transcript and %d redacted streams to client", sessionID, len(session.RedactedStreams))
 	return nil
 }
