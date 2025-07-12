@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/mdlayher/vsock"
 	"go.uber.org/zap"
 )
@@ -255,6 +256,53 @@ type ProxyStatusOutput struct {
 	Status string `json:"status"`
 }
 
+// Custom types matching the simple JSON structures from shared code
+type SharedRecipientInfo struct {
+	AttestationDocument    []byte `json:"attestation_document"`
+	KeyEncryptionAlgorithm string `json:"key_encryption_algorithm"`
+}
+
+type SharedGenerateDataKeyInput struct {
+	KeyId     string               `json:"key_id"`
+	KeySpec   string               `json:"key_spec"`
+	Recipient *SharedRecipientInfo `json:"recipient"`
+}
+
+type SharedDecryptInput struct {
+	KeyId               string               `json:"key_id"`
+	CiphertextBlob      []byte               `json:"ciphertext_blob"`
+	EncryptionAlgorithm string               `json:"encryption_algorithm"`
+	Recipient           *SharedRecipientInfo `json:"recipient"`
+}
+
+// Conversion functions to custom AWS SDK types
+func (s *SharedRecipientInfo) toCustomAWSType() *types.RecipientInfoType {
+	if s == nil {
+		return nil
+	}
+	return &types.RecipientInfoType{
+		AttestationDocument:    s.AttestationDocument,
+		KeyEncryptionAlgorithm: types.EncryptionAlgorithmSpec(s.KeyEncryptionAlgorithm),
+	}
+}
+
+func (s *SharedGenerateDataKeyInput) toCustomAWSType() *kms.GenerateDataKeyInput {
+	return &kms.GenerateDataKeyInput{
+		KeyId:     aws.String(s.KeyId),
+		KeySpec:   types.DataKeySpec(s.KeySpec),
+		Recipient: s.Recipient.toCustomAWSType(),
+	}
+}
+
+func (s *SharedDecryptInput) toCustomAWSType() *kms.DecryptInput {
+	return &kms.DecryptInput{
+		KeyId:               aws.String(s.KeyId),
+		CiphertextBlob:      s.CiphertextBlob,
+		EncryptionAlgorithm: types.EncryptionAlgorithmSpec(s.EncryptionAlgorithm),
+		Recipient:           s.Recipient.toCustomAWSType(),
+	}
+}
+
 func NewKMSProxy(proxyConfig *ProxyConfig, logger *zap.Logger) (*KMSProxy, error) {
 	// Create HTTP transport with logging
 	transport := &http.Transport{
@@ -408,31 +456,31 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 
 	switch req.Operation {
 	case OpGenerateDataKey:
-		var input kms.GenerateDataKeyInput
+		var input SharedGenerateDataKeyInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid GenerateDataKey input: %v", err)
 		}
 
 		// Log detailed KMS GenerateDataKey request info
 		p.logger.Info("KMS GenerateDataKey request details",
-			zap.String("KeyId", aws.ToString(input.KeyId)),
-			zap.String("KeySpec", string(input.KeySpec)),
+			zap.String("KeyId", input.KeyId),
+			zap.String("KeySpec", input.KeySpec),
 			zap.Bool("HasRecipient", input.Recipient != nil),
 		)
 
 		if input.Recipient != nil {
 			p.logger.Info("KMS GenerateDataKey recipient info",
 				zap.Int("AttestationDocument_size", len(input.Recipient.AttestationDocument)),
-				zap.String("KeyEncryptionAlgorithm", string(input.Recipient.KeyEncryptionAlgorithm)),
+				zap.String("KeyEncryptionAlgorithm", input.Recipient.KeyEncryptionAlgorithm),
 			)
 		}
 
-		output, err := p.kmsClient.GenerateDataKey(ctx, &input)
+		output, err := p.kmsClient.GenerateDataKey(ctx, input.toCustomAWSType())
 		if err != nil {
 			p.logger.Error("KMS GenerateDataKey failed - detailed error",
 				zap.Error(err),
 				zap.String("ErrorType", fmt.Sprintf("%T", err)),
-				zap.String("KeyId", aws.ToString(input.KeyId)),
+				zap.String("KeyId", input.KeyId),
 			)
 			return nil, fmt.Errorf("KMS GenerateDataKey failed: %v", err)
 		}
@@ -464,32 +512,32 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 		return json.Marshal(output)
 
 	case OpDecrypt:
-		var input kms.DecryptInput
+		var input SharedDecryptInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
 			return nil, fmt.Errorf("invalid Decrypt input: %v", err)
 		}
 
 		// Log detailed KMS Decrypt request info
 		p.logger.Info("KMS Decrypt request details",
-			zap.String("KeyId", aws.ToString(input.KeyId)),
+			zap.String("KeyId", input.KeyId),
 			zap.Int("CiphertextBlob_size", len(input.CiphertextBlob)),
-			zap.String("EncryptionAlgorithm", string(input.EncryptionAlgorithm)),
+			zap.String("EncryptionAlgorithm", input.EncryptionAlgorithm),
 			zap.Bool("HasRecipient", input.Recipient != nil),
 		)
 
 		if input.Recipient != nil {
 			p.logger.Info("KMS Decrypt recipient info",
 				zap.Int("AttestationDocument_size", len(input.Recipient.AttestationDocument)),
-				zap.String("KeyEncryptionAlgorithm", string(input.Recipient.KeyEncryptionAlgorithm)),
+				zap.String("KeyEncryptionAlgorithm", input.Recipient.KeyEncryptionAlgorithm),
 			)
 		}
 
-		output, err := p.kmsClient.Decrypt(ctx, &input)
+		output, err := p.kmsClient.Decrypt(ctx, input.toCustomAWSType())
 		if err != nil {
 			p.logger.Error("KMS Decrypt failed - detailed error",
 				zap.Error(err),
 				zap.String("ErrorType", fmt.Sprintf("%T", err)),
-				zap.String("KeyId", aws.ToString(input.KeyId)),
+				zap.String("KeyId", input.KeyId),
 				zap.Int("CiphertextBlob_size", len(input.CiphertextBlob)),
 			)
 			return nil, fmt.Errorf("KMS Decrypt failed: %v", err)
