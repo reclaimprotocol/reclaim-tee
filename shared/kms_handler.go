@@ -43,9 +43,6 @@ func NewKMSHandler(connectionMgr KMSConnectionManager, kmsKeyID string, serviceN
 // EncryptAndStoreCacheItem encrypts data and stores it - ALWAYS uses attestation
 // This exactly matches the pattern from nitro.go encryptAndStoreCacheItem function
 func (c *KMSHandler) EncryptAndStoreCacheItem(ctx context.Context, data []byte, filename string) error {
-	log.Printf("[KMS:%s] Starting encrypted storage for item: %s (%d bytes) - STACK: %s",
-		c.serviceName, filename, len(data), getStackTrace())
-
 	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
 		return fmt.Errorf("failed to get enclave handle: %v", err)
@@ -132,9 +129,6 @@ func (c *KMSHandler) EncryptAndStoreCacheItem(ctx context.Context, data []byte, 
 // LoadAndDecryptCacheItem loads and decrypts an item - ALWAYS uses attestation
 // This exactly matches the pattern from nitro.go decryptItem function
 func (c *KMSHandler) LoadAndDecryptCacheItem(ctx context.Context, filename string) ([]byte, error) {
-	log.Printf("[KMS:%s] Loading encrypted item: %s - STACK: %s",
-		c.serviceName, filename, getStackTrace())
-
 	// Load encrypted item from storage (matching nitro.go GetItemInput pattern)
 	loadInput := struct {
 		Filename string `json:"filename"`

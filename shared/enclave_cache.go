@@ -30,9 +30,6 @@ func NewEnclaveCache(connectionMgr *VSockConnectionManager, kmsKeyID string, ser
 
 // Get retrieves and decrypts a cached item using comprehensive KMS handler
 func (c *EnclaveCache) Get(ctx context.Context, key string) ([]byte, error) {
-	stack := getStackTrace()
-	log.Printf("[EnclaveCache:%s] GET CALLED - Looking for %s - STACK: %s", c.serviceName, key, stack)
-
 	c.mu.RLock()
 	// Check memory cache first
 	if data, exists := c.memoryCache[key]; exists {
@@ -66,10 +63,6 @@ func (c *EnclaveCache) Get(ctx context.Context, key string) ([]byte, error) {
 
 // Put encrypts and stores a cached item using comprehensive KMS handler
 func (c *EnclaveCache) Put(ctx context.Context, key string, data []byte) error {
-	stack := getStackTrace()
-	log.Printf("[EnclaveCache:%s] PUT CALLED - Storing %s in cache (%d bytes) - STACK: %s",
-		c.serviceName, key, len(data), stack)
-
 	// Store in memory cache first
 	c.mu.Lock()
 	c.memoryCache[key] = data
@@ -89,10 +82,6 @@ func (c *EnclaveCache) Put(ctx context.Context, key string, data []byte) error {
 
 // Delete removes a cached item using comprehensive KMS handler
 func (c *EnclaveCache) Delete(ctx context.Context, key string) error {
-	stack := getStackTrace()
-	log.Printf("[EnclaveCache:%s] DELETE CALLED - Removing %s from cache - STACK: %s",
-		c.serviceName, key, stack)
-
 	c.mu.Lock()
 	delete(c.memoryCache, key)
 	c.mu.Unlock()
