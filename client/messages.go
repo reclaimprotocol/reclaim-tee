@@ -48,6 +48,10 @@ const (
 	// Single Session Mode message types
 	MsgSignedTranscript               MessageType = "signed_transcript"
 	MsgSignedRedactedDecryptionStream MessageType = "signed_redacted_decryption_stream"
+
+	// Attestation messages
+	MsgAttestationRequest  MessageType = "attestation_request"
+	MsgAttestationResponse MessageType = "attestation_response"
 )
 
 // Base message structure with session support
@@ -214,11 +218,6 @@ type TEETReadyData struct {
 	Success bool `json:"success"`
 }
 
-// Tag computation ready confirmation
-type TagComputationReadyData struct {
-	Success bool `json:"success"`
-}
-
 // Client to TEE_K: Send plaintext data for encryption
 type PlaintextData struct {
 	Data []byte `json:"data"`
@@ -297,4 +296,17 @@ type DecryptedResponseData struct {
 	PlaintextData []byte `json:"plaintext_data"` // Decrypted response data
 	SeqNum        uint64 `json:"seq_num"`        // TLS sequence number for AEAD
 	Success       bool   `json:"success"`        // Whether decryption was successful
+}
+
+// AttestationRequestData represents a request for attestation over WebSocket
+type AttestationRequestData struct {
+	RequestID string `json:"request_id"` // Unique identifier for this request
+}
+
+// AttestationResponseData represents an attestation response over WebSocket
+type AttestationResponseData struct {
+	RequestID      string `json:"request_id"`      // Matching request ID
+	AttestationDoc []byte `json:"attestation_doc"` // Base64-encoded attestation document
+	Success        bool   `json:"success"`
+	ErrorMessage   string `json:"error_message,omitempty"`
 }

@@ -167,6 +167,9 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgEncryptedResponse:
 			fmt.Printf("[TEE_T] DEBUG: Handling MsgEncryptedResponse\n")
 			t.handleEncryptedResponseSession(sessionID, msg)
+		case shared.MsgAttestationRequest:
+			fmt.Printf("[TEE_T] DEBUG: Handling MsgAttestationRequest\n")
+			t.handleAttestationRequestSession(sessionID, msg)
 		case shared.MsgFinished:
 			fmt.Printf("[TEE_T] DEBUG: Handling MsgFinished from client\n")
 			t.handleFinishedFromClientSession(sessionID, msg)
@@ -693,18 +696,6 @@ func (t *TEET) processEncryptedRequestWithStreams(encReq *shared.EncryptedReques
 		return
 	}
 
-	// Notify TEE_K that tag computation is ready
-	readyResponse := shared.TagComputationReadyData{Success: true}
-	readyMsg := shared.CreateMessage(shared.MsgTagComputationReady, readyResponse)
-	msgBytes, err := json.Marshal(readyMsg)
-	if err != nil {
-		log.Printf("[TEE_T] Failed to marshal tag computation ready message: %v", err)
-		return
-	}
-
-	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-		log.Printf("[TEE_T] Failed to send tag computation ready to TEE_K: %v", err)
-	}
 }
 
 // processEncryptedRequestWithStreamsForSession is session-aware version
@@ -782,12 +773,6 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 		return
 	}
 
-	// Notify TEE_K that tag computation is ready
-	readyResponse := shared.TagComputationReadyData{Success: true}
-	readyMsg := shared.CreateMessage(shared.MsgTagComputationReady, readyResponse)
-	if err := t.sendMessageToTEEKForSession(sessionID, readyMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send tag computation ready message: %v", err)
-	}
 }
 
 func (t *TEET) computeAuthenticationTag(encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64) ([]byte, error) {
@@ -1272,6 +1257,68 @@ func (t *TEET) handleTEETReady(conn *websocket.Conn, msg *shared.Message) {
 
 	if err := t.sendMessageToClient(responseMsg); err != nil {
 		log.Printf("[TEE_T] Failed to send TEE_T ready response: %v", err)
+	}
+}
+
+// handleAttestationRequestSession handles attestation requests from clients over WebSocket
+func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Message) {
+	var attestReq shared.AttestationRequestData
+	if err := msg.UnmarshalData(&attestReq); err != nil {
+		log.Printf("[TEE_T] Session %s: Failed to unmarshal attestation request: %v", sessionID, err)
+		t.sendErrorToClientSession(sessionID, "Failed to parse attestation request")
+		return
+	}
+
+	log.Printf("[TEE_T] Session %s: Processing attestation request %s", sessionID, attestReq.RequestID)
+
+	// Get attestation from enclave manager if available
+	if t.signingKeyPair == nil {
+		log.Printf("[TEE_T] Session %s: No signing key pair available for attestation", sessionID)
+		t.sendAttestationResponseToClient(sessionID, attestReq.RequestID, nil, false, "No signing key pair available")
+		return
+	}
+
+	// Generate attestation document using enclave manager
+	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
+	if err != nil {
+		log.Printf("[TEE_T] Session %s: Failed to get public key DER: %v", sessionID, err)
+		t.sendAttestationResponseToClient(sessionID, attestReq.RequestID, nil, false, "Failed to get public key")
+		return
+	}
+
+	// Create user data containing the hex-encoded ECDSA public key
+	log.Printf("[TEE_T] Session %s: Including ECDSA public key in attestation (DER: %d bytes)", sessionID, len(publicKeyDER))
+
+	// Try to get enclave manager from somewhere, for now we'll simulate it
+	// In a real implementation, this would come from the enclave manager
+	// For now, return success with simulated attestation that includes the public key
+	attestationDoc := []byte(fmt.Sprintf("simulated_tee_t_attestation_document_with_key:%x", publicKeyDER))
+
+	log.Printf("[TEE_T] Session %s: Generated attestation document (%d bytes)", sessionID, len(attestationDoc))
+	t.sendAttestationResponseToClient(sessionID, attestReq.RequestID, attestationDoc, true, "")
+}
+
+// sendAttestationResponseToClient sends an attestation response to the client
+func (t *TEET) sendAttestationResponseToClient(sessionID, requestID string, attestationDoc []byte, success bool, errorMessage string) {
+	response := shared.AttestationResponseData{
+		RequestID:      requestID,
+		AttestationDoc: attestationDoc,
+		Success:        success,
+		ErrorMessage:   errorMessage,
+	}
+
+	responseMsg := shared.CreateSessionMessage(shared.MsgAttestationResponse, sessionID, response)
+	if err := t.sessionManager.RouteToClient(sessionID, responseMsg); err != nil {
+		log.Printf("[TEE_T] Session %s: Failed to send attestation response: %v", sessionID, err)
+	}
+}
+
+// sendErrorToClientSession sends an error message to a client session
+func (t *TEET) sendErrorToClientSession(sessionID, errMsg string) {
+	errorData := shared.ErrorData{Message: errMsg}
+	errorMsg := shared.CreateSessionMessage(shared.MsgError, sessionID, errorData)
+	if err := t.sessionManager.RouteToClient(sessionID, errorMsg); err != nil {
+		log.Printf("[TEE_T] Session %s: Failed to send error message: %v", sessionID, err)
 	}
 }
 

@@ -100,12 +100,15 @@ const (
 
 	// Additional message types
 	MsgResponseTagVerification  MessageType = "response_tag_verification"
-	MsgTagComputationReady      MessageType = "tag_computation_ready"
 	MsgError                    MessageType = "error"
 	MsgTEETReady                MessageType = "teet_ready"
 	MsgRedactionStreams         MessageType = "redaction_streams"
 	MsgResponseTagSecrets       MessageType = "response_tag_secrets"
 	MsgResponseDecryptionStream MessageType = "response_decryption_stream"
+
+	// Attestation request over WebSocket
+	MsgAttestationRequest  MessageType = "attestation_request"
+	MsgAttestationResponse MessageType = "attestation_response"
 
 	// Single Session Mode message types
 	MsgFinished                       MessageType = "finished"
@@ -307,9 +310,17 @@ type TEETReadyData struct {
 	Success bool `json:"success"`
 }
 
-// Tag computation ready confirmation
-type TagComputationReadyData struct {
-	Success bool `json:"success"`
+// AttestationRequestData represents a request for attestation over WebSocket
+type AttestationRequestData struct {
+	RequestID string `json:"request_id"` // Unique identifier for this request
+}
+
+// AttestationResponseData represents an attestation response over WebSocket
+type AttestationResponseData struct {
+	RequestID      string `json:"request_id"`      // Matching request ID
+	AttestationDoc []byte `json:"attestation_doc"` // Base64-encoded attestation document
+	Success        bool   `json:"success"`
+	ErrorMessage   string `json:"error_message,omitempty"`
 }
 
 // Client to TEE_K: Send plaintext data for encryption

@@ -5,12 +5,9 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -707,109 +704,46 @@ func (c *Client) isStandaloneMode() bool {
 	return standalone
 }
 
-// fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T and verifies them
+// fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T via WebSocket
 func (c *Client) fetchAndVerifyAttestations() error {
 	if c.isStandaloneMode() {
 		fmt.Printf("[Client] Standalone mode detected - skipping attestation verification\n")
 		return nil
 	}
 
-	fmt.Printf("[Client] Enclave mode detected - fetching attestations from both TEE_K and TEE_T\n")
+	fmt.Printf("[Client] Enclave mode detected - requesting attestations from both TEE_K and TEE_T via WebSocket\n")
 
-	// Fetch attestation from TEE_K
-	teekAttestationURL := c.getAttestationURL(c.teekURL)
-	fmt.Printf("[Client] Fetching TEE_K attestation from: %s\n", teekAttestationURL)
-
-	teekAttestation, err := c.fetchAttestation(teekAttestationURL)
+	// Request attestation from TEE_K via WebSocket
+	teekReq := AttestationRequestData{
+		RequestID: "tee_k_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+	}
+	teekMsg, err := CreateMessage(MsgAttestationRequest, teekReq)
 	if err != nil {
-		return fmt.Errorf("failed to fetch TEE_K attestation: %v", err)
+		return fmt.Errorf("failed to create TEE_K attestation request: %v", err)
 	}
 
-	// Fetch attestation from TEE_T
-	teetAttestationURL := c.getAttestationURL(c.teetURL)
-	fmt.Printf("[Client] Fetching TEE_T attestation from: %s\n", teetAttestationURL)
+	if err := c.sendMessage(teekMsg); err != nil {
+		return fmt.Errorf("failed to send TEE_K attestation request: %v", err)
+	}
+	fmt.Printf("[Client] Sent attestation request to TEE_K (ID: %s)\n", teekReq.RequestID)
 
-	teetAttestation, err := c.fetchAttestation(teetAttestationURL)
+	// Request attestation from TEE_T via WebSocket
+	teetReq := AttestationRequestData{
+		RequestID: "tee_t_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+	}
+	teetMsg, err := CreateMessage(MsgAttestationRequest, teetReq)
 	if err != nil {
-		return fmt.Errorf("failed to fetch TEE_T attestation: %v", err)
+		return fmt.Errorf("failed to create TEE_T attestation request: %v", err)
 	}
 
-	// Verify TEE_K attestation
-	teekPublicKey, err := c.verifyAttestation(teekAttestation, "tee_k")
-	if err != nil {
-		return fmt.Errorf("failed to verify TEE_K attestation: %v", err)
+	if err := c.sendMessageToTEET(teetMsg); err != nil {
+		return fmt.Errorf("failed to send TEE_T attestation request: %v", err)
 	}
-	c.teekAttestationPublicKey = teekPublicKey
+	fmt.Printf("[Client] Sent attestation request to TEE_T (ID: %s)\n", teetReq.RequestID)
 
-	// Verify TEE_T attestation
-	teetPublicKey, err := c.verifyAttestation(teetAttestation, "tee_t")
-	if err != nil {
-		return fmt.Errorf("failed to verify TEE_T attestation: %v", err)
-	}
-	c.teetAttestationPublicKey = teetPublicKey
-
-	fmt.Printf("[Client] Successfully verified both TEE_K and TEE_T attestations\n")
-
-	// Display public keys in a more distinguishable way
-	// For P-256 keys, skip the common DER header (first ~26 bytes) and show the actual key material
-	teekDisplayBytes := teekPublicKey
-	if len(teekPublicKey) > 26 {
-		teekDisplayBytes = teekPublicKey[26:] // Skip DER header, show actual key material
-	}
-
-	teetDisplayBytes := teetPublicKey
-	if len(teetPublicKey) > 26 {
-		teetDisplayBytes = teetPublicKey[26:] // Skip DER header, show actual key material
-	}
-
-	fmt.Printf("[Client] TEE_K public key (key material): %x\n", teekDisplayBytes[:min(32, len(teekDisplayBytes))])
-	fmt.Printf("[Client] TEE_T public key (key material): %x\n", teetDisplayBytes[:min(32, len(teetDisplayBytes))])
-	fmt.Printf("[Client] TEE_K full key length: %d bytes\n", len(teekPublicKey))
-	fmt.Printf("[Client] TEE_T full key length: %d bytes\n", len(teetPublicKey))
-
-	c.attestationVerified = true
+	// Responses will be handled asynchronously by handleAttestationResponse
+	fmt.Printf("[Client] Waiting for attestation responses from both TEE_K and TEE_T...\n")
 	return nil
-}
-
-// getAttestationURL converts a WebSocket URL to the corresponding /attest HTTP endpoint
-func (c *Client) getAttestationURL(wsURL string) string {
-	// Replace ws:// with http:// and wss:// with https://
-	attestURL := strings.Replace(wsURL, "ws://", "http://", 1)
-	attestURL = strings.Replace(attestURL, "wss://", "https://", 1)
-
-	// Remove /ws suffix and add /attest
-	attestURL = strings.TrimSuffix(attestURL, "/ws")
-	attestURL = attestURL + "/attest"
-
-	return attestURL
-}
-
-// fetchAttestation fetches a base64-encoded attestation document from the specified URL
-func (c *Client) fetchAttestation(url string) ([]byte, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP request failed with status: %d", resp.StatusCode)
-	}
-
-	// Read the base64-encoded attestation document
-	base64Data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %v", err)
-	}
-
-	// Decode the base64 data to get the binary attestation document
-	attestationDoc, err := base64.StdEncoding.DecodeString(string(base64Data))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64 attestation: %v", err)
-	}
-
-	fmt.Printf("[Client] Fetched attestation document: %d bytes\n", len(attestationDoc))
-	return attestationDoc, nil
 }
 
 // verifyAttestation verifies an attestation document and extracts the public key from user data
