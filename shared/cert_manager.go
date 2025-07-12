@@ -264,6 +264,9 @@ func (p *VSockHTTP01Provider) CleanUp(domain, token, keyAuth string) error {
 // CreateVSockHTTPHandler creates an HTTP handler for ACME challenges that works with VSock
 func (m *VSockLegoManager) CreateVSockHTTPHandler(fallback http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Log all incoming requests for debugging
+		log.Printf("[%s] VSock HTTP request: %s %s from %s", m.config.ServiceName, r.Method, r.URL.Path, r.RemoteAddr)
+
 		// Check if this is an ACME challenge request
 		if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
 			token := strings.TrimPrefix(r.URL.Path, "/.well-known/acme-challenge/")
@@ -275,22 +278,25 @@ func (m *VSockLegoManager) CreateVSockHTTPHandler(fallback http.Handler) http.Ha
 			m.challengeServer.mu.RUnlock()
 
 			if exists {
-				log.Printf("[%s] VSock ACME challenge: Serving keyAuth for token", m.config.ServiceName)
+				log.Printf("[%s] VSock ACME challenge: Serving keyAuth for token (length: %d)", m.config.ServiceName, len(keyAuth))
 				w.Header().Set("Content-Type", "text/plain")
 				w.WriteHeader(http.StatusOK)
 				w.Write([]byte(keyAuth))
 				return
 			}
 
-			log.Printf("[%s] VSock ACME challenge: Token not found", m.config.ServiceName)
+			log.Printf("[%s] VSock ACME challenge: Token not found in challenge store", m.config.ServiceName)
+			log.Printf("[%s] Available tokens: %d", m.config.ServiceName, len(m.challengeServer.challenges))
 			http.NotFound(w, r)
 			return
 		}
 
 		// Fall back to default handler for non-ACME requests
 		if fallback != nil {
+			log.Printf("[%s] VSock HTTP request: Falling back to default handler", m.config.ServiceName)
 			fallback.ServeHTTP(w, r)
 		} else {
+			log.Printf("[%s] VSock HTTP request: No fallback handler, returning 404", m.config.ServiceName)
 			http.NotFound(w, r)
 		}
 	})

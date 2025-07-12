@@ -71,6 +71,8 @@ type VSockHTTPServer struct {
 
 	server   *http.Server
 	listener net.Listener
+	ready    chan bool
+	mu       sync.RWMutex
 }
 
 // ListenAndServeVSock starts the VSock HTTP server
@@ -90,7 +92,32 @@ func (vs *VSockHTTPServer) ListenAndServeVSock(ctx context.Context) error {
 
 	log.Printf("[%s] HTTP server listening on VSock port %d", vs.ServiceName, vs.Port)
 
+	// Signal that the server is ready
+	vs.mu.Lock()
+	if vs.ready != nil {
+		select {
+		case vs.ready <- true:
+		default:
+		}
+	}
+	vs.mu.Unlock()
+
 	return vs.server.Serve(listener)
+}
+
+// WaitUntilReady waits for the server to be ready to accept connections
+func (vs *VSockHTTPServer) WaitUntilReady(ctx context.Context) error {
+	vs.mu.Lock()
+	vs.ready = make(chan bool, 1)
+	readyChan := vs.ready
+	vs.mu.Unlock()
+
+	select {
+	case <-readyChan:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Shutdown gracefully shuts down the VSock HTTP server
@@ -213,23 +240,39 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	// Create VSock HTTP server for ACME challenges
 	httpServer := em.createVSockHTTPServer(em.certManager.CreateVSockHTTPHandler(nil), em.config.HTTPPort)
 
-	// Start HTTP server in background
+	// Start HTTP server in background with proper error handling
 	serverErrChan := make(chan error, 1)
 	go func() {
+		log.Printf("[%s] Starting VSock HTTP server on port %d for ACME challenges", em.config.ServiceName, em.config.HTTPPort)
+
 		if err := httpServer.ListenAndServeVSock(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("[%s] VSock HTTP server error: %v", em.config.ServiceName, err)
 			serverErrChan <- err
 		}
 	}()
 
-	// Wait for HTTP server to start
-	time.Sleep(200 * time.Millisecond)
+	// Wait for HTTP server to be ready
+	readyCtx, readyCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer readyCancel()
+
+	if err := httpServer.WaitUntilReady(readyCtx); err != nil {
+		return fmt.Errorf("HTTP server failed to become ready: %v", err)
+	}
+
+	log.Printf("[%s] HTTP server is ready and listening on port %d", em.config.ServiceName, em.config.HTTPPort)
+
+	// Additional wait to ensure server is fully ready to handle connections
+	time.Sleep(500 * time.Millisecond)
 
 	log.Printf("[%s] Starting ACME certificate request for %s...", em.config.ServiceName, em.config.Domain)
 	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.certManager.config.CADirURL)
 
 	err = em.certManager.BootstrapCertificates(ctx)
 	if err != nil {
+		// Shutdown HTTP server before returning error
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		httpServer.Shutdown(shutdownCtx)
 		return err
 	}
 
@@ -283,6 +326,7 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	// Shutdown HTTP server
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	log.Printf("[%s] Shutting down ACME HTTP server", em.config.ServiceName)
 	httpServer.Shutdown(shutdownCtx)
 
 	// Check for server errors
