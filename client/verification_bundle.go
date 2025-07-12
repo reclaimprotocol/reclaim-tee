@@ -37,8 +37,8 @@ func (c *Client) BuildVerificationBundle(path string) error {
 			})
 		}
 
-		// Use master signature (which covers all data including redacted streams)
-		signature := c.teekSignedTranscript.MasterSignature
+		// Use comprehensive signature (covers all data including redacted streams)
+		signature := c.teekSignedTranscript.Signature
 
 		bundle.Transcripts.TEEK = &shared.TEEKTranscript{
 			Packets:         c.teekSignedTranscript.Packets,

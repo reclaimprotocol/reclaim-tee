@@ -1626,7 +1626,7 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 
 	// Note: Source field removed - message context determines source
 
-	log.Printf("[TEE_K] Received finished confirmation from TEE_T, starting transcript signing")
+	log.Printf("[TEE_K] Received finished confirmation from TEE_T, preparing transcript data")
 
 	// Get session for transcript data
 	sessionForSigned, err := t.sessionManager.GetSession(sessionID)
@@ -1692,9 +1692,15 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	// Store transcript data for later master signature generation
-	// Don't send the transcript yet - wait for master signature to be generated
-	log.Printf("[TEE_K] Transcript prepared with %d TLS packets, will send with master signature after redaction", len(tlsPackets))
+	// *** CRITICAL CHANGE: Don't send signature immediately ***
+	// Just log that transcript is ready, but wait for redaction processing to complete
+	log.Printf("[TEE_K] Session %s: Transcript prepared with %d TLS packets, waiting for redaction processing to complete before sending signature", sessionID, len(tlsPackets))
+
+	// Check if all processing is complete and we can send signature
+	if err := t.checkAndSendSignatureIfReady(sessionID); err != nil {
+		log.Printf("[TEE_K] Failed to check signature readiness: %v", err)
+		return
+	}
 }
 
 // handleFinishedFromClientSession handles finished messages from clients
@@ -1788,7 +1794,7 @@ func rangesOverlap(r1, r2 shared.RedactionRange) bool {
 	return r1.Start < r2.Start+r2.Length && r2.Start < r1.Start+r1.Length
 }
 
-// generateAndSendRedactedDecryptionStream generates redacted decryption streams using client's redaction bytes
+// generateAndSendRedactedDecryptionStream creates redacted decryption streams but defers signature sending until all processing is complete
 func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec shared.RedactionSpec) error {
 	log.Printf("[TEE_K] Session %s: Generating redacted decryption stream with %d ranges", sessionID, len(spec.Ranges))
 
@@ -1909,17 +1915,59 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		currentOffset += length
 	}
 
-	// Generate master signature over all collected data
-	if err := t.generateMasterSignatureAndSendTranscript(sessionID); err != nil {
-		return fmt.Errorf("failed to generate master signature: %v", err)
+	// *** CRITICAL CHANGE: Mark processing as complete and check if we can send signature ***
+	// Instead of immediately sending signature, mark redaction processing as complete
+	session.StreamsMutex.Lock()
+	session.RedactionProcessingComplete = true
+	session.StreamsMutex.Unlock()
+
+	log.Printf("[TEE_K] Session %s: Redaction processing complete, checking if ready to send signature", sessionID)
+
+	// Check if all processing is complete and we can send signature
+	if err := t.checkAndSendSignatureIfReady(sessionID); err != nil {
+		return fmt.Errorf("failed to check signature readiness: %v", err)
 	}
 
 	return nil
 }
 
-// generateMasterSignatureAndSendTranscript creates master signature and sends all verification data to client
-func (t *TEEK) generateMasterSignatureAndSendTranscript(sessionID string) error {
-	log.Printf("[TEE_K] Session %s: Generating master signature", sessionID)
+// checkAndSendSignatureIfReady checks if all processing is complete and sends signature if ready
+func (t *TEEK) checkAndSendSignatureIfReady(sessionID string) error {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("session %s not found: %v", sessionID, err)
+	}
+
+	// Check if all required processing is complete
+	session.TranscriptMutex.Lock()
+	transcriptReady := len(session.TranscriptPackets) > 0
+	session.TranscriptMutex.Unlock()
+
+	session.StreamsMutex.Lock()
+	redactionComplete := session.RedactionProcessingComplete
+	hasRedactedStreams := len(session.RedactedStreams) > 0
+	session.StreamsMutex.Unlock()
+
+	// All processing is complete when:
+	// 1. We have transcript data (from finished message)
+	// 2. Redaction processing is complete
+	// 3. We have redacted streams
+	allProcessingComplete := transcriptReady && redactionComplete && hasRedactedStreams
+
+	if allProcessingComplete {
+		log.Printf("[TEE_K] Session %s: All processing complete, generating and sending signature", sessionID)
+		return t.generateComprehensiveSignatureAndSendTranscript(sessionID)
+	} else {
+		log.Printf("[TEE_K] Session %s: Not ready to send signature yet - transcript:%v redaction:%v streams:%v",
+			sessionID, transcriptReady, redactionComplete, hasRedactedStreams)
+	}
+
+	return nil
+}
+
+// generateComprehensiveSignatureAndSendTranscript creates comprehensive signature and sends all verification data to client
+func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string) error {
+	log.Printf("[TEE_K] Session %s: Generating comprehensive signature", sessionID)
 
 	// Get session
 	session, err := t.sessionManager.GetSession(sessionID)
@@ -2007,20 +2055,9 @@ func (t *TEEK) generateMasterSignatureAndSendTranscript(sessionID string) error 
 		masterBuffer.Write(packet)
 	}
 
-	masterSignature, err := t.signingKeyPair.SignData(masterBuffer.Bytes())
+	comprehensiveSignature, err := t.signingKeyPair.SignData(masterBuffer.Bytes())
 	if err != nil {
-		return fmt.Errorf("failed to generate master signature: %v", err)
-	}
-
-	// Generate regular transcript signature (for backwards compatibility)
-	var tlsBuffer bytes.Buffer
-	for _, packet := range tlsPackets {
-		tlsBuffer.Write(packet)
-	}
-
-	transcriptSignature, err := t.signingKeyPair.SignData(tlsBuffer.Bytes())
-	if err != nil {
-		return fmt.Errorf("failed to generate transcript signature: %v", err)
+		return fmt.Errorf("failed to generate comprehensive signature: %v", err)
 	}
 
 	// Get public key in DER format
@@ -2029,21 +2066,20 @@ func (t *TEEK) generateMasterSignatureAndSendTranscript(sessionID string) error 
 		return fmt.Errorf("failed to get public key DER: %v", err)
 	}
 
-	// Create signed transcript with master signature
+	// Create signed transcript with comprehensive signature
 	signedTranscript := shared.SignedTranscript{
 		Packets:         tlsPackets,
 		RequestMetadata: requestMetadata,
-		Signature:       transcriptSignature,
-		MasterSignature: masterSignature,
+		Signature:       comprehensiveSignature,
 		PublicKey:       publicKeyDER,
 	}
 
-	log.Printf("[TEE_K] Session %s: Generated master signature over %d TLS packets, %d redacted streams, metadata present: %v",
+	log.Printf("[TEE_K] Session %s: Generated comprehensive signature over %d TLS packets, %d redacted streams, metadata present: %v",
 		sessionID, len(tlsPackets), len(session.RedactedStreams), requestMetadata != nil)
 
 	// Debug: Check what we're sending
-	log.Printf("[TEE_K] DEBUG: Sending transcript with Signature: %d bytes, MasterSignature: %d bytes",
-		len(signedTranscript.Signature), len(signedTranscript.MasterSignature))
+	log.Printf("[TEE_K] DEBUG: Sending transcript with comprehensive signature: %d bytes",
+		len(signedTranscript.Signature))
 
 	// Send signed transcript to client
 	transcriptMsg := shared.CreateSessionMessage(shared.MsgSignedTranscript, sessionID, signedTranscript)

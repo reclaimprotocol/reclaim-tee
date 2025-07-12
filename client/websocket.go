@@ -453,8 +453,7 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 
 	log.Printf("[Client] Received signed transcript")
 	log.Printf("[Client] Transcript contains %d packets", len(signedTranscript.Packets))
-	log.Printf("[Client] Signature: %d bytes", len(signedTranscript.Signature))
-	log.Printf("[Client] MasterSignature: %d bytes", len(signedTranscript.MasterSignature))
+	log.Printf("[Client] Comprehensive signature: %d bytes", len(signedTranscript.Signature))
 	log.Printf("[Client] Public Key: %d bytes (DER format)", len(signedTranscript.PublicKey))
 
 	// Store the public key for attestation verification
@@ -499,34 +498,51 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 
 	// Verify signature
 	log.Printf("[Client] Verifying signature for %s transcript...", sourceName)
-	verificationErr := shared.VerifyTranscriptSignature(&signedTranscript)
-	if verificationErr != nil {
-		log.Printf("[Client] Signature verification FAILED for %s: %v", sourceName, verificationErr)
-		fmt.Printf("[Client] %s signature verification FAILED: %v\n",
-			sourceName, verificationErr)
-		// Don't return here - continue processing but mark signature as invalid
-	} else {
-		log.Printf("[Client] Signature verification SUCCESS for %s", sourceName)
-		fmt.Printf("[Client] %s signature verification SUCCESS\n",
-			sourceName)
-	}
-
-	// Track transcript completion and signature validity
+	var verificationErr error
 	if signedTranscript.RequestMetadata != nil {
-		// This is from TEE_K
-		c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
-		if verificationErr == nil {
-			c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+		// This is TEE_K - check if we have all redacted streams before verification
+		log.Printf("[Client] TEE_K transcript received, checking if redacted streams are available...")
+		if len(c.signedRedactedStreams) == 0 {
+			log.Printf("[Client] TEE_K comprehensive verification deferred - waiting for redacted streams")
+			// Mark transcript as received but don't verify signature yet
+			c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
+			// Don't set signature valid flag yet - will be set after successful verification
+		} else {
+			log.Printf("[Client] TEE_K comprehensive verification: have %d redacted streams", len(c.signedRedactedStreams))
+			verificationErr = shared.VerifyComprehensiveSignature(&signedTranscript, c.signedRedactedStreams)
+			if verificationErr != nil {
+				log.Printf("[Client] Signature verification FAILED for %s: %v", sourceName, verificationErr)
+				fmt.Printf("[Client] %s signature verification FAILED: %v\n", sourceName, verificationErr)
+			} else {
+				log.Printf("[Client] Signature verification SUCCESS for %s", sourceName)
+				fmt.Printf("[Client] %s signature verification SUCCESS\n", sourceName)
+			}
+
+			// Mark transcript as received and set signature validity
+			c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
+			if verificationErr == nil {
+				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+			}
 		}
-		log.Printf("[Client] Marked TEE_K transcript as received (signature valid: %v)", verificationErr == nil)
 	} else {
-		// This is from TEE_T
+		// This is TEE_T - use regular TLS packet verification
+		verificationErr = shared.VerifyTranscriptSignature(&signedTranscript)
+		if verificationErr != nil {
+			log.Printf("[Client] Signature verification FAILED for %s: %v", sourceName, verificationErr)
+			fmt.Printf("[Client] %s signature verification FAILED: %v\n", sourceName, verificationErr)
+		} else {
+			log.Printf("[Client] Signature verification SUCCESS for %s", sourceName)
+			fmt.Printf("[Client] %s signature verification SUCCESS\n", sourceName)
+		}
+
+		// Mark transcript as received and set signature validity
 		c.setCompletionFlag(CompletionFlagTEETTranscriptReceived)
 		if verificationErr == nil {
 			c.setCompletionFlag(CompletionFlagTEETSignatureValid)
 		}
-		log.Printf("[Client] Marked TEE_T transcript as received (signature valid: %v)", verificationErr == nil)
 	}
+
+	log.Printf("[Client] Marked %s transcript as received (signature valid: %v)", sourceName, verificationErr == nil)
 
 	// Check if we now have both transcript public keys and can verify against attestations
 	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
@@ -728,6 +744,30 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 	// Add to collection for verification bundle
 	c.signedRedactedStreams = append(c.signedRedactedStreams, redactedStream)
 
+	// *** CRITICAL FIX: Check if we can now verify TEE_K comprehensive signature ***
+	if c.teekSignedTranscript != nil && !c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
+		log.Printf("[Client] Attempting TEE_K comprehensive signature verification with %d redacted streams", len(c.signedRedactedStreams))
+		verificationErr := shared.VerifyComprehensiveSignature(c.teekSignedTranscript, c.signedRedactedStreams)
+		if verificationErr != nil {
+			log.Printf("[Client] TEE_K signature verification FAILED: %v", verificationErr)
+			fmt.Printf("[Client] TEE_K signature verification FAILED: %v\n", verificationErr)
+		} else {
+			log.Printf("[Client] TEE_K signature verification SUCCESS")
+			fmt.Printf("[Client] TEE_K signature verification SUCCESS\n")
+			c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+
+			// Check if we can now proceed with full protocol completion
+			transcriptsComplete := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
+			signaturesValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)
+
+			if transcriptsComplete && signaturesValid {
+				log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")
+				c.validateTranscriptsAgainstCapturedTraffic()
+				fmt.Printf("[Client] Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+			}
+		}
+	}
+
 	// Note: Individual stream signatures removed - using master signature verification
 
 	// Apply redacted stream to ciphertext to get redacted plaintext
@@ -761,6 +801,9 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 	c.responseContentMutex.Unlock()
 
 	c.printRedactedResponse()
+
+	// Check protocol completion after processing redacted stream
+	c.checkProtocolCompletion("redacted stream processed")
 }
 
 // printRedactedResponse prints the full redacted response in order once all parts are received

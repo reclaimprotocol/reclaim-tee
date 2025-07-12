@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"strings"
 
@@ -25,7 +25,7 @@ func Validate(bundlePath string) error {
 	}
 	defer f.Close()
 
-	data, err := ioutil.ReadAll(f)
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return fmt.Errorf("failed to read bundle: %v", err)
 	}
@@ -47,7 +47,7 @@ func Validate(bundlePath string) error {
 		}
 	}
 
-	fmt.Println("[Verifier] Master signature verification successful")
+	fmt.Println("[Verifier] Comprehensive signature verification successful")
 
 	// --- Commitment verification for proof stream ---
 	if bundle.Opening != nil && bundle.Opening.ProofStream != nil && bundle.Opening.ProofKey != nil && bundle.Transcripts.TEEK != nil {
