@@ -46,7 +46,7 @@ func startEnclaveMode(config *TEETConfig) {
 	}
 
 	// Phase 2: Start production HTTPS server with WebSocket support
-	teet := NewTEET(int(enclaveConfig.HTTPSPort))
+	teet := NewTEETWithEnclaveManager(int(enclaveConfig.HTTPSPort), enclaveManager)
 
 	// Create HTTPS server with integrated WebSocket handler
 	httpsHandler := setupEnclaveRoutes(teet, enclaveManager)

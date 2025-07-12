@@ -46,7 +46,7 @@ func startEnclaveMode(config *TEEKConfig) {
 	}
 
 	// Phase 2: Start production HTTPS server with WebSocket support
-	teek := NewTEEK(int(enclaveConfig.HTTPSPort))
+	teek := NewTEEKWithEnclaveManager(int(enclaveConfig.HTTPSPort), enclaveManager)
 
 	// Create HTTPS server with integrated WebSocket handler
 	httpsHandler := setupEnclaveRoutes(teek, enclaveManager)

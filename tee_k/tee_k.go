@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/json"
@@ -51,6 +52,9 @@ type TEEK struct {
 
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
+
+	// Enclave manager for attestation generation
+	enclaveManager *shared.EnclaveManager
 }
 
 // WebSocketConn adapts websocket to net.Conn interface for miniTLS
@@ -64,6 +68,10 @@ type WebSocketConn struct {
 }
 
 func NewTEEK(port int) *TEEK {
+	return NewTEEKWithEnclaveManager(port, nil)
+}
+
+func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) *TEEK {
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
@@ -81,6 +89,7 @@ func NewTEEK(port int) *TEEK {
 		tcpReady:            make(chan bool, 1),
 		responseLengthBySeq: make(map[uint64]int),
 		signingKeyPair:      signingKeyPair,
+		enclaveManager:      enclaveManager,
 	}
 }
 
@@ -2126,14 +2135,24 @@ func (t *TEEK) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 	}
 
 	// Create user data containing the hex-encoded ECDSA public key
+	userData := fmt.Sprintf("tee_k_public_key:%x", publicKeyDER)
 	log.Printf("[TEE_K] Session %s: Including ECDSA public key in attestation (DER: %d bytes)", sessionID, len(publicKeyDER))
 
-	// Try to get enclave manager from somewhere, for now we'll simulate it
-	// In a real implementation, this would come from the enclave manager
-	// For now, return success with simulated attestation that includes the public key
-	attestationDoc := []byte(fmt.Sprintf("simulated_tee_k_attestation_document_with_key:%x", publicKeyDER))
+	// Generate attestation document using enclave manager
+	if t.enclaveManager == nil {
+		log.Printf("[TEE_K] Session %s: No enclave manager available for attestation", sessionID)
+		t.sendAttestationResponse(sessionID, attestReq.RequestID, nil, false, "No enclave manager available")
+		return
+	}
 
+	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
+	if err != nil {
+		log.Printf("[TEE_K] Session %s: Attestation generation failed: %v", sessionID, err)
+		t.sendAttestationResponse(sessionID, attestReq.RequestID, nil, false, "Failed to generate attestation")
+		return
+	}
 	log.Printf("[TEE_K] Session %s: Generated attestation document (%d bytes)", sessionID, len(attestationDoc))
+
 	t.sendAttestationResponse(sessionID, attestReq.RequestID, attestationDoc, true, "")
 }
 

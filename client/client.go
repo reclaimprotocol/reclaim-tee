@@ -696,22 +696,9 @@ func (c *Client) hasAllCompletionFlags(flags int64) bool {
 
 // sendRedactionSpec - moved to completion.go
 
-// isStandaloneMode checks if the client is running in standalone mode
-func (c *Client) isStandaloneMode() bool {
-
-	standalone := strings.HasPrefix(c.teekURL, "ws://") || strings.HasPrefix(c.teetURL, "ws://")
-
-	return standalone
-}
-
 // fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T via WebSocket
 func (c *Client) fetchAndVerifyAttestations() error {
-	if c.isStandaloneMode() {
-		fmt.Printf("[Client] Standalone mode detected - skipping attestation verification\n")
-		return nil
-	}
-
-	fmt.Printf("[Client] Enclave mode detected - requesting attestations from both TEE_K and TEE_T via WebSocket\n")
+	fmt.Printf("[Client] Requesting attestations from both TEE_K and TEE_T via WebSocket\n")
 
 	// Request attestation from TEE_K via WebSocket
 	teekReq := AttestationRequestData{
@@ -788,10 +775,6 @@ func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string)
 
 // verifyAttestationPublicKeys compares the public keys from attestations with those from signed transcripts
 func (c *Client) verifyAttestationPublicKeys() error {
-	if c.isStandaloneMode() {
-		fmt.Printf("[Client] Standalone mode - skipping attestation vs transcript public key comparison\n")
-		return nil
-	}
 
 	// Check if we have both transcript public keys
 	if c.teekTranscriptPublicKey == nil || c.teetTranscriptPublicKey == nil {
@@ -1016,37 +999,31 @@ func (c *Client) buildAttestationValidationResults() *AttestationValidationResul
 		return c.attestationValidationResults
 	}
 
-	// In standalone mode, attestation verification is skipped
-	isStandalone := c.isStandaloneMode()
-
 	teekAttestation := AttestationVerificationResult{
 		AttestationReceived: c.teekAttestationPublicKey != nil,
-		RootOfTrustValid:    isStandalone || c.attestationVerified,
+		RootOfTrustValid:    c.attestationVerified,
 		PublicKeyExtracted:  c.teekAttestationPublicKey != nil,
 		PublicKeySize:       len(c.teekAttestationPublicKey),
 	}
 
 	teetAttestation := AttestationVerificationResult{
 		AttestationReceived: c.teetAttestationPublicKey != nil,
-		RootOfTrustValid:    isStandalone || c.attestationVerified,
+		RootOfTrustValid:    c.attestationVerified,
 		PublicKeyExtracted:  c.teetAttestationPublicKey != nil,
 		PublicKeySize:       len(c.teetAttestationPublicKey),
 	}
 
 	publicKeyComparison := PublicKeyComparisonResult{
-		ComparisonPerformed: isStandalone || c.publicKeyComparisonDone,
-		TEEKKeysMatch:       isStandalone || (c.publicKeyComparisonDone && c.attestationVerified),
-		TEETKeysMatch:       isStandalone || (c.publicKeyComparisonDone && c.attestationVerified),
-		BothTEEsMatch:       isStandalone || (c.publicKeyComparisonDone && c.attestationVerified),
+		ComparisonPerformed: c.publicKeyComparisonDone,
+		TEEKKeysMatch:       c.publicKeyComparisonDone && c.attestationVerified,
+		TEETKeysMatch:       c.publicKeyComparisonDone && c.attestationVerified,
+		BothTEEsMatch:       c.publicKeyComparisonDone && c.attestationVerified,
 	}
 
-	// In standalone mode, attestation validation always passes since it's bypassed
-	overallValid := isStandalone || (teekAttestation.RootOfTrustValid && teetAttestation.RootOfTrustValid && publicKeyComparison.BothTEEsMatch)
+	overallValid := teekAttestation.RootOfTrustValid && teetAttestation.RootOfTrustValid && publicKeyComparison.BothTEEsMatch
 
 	var summary string
-	if isStandalone {
-		summary = "Standalone mode - attestation verification bypassed"
-	} else if overallValid {
+	if overallValid {
 		summary = "All attestations verified successfully"
 	} else {
 		summary = "Some attestation verifications failed"

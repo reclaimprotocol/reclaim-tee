@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -50,9 +51,16 @@ type TEET struct {
 
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
+
+	// Enclave manager for attestation generation
+	enclaveManager *shared.EnclaveManager
 }
 
 func NewTEET(port int) *TEET {
+	return NewTEETWithEnclaveManager(port, nil)
+}
+
+func NewTEETWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) *TEET {
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
@@ -69,11 +77,16 @@ func NewTEET(port int) *TEET {
 		pendingEncryptedRequest: nil,
 		signingKeyPair:          signingKeyPair,
 		pendingResponses:        make(map[uint64]*shared.EncryptedResponseData),
+		enclaveManager:          enclaveManager,
 	}
 }
 
 // NewTEETWithSessionManager creates a TEET with a specific session manager
 func NewTEETWithSessionManager(port int, sessionManager shared.SessionManagerInterface) *TEET {
+	return NewTEETWithSessionManagerAndEnclaveManager(port, sessionManager, nil)
+}
+
+func NewTEETWithSessionManagerAndEnclaveManager(port int, sessionManager shared.SessionManagerInterface, enclaveManager *shared.EnclaveManager) *TEET {
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
@@ -90,6 +103,7 @@ func NewTEETWithSessionManager(port int, sessionManager shared.SessionManagerInt
 		pendingEncryptedRequest: nil,
 		signingKeyPair:          signingKeyPair,
 		pendingResponses:        make(map[uint64]*shared.EncryptedResponseData),
+		enclaveManager:          enclaveManager,
 	}
 }
 
@@ -1287,14 +1301,24 @@ func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 	}
 
 	// Create user data containing the hex-encoded ECDSA public key
+	userData := fmt.Sprintf("tee_t_public_key:%x", publicKeyDER)
 	log.Printf("[TEE_T] Session %s: Including ECDSA public key in attestation (DER: %d bytes)", sessionID, len(publicKeyDER))
 
-	// Try to get enclave manager from somewhere, for now we'll simulate it
-	// In a real implementation, this would come from the enclave manager
-	// For now, return success with simulated attestation that includes the public key
-	attestationDoc := []byte(fmt.Sprintf("simulated_tee_t_attestation_document_with_key:%x", publicKeyDER))
+	// Generate attestation document using enclave manager
+	if t.enclaveManager == nil {
+		log.Printf("[TEE_T] Session %s: No enclave manager available for attestation", sessionID)
+		t.sendAttestationResponseToClient(sessionID, attestReq.RequestID, nil, false, "No enclave manager available")
+		return
+	}
 
+	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
+	if err != nil {
+		log.Printf("[TEE_T] Session %s: Attestation generation failed: %v", sessionID, err)
+		t.sendAttestationResponseToClient(sessionID, attestReq.RequestID, nil, false, "Failed to generate attestation")
+		return
+	}
 	log.Printf("[TEE_T] Session %s: Generated attestation document (%d bytes)", sessionID, len(attestationDoc))
+
 	t.sendAttestationResponseToClient(sessionID, attestReq.RequestID, attestationDoc, true, "")
 }
 
