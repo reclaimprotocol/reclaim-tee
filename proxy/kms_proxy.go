@@ -491,7 +491,16 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 			zap.String("KeyId", aws.ToString(output.KeyId)),
 		)
 
-		out, err := json.Marshal(output)
+		// Convert AWS response to shared code expected format
+		sharedResponse := struct {
+			CiphertextBlob         []byte `json:"ciphertext_blob"`
+			CiphertextForRecipient []byte `json:"ciphertext_for_recipient"`
+		}{
+			CiphertextBlob:         output.CiphertextBlob,
+			CiphertextForRecipient: output.CiphertextForRecipient,
+		}
+
+		out, err := json.Marshal(sharedResponse)
 		if err != nil {
 			return nil, fmt.Errorf("KMS GenerateDataKey failed - detailed error: %v", err)
 		}
@@ -549,7 +558,14 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 			zap.String("EncryptionAlgorithm", string(output.EncryptionAlgorithm)),
 		)
 
-		return json.Marshal(output)
+		// Convert AWS response to shared code expected format
+		sharedResponse := struct {
+			CiphertextForRecipient []byte `json:"ciphertext_for_recipient"`
+		}{
+			CiphertextForRecipient: output.CiphertextForRecipient,
+		}
+
+		return json.Marshal(sharedResponse)
 	case OpStoreEncryptedItem:
 		var input ProxyStoreItemInput
 		if err := json.Unmarshal(req.Input, &input); err != nil {
