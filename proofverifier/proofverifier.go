@@ -37,33 +37,22 @@ func Validate(bundlePath string) error {
 
 	// --- Transcript signature verification ---
 	if bundle.Transcripts.TEEK != nil {
-		if err := shared.VerifyTranscriptSignature(bundle.Transcripts.TEEK); err != nil {
+		if err := verifyTEEKTranscript(bundle.Transcripts.TEEK); err != nil {
 			return fmt.Errorf("TEE_K transcript signature invalid: %v", err)
-		}
-
-		// Verify master signature over all TEE_K data
-		if len(bundle.Transcripts.TEEK.MasterSignature) > 0 {
-			if err := shared.VerifyMasterSignature(bundle.Transcripts.TEEK, bundle.RedactedStreams); err != nil {
-				return fmt.Errorf("TEE_K master signature invalid: %v", err)
-			}
 		}
 	}
 	if bundle.Transcripts.TEET != nil {
-		if err := shared.VerifyTranscriptSignature(bundle.Transcripts.TEET); err != nil {
+		if err := verifyTEETTranscript(bundle.Transcripts.TEET); err != nil {
 			return fmt.Errorf("TEE_T transcript signature invalid: %v", err)
 		}
 	}
 
-	if len(bundle.Transcripts.TEEK.MasterSignature) > 0 {
-		fmt.Println("[Verifier] Master signature verification successful")
-	} else {
-		fmt.Println("[Verifier] Transcript signatures valid")
-	}
+	fmt.Println("[Verifier] Master signature verification successful")
 
 	// --- Commitment verification for proof stream ---
-	if bundle.ProofStream != nil && bundle.ProofKey != nil && bundle.Transcripts.TEEK != nil {
-		mac := hmac.New(sha256.New, bundle.ProofKey)
-		mac.Write(bundle.ProofStream)
+	if bundle.Opening != nil && bundle.Opening.ProofStream != nil && bundle.Opening.ProofKey != nil && bundle.Transcripts.TEEK != nil {
+		mac := hmac.New(sha256.New, bundle.Opening.ProofKey)
+		mac.Write(bundle.Opening.ProofStream)
 		expectedCommitment := mac.Sum(nil)
 
 		// Verify commitment directly from request metadata
@@ -83,7 +72,7 @@ func Validate(bundlePath string) error {
 
 		fmt.Printf("[Verifier] Commitment verified ✅ (len=%d, first16=%x)\n",
 			len(expectedCommitment), expectedCommitment[:min(16, len(expectedCommitment))])
-		fmt.Printf("[Verifier]   ProofStream len=%d, ProofKey len=%d\n", len(bundle.ProofStream), len(bundle.ProofKey))
+		fmt.Printf("[Verifier]   ProofStream len=%d, ProofKey len=%d\n", len(bundle.Opening.ProofStream), len(bundle.Opening.ProofKey))
 
 		// Apply proof stream to reveal original sensitive_proof data
 		if err := verifyAndRevealProofData(bundle); err != nil {
@@ -114,25 +103,29 @@ func Validate(bundlePath string) error {
 	// Reconstruct plaintext by walking streams and finding the next ciphertext with matching length
 	var reconstructed []byte
 	cipherIdx := 0
-	for _, stream := range bundle.RedactedStreams {
-		// advance cipherIdx until length matches
-		for cipherIdx < len(ciphertexts) && len(ciphertexts[cipherIdx]) != len(stream.RedactedStream) {
+	if bundle.Transcripts.TEEK != nil && len(bundle.Transcripts.TEEK.RedactedStreams) > 0 {
+		for _, stream := range bundle.Transcripts.TEEK.RedactedStreams {
+			// advance cipherIdx until length matches
+			for cipherIdx < len(ciphertexts) && len(ciphertexts[cipherIdx]) != len(stream.RedactedStream) {
+				cipherIdx++
+			}
+			if cipherIdx >= len(ciphertexts) {
+				return fmt.Errorf("no ciphertext of length %d found for stream seq %d", len(stream.RedactedStream), stream.SeqNum)
+			}
+			cipher := ciphertexts[cipherIdx]
+			plain := make([]byte, len(cipher))
+			for i := range cipher {
+				plain[i] = cipher[i] ^ stream.RedactedStream[i]
+			}
+			reconstructed = append(reconstructed, plain...)
 			cipherIdx++
 		}
-		if cipherIdx >= len(ciphertexts) {
-			return fmt.Errorf("no ciphertext of length %d found for stream seq %d", len(stream.RedactedStream), stream.SeqNum)
-		}
-		cipher := ciphertexts[cipherIdx]
-		plain := make([]byte, len(cipher))
-		for i := range cipher {
-			plain[i] = cipher[i] ^ stream.RedactedStream[i]
-		}
-		reconstructed = append(reconstructed, plain...)
-		cipherIdx++
-	}
 
-	fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + string(reconstructed) + "\n---")
-	fmt.Println("[Verifier] Redacted streams applied successfully ✅")
+		fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + string(reconstructed) + "\n---")
+		fmt.Println("[Verifier] Redacted streams applied successfully ✅")
+	} else {
+		fmt.Println("[Verifier] No redacted streams available for reconstruction")
+	}
 
 	// --- Verify redaction ranges authenticity ---
 	if bundle.Transcripts.TEEK != nil && bundle.Transcripts.TEEK.RequestMetadata != nil {
@@ -149,6 +142,74 @@ func Validate(bundlePath string) error {
 	return nil
 }
 
+// verifyTEEKTranscript verifies TEE_K's master signature over all data
+func verifyTEEKTranscript(transcript *shared.TEEKTranscript) error {
+	if transcript == nil {
+		return fmt.Errorf("transcript is nil")
+	}
+
+	if len(transcript.Signature) == 0 {
+		return fmt.Errorf("signature is empty")
+	}
+
+	// Reconstruct the original data that was signed (master signature covers all data)
+	var buffer bytes.Buffer
+
+	// Add request metadata
+	if transcript.RequestMetadata != nil {
+		buffer.Write(transcript.RequestMetadata.RedactedRequest)
+		buffer.Write(transcript.RequestMetadata.CommSP)
+
+		// Include redaction ranges in signature verification (same as signing)
+		if len(transcript.RequestMetadata.RedactionRanges) > 0 {
+			redactionRangesBytes, err := json.Marshal(transcript.RequestMetadata.RedactionRanges)
+			if err != nil {
+				return fmt.Errorf("failed to marshal redaction ranges for verification: %v", err)
+			}
+			buffer.Write(redactionRangesBytes)
+		}
+	}
+
+	// Add concatenated redacted streams
+	for _, stream := range transcript.RedactedStreams {
+		buffer.Write(stream.RedactedStream)
+	}
+
+	// Add TLS packets
+	for _, packet := range transcript.Packets {
+		buffer.Write(packet)
+	}
+
+	originalData := buffer.Bytes()
+
+	// Verify signature using the public key
+	return shared.VerifySignatureWithDER(originalData, transcript.Signature, transcript.PublicKey)
+}
+
+// verifyTEETTranscript verifies TEE_T's signature over TLS packets
+func verifyTEETTranscript(transcript *shared.TEETTranscript) error {
+	if transcript == nil {
+		return fmt.Errorf("transcript is nil")
+	}
+
+	if len(transcript.Signature) == 0 {
+		return fmt.Errorf("signature is empty")
+	}
+
+	// Reconstruct the original data that was signed (TLS packets only)
+	var buffer bytes.Buffer
+
+	// Write each TLS packet to buffer
+	for _, packet := range transcript.Packets {
+		buffer.Write(packet)
+	}
+
+	originalData := buffer.Bytes()
+
+	// Verify signature using the public key
+	return shared.VerifySignatureWithDER(originalData, transcript.Signature, transcript.PublicKey)
+}
+
 // verifyAndRevealProofData applies the proof stream to reveal original sensitive_proof data
 func verifyAndRevealProofData(bundle shared.VerificationBundle) error {
 	if bundle.Transcripts.TEEK == nil || bundle.Transcripts.TEEK.RequestMetadata == nil {
@@ -157,7 +218,13 @@ func verifyAndRevealProofData(bundle shared.VerificationBundle) error {
 
 	redactedRequest := bundle.Transcripts.TEEK.RequestMetadata.RedactedRequest
 	redactionRanges := bundle.Transcripts.TEEK.RequestMetadata.RedactionRanges
-	proofStream := bundle.ProofStream
+
+	if bundle.Opening == nil || bundle.Opening.ProofStream == nil {
+		fmt.Println("[Verifier] No proof stream available for SP revelation")
+		return nil
+	}
+
+	proofStream := bundle.Opening.ProofStream
 
 	if len(redactedRequest) == 0 || len(proofStream) == 0 {
 		fmt.Println("[Verifier] No proof stream or redacted request available for SP revelation")

@@ -26,36 +26,45 @@ func (c *Client) BuildVerificationBundle(path string) error {
 		}
 	}
 
-	// Transcripts – only include if received
+	// TEE_K transcript – convert from SignedTranscript to TEEKTranscript
 	if c.teekSignedTranscript != nil {
-		bundle.Transcripts.TEEK = c.teekSignedTranscript
-	}
-	if c.teetSignedTranscript != nil {
-		bundle.Transcripts.TEET = c.teetSignedTranscript
+		// Order streams by seq for deterministic output
+		orderedStreams := make([]shared.SignedRedactedDecryptionStream, len(c.signedRedactedStreams))
+		copy(orderedStreams, c.signedRedactedStreams)
+		if len(orderedStreams) > 0 {
+			sort.Slice(orderedStreams, func(i, j int) bool {
+				return orderedStreams[i].SeqNum < orderedStreams[j].SeqNum
+			})
+		}
+
+		// Use master signature (which covers all data including redacted streams)
+		signature := c.teekSignedTranscript.MasterSignature
+
+		bundle.Transcripts.TEEK = &shared.TEEKTranscript{
+			Packets:         c.teekSignedTranscript.Packets,
+			RequestMetadata: c.teekSignedTranscript.RequestMetadata,
+			RedactedStreams: orderedStreams,
+			Signature:       signature,
+			PublicKey:       c.teekSignedTranscript.PublicKey,
+		}
 	}
 
-	// Streams (order by seq for deterministic output)
-	if len(c.signedRedactedStreams) > 0 {
-		sort.Slice(c.signedRedactedStreams, func(i, j int) bool {
-			return c.signedRedactedStreams[i].SeqNum < c.signedRedactedStreams[j].SeqNum
-		})
-		bundle.RedactedStreams = c.signedRedactedStreams
+	// TEE_T transcript – convert from SignedTranscript to TEETTranscript
+	if c.teetSignedTranscript != nil {
+		bundle.Transcripts.TEET = &shared.TEETTranscript{
+			Packets:   c.teetSignedTranscript.Packets,
+			Signature: c.teetSignedTranscript.Signature,
+			PublicKey: c.teetSignedTranscript.PublicKey,
+		}
 	}
 
 	// Proof commitment opening
-	if c.proofStream != nil {
-		bundle.ProofStream = c.proofStream
+	if c.proofStream != nil || c.proofKey != nil {
+		bundle.Opening = &shared.Opening{
+			ProofStream: c.proofStream,
+			ProofKey:    c.proofKey,
+		}
 	}
-	if c.proofKey != nil {
-		bundle.ProofKey = c.proofKey
-	}
-
-	// Pretty-print helpers
-	if c.redactedRequestPlain != nil {
-		bundle.RedactedRequest = c.redactedRequestPlain
-	}
-	// NOTE: redaction_ranges are now included in RequestMetadata (signed by TEE_K)
-	// instead of being duplicated at the root level
 
 	// Attestations (if any; nil slices marshal as null, omit empty)
 	bundle.AttestationTEEK = c.teekAttestationPublicKey // TODO: replace with full doc when available

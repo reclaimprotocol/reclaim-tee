@@ -1692,51 +1692,9 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	// Create data to sign for transcript (TLS packets only)
-	var buffer bytes.Buffer
-	for _, packet := range tlsPackets {
-		buffer.Write(packet)
-	}
-
-	signature, err := t.signingKeyPair.SignData(buffer.Bytes())
-	if err != nil {
-		log.Printf("[TEE_K] Failed to sign transcript: %v", err)
-		return
-	}
-
-	// Note: Master signature will be generated later after redacted streams are collected
-
-	log.Printf("[TEE_K] Successfully signed transcript (%d TLS packets, metadata present: %v, %d bytes signature)",
-		len(tlsPackets), requestMetadata != nil, len(signature))
-
-	// Get public key in DER format
-	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-	if err != nil {
-		log.Printf("[TEE_K] Failed to get public key DER: %v", err)
-		return
-	}
-
-	signedTranscript := shared.SignedTranscript{
-		Packets:         tlsPackets,
-		RequestMetadata: requestMetadata,
-		Signature:       signature,
-		PublicKey:       publicKeyDER,
-	}
-
-	// Send signed transcript to client
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		log.Printf("[TEE_K] Failed to get session %s: %v", sessionID, err)
-		return
-	}
-
-	transcriptMsg := shared.CreateSessionMessage(shared.MsgSignedTranscript, sessionID, signedTranscript)
-	if err := session.ClientConn.WriteJSON(transcriptMsg); err != nil {
-		log.Printf("[TEE_K] Failed to send signed transcript to client: %v", err)
-		return
-	}
-
-	log.Printf("[TEE_K] Sent signed transcript to client")
+	// Store transcript data for later master signature generation
+	// Don't send the transcript yet - wait for master signature to be generated
+	log.Printf("[TEE_K] Transcript prepared with %d TLS packets, will send with master signature after redaction", len(tlsPackets))
 }
 
 // handleFinishedFromClientSession handles finished messages from clients
@@ -2082,6 +2040,10 @@ func (t *TEEK) generateMasterSignatureAndSendTranscript(sessionID string) error 
 
 	log.Printf("[TEE_K] Session %s: Generated master signature over %d TLS packets, %d redacted streams, metadata present: %v",
 		sessionID, len(tlsPackets), len(session.RedactedStreams), requestMetadata != nil)
+
+	// Debug: Check what we're sending
+	log.Printf("[TEE_K] DEBUG: Sending transcript with Signature: %d bytes, MasterSignature: %d bytes",
+		len(signedTranscript.Signature), len(signedTranscript.MasterSignature))
 
 	// Send signed transcript to client
 	transcriptMsg := shared.CreateSessionMessage(shared.MsgSignedTranscript, sessionID, signedTranscript)

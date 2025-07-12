@@ -454,6 +454,7 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 	log.Printf("[Client] Received signed transcript")
 	log.Printf("[Client] Transcript contains %d packets", len(signedTranscript.Packets))
 	log.Printf("[Client] Signature: %d bytes", len(signedTranscript.Signature))
+	log.Printf("[Client] MasterSignature: %d bytes", len(signedTranscript.MasterSignature))
 	log.Printf("[Client] Public Key: %d bytes (DER format)", len(signedTranscript.PublicKey))
 
 	// Store the public key for attestation verification

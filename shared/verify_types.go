@@ -8,6 +8,34 @@ type RequestMetadata struct {
 	RedactionRanges []RedactionRange `json:"redaction_ranges"` // Ranges used for request redaction (signed by TEE_K)
 }
 
+// Opening contains the commitment opening data (Str_SP, K_SP) provided by the User
+type Opening struct {
+	ProofStream []byte `json:"proof_stream"` // Str_SP - proof stream for revealing sensitive_proof data
+	ProofKey    []byte `json:"proof_key"`    // K_SP - commitment key for proof stream
+}
+
+// TEEKTranscript represents TEE_K's signed transcript including all its data
+type TEEKTranscript struct {
+	Packets [][]byte `json:"packets"` // TLS packets only (binary data)
+
+	// Request metadata (redacted request, commitment, redaction ranges)
+	RequestMetadata *RequestMetadata `json:"request_metadata,omitempty"`
+
+	// Signed decryption keystreams produced by TEE_K, one per ApplicationData record
+	RedactedStreams []SignedRedactedDecryptionStream `json:"redacted_streams,omitempty"`
+
+	Signature []byte `json:"signature"`  // Master signature over all TEE_K data
+	PublicKey []byte `json:"public_key"` // Public key in DER format (binary data)
+}
+
+// TEETTranscript represents TEE_T's signed transcript (response data)
+type TEETTranscript struct {
+	Packets [][]byte `json:"packets"` // TLS packets only (binary data)
+
+	Signature []byte `json:"signature"`  // Signature over TLS packets
+	PublicKey []byte `json:"public_key"` // Public key in DER format (binary data)
+}
+
 // VerificationBundle is the single JSON artefact that the client produces
 // and that the offline verifier consumes to reproduce all checks.
 // The fields mirror the outputs of the protocol phases.
@@ -16,8 +44,10 @@ type RequestMetadata struct {
 // as byte-slices and will be base64-encoded automatically by the JSON
 // encoder/decoder.
 //
-// NOTE: additional fields can be added later without breaking existing
-// bundles – the verifier will ignore unknown JSON keys.
+// This structure follows the protocol design where:
+// - TEE_K provides: signed request_transcript (including redacted streams) + TLS keys
+// - TEE_T provides: signed response_transcript
+// - User provides: opening (proof_stream + proof_key)
 
 type HandshakeSecrets struct {
 	HandshakeKey []byte `json:"handshake_key"`
@@ -32,26 +62,18 @@ type VerificationBundle struct {
 
 	// ---- Phase 3 & 4: traffic authenticity & integrity ----
 	Transcripts struct {
-		TEEK *SignedTranscript `json:"tee_k,omitempty"`
-		TEET *SignedTranscript `json:"tee_t,omitempty"`
+		TEEK *TEEKTranscript `json:"tee_k,omitempty"`
+		TEET *TEETTranscript `json:"tee_t,omitempty"`
 	} `json:"transcripts"`
 
-	// Signed decryption keystreams produced by TEE_K, one per ApplicationData record
-	RedactedStreams []SignedRedactedDecryptionStream `json:"redacted_streams,omitempty"`
-
+	// ---- Phase 5: commitment opening ----
 	// Opening for the proof-relevant redaction commitment (Str_SP, K_SP)
-	ProofStream []byte `json:"proof_stream,omitempty"`
-	ProofKey    []byte `json:"proof_key,omitempty"`
+	Opening *Opening `json:"opening,omitempty"`
 
+	// ---- Attestation verification ----
 	// Attestation documents (optional in standalone mode)
 	AttestationTEEK []byte `json:"attestation_tee_k,omitempty"`
 	AttestationTEET []byte `json:"attestation_tee_t,omitempty"`
-
-	// ---- Optional pretty-printing helpers ----
-	// Plaintext redacted HTTP request as sent to TEE_K (R_red)
-	RedactedRequest []byte `json:"redacted_request,omitempty"`
-	// Exact ranges that were XOR-redacted; same coordinates used by client & TEEs.
-	RedactionRanges []RedactionRange `json:"redaction_ranges,omitempty"`
 }
 
 // Report captures the result of offline verification. The verifier returns it
