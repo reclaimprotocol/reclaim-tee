@@ -121,6 +121,13 @@ func (c *Client) sendRedactionSpec() error {
 	// Analyze response content to identify redaction ranges
 	redactionSpec := c.analyzeResponseRedaction()
 
+	// Count expected redacted streams based on response sequences
+	c.responseContentMutex.Lock()
+	c.expectedRedactedStreams = len(c.responseContentBySeq)
+	c.responseContentMutex.Unlock()
+
+	log.Printf("[Client] Expecting %d redacted streams based on response sequences", c.expectedRedactedStreams)
+
 	// Send redaction spec to TEE_K
 	msg := shared.CreateSessionMessage(shared.MsgRedactionSpec, c.sessionID, redactionSpec)
 	if err := c.wsConn.WriteJSON(msg); err != nil {

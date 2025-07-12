@@ -123,12 +123,13 @@ type Client struct {
 	attestationValidationResults *AttestationValidationResults // Cached attestation results
 
 	// Verification bundle tracking fields
-	handshakeDisclosure   *HandshakeKeyDisclosureData             // store handshake keys
-	teekSignedTranscript  *shared.SignedTranscript                // full signed transcript from TEE_K
-	teetSignedTranscript  *shared.SignedTranscript                // full signed transcript from TEE_T
-	signedRedactedStreams []shared.SignedRedactedDecryptionStream // ordered collection of redacted streams
-	redactedRequestPlain  []byte                                  // R_red plaintext sent to TEE_K
-	fullRedactedResponse  []byte                                  // final redacted HTTP response (concatenated)
+	handshakeDisclosure     *HandshakeKeyDisclosureData             // store handshake keys
+	teekSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_K
+	teetSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_T
+	signedRedactedStreams   []shared.SignedRedactedDecryptionStream // ordered collection of redacted streams
+	redactedRequestPlain    []byte                                  // R_red plaintext sent to TEE_K
+	fullRedactedResponse    []byte                                  // final redacted HTTP response (concatenated)
+	expectedRedactedStreams int                                     // expected number of redacted streams from response sequences
 
 	// commitment opening for proof
 	proofStream []byte
@@ -174,6 +175,7 @@ func NewClient(teekURL string) *Client {
 		signedRedactedStreams:        make([]shared.SignedRedactedDecryptionStream, 0),
 		proofStream:                  nil,
 		proofKey:                     nil,
+		expectedRedactedStreams:      0,
 	}
 }
 
