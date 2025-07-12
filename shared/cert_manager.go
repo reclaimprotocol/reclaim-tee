@@ -313,7 +313,7 @@ func (m *VSockLegoManager) BootstrapCertificates(ctx context.Context) error {
 		// Check if we have a valid cached certificate in memory
 		m.mu.RLock()
 		if cert, exists := m.certificates[m.config.Domain]; exists {
-			if m.isValidCertificate(cert) {
+			if m.IsValidCertificate(cert) {
 				m.mu.RUnlock()
 				log.Printf("[%s] Valid cached certificate already loaded - skipping bootstrap", m.config.ServiceName)
 				return nil
@@ -356,7 +356,7 @@ func (m *VSockLegoManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Cert
 	// First try in-memory cache
 	m.mu.RLock()
 	if cert, exists := m.certificates[domain]; exists {
-		if m.isValidCertificate(cert) {
+		if m.IsValidCertificate(cert) {
 			m.mu.RUnlock()
 			return cert, nil
 		}
@@ -365,7 +365,7 @@ func (m *VSockLegoManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Cert
 
 	// Then try persistent cache
 	cert, err := m.getCachedCertificate(context.Background(), domain)
-	if err == nil && m.isValidCertificate(cert) {
+	if err == nil && m.IsValidCertificate(cert) {
 		m.mu.Lock()
 		m.certificates[domain] = cert
 		m.mu.Unlock()
@@ -448,8 +448,8 @@ func (m *VSockLegoManager) storeCertificate(ctx context.Context, domain string, 
 	return m.cache.Put(ctx, cacheKey, combined)
 }
 
-// isValidCertificate checks if a certificate is valid and not expiring soon
-func (m *VSockLegoManager) isValidCertificate(cert *tls.Certificate) bool {
+// IsValidCertificate checks if a certificate is valid and not expiring soon
+func (m *VSockLegoManager) IsValidCertificate(cert *tls.Certificate) bool {
 	if len(cert.Certificate) == 0 {
 		return false
 	}

@@ -226,16 +226,35 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	log.Printf("[%s] Bootstrapping certificates for domain: %s", em.config.ServiceName, em.config.Domain)
 
-	// First check if we already have a valid certificate
-	cert, err := em.certManager.GetCertificate(&tls.ClientHelloInfo{
-		ServerName: em.config.Domain,
-	})
-	if err == nil && cert != nil {
-		log.Printf("[%s] Found valid certificate - skipping ACME process", em.config.ServiceName)
-		return nil
+	// Check if we already have a valid certificate WITHOUT triggering ACME operations
+	// First check the certificate manager's in-memory cache
+	em.certManager.mu.RLock()
+	if cert, exists := em.certManager.certificates[em.config.Domain]; exists {
+		if em.certManager.IsValidCertificate(cert) {
+			em.certManager.mu.RUnlock()
+			log.Printf("[%s] Found valid certificate in memory - skipping ACME process", em.config.ServiceName)
+			return nil
+		}
+	}
+	em.certManager.mu.RUnlock()
+
+	// Then check the persistent cache directly (without triggering ACME)
+	if em.cache != nil {
+		cachedData, err := em.cache.Get(ctx, em.config.Domain)
+		if err == nil {
+			cert, err := tls.X509KeyPair(cachedData, cachedData)
+			if err == nil && em.certManager.IsValidCertificate(&cert) {
+				log.Printf("[%s] Found valid certificate in persistent cache - skipping ACME process", em.config.ServiceName)
+				// Store in memory for future use
+				em.certManager.mu.Lock()
+				em.certManager.certificates[em.config.Domain] = &cert
+				em.certManager.mu.Unlock()
+				return nil
+			}
+		}
 	}
 
-	log.Printf("[%s] Starting ACME challenge for %s", em.config.ServiceName, em.config.Domain)
+	log.Printf("[%s] No valid certificate found - starting ACME challenge for %s", em.config.ServiceName, em.config.Domain)
 
 	// Create VSock HTTP server for ACME challenges
 	httpServer := em.createVSockHTTPServer(em.certManager.CreateVSockHTTPHandler(nil), em.config.HTTPPort)
@@ -267,7 +286,8 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	log.Printf("[%s] Starting ACME certificate request for %s...", em.config.ServiceName, em.config.Domain)
 	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.certManager.config.CADirURL)
 
-	err = em.certManager.BootstrapCertificates(ctx)
+	// Now it's safe to call BootstrapCertificates which will trigger ACME operations
+	err := em.certManager.BootstrapCertificates(ctx)
 	if err != nil {
 		// Shutdown HTTP server before returning error
 		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -276,51 +296,39 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 		return err
 	}
 
-	// Create a timeout context for the certificate request
-	certCtx, certCancel := context.WithTimeout(ctx, 5*time.Minute)
+	// After successful ACME certificate request, try to get the certificate for validation
+	certCtx, certCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer certCancel()
 
 	// Channel to handle the GetCertificate call with timeout
 	certResult := make(chan error, 1)
 	go func() {
-		log.Printf("[%s] Calling GetCertificate for %s...", em.config.ServiceName, em.config.Domain)
+		log.Printf("[%s] Validating obtained certificate for %s...", em.config.ServiceName, em.config.Domain)
 		_, certErr := em.certManager.GetCertificate(&tls.ClientHelloInfo{
 			ServerName: em.config.Domain,
 		})
-		log.Printf("[%s] GetCertificate completed for %s", em.config.ServiceName, em.config.Domain)
+		log.Printf("[%s] Certificate validation completed for %s", em.config.ServiceName, em.config.Domain)
 		certResult <- certErr
 	}()
 
-	// Wait for certificate request to complete or timeout
+	// Wait for certificate validation to complete or timeout
 	select {
 	case err = <-certResult:
 		if err != nil {
-			log.Printf("[%s] ACME certificate request failed: %v", em.config.ServiceName, err)
+			log.Printf("[%s] Certificate validation failed: %v", em.config.ServiceName, err)
 		} else {
-			log.Printf("[%s] ACME certificate request succeeded!", em.config.ServiceName)
+			log.Printf("[%s] Certificate validation succeeded!", em.config.ServiceName)
 
-			// Force certificate to be cached immediately after ACME success
-			log.Printf("[%s] DEBUG: Forcing certificate storage after ACME success...", em.config.ServiceName)
-
-			// Trigger GetCertificate to force certificate generation and caching
-			if testCert, testErr := em.certManager.GetCertificate(&tls.ClientHelloInfo{
-				ServerName: em.config.Domain,
-			}); testErr == nil {
-				log.Printf("[%s] DEBUG: Forced GetCertificate successful, cert chain length: %d", em.config.ServiceName, len(testCert.Certificate))
-
-				// Verify it's now cached
-				if cachedCert, cacheErr := em.cache.Get(ctx, em.config.Domain); cacheErr == nil {
-					log.Printf("[%s] DEBUG: Certificate now cached (%d bytes) - ready for TLS!", em.config.ServiceName, len(cachedCert))
-				} else {
-					log.Printf("[%s] DEBUG: WARNING: Certificate still not cached: %v", em.config.ServiceName, cacheErr)
-				}
+			// Verify it's now cached
+			if cachedCert, cacheErr := em.cache.Get(ctx, em.config.Domain); cacheErr == nil {
+				log.Printf("[%s] Certificate now cached (%d bytes) - ready for TLS!", em.config.ServiceName, len(cachedCert))
 			} else {
-				log.Printf("[%s] DEBUG: Forced GetCertificate failed: %v", em.config.ServiceName, testErr)
+				log.Printf("[%s] WARNING: Certificate not cached: %v", em.config.ServiceName, cacheErr)
 			}
 		}
 	case <-certCtx.Done():
-		err = fmt.Errorf("certificate request timed out after 5 minutes")
-		log.Printf("[%s] ACME certificate request TIMED OUT", em.config.ServiceName)
+		err = fmt.Errorf("certificate validation timed out after 30 seconds")
+		log.Printf("[%s] Certificate validation TIMED OUT", em.config.ServiceName)
 	}
 
 	// Shutdown HTTP server
