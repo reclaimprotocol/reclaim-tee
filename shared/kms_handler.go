@@ -11,28 +11,23 @@ import (
 	"log"
 
 	"github.com/austinast/nitro-enclaves-sdk-go/crypto/cms"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/kms"
-	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"golang.org/x/crypto/acme/autocert"
 )
 
-// KMSConnectionManager defines the interface for KMS connection management
+// KMSConnectionManager handles VSock communication with proxy
 type KMSConnectionManager interface {
 	SendKMSRequest(ctx context.Context, operation string, serviceName string, data interface{}) ([]byte, error)
 }
 
-// KMSHandler ensures ALL KMS operations use attestation documents
-// This matches the exact pattern from nitro.go for maximum security
+// KMSHandler handles KMS operations via VSock proxy
 type KMSHandler struct {
 	connectionMgr KMSConnectionManager
 	kmsKeyID      string
 	serviceName   string
 }
 
-// NewKMSHandler creates a new comprehensive KMS handler
+// NewKMSHandler creates a new KMS handler
 func NewKMSHandler(connectionMgr KMSConnectionManager, kmsKeyID string, serviceName string) *KMSHandler {
-	log.Printf("[KMS:%s] Creating new KMS handler with key ID: %s", serviceName, kmsKeyID)
 	return &KMSHandler{
 		connectionMgr: connectionMgr,
 		kmsKeyID:      kmsKeyID,
@@ -40,8 +35,39 @@ func NewKMSHandler(connectionMgr KMSConnectionManager, kmsKeyID string, serviceN
 	}
 }
 
-// EncryptAndStoreCacheItem encrypts data and stores it - ALWAYS uses attestation
-// This exactly matches the pattern from nitro.go encryptAndStoreCacheItem function
+// RecipientInfo holds recipient information for KMS operations
+type RecipientInfo struct {
+	AttestationDocument    []byte `json:"attestation_document"`
+	KeyEncryptionAlgorithm string `json:"key_encryption_algorithm"`
+}
+
+// GenerateDataKeyInput holds input for GenerateDataKey operation
+type GenerateDataKeyInput struct {
+	KeyId     string         `json:"key_id"`
+	KeySpec   string         `json:"key_spec"`
+	Recipient *RecipientInfo `json:"recipient"`
+}
+
+// GenerateDataKeyOutput holds output from GenerateDataKey operation
+type GenerateDataKeyOutput struct {
+	CiphertextBlob         []byte `json:"ciphertext_blob"`
+	CiphertextForRecipient []byte `json:"ciphertext_for_recipient"`
+}
+
+// DecryptInput holds input for Decrypt operation
+type DecryptInput struct {
+	KeyId               string         `json:"key_id"`
+	CiphertextBlob      []byte         `json:"ciphertext_blob"`
+	EncryptionAlgorithm string         `json:"encryption_algorithm"`
+	Recipient           *RecipientInfo `json:"recipient"`
+}
+
+// DecryptOutput holds output from Decrypt operation
+type DecryptOutput struct {
+	CiphertextForRecipient []byte `json:"ciphertext_for_recipient"`
+}
+
+// EncryptAndStoreCacheItem encrypts and stores data using KMS
 func (c *KMSHandler) EncryptAndStoreCacheItem(ctx context.Context, data []byte, filename string) error {
 	handle, err := SafeGetEnclaveHandle()
 	if err != nil {
@@ -53,15 +79,14 @@ func (c *KMSHandler) EncryptAndStoreCacheItem(ctx context.Context, data []byte, 
 		return fmt.Errorf("failed to generate attestation: %v", err)
 	}
 
-	log.Printf("[KMS] Generated attestation document (%d bytes) for storage operation", len(attestationDoc))
+	log.Printf("[KMS] Generated attestation document (%d bytes) for encrypt operation", len(attestationDoc))
 
-	// Create KMS GenerateDataKey request with attestation (matching nitro.go exactly)
-	input := kms.GenerateDataKeyInput{
-		KeyId:   aws.String(c.kmsKeyID),
-		KeySpec: "AES_256", // Using string format as in nitro.go
-		Recipient: &types.RecipientInfoType{
+	input := GenerateDataKeyInput{
+		KeyId:   c.kmsKeyID,
+		KeySpec: "AES_256",
+		Recipient: &RecipientInfo{
 			AttestationDocument:    attestationDoc,
-			KeyEncryptionAlgorithm: types.EncryptionAlgorithmSpecRsaesOaepSha256,
+			KeyEncryptionAlgorithm: "RSAES_OAEP_SHA_256",
 		},
 	}
 
@@ -71,7 +96,7 @@ func (c *KMSHandler) EncryptAndStoreCacheItem(ctx context.Context, data []byte, 
 		return fmt.Errorf("KMS GenerateDataKey failed: %v", err)
 	}
 
-	var output kms.GenerateDataKeyOutput
+	var output GenerateDataKeyOutput
 	if err = json.Unmarshal(resp, &output); err != nil {
 		return fmt.Errorf("failed to parse KMS output: %v", err)
 	}
@@ -95,14 +120,14 @@ func (c *KMSHandler) EncryptAndStoreCacheItem(ctx context.Context, data []byte, 
 
 	log.Printf("[KMS] Encrypted data (%d bytes -> %d bytes)", len(data), len(encryptedData))
 
-	// Store encrypted data and ciphertext blob (matching nitro.go StoreItemInput structure)
+	// Store encrypted data and ciphertext blob
 	storeInput := struct {
 		Data     []byte `json:"data"`
 		Key      []byte `json:"key"`
 		Filename string `json:"filename"`
 	}{
 		Data:     encryptedData,
-		Key:      output.CiphertextBlob, // Store the standard ciphertext blob
+		Key:      output.CiphertextBlob,
 		Filename: filename,
 	}
 
@@ -126,10 +151,9 @@ func (c *KMSHandler) EncryptAndStoreCacheItem(ctx context.Context, data []byte, 
 	return nil
 }
 
-// LoadAndDecryptCacheItem loads and decrypts an item - ALWAYS uses attestation
-// This exactly matches the pattern from nitro.go decryptItem function
+// LoadAndDecryptCacheItem loads and decrypts an item
 func (c *KMSHandler) LoadAndDecryptCacheItem(ctx context.Context, filename string) ([]byte, error) {
-	// Load encrypted item from storage (matching nitro.go GetItemInput pattern)
+	// Load encrypted item from storage
 	loadInput := struct {
 		Filename string `json:"filename"`
 	}{
@@ -142,7 +166,7 @@ func (c *KMSHandler) LoadAndDecryptCacheItem(ctx context.Context, filename strin
 		return nil, autocert.ErrCacheMiss
 	}
 
-	// Parse response directly (matching advanced_kms.go pattern)
+	// Parse response
 	var output struct {
 		Data []byte `json:"data"`
 		Key  []byte `json:"key"`
@@ -159,7 +183,7 @@ func (c *KMSHandler) LoadAndDecryptCacheItem(ctx context.Context, filename strin
 
 	log.Printf("[KMS] Retrieved encrypted item - data: %d bytes, key: %d bytes", len(output.Data), len(output.Key))
 
-	// Decrypt the item (matching nitro.go decryptItem exactly)
+	// Decrypt the item
 	decryptedData, err := c.decryptItem(ctx, output.Data, output.Key)
 	if err != nil {
 		log.Printf("[KMS] Failed to decrypt item %s: %v", filename, err)
@@ -186,13 +210,13 @@ func (c *KMSHandler) decryptItem(ctx context.Context, encryptedData, ciphertextB
 
 	log.Printf("[KMS] Generated attestation document (%d bytes) for decrypt operation", len(attestationDoc))
 
-	input := kms.DecryptInput{
-		KeyId:               aws.String(c.kmsKeyID),
+	input := DecryptInput{
+		KeyId:               c.kmsKeyID,
 		CiphertextBlob:      ciphertextBlob,
-		EncryptionAlgorithm: types.EncryptionAlgorithmSpecSymmetricDefault,
-		Recipient: &types.RecipientInfoType{
+		EncryptionAlgorithm: "SYMMETRIC_DEFAULT",
+		Recipient: &RecipientInfo{
 			AttestationDocument:    attestationDoc,
-			KeyEncryptionAlgorithm: types.EncryptionAlgorithmSpecRsaesOaepSha256,
+			KeyEncryptionAlgorithm: "RSAES_OAEP_SHA_256",
 		},
 	}
 
@@ -203,7 +227,7 @@ func (c *KMSHandler) decryptItem(ctx context.Context, encryptedData, ciphertextB
 		return nil, fmt.Errorf("KMS Decrypt failed: %v", err)
 	}
 
-	var output kms.DecryptOutput
+	var output DecryptOutput
 	if err = json.Unmarshal(resp, &output); err != nil {
 		log.Printf("[KMS] Failed to parse KMS decrypt response: %v", err)
 		return nil, fmt.Errorf("failed to parse KMS output: %v", err)
@@ -220,7 +244,7 @@ func (c *KMSHandler) decryptItem(ctx context.Context, encryptedData, ciphertextB
 
 	log.Printf("[KMS] Successfully decrypted envelope key (%d bytes)", len(plaintextKey))
 
-	// Decrypt the actual data using the decrypted key (matching nitro.go aesGCMOperation)
+	// Decrypt the actual data using the decrypted key
 	plaintext, err := aesGCMOperation(plaintextKey, encryptedData, false)
 	if err != nil {
 		log.Printf("[KMS] AES-GCM decryption failed: %v", err)
@@ -231,7 +255,7 @@ func (c *KMSHandler) decryptItem(ctx context.Context, encryptedData, ciphertextB
 	return plaintext, nil
 }
 
-// generateAttestation generates attestation document - matching nitro.go pattern exactly
+// generateAttestation generates attestation document
 func (c *KMSHandler) generateAttestation(handle *EnclaveHandle, userData []byte) ([]byte, error) {
 	return handle.generateAttestation(userData)
 }

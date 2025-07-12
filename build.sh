@@ -16,7 +16,7 @@ echo "  Building Client..."
 cd client && go build -o ../bin/client . && cd ..
 
 echo "  Building Proxy..."
-cd proxy && go build -o ../bin/proxy . && cd ..
+cd proxy && go mod download && go build -o ../bin/proxy . && cd ..
 
 echo " All services built successfully!"
 echo ""
