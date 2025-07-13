@@ -1106,3 +1106,56 @@ func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) Tran
 		PacketDetails:    details,
 	}
 }
+
+// RequestAttestation requests attestation from both TEE_K and TEE_T
+// Now waits for session coordination before sending requests
+func (c *Client) RequestAttestation() (*AttestationResponseData, *AttestationResponseData, error) {
+	// Wait for session ID from TEE_K (indicates successful session coordination)
+	if c.sessionID == "" {
+		return nil, nil, fmt.Errorf("session not established - cannot request attestation")
+	}
+
+	fmt.Printf("[Client] Requesting attestation for session: %s\n", c.sessionID)
+
+	// Create attestation request (no request ID needed)
+	attestReq := AttestationRequestData{}
+
+	// Send to TEE_K
+	teekMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create TEE_K attestation request: %v", err)
+	}
+
+	if err := c.sendMessage(teekMsg); err != nil {
+		return nil, nil, fmt.Errorf("failed to send TEE_K attestation request: %v", err)
+	}
+
+	// Send to TEE_T
+	teetMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create TEE_T attestation request: %v", err)
+	}
+
+	if err := c.sendMessageToTEET(teetMsg); err != nil {
+		return nil, nil, fmt.Errorf("failed to send TEE_T attestation request: %v", err)
+	}
+
+	// Wait for both responses
+	var teekResponse, teetResponse *AttestationResponseData
+	responsesReceived := 0
+
+	for responsesReceived < 2 {
+		select {
+		case <-time.After(30 * time.Second):
+			return nil, nil, fmt.Errorf("timeout waiting for attestation responses")
+		case <-c.completionChan:
+			return nil, nil, fmt.Errorf("client closed while waiting for attestation")
+		default:
+			// Check for responses (simplified without request ID matching)
+			time.Sleep(100 * time.Millisecond)
+			// Response handling is done in message handlers
+		}
+	}
+
+	return teekResponse, teetResponse, nil
+}

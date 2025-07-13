@@ -305,15 +305,15 @@ type TEETReadyData struct {
 	Success bool `json:"success"`
 }
 
-// AttestationRequestData represents a request for attestation over WebSocket
+// AttestationRequestData represents a request for attestation
 type AttestationRequestData struct {
-	RequestID string `json:"request_id"` // Unique identifier for this request
+	// RequestID removed - no longer needed since we wait for session coordination
 }
 
-// AttestationResponseData represents an attestation response over WebSocket
+// AttestationResponseData represents an attestation response
 type AttestationResponseData struct {
-	RequestID      string `json:"request_id"`      // Matching request ID
-	AttestationDoc []byte `json:"attestation_doc"` // Base64-encoded attestation document
+	// RequestID removed - no longer needed since we wait for session coordination
+	AttestationDoc []byte `json:"attestation_doc,omitempty"`
 	Success        bool   `json:"success"`
 	ErrorMessage   string `json:"error_message,omitempty"`
 }

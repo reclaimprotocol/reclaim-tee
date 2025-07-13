@@ -2117,12 +2117,12 @@ func (t *TEEK) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 		return
 	}
 
-	log.Printf("[TEE_K] Session %s: Processing attestation request %s", sessionID, attestReq.RequestID)
+	log.Printf("[TEE_K] Session %s: Processing attestation request", sessionID)
 
 	// Get attestation from enclave manager if available
 	if t.signingKeyPair == nil {
 		log.Printf("[TEE_K] Session %s: No signing key pair available for attestation", sessionID)
-		t.sendAttestationResponse(sessionID, attestReq.RequestID, nil, false, "No signing key pair available")
+		t.sendAttestationResponse(sessionID, nil, false, "No signing key pair available")
 		return
 	}
 
@@ -2130,7 +2130,7 @@ func (t *TEEK) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
 	if err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to get public key DER: %v", sessionID, err)
-		t.sendAttestationResponse(sessionID, attestReq.RequestID, nil, false, "Failed to get public key")
+		t.sendAttestationResponse(sessionID, nil, false, "Failed to get public key")
 		return
 	}
 
@@ -2141,32 +2141,33 @@ func (t *TEEK) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 	// Generate attestation document using enclave manager
 	if t.enclaveManager == nil {
 		log.Printf("[TEE_K] Session %s: No enclave manager available for attestation", sessionID)
-		t.sendAttestationResponse(sessionID, attestReq.RequestID, nil, false, "No enclave manager available")
+		t.sendAttestationResponse(sessionID, nil, false, "No enclave manager available")
 		return
 	}
 
 	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
 	if err != nil {
-		log.Printf("[TEE_K] Session %s: Attestation generation failed: %v", sessionID, err)
-		t.sendAttestationResponse(sessionID, attestReq.RequestID, nil, false, "Failed to generate attestation")
+		log.Printf("[TEE_K] Session %s: Failed to generate attestation: %v", sessionID, err)
+		t.sendAttestationResponse(sessionID, nil, false, fmt.Sprintf("Failed to generate attestation: %v", err))
 		return
 	}
+
 	log.Printf("[TEE_K] Session %s: Generated attestation document (%d bytes)", sessionID, len(attestationDoc))
 
-	t.sendAttestationResponse(sessionID, attestReq.RequestID, attestationDoc, true, "")
+	// Send successful response
+	t.sendAttestationResponse(sessionID, attestationDoc, true, "")
 }
 
-// sendAttestationResponse sends an attestation response to the client
-func (t *TEEK) sendAttestationResponse(sessionID, requestID string, attestationDoc []byte, success bool, errorMessage string) {
+// sendAttestationResponse sends attestation response to client (request ID removed)
+func (t *TEEK) sendAttestationResponse(sessionID string, attestationDoc []byte, success bool, errorMessage string) {
 	response := shared.AttestationResponseData{
-		RequestID:      requestID,
 		AttestationDoc: attestationDoc,
 		Success:        success,
 		ErrorMessage:   errorMessage,
 	}
 
-	responseMsg := shared.CreateSessionMessage(shared.MsgAttestationResponse, sessionID, response)
-	if err := t.sessionManager.RouteToClient(sessionID, responseMsg); err != nil {
+	msg := shared.CreateSessionMessage(shared.MsgAttestationResponse, sessionID, response)
+	if err := t.sessionManager.RouteToClient(sessionID, msg); err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to send attestation response: %v", sessionID, err)
 	}
 }
