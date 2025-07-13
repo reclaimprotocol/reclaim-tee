@@ -108,8 +108,7 @@ func (r *HTTPRouter) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	if !found {
-		r.logger.Error("No matching domain found", zap.String("host", host))
-		r.sendError(conn, 404, "Domain not found")
+		r.sendError(conn, 502, "Service unavailable")
 		return
 	}
 

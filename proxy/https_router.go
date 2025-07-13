@@ -87,12 +87,10 @@ func (r *HTTPSRouter) handleConnection(ctx context.Context, conn net.Conn) {
 	// Extract SNI from TLS ClientHello and get the connection that preserves all data
 	sni, replayConn, err := r.extractSNIWithReplay(conn)
 	if err != nil {
-		r.logger.Error("Failed to extract SNI", zap.Error(err))
 		return
 	}
 
 	if sni == "" {
-		r.logger.Error("No SNI found in TLS ClientHello")
 		return
 	}
 
@@ -110,7 +108,6 @@ func (r *HTTPSRouter) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	if !found {
-		r.logger.Error("No matching domain found", zap.String("sni", sni))
 		return
 	}
 
