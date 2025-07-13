@@ -105,7 +105,14 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 		return
 	}
 
-	p.logger.Info("Connecting to target", zap.String("target", target))
+	// Check if this is a local domain that should route back to the proxy
+	if p.isLocalDomain(target) {
+		p.logger.Info("Routing to local domain", zap.String("target", target))
+		p.handleLocalDomainConnection(ctx, enclaveConn, target)
+		return
+	}
+
+	p.logger.Info("Connecting to external target", zap.String("target", target))
 
 	// Make outbound connection to target with timeout
 	dialer := &net.Dialer{
@@ -180,6 +187,148 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 		p.logger.Info("Connection cancelled", zap.String("target", target))
 	case <-time.After(24 * time.Hour): // Maximum connection lifetime
 		p.logger.Info("Connection maximum lifetime reached", zap.String("target", target))
+	}
+}
+
+// isLocalDomain checks if the target domain should be routed back to the proxy
+func (p *InternetProxy) isLocalDomain(target string) bool {
+	// Extract hostname from target (remove port)
+	hostname := target
+	if idx := strings.LastIndex(target, ":"); idx != -1 {
+		hostname = target[:idx]
+	}
+
+	// Check if this hostname is configured as a local domain
+	for domain := range p.config.Domains {
+		if hostname == domain {
+			return true
+		}
+	}
+	return false
+}
+
+// handleLocalDomainConnection handles connections to local domains by routing directly to target enclave
+func (p *InternetProxy) handleLocalDomainConnection(ctx context.Context, enclaveConn net.Conn, target string) {
+	// Extract hostname and port
+	hostname := target
+	port := "443" // Default HTTPS port
+	if idx := strings.LastIndex(target, ":"); idx != -1 {
+		hostname = target[:idx]
+		port = target[idx+1:]
+	}
+
+	// Find target enclave CID for direct VSock communication
+	targetConfig, exists := p.config.Domains[hostname]
+	if !exists {
+		p.logger.Error("Local domain not found in configuration",
+			zap.String("hostname", hostname))
+		return
+	}
+
+	// Determine target VSock port based on requested port
+	var targetPort uint32
+	switch port {
+	case "443":
+		targetPort = 8443 // HTTPS port in enclave
+	case "80":
+		targetPort = 8080 // HTTP port in enclave
+	default:
+		p.logger.Error("Unsupported port for inter-enclave communication",
+			zap.String("hostname", hostname),
+			zap.String("port", port))
+		return
+	}
+
+	p.logger.Info("Direct VSock routing to target enclave",
+		zap.String("hostname", hostname),
+		zap.Uint32("target_cid", targetConfig.CID),
+		zap.Uint32("target_port", targetPort))
+
+	// Connect directly to target enclave via VSock
+	targetConn, err := vsock.Dial(targetConfig.CID, targetPort, nil)
+	if err != nil {
+		p.logger.Error("Failed to connect to target enclave via VSock",
+			zap.String("hostname", hostname),
+			zap.Uint32("target_cid", targetConfig.CID),
+			zap.Uint32("target_port", targetPort),
+			zap.Error(err))
+		return
+	}
+	defer targetConn.Close()
+
+	p.logger.Info("Direct VSock connection established",
+		zap.String("hostname", hostname),
+		zap.Uint32("target_cid", targetConfig.CID),
+		zap.Uint32("target_port", targetPort))
+
+	// Clear read deadline and set reasonable idle timeouts
+	enclaveConn.SetReadDeadline(time.Time{})
+	enclaveConn.SetWriteDeadline(time.Time{})
+	targetConn.SetReadDeadline(time.Time{})
+	targetConn.SetWriteDeadline(time.Time{})
+
+	// Use context for cancellation
+	copyCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Direct VSock-to-VSock bidirectional copy
+	done := make(chan error, 2)
+
+	// Copy from source enclave to target enclave
+	go func() {
+		written, err := io.Copy(targetConn, enclaveConn)
+		if err != nil && !isConnectionClosed(err) {
+			p.logger.Debug("Source->Target VSock copy ended",
+				zap.String("hostname", hostname),
+				zap.Uint32("target_cid", targetConfig.CID),
+				zap.Int64("bytes", written),
+				zap.Error(err))
+		} else {
+			p.logger.Debug("Source->Target VSock copy completed",
+				zap.String("hostname", hostname),
+				zap.Uint32("target_cid", targetConfig.CID),
+				zap.Int64("bytes", written))
+		}
+		done <- err
+		cancel() // Cancel context to stop other goroutine
+	}()
+
+	// Copy from target enclave to source enclave
+	go func() {
+		written, err := io.Copy(enclaveConn, targetConn)
+		if err != nil && !isConnectionClosed(err) {
+			p.logger.Debug("Target->Source VSock copy ended",
+				zap.String("hostname", hostname),
+				zap.Uint32("target_cid", targetConfig.CID),
+				zap.Int64("bytes", written),
+				zap.Error(err))
+		} else {
+			p.logger.Debug("Target->Source VSock copy completed",
+				zap.String("hostname", hostname),
+				zap.Uint32("target_cid", targetConfig.CID),
+				zap.Int64("bytes", written))
+		}
+		done <- err
+		cancel() // Cancel context to stop other goroutine
+	}()
+
+	// Wait for either copy to complete or context cancellation
+	select {
+	case err := <-done:
+		if err != nil && !isConnectionClosed(err) {
+			p.logger.Error("VSock-to-VSock copy error",
+				zap.String("hostname", hostname),
+				zap.Uint32("target_cid", targetConfig.CID),
+				zap.Error(err))
+		}
+	case <-copyCtx.Done():
+		p.logger.Info("VSock-to-VSock connection cancelled",
+			zap.String("hostname", hostname),
+			zap.Uint32("target_cid", targetConfig.CID))
+	case <-time.After(1 * time.Hour): // Reasonable timeout for inter-enclave connections
+		p.logger.Info("VSock-to-VSock connection timeout",
+			zap.String("hostname", hostname),
+			zap.Uint32("target_cid", targetConfig.CID))
 	}
 }
 
