@@ -699,14 +699,29 @@ func (c *Client) hasAllCompletionFlags(flags int64) bool {
 // sendRedactionSpec - moved to completion.go
 
 // fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T via WebSocket
+// Now waits for session coordination before sending requests
 func (c *Client) fetchAndVerifyAttestations() error {
 	fmt.Printf("[Client] Requesting attestations from both TEE_K and TEE_T via WebSocket\n")
 
-	// Request attestation from TEE_K via WebSocket
-	teekReq := AttestationRequestData{
-		RequestID: "tee_k_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+	// Wait for session ID from TEE_K (indicates successful session coordination)
+	// This is a simple polling approach for now
+	maxWait := 30 * time.Second
+	waitStart := time.Now()
+
+	for c.sessionID == "" {
+		if time.Since(waitStart) > maxWait {
+			return fmt.Errorf("timeout waiting for session coordination")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	teekMsg, err := CreateMessage(MsgAttestationRequest, teekReq)
+
+	fmt.Printf("[Client] Session coordinated (%s), proceeding with attestation requests\n", c.sessionID)
+
+	// Create attestation request (no request ID needed)
+	attestReq := AttestationRequestData{}
+
+	// Send to TEE_K
+	teekMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
 	if err != nil {
 		return fmt.Errorf("failed to create TEE_K attestation request: %v", err)
 	}
@@ -714,13 +729,10 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	if err := c.sendMessage(teekMsg); err != nil {
 		return fmt.Errorf("failed to send TEE_K attestation request: %v", err)
 	}
-	fmt.Printf("[Client] Sent attestation request to TEE_K (ID: %s)\n", teekReq.RequestID)
+	fmt.Printf("[Client] Sent attestation request to TEE_K\n")
 
-	// Request attestation from TEE_T via WebSocket
-	teetReq := AttestationRequestData{
-		RequestID: "tee_t_" + fmt.Sprintf("%d", time.Now().UnixNano()),
-	}
-	teetMsg, err := CreateMessage(MsgAttestationRequest, teetReq)
+	// Send to TEE_T
+	teetMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
 	if err != nil {
 		return fmt.Errorf("failed to create TEE_T attestation request: %v", err)
 	}
@@ -728,7 +740,7 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	if err := c.sendMessageToTEET(teetMsg); err != nil {
 		return fmt.Errorf("failed to send TEE_T attestation request: %v", err)
 	}
-	fmt.Printf("[Client] Sent attestation request to TEE_T (ID: %s)\n", teetReq.RequestID)
+	fmt.Printf("[Client] Sent attestation request to TEE_T\n")
 
 	// Responses will be handled asynchronously by handleAttestationResponse
 	fmt.Printf("[Client] Waiting for attestation responses from both TEE_K and TEE_T...\n")

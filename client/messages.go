@@ -300,12 +300,12 @@ type DecryptedResponseData struct {
 
 // AttestationRequestData represents a request for attestation over WebSocket
 type AttestationRequestData struct {
-	RequestID string `json:"request_id"` // Unique identifier for this request
+	// RequestID removed - no longer needed since we wait for session coordination
 }
 
 // AttestationResponseData represents an attestation response over WebSocket
 type AttestationResponseData struct {
-	RequestID      string `json:"request_id"`      // Matching request ID
+	// RequestID removed - no longer needed since we wait for session coordination
 	AttestationDoc []byte `json:"attestation_doc"` // Base64-encoded attestation document
 	Success        bool   `json:"success"`
 	ErrorMessage   string `json:"error_message,omitempty"`
