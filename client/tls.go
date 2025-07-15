@@ -347,12 +347,18 @@ func (c *Client) processTLSRecord(record []byte) {
 	c.responseContentMutex.Unlock()
 
 	// Prepare data to send to TEE_T for tag verification
+	// Get the actual negotiated cipher suite from handshake disclosure
+	cipherSuite := uint16(0x1302) // Default fallback
+	if c.handshakeDisclosure != nil {
+		cipherSuite = c.handshakeDisclosure.CipherSuite
+	}
+
 	encryptedResponseData := EncryptedResponseData{
 		EncryptedData: encryptedData,
 		Tag:           tag,
 		RecordHeader:  record[:5], // Include actual TLS record header from server
 		SeqNum:        c.responseSeqNum,
-		CipherSuite:   0x1302, // TLS_AES_256_GCM_SHA384 - TODO: get from handshake
+		CipherSuite:   cipherSuite, // Use actual negotiated cipher suite
 	}
 
 	responseMsg, err := CreateMessage(MsgEncryptedResponse, encryptedResponseData)

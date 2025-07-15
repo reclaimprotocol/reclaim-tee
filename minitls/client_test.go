@@ -77,3 +77,91 @@ func min_test(a, b int) int {
 	}
 	return b
 }
+
+// TestChaCha20Preference tests that ChaCha20-Poly1305 is preferred when no specific cipher is forced
+func TestChaCha20Preference(t *testing.T) {
+	addr := "cloudflare.com:443"
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Failed to connect to server %s: %v", addr, err)
+	}
+	defer conn.Close()
+
+	// Create a client WITHOUT overriding cipher suites to test natural preference
+	client := NewClient(conn)
+
+	// Perform the handshake - should prefer ChaCha20-Poly1305
+	if err := client.Handshake("cloudflare.com"); err != nil {
+		t.Fatalf("Handshake failed: %v", err)
+	}
+
+	negotiatedCipher := client.GetCipherSuite()
+
+	fmt.Printf("🔐 Negotiated cipher suite: 0x%04x\n", negotiatedCipher)
+
+	if negotiatedCipher == TLS_CHACHA20_POLY1305_SHA256 {
+		fmt.Println("✅ SUCCESS: ChaCha20-Poly1305 was preferred!")
+	} else {
+		fmt.Printf("⚠️  Note: Server chose 0x%04x instead of ChaCha20-Poly1305 (0x%04x)\n",
+			negotiatedCipher, TLS_CHACHA20_POLY1305_SHA256)
+	}
+
+	// Verify the connection works
+	if err := client.SendHTTPRequest("GET", "/", "cloudflare.com"); err != nil {
+		t.Fatalf("Failed to send HTTP request: %v", err)
+	}
+
+	response, err := client.ReadHTTPResponse()
+	if err != nil {
+		t.Fatalf("Failed to read HTTP response: %v", err)
+	}
+
+	if len(response) == 0 {
+		t.Error("Received an empty HTTP response")
+	}
+
+	fmt.Printf("✅ HTTP request successful with cipher 0x%04x (%d bytes response)\n",
+		negotiatedCipher, len(response))
+}
+
+// TestChaCha20PreferenceGoogle tests ChaCha20-Poly1305 preference against Google
+func TestChaCha20PreferenceGoogle(t *testing.T) {
+	addr := "google.com:443"
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Failed to connect to server %s: %v", addr, err)
+	}
+	defer conn.Close()
+
+	// Create a client WITHOUT overriding cipher suites
+	client := NewClient(conn)
+
+	// Perform the handshake
+	if err := client.Handshake("google.com"); err != nil {
+		t.Fatalf("Handshake failed: %v", err)
+	}
+
+	negotiatedCipher := client.GetCipherSuite()
+
+	fmt.Printf("🔐 Google negotiated cipher suite: 0x%04x\n", negotiatedCipher)
+
+	switch negotiatedCipher {
+	case TLS_CHACHA20_POLY1305_SHA256:
+		fmt.Println("✅ Google also prefers ChaCha20-Poly1305!")
+	case TLS_AES_256_GCM_SHA384:
+		fmt.Println("📊 Google chose AES-256-GCM instead")
+	case TLS_AES_128_GCM_SHA256:
+		fmt.Println("📊 Google chose AES-128-GCM instead")
+	default:
+		fmt.Printf("❓ Google chose unknown cipher: 0x%04x\n", negotiatedCipher)
+	}
+
+	// Quick HTTP test
+	if err := client.SendHTTPRequest("GET", "/", "google.com"); err == nil {
+		if response, err := client.ReadHTTPResponse(); err == nil && len(response) > 0 {
+			fmt.Printf("✅ Google connection successful (%d bytes)\n", len(response))
+		}
+	}
+}

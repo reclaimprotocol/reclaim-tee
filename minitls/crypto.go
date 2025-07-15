@@ -11,8 +11,10 @@ import (
 
 	"hash"
 
+	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
+	"golang.org/x/crypto/poly1305"
 )
 
 // TLS 1.3 Key Schedule
@@ -447,22 +449,20 @@ func (sa *SplitAEAD) EncryptWithoutTag(plaintext, additionalData []byte) ([]byte
 		tagSecrets = sa.generateGCMTagSecrets(block, nonce)
 
 	case TLS_CHACHA20_POLY1305_SHA256:
-		// ChaCha20-Poly1305 case: encrypt with ChaCha20, generate Poly1305 key material
-		aead, err := chacha20poly1305.New(sa.key)
+		// ChaCha20-Poly1305 case: encrypt with ChaCha20 stream directly
+
+		// Create ChaCha20 cipher
+		cipher, err := chacha20.NewUnauthenticatedCipher(sa.key, nonce)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to create ChaCha20 cipher: %v", err)
 		}
 
-		// For now, use full encryption and split - in real implementation would use ChaCha20 stream directly
-		fullCiphertext := aead.Seal(nil, nonce, plaintext, additionalData)
+		// Set counter to 1 for data encryption (counter 0 is reserved for Poly1305 key)
+		cipher.SetCounter(1)
 
-		// Split ciphertext and tag (tag is last 16 bytes for Poly1305)
-		tagSize := aead.Overhead()
-		if len(fullCiphertext) < tagSize {
-			return nil, nil, fmt.Errorf("ciphertext too short")
-		}
-
-		ciphertext = fullCiphertext[:len(fullCiphertext)-tagSize]
+		// Encrypt plaintext using ChaCha20
+		ciphertext = make([]byte, len(plaintext))
+		cipher.XORKeyStream(ciphertext, plaintext)
 
 		// Generate tag computation material for ChaCha20-Poly1305:
 		// First 32 bytes of the Stream Block derived using key K, nonce N and counter 0
@@ -509,22 +509,24 @@ func (sa *SplitAEAD) generateGCMTagSecrets(block cipher.Block, nonce []byte) []b
 // generateChaChaTagSecrets generates tag computation material for ChaCha20-Poly1305
 // Returns first 32 bytes of the Stream Block derived using key K, nonce N and counter 0
 func (sa *SplitAEAD) generateChaChaTagSecrets(nonce []byte) []byte {
-	// For ChaCha20-Poly1305, we need the first 32 bytes of the stream block
-	// This is used for Poly1305 key derivation
+	// For ChaCha20-Poly1305, we need the first 32 bytes of the stream block (counter 0)
+	// This is used for Poly1305 key derivation per RFC 8439
 
-	// Create ChaCha20 stream and get first 32 bytes
-	// This is a simplified version - in real implementation would use ChaCha20 stream directly
-	secrets := make([]byte, 32)
-
-	// Use the key and nonce to generate stream bytes
-	// For now, we'll use a simplified approach
-	for i := 0; i < 32; i++ {
-		secrets[i] = sa.key[i%len(sa.key)] ^ nonce[i%len(nonce)] ^ byte(i)
+	// Create ChaCha20 cipher with counter 0 for Poly1305 key generation
+	cipher, err := chacha20.NewUnauthenticatedCipher(sa.key, nonce)
+	if err != nil {
+		// This should not happen with valid key/nonce lengths
+		return make([]byte, 32) // Return zeros on error
 	}
 
-	// fmt.Printf("ChaCha20 Tag Secrets (32 bytes): %x\n", secrets)
+	// Get first 32 bytes of keystream (counter 0) for Poly1305 key
+	poly1305Key := make([]byte, 32)
+	zeros := make([]byte, 32)
+	cipher.XORKeyStream(poly1305Key, zeros)
 
-	return secrets
+	// fmt.Printf("ChaCha20 Tag Secrets (32 bytes): %x\n", poly1305Key)
+
+	return poly1305Key
 }
 
 // ComputeTagFromSecrets computes GCM authentication tag using proper GHASH (TEE_T responsibility)
@@ -565,7 +567,22 @@ func ComputeTagFromSecrets(ciphertext, tagSecrets []byte, cipherSuite uint16, ad
 		return tag, nil
 
 	case TLS_CHACHA20_POLY1305_SHA256:
-		return nil, fmt.Errorf("ChaCha20-Poly1305 split AEAD not yet implemented")
+		// ChaCha20-Poly1305 tag computation using Poly1305 key from tag secrets
+		if len(tagSecrets) != 32 {
+			return nil, fmt.Errorf("ChaCha20-Poly1305 tag secrets wrong size: got %d, need 32", len(tagSecrets))
+		}
+
+		// Use Poly1305 key from tag secrets to compute authentication tag
+		poly1305Key := tagSecrets[:32]
+
+		// Create ChaCha20-Poly1305 AEAD with dummy key for tag computation
+		// We'll use the poly1305Key directly for tag computation
+		tag, err := computePoly1305Tag(poly1305Key, additionalData, ciphertext)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compute Poly1305 tag: %v", err)
+		}
+
+		return tag, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported cipher suite for tag computation: 0x%04x", cipherSuite)
@@ -699,4 +716,51 @@ func (ks *KeySchedule) GetServerApplicationKey() []byte {
 // GetServerApplicationIV returns the server application IV for split AEAD
 func (ks *KeySchedule) GetServerApplicationIV() []byte {
 	return ks.serverAppIV
+}
+
+// computePoly1305Tag computes Poly1305 authentication tag
+func computePoly1305Tag(key []byte, additionalData, ciphertext []byte) ([]byte, error) {
+	if len(key) != 32 {
+		return nil, fmt.Errorf("Poly1305 key must be 32 bytes, got %d", len(key))
+	}
+
+	// Prepare data for Poly1305 computation according to RFC 8439
+	// Format: AAD || pad(AAD) || ciphertext || pad(ciphertext) || len(AAD) || len(ciphertext)
+
+	var polyData []byte
+
+	// Add additional data
+	polyData = append(polyData, additionalData...)
+
+	// Pad AAD to 16-byte boundary
+	aadPadding := (16 - (len(additionalData) % 16)) % 16
+	for i := 0; i < aadPadding; i++ {
+		polyData = append(polyData, 0)
+	}
+
+	// Add ciphertext
+	polyData = append(polyData, ciphertext...)
+
+	// Pad ciphertext to 16-byte boundary
+	ctPadding := (16 - (len(ciphertext) % 16)) % 16
+	for i := 0; i < ctPadding; i++ {
+		polyData = append(polyData, 0)
+	}
+
+	// Add lengths (8 bytes each, little-endian)
+	aadLen := make([]byte, 8)
+	ctLen := make([]byte, 8)
+	binary.LittleEndian.PutUint64(aadLen, uint64(len(additionalData)))
+	binary.LittleEndian.PutUint64(ctLen, uint64(len(ciphertext)))
+	polyData = append(polyData, aadLen...)
+	polyData = append(polyData, ctLen...)
+
+	// Compute Poly1305 tag
+	var keyArray [32]byte
+	copy(keyArray[:], key)
+
+	var tagArray [16]byte
+	poly1305.Sum(&tagArray, polyData, &keyArray)
+
+	return tagArray[:], nil
 }

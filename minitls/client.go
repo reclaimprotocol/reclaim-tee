@@ -403,7 +403,8 @@ func (c *Client) buildClientHello(serverName string) ([]byte, *ecdh.PrivateKey, 
 	// Build ClientHello message
 	cipherSuites := c.SupportedCipherSuites
 	if cipherSuites == nil {
-		cipherSuites = []uint16{TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256}
+		// Prioritize ChaCha20-Poly1305 for better performance, especially on mobile/ARM devices
+		cipherSuites = []uint16{TLS_CHACHA20_POLY1305_SHA256, TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256}
 	}
 
 	hello := &ClientHelloMsg{
