@@ -1293,7 +1293,7 @@ func (t *TEEK) handleResponseTagVerificationSession(sessionID string, msg *share
 		fmt.Printf("[TEE_K] Session %s: Response tag verification successful (seq=%d), generating decryption stream", sessionID, verificationData.SeqNum)
 		t.generateAndSendDecryptionStreamSession(sessionID, verificationData.SeqNum)
 	} else {
-		fmt.Printf("[TEE_K] Session %s: Response tag verification failed (seq=%d): %s\n",
+		fmt.Printf("[TEE_K] Session %d: Response tag verification failed (seq=%d): %s\n",
 			verificationData.SeqNum, verificationData.SeqNum, verificationData.Message)
 	}
 }

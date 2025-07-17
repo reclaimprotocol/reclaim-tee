@@ -152,8 +152,10 @@ const (
 const (
 	extensionServerName           = 0
 	extensionSupportedGroups      = 10
+	extensionECPointFormats       = 11
 	extensionSignatureAlgorithms  = 13
 	extensionExtendedMasterSecret = 23
+	extensionSessionTicket        = 35
 	extensionSupportedVersions    = 43
 	extensionKeyShare             = 51
 )
@@ -161,6 +163,8 @@ const (
 // TLS 1.3 Supported Groups
 const (
 	secp256r1 = 23
+	secp384r1 = 24
+	secp521r1 = 25
 	X25519    = 29
 )
 

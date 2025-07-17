@@ -128,11 +128,3 @@ func (w *TLS12RecordWriter) WriteRecord(record *TLS12Record) error {
 	_, err := w.conn.Write(recordBytes)
 	return err
 }
-
-// Helper function for Go 1.20 compatibility
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

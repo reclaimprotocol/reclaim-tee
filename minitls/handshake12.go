@@ -73,6 +73,11 @@ func (m *ServerKeyExchangeMsg) GetPublicKey() []byte {
 	return m.publicKey
 }
 
+// GetNamedCurve returns the server's specified curve
+func (m *ServerKeyExchangeMsg) GetNamedCurve() uint16 {
+	return m.namedCurve
+}
+
 // ClientKeyExchangeMsg represents the TLS 1.2 ClientKeyExchange message
 type ClientKeyExchangeMsg struct {
 	publicKey []byte

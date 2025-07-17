@@ -197,38 +197,38 @@ func (ks *KeySchedule) DeriveApplicationKeys(transcriptHash []byte) error {
 	return nil
 }
 
+// createAEAD is a unified helper for creating AEADs with optional sequence number override
+func (ks *KeySchedule) createAEAD(key, iv []byte, startSeq *uint64) (*AEAD, error) {
+	aead, err := NewAEAD(key, iv, ks.cipherSuite)
+	if err != nil {
+		return nil, err
+	}
+	if startSeq != nil {
+		aead.seq = *startSeq
+	}
+	return aead, nil
+}
+
 // CreateServerHandshakeAEAD creates an AEAD for decrypting server handshake messages
 func (ks *KeySchedule) CreateServerHandshakeAEAD() (*AEAD, error) {
-	return NewAEAD(ks.serverHandshakeKey, ks.serverHandshakeIV, ks.cipherSuite)
+	return ks.createAEAD(ks.serverHandshakeKey, ks.serverHandshakeIV, nil)
 }
 
 // CreateClientHandshakeAEAD creates an AEAD for encrypting client handshake messages
 func (ks *KeySchedule) CreateClientHandshakeAEAD() (*AEAD, error) {
-	return NewAEAD(ks.clientHandshakeKey, ks.clientHandshakeIV, ks.cipherSuite)
+	return ks.createAEAD(ks.clientHandshakeKey, ks.clientHandshakeIV, nil)
 }
 
 // CreateClientApplicationAEAD creates an AEAD for encrypting client application data
 func (ks *KeySchedule) CreateClientApplicationAEAD() (*AEAD, error) {
-	aead, err := NewAEAD(ks.clientAppKey, ks.clientAppIV, ks.cipherSuite)
-	if err != nil {
-		return nil, err
-	}
-	// Application data sequence numbers start fresh at 0
-	aead.seq = 0
-	// fmt.Printf("Created client application AEAD with sequence starting at 0\n")
-	return aead, nil
+	var seq uint64 = 0
+	return ks.createAEAD(ks.clientAppKey, ks.clientAppIV, &seq)
 }
 
 // CreateServerApplicationAEAD creates an AEAD for decrypting server application data
 func (ks *KeySchedule) CreateServerApplicationAEAD() (*AEAD, error) {
-	aead, err := NewAEAD(ks.serverAppKey, ks.serverAppIV, ks.cipherSuite)
-	if err != nil {
-		return nil, err
-	}
-	// Application data sequence numbers start fresh at 0
-	aead.seq = 0
-	// fmt.Printf("Created server application AEAD with sequence starting at 0\n")
-	return aead, nil
+	var seq uint64 = 0
+	return ks.createAEAD(ks.serverAppKey, ks.serverAppIV, &seq)
 }
 
 // HKDF-Extract for TLS 1.3

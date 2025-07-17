@@ -18,8 +18,8 @@ import (
 func (c *Client) handshakeTLS12(serverName string) error {
 	fmt.Println("=== Starting TLS 1.2 Handshake ===")
 
-	// Step 1: Send ClientHello
-	clientHello, clientPrivateKey, err := c.buildClientHelloTLS12(serverName)
+	// Step 1: Send ClientHello (pure TLS 1.2 without keyShares)
+	clientHello, err := c.buildPureTLS12ClientHello(serverName)
 	if err != nil {
 		return fmt.Errorf("failed to build ClientHello: %v", err)
 	}
@@ -58,7 +58,7 @@ func (c *Client) handshakeTLS12(serverName string) error {
 	c.transcript = append(c.transcript, certificate...)
 
 	// Process and verify the certificate
-	if err := c.processServerCertificate(certificate); err != nil {
+	if err := c.processServerCertificateTLS12(certificate); err != nil {
 		return fmt.Errorf("failed to process server certificate: %v", err)
 	}
 
@@ -73,6 +73,34 @@ func (c *Client) handshakeTLS12(serverName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse ServerKeyExchange: %v", err)
 	}
+
+	// Step 4.5: Generate client ECDH key pair matching server's curve
+	msg, err := ParseServerKeyExchange(serverKeyExchange)
+	if err != nil {
+		return fmt.Errorf("failed to re-parse ServerKeyExchange for curve: %v", err)
+	}
+
+	var clientCurve ecdh.Curve
+	switch msg.GetNamedCurve() {
+	case X25519:
+		clientCurve = ecdh.X25519()
+	case secp256r1:
+		clientCurve = ecdh.P256()
+	case secp384r1:
+		clientCurve = ecdh.P384()
+	case secp521r1:
+		clientCurve = ecdh.P521()
+	default:
+		return fmt.Errorf("unsupported client curve: %d", msg.GetNamedCurve())
+	}
+
+	// Generate new client key pair using the same curve as server
+	clientPrivateKey, err := clientCurve.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("failed to generate client ECDH key: %v", err)
+	}
+
+	fmt.Printf("Generated client ECDH key pair using curve %d\n", msg.GetNamedCurve())
 
 	// Step 5: Read ServerHelloDone message
 	serverHelloDone, err := c.readHandshakeMessage()
@@ -208,6 +236,34 @@ func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.P
 	if err != nil {
 		return fmt.Errorf("failed to parse ServerKeyExchange: %v", err)
 	}
+
+	// Step 4.5: Generate client ECDH key pair matching server's curve
+	msg, err := ParseServerKeyExchange(serverKeyExchange)
+	if err != nil {
+		return fmt.Errorf("failed to re-parse ServerKeyExchange for curve: %v", err)
+	}
+
+	var clientCurve ecdh.Curve
+	switch msg.GetNamedCurve() {
+	case X25519:
+		clientCurve = ecdh.X25519()
+	case secp256r1:
+		clientCurve = ecdh.P256()
+	case secp384r1:
+		clientCurve = ecdh.P384()
+	case secp521r1:
+		clientCurve = ecdh.P521()
+	default:
+		return fmt.Errorf("unsupported client curve: %d", msg.GetNamedCurve())
+	}
+
+	// Generate new client key pair using the same curve as server (ignore passed-in key from version negotiation)
+	clientPrivateKey, err = clientCurve.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("failed to generate client ECDH key: %v", err)
+	}
+
+	fmt.Printf("Generated client ECDH key pair using curve %d\n", msg.GetNamedCurve())
 
 	// Step 5: Read ServerHelloDone message
 	serverHelloDone, err := c.readHandshakeMessage()
@@ -399,9 +455,9 @@ func (c *Client) processServerCertificateTLS12(data []byte) error {
 	return nil
 }
 
-// buildClientHelloTLS12 builds a TLS 1.2 ClientHello message
+// buildClientHelloTLS12 builds a TLS 1.2 ClientHello message (with keyShares for version negotiation)
 func (c *Client) buildClientHelloTLS12(serverName string) ([]byte, *ecdh.PrivateKey, error) {
-	// Generate X25519 key pair
+	// Generate X25519 key pair for TLS 1.3 negotiation
 	curve := ecdh.X25519()
 	privateKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
@@ -417,17 +473,18 @@ func (c *Client) buildClientHelloTLS12(serverName string) ([]byte, *ecdh.Private
 		return nil, nil, fmt.Errorf("failed to generate client random: %v", err)
 	}
 
-	// Build ClientHello with both TLS 1.2 and 1.3 cipher suites
+	// Build ClientHello with TLS 1.2 cipher suites for better Google compatibility
+	// Include both RSA and ECDSA variants to support all certificate types
 	cipherSuites := c.getCipherSuites()
 	if len(cipherSuites) == 0 {
-		// Include both TLS 1.2 and 1.3 cipher suites for compatibility
+		// Use TLS 1.2 cipher suites that servers can understand for both TLS 1.2 and 1.3
 		cipherSuites = []uint16{
-			// TLS 1.3 cipher suites (server will prefer these if it supports TLS 1.3)
-			TLS_CHACHA20_POLY1305_SHA256, TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256,
-			// TLS 1.2 AEAD cipher suites
-			TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-			TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,   // ChaCha20 with RSA certs
+			TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256, // ChaCha20 with ECDSA certs
+			TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,         // AES-256 with RSA certs
+			TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,       // AES-256 with ECDSA certs
+			TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,         // AES-128 with RSA certs
+			TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,       // AES-128 with ECDSA certs
 		}
 	}
 
@@ -452,6 +509,18 @@ func (c *Client) buildClientHelloTLS12(serverName string) ([]byte, *ecdh.Private
 		supportedVersions = append(supportedVersions, VersionTLS12)
 	}
 
+	// Include keyShares whenever TLS 1.3 is supported
+	// keyShares extension is mandatory when advertising TLS 1.3 support
+	var keyShares []keyShare
+	for _, version := range supportedVersions {
+		if version == VersionTLS13 {
+			keyShares = []keyShare{
+				{group: X25519, data: publicKeyBytes},
+			}
+			break
+		}
+	}
+
 	hello := &ClientHelloMsg{
 		vers:               VersionTLS12, // Legacy version in record
 		random:             c.clientRandom,
@@ -468,9 +537,7 @@ func (c *Client) buildClientHelloTLS12(serverName string) ([]byte, *ecdh.Private
 			ecdsa_secp384r1_sha384,
 			rsa_pss_rsae_sha512,
 		},
-		keyShares: []keyShare{
-			{group: X25519, data: publicKeyBytes},
-		},
+		keyShares:            keyShares,
 		extendedMasterSecret: false, // Temporarily disable Extended Master Secret for testing
 	}
 
@@ -480,6 +547,49 @@ func (c *Client) buildClientHelloTLS12(serverName string) ([]byte, *ecdh.Private
 	}
 
 	return hello.Marshal(), privateKey, nil
+}
+
+// buildPureTLS12ClientHello builds a pure TLS 1.2 ClientHello without keyShares
+func (c *Client) buildPureTLS12ClientHello(serverName string) ([]byte, error) {
+	// Generate client random
+	c.clientRandom = make([]byte, 32)
+	if _, err := rand.Read(c.clientRandom); err != nil {
+		return nil, fmt.Errorf("failed to generate client random: %v", err)
+	}
+
+	// TLS 1.2 cipher suites only
+	cipherSuites := []uint16{
+		TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	}
+
+	hello := &ClientHelloMsg{
+		vers:               VersionTLS12, // Legacy version in record
+		random:             c.clientRandom,
+		sessionId:          make([]byte, 32),
+		cipherSuites:       cipherSuites,
+		compressionMethods: []uint8{0},
+		serverName:         serverName,
+		supportedCurves:    []uint16{X25519, secp256r1}, // X25519 for ECDHE, secp256r1 for ECDSA signatures
+		supportedVersions:  []uint16{VersionTLS12},      // TLS 1.2 only
+		supportedSignatureAlgorithms: []uint16{
+			rsa_pss_rsae_sha256,
+			ecdsa_secp256r1_sha256,
+			rsa_pss_rsae_sha384,
+			ecdsa_secp384r1_sha384,
+			rsa_pss_rsae_sha512,
+		},
+		// No keyShares for pure TLS 1.2
+		extendedMasterSecret: false, // Temporarily disable Extended Master Secret for testing
+	}
+
+	// Fill session ID with random bytes
+	if _, err := rand.Read(hello.sessionId); err != nil {
+		return nil, fmt.Errorf("failed to generate session ID: %v", err)
+	}
+
+	return hello.Marshal(), nil
 }
 
 // parseServerHelloTLS12 parses a TLS 1.2 ServerHello and extracts server random
@@ -583,14 +693,28 @@ func (c *Client) parseServerKeyExchange(data []byte) (*ecdh.PublicKey, error) {
 		return nil, err
 	}
 
+	// Use the curve specified by the server
+	var curve ecdh.Curve
+	switch msg.GetNamedCurve() {
+	case X25519:
+		curve = ecdh.X25519()
+	case secp256r1:
+		curve = ecdh.P256()
+	case secp384r1:
+		curve = ecdh.P384()
+	case secp521r1:
+		curve = ecdh.P521()
+	default:
+		return nil, fmt.Errorf("unsupported curve: %d", msg.GetNamedCurve())
+	}
+
 	// Convert the raw public key bytes to an ECDH public key
-	curve := ecdh.X25519()
 	publicKey, err := curve.NewPublicKey(msg.GetPublicKey())
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse server public key: %v", err)
 	}
 
-	fmt.Printf("Server public key (%d bytes): %x\n", len(msg.GetPublicKey()), msg.GetPublicKey())
+	fmt.Printf("Server public key (%d bytes) using curve %d: %x\n", len(msg.GetPublicKey()), msg.GetNamedCurve(), msg.GetPublicKey())
 	return publicKey, nil
 }
 
