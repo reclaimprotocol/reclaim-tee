@@ -4,6 +4,104 @@ import (
 	"fmt"
 )
 
+// TLS version constants (following Go's crypto/tls conventions)
+const (
+	VersionTLS12 = 0x0303
+	VersionTLS13 = 0x0304
+)
+
+// Config contains configuration for TLS clients and servers.
+// Following Go's crypto/tls.Config design patterns.
+type Config struct {
+	// MinVersion contains minimum TLS version that is acceptable.
+	// If zero, TLS 1.2 is currently taken as the minimum.
+	MinVersion uint16
+
+	// MaxVersion contains maximum TLS version that is acceptable.
+	// If zero, TLS 1.3 is currently taken as the maximum.
+	MaxVersion uint16
+
+	// CipherSuites is a list of enabled TLS cipher suites.
+	// If nil, a default safe list is used.
+	CipherSuites []uint16
+
+	// ServerName is the hostname used to verify the server certificate.
+	// For clients only.
+	ServerName string
+
+	// NextProtos is a list of supported application level protocols,
+	// in order of preference. (ALPN)
+	NextProtos []string
+
+	// InsecureSkipVerify controls whether a client verifies the
+	// server's certificate chain and host name.
+	InsecureSkipVerify bool
+}
+
+// supportedVersions returns the list of supported TLS versions for this config
+func (c *Config) supportedVersions() []uint16 {
+	minVer := c.MinVersion
+	if minVer == 0 {
+		minVer = VersionTLS12 // Default minimum
+	}
+
+	maxVer := c.MaxVersion
+	if maxVer == 0 {
+		maxVer = VersionTLS13 // Default maximum
+	}
+
+	var versions []uint16
+	for ver := minVer; ver <= maxVer; ver++ {
+		if ver == VersionTLS12 || ver == VersionTLS13 {
+			versions = append(versions, ver)
+		}
+	}
+	return versions
+}
+
+// maxSupportedVersion returns the maximum supported version for this config
+func (c *Config) maxSupportedVersion() uint16 {
+	versions := c.supportedVersions()
+	if len(versions) == 0 {
+		return VersionTLS13 // Default
+	}
+	return versions[len(versions)-1]
+}
+
+// defaultCipherSuites returns the default cipher suites for a given TLS version
+func defaultCipherSuites(version uint16) []uint16 {
+	switch version {
+	case VersionTLS13:
+		return []uint16{
+			TLS_AES_128_GCM_SHA256,
+			TLS_AES_256_GCM_SHA384,
+			TLS_CHACHA20_POLY1305_SHA256,
+		}
+	case VersionTLS12:
+		return []uint16{
+			TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+			TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		}
+	default:
+		return nil
+	}
+}
+
+// cipherSuites returns the cipher suites to use for this config
+func (c *Config) cipherSuites() []uint16 {
+	if c.CipherSuites != nil {
+		return c.CipherSuites
+	}
+
+	// Return default cipher suites for the maximum supported version
+	maxVer := c.maxSupportedVersion()
+	return defaultCipherSuites(maxVer)
+}
+
 // TLS 1.3 Record Layer
 const (
 	recordTypeChangeCipherSpec = 20
@@ -15,15 +113,22 @@ const (
 type recordType uint8
 type HandshakeType uint8
 
-// TLS 1.3 Handshake Message Types
+// TLS Handshake Message Types (shared between TLS 1.2 and 1.3)
 const (
-	typeClientHello         HandshakeType = 1
-	typeServerHello         HandshakeType = 2
-	typeNewSessionTicket    HandshakeType = 4
+	typeClientHello      HandshakeType = 1
+	typeServerHello      HandshakeType = 2
+	typeNewSessionTicket HandshakeType = 4
+	// TLS 1.2 specific messages
+	typeCertificateRequest HandshakeType = 13
+	typeServerKeyExchange  HandshakeType = 12
+	typeClientKeyExchange  HandshakeType = 16
+	typeServerHelloDone    HandshakeType = 14
+	// TLS 1.3 specific messages
 	typeEncryptedExtensions HandshakeType = 8
-	typeCertificate         HandshakeType = 11
-	typeCertificateVerify   HandshakeType = 15
-	typeFinished            HandshakeType = 20
+	// Shared messages
+	typeCertificate       HandshakeType = 11
+	typeCertificateVerify HandshakeType = 15
+	typeFinished          HandshakeType = 20
 )
 
 // TLS 1.3 Cipher Suites
@@ -33,18 +138,30 @@ const (
 	TLS_CHACHA20_POLY1305_SHA256 = 0x1303
 )
 
+// TLS 1.2 AEAD Cipher Suites (following Go's crypto/tls constants)
+const (
+	TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256         = 0xc02f
+	TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256       = 0xc02b
+	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384         = 0xc030
+	TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384       = 0xc02c
+	TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256   = 0xcca8
+	TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9
+)
+
 // TLS 1.3 Extension Types
 const (
-	extensionServerName          = 0
-	extensionSupportedGroups     = 10
-	extensionSignatureAlgorithms = 13
-	extensionSupportedVersions   = 43
-	extensionKeyShare            = 51
+	extensionServerName           = 0
+	extensionSupportedGroups      = 10
+	extensionSignatureAlgorithms  = 13
+	extensionExtendedMasterSecret = 23
+	extensionSupportedVersions    = 43
+	extensionKeyShare             = 51
 )
 
 // TLS 1.3 Supported Groups
 const (
-	X25519 = 29
+	secp256r1 = 23
+	X25519    = 29
 )
 
 // Signature Algorithms
@@ -118,6 +235,7 @@ type ClientHelloMsg struct {
 	cookie                           []byte
 	pskModes                         []uint8
 	keyShares                        []keyShare
+	extendedMasterSecret             bool
 }
 
 func (m *ClientHelloMsg) Marshal() []byte {
@@ -204,6 +322,13 @@ func (m *ClientHelloMsg) Marshal() []byte {
 			extensions = append(extensions, byte(len(ks.data)>>8), byte(len(ks.data)))
 			extensions = append(extensions, ks.data...)
 		}
+	}
+
+	// Extended Master Secret
+	if m.extendedMasterSecret {
+		extensions = append(extensions, byte(extensionExtendedMasterSecret>>8), byte(extensionExtendedMasterSecret))
+		extensions = append(extensions, 0) // Extension length: 0
+		extensions = append(extensions, 0) // Extension data: empty
 	}
 
 	// Append extensions

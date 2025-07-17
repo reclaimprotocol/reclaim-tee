@@ -36,8 +36,10 @@ func TestFullHandshakeAndHTTP(t *testing.T) {
 
 			// Create a client and override the supported cipher suites
 			// to isolate the one we are testing.
-			client := NewClient(conn)
-			client.SupportedCipherSuites = []uint16{tc.cipherSuite}
+			config := &Config{
+				CipherSuites: []uint16{tc.cipherSuite},
+			}
+			client := NewClientWithConfig(conn, config)
 
 			// Perform the handshake
 			if err := client.Handshake(tc.serverName); err != nil {

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 
 echo "=== TEE + MPC Protocol - Demo Script ==="
 echo ""
