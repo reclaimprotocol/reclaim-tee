@@ -232,10 +232,12 @@ type RedactionRange struct {
 
 // Client to TEE_K: Request to establish connection
 type RequestConnectionData struct {
-	Hostname string   `json:"hostname"`
-	Port     int      `json:"port"`
-	SNI      string   `json:"sni"`
-	ALPN     []string `json:"alpn"`
+	Hostname         string   `json:"hostname"`
+	Port             int      `json:"port"`
+	SNI              string   `json:"sni"`
+	ALPN             []string `json:"alpn"`
+	ForceTLSVersion  string   `json:"force_tls_version,omitempty"`  // Force specific TLS version: "1.2", "1.3", or "" for auto
+	ForceCipherSuite string   `json:"force_cipher_suite,omitempty"` // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
 }
 
 // TEE_K to Client: Connection is ready

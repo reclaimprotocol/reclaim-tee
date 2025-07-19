@@ -54,6 +54,8 @@ type Client struct {
 
 	teekURL           string
 	teetURL           string
+	forceTLSVersion   string // Force specific TLS version: "1.2", "1.3", or "" for auto
+	forceCipherSuite  string // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
 	targetHost        string
 	targetPort        int
 	isClosing         bool
@@ -61,7 +63,7 @@ type Client struct {
 	handshakeComplete bool     // Track if TLS handshake is complete
 
 	// Pending connection request data (to be sent once session ID is received)
-	pendingConnectionRequest *RequestConnectionData
+	pendingConnectionRequest *shared.RequestConnectionData
 	connectionRequestPending bool
 
 	// Phase 4: Response handling
@@ -199,11 +201,13 @@ func (c *Client) RequestHTTP(hostname string, port int) error {
 	fmt.Printf("[Client] Requesting connection to %s:%d\n", hostname, port)
 
 	// Store connection request data to be sent once session ID is received
-	c.pendingConnectionRequest = &RequestConnectionData{
-		Hostname: hostname,
-		Port:     port,
-		SNI:      hostname,
-		ALPN:     []string{"http/1.1"},
+	c.pendingConnectionRequest = &shared.RequestConnectionData{
+		Hostname:         hostname,
+		Port:             port,
+		SNI:              hostname,
+		ALPN:             []string{"http/1.1"},
+		ForceTLSVersion:  c.forceTLSVersion,
+		ForceCipherSuite: c.forceCipherSuite,
 	}
 	c.connectionRequestPending = true
 

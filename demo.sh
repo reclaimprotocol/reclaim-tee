@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/bin/bash
 
 echo "=== TEE + MPC Protocol - Demo Script ==="
 echo ""
@@ -74,7 +74,8 @@ echo ""
 echo "Starting Client..."
 echo "   Connecting to TEE_K at ws://localhost:8080/ws"
 echo ""
-./bin/client ws://localhost:8080/ws
+# Pass any additional arguments to client (TLS version, cipher suite, etc.)
+./bin/client ws://localhost:8080/ws "$@"
 CLIENT_EXIT_CODE=$?
 
 echo ""

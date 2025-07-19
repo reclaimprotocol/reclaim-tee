@@ -38,6 +38,10 @@ type TEEK struct {
 	// TEE_T connection settings
 	teetURL string
 
+	// TLS configuration
+	forceTLSVersion  string // Force specific TLS version: "1.2", "1.3", or "" for auto
+	forceCipherSuite string // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
+
 	tlsClient      *minitls.Client
 	wsConn2TLS     *WebSocketConn
 	currentConn    *websocket.Conn
@@ -74,6 +78,14 @@ func NewTEEK(port int) *TEEK {
 	return NewTEEKWithEnclaveManager(port, nil)
 }
 
+func NewTEEKWithConfig(config *TEEKConfig) *TEEK {
+	teek := NewTEEKWithEnclaveManager(config.Port, nil)
+	teek.SetTEETURL(config.TEETURL)
+	teek.SetForceTLSVersion(config.ForceTLSVersion)
+	teek.SetForceCipherSuite(config.ForceCipherSuite)
+	return teek
+}
+
 func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) *TEEK {
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
@@ -99,6 +111,16 @@ func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 // SetTEETURL sets the TEE_T connection URL
 func (t *TEEK) SetTEETURL(url string) {
 	t.teetURL = url
+}
+
+// SetForceTLSVersion sets the forced TLS version
+func (t *TEEK) SetForceTLSVersion(version string) {
+	t.forceTLSVersion = version
+}
+
+// SetForceCipherSuite sets the forced cipher suite
+func (t *TEEK) SetForceCipherSuite(cipherSuite string) {
+	t.forceCipherSuite = cipherSuite
 }
 
 // createVSockWebSocketDialer creates a custom WebSocket dialer for enclave mode
@@ -452,12 +474,50 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	// Initialize TLS client for this session
 	tlsClient := minitls.NewClient(tlsConn)
 
-	// Use default config (supports both TLS 1.2 and TLS 1.3)
-	config := &minitls.Config{
-		// Let the server choose between TLS 1.2 and TLS 1.3
-		// MinVersion: defaults to TLS 1.2
-		// MaxVersion: defaults to TLS 1.3
+	// Configure TLS version based on client request or server setting
+	config := &minitls.Config{}
+
+	// Prefer client-requested TLS version over server default
+	effectiveTLSVersion := reqData.ForceTLSVersion
+	if effectiveTLSVersion == "" {
+		effectiveTLSVersion = t.forceTLSVersion
 	}
+
+	// Prefer client-requested cipher suite over server default
+	effectiveCipherSuite := reqData.ForceCipherSuite
+	if effectiveCipherSuite == "" {
+		effectiveCipherSuite = t.forceCipherSuite
+	}
+
+	switch effectiveTLSVersion {
+	case "1.2":
+		config.MinVersion = minitls.VersionTLS12
+		config.MaxVersion = minitls.VersionTLS12
+		fmt.Printf("[TEE_K] Session %s: Forcing TLS 1.2\n", sessionID)
+	case "1.3":
+		config.MinVersion = minitls.VersionTLS13
+		config.MaxVersion = minitls.VersionTLS13
+		fmt.Printf("[TEE_K] Session %s: Forcing TLS 1.3\n", sessionID)
+	default:
+		// Auto-negotiate (default behavior)
+		config.MinVersion = minitls.VersionTLS12
+		config.MaxVersion = minitls.VersionTLS13
+		fmt.Printf("[TEE_K] Session %s: TLS version auto-negotiation enabled\n", sessionID)
+	}
+
+	// Configure cipher suite restrictions if specified
+	if err := configureCipherSuites(config, effectiveCipherSuite, effectiveTLSVersion); err != nil {
+		log.Printf("[TEE_K] Session %s: Cipher suite configuration error: %v", sessionID, err)
+		t.sendErrorToSession(sessionID, fmt.Sprintf("Invalid cipher suite configuration: %v", err))
+		return
+	}
+
+	if effectiveCipherSuite != "" {
+		fmt.Printf("[TEE_K] Session %s: Forcing cipher suite %s\n", sessionID, effectiveCipherSuite)
+	} else {
+		fmt.Printf("[TEE_K] Session %s: Cipher suite auto-negotiation enabled\n", sessionID)
+	}
+
 	tlsClient = minitls.NewClientWithConfig(tlsConn, config)
 
 	// For backward compatibility with TCP data handler, store in global fields
@@ -744,12 +804,38 @@ func (t *TEEK) performTLSHandshakeAndHTTP() {
 	// Create TLS client using WebSocket proxy through Client
 	t.tlsClient = minitls.NewClient(t.wsConn2TLS)
 
-	// Use default config (supports both TLS 1.2 and TLS 1.3)
-	config := &minitls.Config{
-		// Let the server choose between TLS 1.2 and TLS 1.3
-		// MinVersion: defaults to TLS 1.2
-		// MaxVersion: defaults to TLS 1.3
+	// Configure TLS version based on forced setting
+	config := &minitls.Config{}
+
+	switch t.forceTLSVersion {
+	case "1.2":
+		config.MinVersion = minitls.VersionTLS12
+		config.MaxVersion = minitls.VersionTLS12
+		fmt.Printf("[TEE_K] Forcing TLS 1.2\n")
+	case "1.3":
+		config.MinVersion = minitls.VersionTLS13
+		config.MaxVersion = minitls.VersionTLS13
+		fmt.Printf("[TEE_K] Forcing TLS 1.3\n")
+	default:
+		// Auto-negotiate (default behavior)
+		config.MinVersion = minitls.VersionTLS12
+		config.MaxVersion = minitls.VersionTLS13
+		fmt.Printf("[TEE_K] TLS version auto-negotiation enabled\n")
 	}
+
+	// Configure cipher suite restrictions if specified
+	if err := configureCipherSuites(config, t.forceCipherSuite, t.forceTLSVersion); err != nil {
+		log.Printf("[TEE_K] Cipher suite configuration error: %v", err)
+		t.sendError(t.currentConn, fmt.Sprintf("Invalid cipher suite configuration: %v", err))
+		return
+	}
+
+	if t.forceCipherSuite != "" {
+		fmt.Printf("[TEE_K] Forcing cipher suite %s\n", t.forceCipherSuite)
+	} else {
+		fmt.Printf("[TEE_K] Cipher suite auto-negotiation enabled\n")
+	}
+
 	t.tlsClient = minitls.NewClientWithConfig(t.wsConn2TLS, config)
 
 	fmt.Println(" TEE_K starting TLS handshake over direct connection")
@@ -1195,30 +1281,7 @@ func isNetworkShutdownError(err error) bool {
 
 // getCipherSuiteAlgorithm maps TLS cipher suite numbers to algorithm names
 func getCipherSuiteAlgorithm(cipherSuite uint16) string {
-	switch cipherSuite {
-	// TLS 1.3 cipher suites
-	case 0x1301: // TLS_AES_128_GCM_SHA256
-		return "AES-128-GCM"
-	case 0x1302: // TLS_AES_256_GCM_SHA384
-		return "AES-256-GCM"
-	case 0x1303: // TLS_CHACHA20_POLY1305_SHA256
-		return "ChaCha20-Poly1305"
-	// TLS 1.2 cipher suites
-	case 0xc02f: // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-		return "AES-128-GCM"
-	case 0xc02b: // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-		return "AES-128-GCM"
-	case 0xc030: // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-		return "AES-256-GCM"
-	case 0xc02c: // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-		return "AES-256-GCM"
-	case 0xcca8: // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-		return "ChaCha20-Poly1305"
-	case 0xcca9: // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
-		return "ChaCha20-Poly1305"
-	default:
-		return fmt.Sprintf("Unknown-0x%04x", cipherSuite)
-	}
+	return shared.GetAlgorithmName(cipherSuite)
 }
 
 // Phase 2: Split AEAD handlers for TEE_T communication
@@ -1250,26 +1313,9 @@ func (t *TEEK) handleTEETError(msg *shared.Message) {
 
 // requestKeyShareFromTEET requests a key share from TEE_T for split AEAD
 func (t *TEEK) requestKeyShareFromTEET(cipherSuite uint16) error {
-	var keyLen, ivLen int
-
-	// Determine key and IV lengths based on cipher suite
-	switch cipherSuite {
-	// TLS 1.3 cipher suites
-	case 0x1301: // TLS_AES_128_GCM_SHA256
-		keyLen, ivLen = 16, 12
-	case 0x1302: // TLS_AES_256_GCM_SHA384
-		keyLen, ivLen = 32, 12
-	case 0x1303: // TLS_CHACHA20_POLY1305_SHA256
-		keyLen, ivLen = 32, 12
-	// TLS 1.2 cipher suites
-	case 0xc02f, 0xc02b: // TLS_ECDHE_RSA/ECDSA_WITH_AES_128_GCM_SHA256
-		keyLen, ivLen = 16, 4 // AES-128: 16-byte key, 4-byte implicit IV
-	case 0xc030, 0xc02c: // TLS_ECDHE_RSA/ECDSA_WITH_AES_256_GCM_SHA384
-		keyLen, ivLen = 32, 4 // AES-256: 32-byte key, 4-byte implicit IV
-	case 0xcca8, 0xcca9: // TLS_ECDHE_RSA/ECDSA_WITH_CHACHA20_POLY1305_SHA256
-		keyLen, ivLen = 32, 12 // ChaCha20: 32-byte key, 12-byte IV (same as TLS 1.3)
-	default:
-		return fmt.Errorf("unsupported cipher suite: 0x%04x", cipherSuite)
+	keyLen, ivLen, err := shared.GetKeyAndIVLengths(cipherSuite)
+	if err != nil {
+		return fmt.Errorf("unsupported cipher suite: %v", err)
 	}
 
 	fmt.Printf(" TEE_K requesting key share from TEE_T for cipher suite 0x%04x\n", cipherSuite)
@@ -1286,26 +1332,9 @@ func (t *TEEK) requestKeyShareFromTEET(cipherSuite uint16) error {
 
 // requestKeyShareFromTEETWithSession requests a key share from TEE_T for split AEAD with session ID
 func (t *TEEK) requestKeyShareFromTEETWithSession(sessionID string, cipherSuite uint16) error {
-	var keyLen, ivLen int
-
-	// Determine key and IV lengths based on cipher suite
-	switch cipherSuite {
-	// TLS 1.3 cipher suites
-	case 0x1301: // TLS_AES_128_GCM_SHA256
-		keyLen, ivLen = 16, 12
-	case 0x1302: // TLS_AES_256_GCM_SHA384
-		keyLen, ivLen = 32, 12
-	case 0x1303: // TLS_CHACHA20_POLY1305_SHA256
-		keyLen, ivLen = 32, 12
-	// TLS 1.2 cipher suites
-	case 0xc02f, 0xc02b: // TLS_ECDHE_RSA/ECDSA_WITH_AES_128_GCM_SHA256
-		keyLen, ivLen = 16, 4 // AES-128: 16-byte key, 4-byte implicit IV
-	case 0xc030, 0xc02c: // TLS_ECDHE_RSA/ECDSA_WITH_AES_256_GCM_SHA384
-		keyLen, ivLen = 32, 4 // AES-256: 32-byte key, 4-byte implicit IV
-	case 0xcca8, 0xcca9: // TLS_ECDHE_RSA/ECDSA_WITH_CHACHA20_POLY1305_SHA256
-		keyLen, ivLen = 32, 12 // ChaCha20: 32-byte key, 12-byte IV (same as TLS 1.3)
-	default:
-		return fmt.Errorf("unsupported cipher suite: 0x%04x", cipherSuite)
+	keyLen, ivLen, err := shared.GetKeyAndIVLengths(cipherSuite)
+	if err != nil {
+		return fmt.Errorf("unsupported cipher suite: %v", err)
 	}
 
 	fmt.Printf(" TEE_K requesting key share from TEE_T for session %s, cipher suite 0x%04x\n", sessionID, cipherSuite)
@@ -1494,8 +1523,15 @@ func (t *TEEK) generateAndSendDecryptionStreamSession(sessionID string, seqNum u
 	}
 
 	// Generate cipher-agnostic decryption stream with explicit IV support
-	// Use server sequence (client seq - 1) for keystream generation to match tag secrets
-	serverSeqNum := seqNum - 1
+	// Use same sequence logic as tag generation for consistency
+	var serverSeqNum uint64
+	if tlsVersion == 0x0303 { // TLS 1.2
+		serverSeqNum = seqNum // Server sequence matches client sequence
+		fmt.Printf("[TEE_K] TLS 1.2 decryption: Using server sequence %d (same as client)\n", serverSeqNum)
+	} else { // TLS 1.3
+		serverSeqNum = seqNum - 1
+		fmt.Printf("[TEE_K] TLS 1.3 decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
+	}
 	decryptionStream, err := t.generateDecryptionStreamWithExplicitIV(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite, explicitIV)
 	if err != nil {
 		return fmt.Errorf("failed to generate decryption stream: %v", err)
@@ -1634,33 +1670,37 @@ func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cip
 		fmt.Printf("[TEE_K] TLS 1.3 tag secret AAD: %x (ciphertext+tag length: %d)\n", additionalData, ciphertextLength)
 	}
 
-	// *** CRITICAL FIX: Server sequence = client sequence - 1 ***
-	// Client labels first response as seq=1, but server generated it with seq=0
-	// Client labels second response as seq=2, but server generated it with seq=1, etc.
-	actualSeqToUse := seqNum - 1
-	fmt.Printf("[TEE_K] Using server sequence %d (client sequence %d - 1)\n", actualSeqToUse, seqNum)
+	// *** SEQUENCE NUMBER FIX ***
+	// For TLS 1.2, server sequence matches client sequence (both start at 1 after handshake)
+	// For TLS 1.3, server sequence = client sequence - 1 (server starts at 0)
+	var actualSeqToUse uint64
+	if tlsVersion == 0x0303 { // TLS 1.2
+		actualSeqToUse = seqNum // Server sequence matches client sequence
+		fmt.Printf("[TEE_K] TLS 1.2: Using server sequence %d (same as client sequence)\n", actualSeqToUse)
+	} else { // TLS 1.3
+		actualSeqToUse = seqNum - 1
+		fmt.Printf("[TEE_K] TLS 1.3: Using server sequence %d (client sequence %d - 1)\n", actualSeqToUse, seqNum)
+	}
 
-	if tlsVersion == 0x0303 && len(explicitIV) > 0 { // TLS 1.2 with explicit IV
-		// For TLS 1.2 AES-GCM, construct nonce exactly like minitls crypto12.go
-		// Parse explicit IV as big-endian uint64, then encode back as big-endian uint64
-		if len(explicitIV) != 8 {
-			return nil, fmt.Errorf("TLS 1.2 explicit IV must be 8 bytes, got %d", len(explicitIV))
-		}
+	if tlsVersion == 0x0303 { // TLS 1.2
+		if len(explicitIV) > 0 && (cipherSuite == 0xc02f || cipherSuite == 0xc02b || cipherSuite == 0xc030 || cipherSuite == 0xc02c) {
+			// TLS 1.2 AES-GCM with explicit IV
+			if len(explicitIV) != 8 {
+				return nil, fmt.Errorf("TLS 1.2 explicit IV must be 8 bytes, got %d", len(explicitIV))
+			}
 
-		// Parse explicit IV as uint64 (like minitls does)
-		explicitIVUint64 := binary.BigEndian.Uint64(explicitIV)
+			// Parse explicit IV as uint64 (like minitls does)
+			explicitIVUint64 := binary.BigEndian.Uint64(explicitIV)
 
-		// Construct nonce: implicit_iv(4) || explicit_nonce(8)
-		nonce := make([]byte, 12)                                 // GCM nonce is 12 bytes
-		copy(nonce[0:4], serverAppIV[0:4])                        // 4-byte implicit IV
-		binary.BigEndian.PutUint64(nonce[4:12], explicitIVUint64) // 8-byte explicit IV as uint64
+			// Construct nonce: implicit_iv(4) || explicit_nonce(8)
+			nonce := make([]byte, 12)                                 // GCM nonce is 12 bytes
+			copy(nonce[0:4], serverAppIV[0:4])                        // 4-byte implicit IV
+			binary.BigEndian.PutUint64(nonce[4:12], explicitIVUint64) // 8-byte explicit IV as uint64
 
-		fmt.Printf("[TEE_K] TLS 1.2 nonce construction: implicit_iv=%x + explicit_iv_uint64=%d = nonce=%x\n",
-			serverAppIV[0:4], explicitIVUint64, nonce)
+			fmt.Printf("[TEE_K] TLS 1.2 AES-GCM nonce construction: implicit_iv=%x + explicit_iv_uint64=%d = nonce=%x\n",
+				serverAppIV[0:4], explicitIVUint64, nonce)
 
-		// For TLS 1.2 AES-GCM, manually generate tag secrets using the constructed nonce
-		if cipherSuite == 0xc02f || cipherSuite == 0xc02b || cipherSuite == 0xc030 || cipherSuite == 0xc02c {
-			// AES-GCM cipher suites
+			// Generate AES-GCM tag secrets using the constructed nonce
 			block, err := aes.NewCipher(serverAppKey)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create AES cipher: %v", err)
@@ -1679,12 +1719,26 @@ func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cip
 			nonceWith1[15] = 1
 			block.Encrypt(tagSecrets[16:32], nonceWith1)
 
-			fmt.Printf("[TEE_K] Generated TLS 1.2 tag secrets: E_K(0^128)=%x, E_K(nonce||1)=%x\n",
+			fmt.Printf("[TEE_K] Generated TLS 1.2 AES-GCM tag secrets: E_K(0^128)=%x, E_K(nonce||1)=%x\n",
 				tagSecrets[0:16], tagSecrets[16:32])
 
 			return tagSecrets, nil
+		} else if cipherSuite == 0xcca8 || cipherSuite == 0xcca9 {
+			// TLS 1.2 ChaCha20-Poly1305 (no explicit IV)
+			// Use TLS 1.2 ChaCha20 nonce construction: IV XOR sequence number
+			nonce := make([]byte, len(serverAppIV))
+			copy(nonce, serverAppIV)
+			for i := 0; i < 8; i++ {
+				nonce[len(nonce)-1-i] ^= byte(actualSeqToUse >> (8 * i))
+			}
+
+			fmt.Printf("[TEE_K] TLS 1.2 ChaCha20 nonce construction: iv=%x XOR seq=%d = nonce=%x\n",
+				serverAppIV, actualSeqToUse, nonce)
+
+			// Generate ChaCha20-Poly1305 tag secrets
+			return t.generateChaCha20Poly1305TagSecrets(serverAppKey, nonce)
 		} else {
-			return nil, fmt.Errorf("unsupported TLS 1.2 cipher suite for manual tag generation: 0x%04x", cipherSuite)
+			return nil, fmt.Errorf("unsupported TLS 1.2 cipher suite: 0x%04x", cipherSuite)
 		}
 	} else {
 		// TLS 1.3 or TLS 1.2 without explicit IV (use standard SplitAEAD)
@@ -1824,8 +1878,15 @@ func (t *TEEK) generateAndSendDecryptionStream(seqNum uint64) error {
 	cipherSuite := t.tlsClient.GetCipherSuite()
 
 	// Generate cipher-agnostic decryption stream
-	// Use server sequence (client seq - 1) for keystream generation to match tag secrets
-	serverSeqNum := seqNum - 1
+	// Use same sequence logic as tag generation for consistency
+	var serverSeqNum uint64
+	if tlsVersion == 0x0303 { // TLS 1.2
+		serverSeqNum = seqNum // Server sequence matches client sequence
+		fmt.Printf("[TEE_K] TLS 1.2 legacy decryption: Using server sequence %d (same as client)\n", serverSeqNum)
+	} else { // TLS 1.3
+		serverSeqNum = seqNum - 1
+		fmt.Printf("[TEE_K] TLS 1.3 legacy decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
+	}
 	decryptionStream, err := t.generateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite)
 	if err != nil {
 		return fmt.Errorf("failed to generate decryption stream: %v", err)
@@ -2172,8 +2233,15 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 			explicitIV = t.explicitIVBySeq[seqNum]
 		}
 
-		// Use server sequence (client seq - 1) for keystream generation to match tag secrets
-		serverSeqNum := seqNum - 1
+		// Use same sequence logic as tag generation for consistency
+		var serverSeqNum uint64
+		if tlsVersion == 0x0303 { // TLS 1.2
+			serverSeqNum = seqNum // Server sequence matches client sequence
+			fmt.Printf("[TEE_K] TLS 1.2 redacted decryption: Using server sequence %d (same as client)\n", serverSeqNum)
+		} else { // TLS 1.3
+			serverSeqNum = seqNum - 1
+			fmt.Printf("[TEE_K] TLS 1.3 redacted decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
+		}
 		originalStream, err := t.generateDecryptionStreamWithExplicitIV(serverAppKey, serverAppIV, serverSeqNum, length, cipherSuite, explicitIV)
 		if err != nil {
 			return fmt.Errorf("failed to generate original decryption stream for seq %d: %v", seqNum, err)
@@ -2188,21 +2256,11 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 			rangeStart := redactionRange.Start
 			rangeEnd := redactionRange.Start + redactionRange.Length
 
-			// Check if this is TLS 1.2 AES-GCM cipher suite (needs special handling)
-			// Detect TLS version based on cipher suite for proper offset handling
-			isTLS13Cipher := (cipherSuite >= 0x1301 && cipherSuite <= 0x1305) // TLS 1.3 cipher suite range
-
-			// TLS 1.2: Apply offset for explicit IV in keystream
-			// TLS 1.3: No offset adjustment needed (no explicit IV in records)
-			if isTLS13Cipher {
-				// TLS 1.3: No offset adjustment needed
-				log.Printf("[TEE_K] DEBUG: TLS 1.3 redaction range [%d:%d] (no offset)", rangeStart, rangeEnd)
-			} else {
-				// TLS 1.2: Adjust ranges for explicit IV in keystream
-				rangeStart += 8 // Adjust for explicit IV in TLS 1.2 keystream
-				rangeEnd += 8
-				log.Printf("[TEE_K] DEBUG: TLS 1.2 redaction range [%d:%d] (+8 offset)", rangeStart, rangeEnd)
-			}
+			// *** CRITICAL FIX: Remove incorrect TLS 1.2 offset adjustment ***
+			// The explicit IV is part of the TLS record but NOT part of the encrypted data
+			// The keystream only decrypts the actual encrypted data, not the explicit IV
+			// So redaction ranges should NOT be offset for TLS 1.2
+			log.Printf("[TEE_K] DEBUG: Redaction range [%d:%d] (no offset adjustment)", rangeStart, rangeEnd)
 
 			// Check if this range overlaps with current sequence
 			seqStart := currentOffset
@@ -2554,15 +2612,26 @@ func (t *TEEK) encryptWithCipherSuiteWithExplicitIV(data []byte, key, iv []byte,
 	// Use centralized nonce construction with explicit IV support
 	var nonce []byte
 	if explicitIV != nil && len(explicitIV) == 8 {
-		// TLS 1.2 AES-GCM: use constructNonce with sequence number (not explicit IV from record)
-		nonce = t.constructNonce(iv, seqNum, cipherSuite)
-		explicitIVUint64 := binary.BigEndian.Uint64(explicitIV)
-		fmt.Printf("[TEE_K] DEBUG: TLS 1.2 constructNonce: cipher=0x%04x, seq=%d, nonce: %x\n", cipherSuite, seqNum, nonce)
-		fmt.Printf("[TEE_K] DEBUG: iv: %x, explicitIVBytes: %x, explicitIVUint64: %016x\n", iv, explicitIV, explicitIVUint64)
+		// *** CRITICAL FIX: For TLS 1.2 AES-GCM, construct nonce using ACTUAL explicit IV from record ***
+		// This matches minitls crypto12.go behavior: nonce = implicit_iv(4) || explicit_iv(8)
+		if cipherSuite == 0xc02f || cipherSuite == 0xc02b || cipherSuite == 0xc030 || cipherSuite == 0xc02c {
+			// TLS 1.2 AES-GCM: use explicit IV from record for nonce construction
+			nonce = make([]byte, 12)
+			copy(nonce[0:4], iv)          // 4-byte implicit IV
+			copy(nonce[4:12], explicitIV) // 8-byte explicit IV from actual TLS record
+
+			explicitIVUint64 := binary.BigEndian.Uint64(explicitIV)
+			fmt.Printf("[TEE_K] DEBUG: TLS 1.2 explicit IV nonce: cipher=0x%04x, implicit_iv=%x, explicit_iv=%x (uint64=%d), nonce=%x\n",
+				cipherSuite, iv, explicitIV, explicitIVUint64, nonce)
+		} else {
+			// Use standard nonce construction for other cipher suites
+			nonce = t.constructNonce(iv, seqNum, cipherSuite)
+			fmt.Printf("[TEE_K] DEBUG: Standard nonce with explicit IV: cipher=0x%04x, seq=%d, nonce=%x\n", cipherSuite, seqNum, nonce)
+		}
 	} else {
 		// Use standard nonce construction (TLS 1.3 or TLS 1.2 without explicit IV)
 		nonce = t.constructNonce(iv, seqNum, cipherSuite)
-		fmt.Printf("[TEE_K] DEBUG: Standard nonce: cipher=0x%04x, seq=%d, nonce: %x\n", cipherSuite, seqNum, nonce)
+		fmt.Printf("[TEE_K] DEBUG: Standard nonce: cipher=0x%04x, seq=%d, nonce=%x\n", cipherSuite, seqNum, nonce)
 	}
 
 	switch cipherSuite {

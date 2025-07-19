@@ -46,8 +46,11 @@ var certificatePacket []byte // Store the encrypted certificate packet for discl
 
 func NewClient(conn net.Conn) *Client {
 	return &Client{
-		conn:   conn,
-		Config: &Config{}, // Use default config (supports both TLS 1.2 and 1.3)
+		conn: conn,
+		Config: &Config{
+			MinVersion: VersionTLS12,
+			MaxVersion: VersionTLS12,
+		}, // Use default config (supports both TLS 1.2 and 1.3)
 	}
 }
 

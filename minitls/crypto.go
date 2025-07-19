@@ -271,7 +271,7 @@ func NewAEAD(key, iv []byte, cipherSuite uint16) (*AEAD, error) {
 
 	// Select cipher based on TLS cipher suite, not just key length
 	switch cipherSuite {
-	case TLS_AES_128_GCM_SHA256:
+	case TLS_AES_128_GCM_SHA256, TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:
 		// AES-128-GCM
 		block, err := aes.NewCipher(key)
 		if err != nil {
@@ -283,8 +283,8 @@ func NewAEAD(key, iv []byte, cipherSuite uint16) (*AEAD, error) {
 		}
 		// fmt.Printf("Using AES-128-GCM for cipher suite 0x%04x\n", cipherSuite)
 
-	case TLS_AES_256_GCM_SHA384:
-		// AES-256-GCM (force this, don't use ChaCha20)
+	case TLS_AES_256_GCM_SHA384, TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
+		// AES-256-GCM
 		block, err := aes.NewCipher(key)
 		if err != nil {
 			return nil, err
@@ -295,7 +295,7 @@ func NewAEAD(key, iv []byte, cipherSuite uint16) (*AEAD, error) {
 		}
 		// fmt.Printf("Using AES-256-GCM for cipher suite 0x%04x\n", cipherSuite)
 
-	case TLS_CHACHA20_POLY1305_SHA256:
+	case TLS_CHACHA20_POLY1305_SHA256, TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
 		// ChaCha20-Poly1305
 		aead, err = chacha20poly1305.New(key)
 		if err != nil {
@@ -425,14 +425,16 @@ func (sa *SplitAEAD) EncryptWithoutTag(plaintext, additionalData []byte) ([]byte
 	var tagSecrets []byte
 
 	switch sa.cipherSuite {
-	case TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384:
+	case TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+		TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
 		// AES-GCM case: split AEAD - encrypt with CTR mode, let TEE_T compute GCM tag
 		block, err := aes.NewCipher(sa.key)
 		if err != nil {
 			return nil, nil, err
 		}
 
-		// For AES-CTR, we need 16-byte IV. TLS 1.3 uses 12-byte IV, so pad with 4 bytes counter
+		// For AES-CTR, we need 16-byte IV. TLS uses 12-byte IV, so pad with 4 bytes counter
 		// GCM nonce format: IV (12 bytes) || counter (4 bytes) starting with 1
 		ctrNonce := make([]byte, 16)
 		copy(ctrNonce, nonce) // Copy 12-byte TLS nonce
@@ -448,7 +450,8 @@ func (sa *SplitAEAD) EncryptWithoutTag(plaintext, additionalData []byte) ([]byte
 		// This provides TEE_T with the secrets needed to compute the GCM tag
 		tagSecrets = sa.generateGCMTagSecrets(block, nonce)
 
-	case TLS_CHACHA20_POLY1305_SHA256:
+	case TLS_CHACHA20_POLY1305_SHA256,
+		TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
 		// ChaCha20-Poly1305 case: encrypt with ChaCha20 stream directly
 
 		// Create ChaCha20 cipher

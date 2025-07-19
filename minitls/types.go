@@ -32,10 +32,6 @@ type Config struct {
 	// NextProtos is a list of supported application level protocols,
 	// in order of preference. (ALPN)
 	NextProtos []string
-
-	// InsecureSkipVerify controls whether a client verifies the
-	// server's certificate chain and host name.
-	InsecureSkipVerify bool
 }
 
 // supportedVersions returns the list of supported TLS versions for this config

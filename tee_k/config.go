@@ -16,6 +16,10 @@ type TEEKConfig struct {
 	EnclaveMode bool   `json:"enclave_mode"`
 	Domain      string `json:"domain"`
 	KMSKey      string `json:"kms_key"`
+
+	// TLS configuration
+	ForceTLSVersion  string `json:"force_tls_version"`  // Force specific TLS version: "1.2", "1.3", or "" for auto
+	ForceCipherSuite string `json:"force_cipher_suite"` // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
 }
 
 func LoadTEEKConfig() *TEEKConfig {
@@ -36,10 +40,12 @@ func LoadTEEKConfig() *TEEKConfig {
 	}
 
 	return &TEEKConfig{
-		Port:        shared.GetEnvIntOrDefault("PORT", 8080),
-		TEETURL:     teetURL,
-		EnclaveMode: enclaveMode,
-		Domain:      shared.GetEnvOrDefault("ENCLAVE_DOMAIN", "tee-k.reclaimprotocol.org"),
-		KMSKey:      shared.GetEnvOrDefault("KMS_KEY", "arn:aws:kms:ap-south-1:342772716647:key/ff4db6ac-b9fe-474c-9f59-5224c0c0f912"),
+		Port:             shared.GetEnvIntOrDefault("PORT", 8080),
+		TEETURL:          teetURL,
+		EnclaveMode:      enclaveMode,
+		Domain:           shared.GetEnvOrDefault("ENCLAVE_DOMAIN", "tee-k.reclaimprotocol.org"),
+		KMSKey:           shared.GetEnvOrDefault("KMS_KEY", "arn:aws:kms:ap-south-1:342772716647:key/ff4db6ac-b9fe-474c-9f59-5224c0c0f912"),
+		ForceTLSVersion:  shared.GetEnvOrDefault("FORCE_TLS_VERSION", ""),
+		ForceCipherSuite: shared.GetEnvOrDefault("FORCE_CIPHER_SUITE", ""),
 	}
 }

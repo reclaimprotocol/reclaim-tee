@@ -62,13 +62,7 @@ type Message struct {
 	Timestamp time.Time   `json:"timestamp"`
 }
 
-// Client to TEE_K: Request to establish connection
-type RequestConnectionData struct {
-	Hostname string   `json:"hostname"`
-	Port     int      `json:"port"`
-	SNI      string   `json:"sni"`
-	ALPN     []string `json:"alpn"`
-}
+// Note: RequestConnectionData is now defined in shared package
 
 // TEE_K to Client: Connection is ready
 type ConnectionReadyData struct {

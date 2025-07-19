@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	proofverifier "tee-mpc/proofverifier" // add new import
+	"tee-mpc/shared"
 	"time"
 )
 
@@ -14,11 +15,43 @@ func main() {
 
 	// Default to enclave mode, fallback to standalone if specified
 	teekURL := "wss://tee-k.reclaimprotocol.org/ws" // Default to enclave
+	forceTLSVersion := ""                           // Default to auto-negotiate
+	forceCipherSuite := ""                          // Default to auto-negotiate
+
 	if len(os.Args) > 1 {
 		teekURL = os.Args[1]
 	}
 
+	// Check for TLS version argument
+	if len(os.Args) > 2 {
+		forceTLSVersion = os.Args[2]
+		if forceTLSVersion != "1.2" && forceTLSVersion != "1.3" && forceTLSVersion != "" {
+			fmt.Printf("Invalid TLS version '%s'. Use '1.2', '1.3', or omit for auto-negotiation\n", forceTLSVersion)
+			os.Exit(1)
+		}
+	}
+
+	// Check for cipher suite argument
+	if len(os.Args) > 3 {
+		forceCipherSuite = os.Args[3]
+		// Validate cipher suite format (hex or name)
+		if forceCipherSuite != "" && !isValidCipherSuite(forceCipherSuite) {
+			fmt.Printf("Invalid cipher suite '%s'. Use hex format (e.g. '0xc02f') or valid name\n", forceCipherSuite)
+			os.Exit(1)
+		}
+	}
+
 	fmt.Printf(" Starting Client, connecting to TEE_K at %s\n", teekURL)
+	if forceTLSVersion != "" {
+		fmt.Printf(" Forcing TLS version %s\n", forceTLSVersion)
+	} else {
+		fmt.Printf(" TLS version auto-negotiation enabled\n")
+	}
+	if forceCipherSuite != "" {
+		fmt.Printf(" Forcing cipher suite %s\n", forceCipherSuite)
+	} else {
+		fmt.Printf(" Cipher suite auto-negotiation enabled\n")
+	}
 
 	// Auto-detect TEE_T URL based on TEE_K URL
 	teetURL := autoDetectTEETURL(teekURL)
@@ -32,6 +65,8 @@ func main() {
 		Mode:              ModeAuto,
 		RequestRedactions: getDemoRequestRedactions(),
 		ResponseCallback:  &DemoResponseCallback{},
+		ForceTLSVersion:   forceTLSVersion,
+		ForceCipherSuite:  forceCipherSuite,
 	}
 
 	// Create client using library interface
@@ -146,6 +181,11 @@ func main() {
 }
 
 // autoDetectTEETURL automatically detects the appropriate TEE_T URL based on TEE_K URL
+// isValidCipherSuite validates cipher suite format and name
+func isValidCipherSuite(cipherSuite string) bool {
+	return shared.IsValidCipherSuite(cipherSuite)
+}
+
 func autoDetectTEETURL(teekURL string) string {
 	if strings.HasPrefix(teekURL, "wss://") && strings.Contains(teekURL, "reclaimprotocol.org") {
 		// Enclave mode: TEE_K is using enclave domain, so TEE_T should too

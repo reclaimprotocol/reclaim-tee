@@ -25,7 +25,7 @@ func main() {
 }
 
 func startStandaloneMode(config *TEEKConfig) {
-	teek := NewTEEK(config.Port)
+	teek := NewTEEKWithConfig(config)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
@@ -51,9 +51,11 @@ func startStandaloneMode(config *TEEKConfig) {
 		}
 	}()
 
-	// Set TEE_T URL for per-session connections
-	teek.SetTEETURL(config.TEETURL)
+	// TEE_T URL and TLS configuration already set via NewTEEKWithConfig
 	log.Printf("[TEE_K] Standalone mode: TEE_T URL set to %s, will create per-session connections", config.TEETURL)
+	if config.ForceTLSVersion != "" {
+		log.Printf("[TEE_K] TLS version forced to: %s", config.ForceTLSVersion)
+	}
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)

@@ -53,6 +53,10 @@ func NewReclaimClient(config ClientConfig) ReclaimClient {
 		client.SetTEETURL(config.TEETURL)
 	}
 
+	// Store config for later use
+	client.forceTLSVersion = config.ForceTLSVersion
+	client.forceCipherSuite = config.ForceCipherSuite
+
 	return &reclaimClientImpl{
 		client: client,
 		config: config,
