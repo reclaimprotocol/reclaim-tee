@@ -207,12 +207,14 @@ func (c *Client) tcpToWebsocket() {
 
 		n, err := c.tcpConn.Read(buffer)
 
+		// *** CRITICAL FIX: Process any received data before handling EOF ***
+		eofReceived := false
 		if err != nil {
 			if err == io.EOF {
 				fmt.Printf("[Client] TCP connection closed by server (EOF)\n")
 				atomic.StoreInt64(&c.eofReached, 1)
-				fmt.Printf("[Client] EOF reached, checking for protocol completion...\n")
-				break
+				fmt.Printf("[Client] EOF reached, but checking for final data first...\n")
+				eofReceived = true // Mark EOF but continue to process any final data
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			} else if !isClientNetworkShutdownError(err) {
@@ -225,59 +227,68 @@ func (c *Client) tcpToWebsocket() {
 			}
 		}
 
-		if c.tcpConn != nil {
-			c.tcpConn.SetReadDeadline(time.Time{})
-		}
-
-		// Append new data to any pending data
-		data := append(pending, buffer[:n]...)
-		pending = nil
-		offset := 0
-
-		// Process complete TLS packets
-		for offset < len(data) {
-			// Need at least 5 bytes for TLS record header
-			if offset+5 > len(data) {
-				pending = data[offset:]
-				break
+		// If we got data (n > 0), process it even if EOF was also received
+		if n > 0 {
+			if c.tcpConn != nil {
+				c.tcpConn.SetReadDeadline(time.Time{})
 			}
 
-			// Get packet length from TLS header
-			length := int(data[offset+3])<<8 | int(data[offset+4])
-			fullLength := length + 5
+			// Append new data to any pending data
+			data := append(pending, buffer[:n]...)
+			pending = nil
+			offset := 0
 
-			// Check if we have the complete packet
-			if offset+fullLength > len(data) {
-				pending = data[offset:]
-				break
-			}
-
-			// Extract the complete TLS packet
-			packet := make([]byte, fullLength)
-			copy(packet, data[offset:offset+fullLength])
-			c.capturedTraffic = append(c.capturedTraffic, packet)
-			fmt.Printf("[Client] Captured TLS packet: type=0x%02x, length=%d\n", packet[0], length)
-
-			if !c.handshakeComplete {
-				// During handshake: Forward to TEE_K
-				tcpDataMsg, err := CreateMessage(MsgTCPData, TCPData{Data: packet})
-				if err != nil {
-					log.Printf("[Client] Failed to create TCP data message: %v", err)
-					continue
-				}
-
-				if err := c.sendMessage(tcpDataMsg); err != nil {
-					if !isClientNetworkShutdownError(err) {
-						log.Printf("[Client] Failed to send TCP data to TEE_K: %v", err)
-					}
+			// Process complete TLS packets
+			for offset < len(data) {
+				// Need at least 5 bytes for TLS record header
+				if offset+5 > len(data) {
+					pending = data[offset:]
 					break
 				}
-			} else {
-				// After handshake: Process for split AEAD
-				c.processTLSRecordFromData(packet)
-			}
 
-			offset += fullLength
+				// Get packet length from TLS header
+				length := int(data[offset+3])<<8 | int(data[offset+4])
+				fullLength := length + 5
+
+				// Check if we have the complete packet
+				if offset+fullLength > len(data) {
+					pending = data[offset:]
+					break
+				}
+
+				// Extract the complete TLS packet
+				packet := make([]byte, fullLength)
+				copy(packet, data[offset:offset+fullLength])
+				c.capturedTraffic = append(c.capturedTraffic, packet)
+				fmt.Printf("[Client] Captured TLS packet: type=0x%02x, length=%d\n", packet[0], length)
+
+				if !c.handshakeComplete {
+					// During handshake: Forward to TEE_K
+					tcpDataMsg, err := CreateMessage(MsgTCPData, TCPData{Data: packet})
+					if err != nil {
+						log.Printf("[Client] Failed to create TCP data message: %v", err)
+						continue
+					}
+
+					if err := c.sendMessage(tcpDataMsg); err != nil {
+						if !isClientNetworkShutdownError(err) {
+							log.Printf("[Client] Failed to send TCP data to TEE_K: %v", err)
+						}
+						break
+					}
+				} else {
+					// After handshake: Process for split AEAD
+					c.processTLSRecordFromData(packet)
+				}
+
+				offset += fullLength
+			}
+		} // Close the "if n > 0" block
+
+		// After processing any final data, break if EOF was received
+		if eofReceived {
+			fmt.Printf("[Client] EOF reached, checking for protocol completion...\n")
+			break
 		}
 	}
 

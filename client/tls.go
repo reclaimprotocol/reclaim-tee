@@ -39,6 +39,9 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *Message) {
 	// Mark handshake as complete for response handling
 	c.handshakeComplete = true
 
+	// Initialize response sequence number to 1 (first application data after handshake)
+	c.responseSeqNum = 1
+
 	// Store disclosure for verification bundle
 	c.handshakeDisclosure = &disclosureData
 
@@ -314,6 +317,7 @@ func (c *Client) processTLSRecord(record []byte) {
 
 	// Extract encrypted payload and tag (skip 5-byte header)
 	encryptedPayload := record[5:]
+	fmt.Printf("[Client] DEBUG: Total record=%d bytes, encrypted payload=%d bytes\n", len(record), len(encryptedPayload))
 
 	// For AES-GCM, tag is last 16 bytes of encrypted payload
 	if len(encryptedPayload) < 16 {
@@ -322,11 +326,42 @@ func (c *Client) processTLSRecord(record []byte) {
 	}
 
 	tagSize := 16 // AES-GCM tag size
-	encryptedData := encryptedPayload[:len(encryptedPayload)-tagSize]
 	tag := encryptedPayload[len(encryptedPayload)-tagSize:]
 
-	fmt.Printf("[Client] Processing TLS record: %d bytes encrypted data, %d bytes tag\n",
-		len(encryptedData), len(tag))
+	// Extract explicit IV and encrypted data for TLS 1.2 AES-GCM
+	var encryptedData []byte
+	var explicitIV []byte
+
+	// Check if this is TLS 1.2 AES-GCM response (needs explicit IV extraction)
+	isTLS12AESGCMResponse := c.handshakeDisclosure != nil &&
+		(c.handshakeDisclosure.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+			c.handshakeDisclosure.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+			c.handshakeDisclosure.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+			c.handshakeDisclosure.CipherSuite == 0xc02c) // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+
+	if isTLS12AESGCMResponse {
+		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)
+		if len(encryptedPayload) < 8+tagSize {
+			log.Printf("[Client] Invalid TLS 1.2 AES-GCM record: payload too short for explicit IV (%d bytes)", len(encryptedPayload))
+			return
+		}
+
+		explicitIV = encryptedPayload[:8]
+		encryptedData = encryptedPayload[8 : len(encryptedPayload)-tagSize]
+
+		fmt.Printf("[Client] DEBUG: encryptedPayload first 16 bytes: %x\n", encryptedPayload[:min(16, len(encryptedPayload))])
+		fmt.Printf("[Client] DEBUG: extracted explicitIV: %x\n", explicitIV)
+		fmt.Printf("[Client] DEBUG: encryptedPayload[8:%d] = encryptedData length %d\n", len(encryptedPayload)-tagSize, len(encryptedData))
+		fmt.Printf("[Client] TLS 1.2 AES-GCM: extracted explicit IV (%d bytes) and encrypted data (%d bytes), tag (%d bytes)\n",
+			len(explicitIV), len(encryptedData), len(tag))
+		fmt.Printf("[Client] Explicit IV: %x\n", explicitIV)
+	} else {
+		// TLS 1.3 or other: no explicit IV
+		encryptedData = encryptedPayload[:len(encryptedPayload)-tagSize]
+
+		fmt.Printf("[Client] Processing TLS record: %d bytes encrypted data, %d bytes tag\n",
+			len(encryptedData), len(tag))
+	}
 
 	// *** Check if system is shutting down or TEE_T connection is closed ***
 	if c.isClosing {
@@ -359,6 +394,7 @@ func (c *Client) processTLSRecord(record []byte) {
 		RecordHeader:  record[:5], // Include actual TLS record header from server
 		SeqNum:        c.responseSeqNum,
 		CipherSuite:   cipherSuite, // Use actual negotiated cipher suite
+		ExplicitIV:    explicitIV,  // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
 	}
 
 	responseMsg, err := CreateMessage(MsgEncryptedResponse, encryptedResponseData)
@@ -430,6 +466,14 @@ func (c *Client) handleResponseDecryptionStream(msg *Message) {
 	}
 
 	// XOR ciphertext with decryption stream to get plaintext
+	fmt.Printf("[Client] DEBUG: Ciphertext length=%d, DecryptionStream length=%d\n", len(ciphertext), len(streamData.DecryptionStream))
+
+	if len(ciphertext) != len(streamData.DecryptionStream) {
+		log.Printf("[Client] LENGTH MISMATCH: ciphertext=%d bytes, stream=%d bytes", len(ciphertext), len(streamData.DecryptionStream))
+		c.responseContentMutex.Unlock()
+		return
+	}
+
 	plaintext := make([]byte, len(ciphertext))
 	for i := 0; i < len(ciphertext); i++ {
 		plaintext[i] = ciphertext[i] ^ streamData.DecryptionStream[i]
@@ -678,29 +722,39 @@ func getClientAlertDescription(code byte) string {
 	}
 }
 
-// removeTLSPadding removes TLS 1.3 padding from decrypted content
+// removeTLSPadding removes TLS 1.3 padding from decrypted content (TLS 1.2 has no padding)
 func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 	if len(data) == 0 {
 		return nil, 0
 	}
 
-	// Find the last non-zero byte which indicates the content type
-	lastNonZero := len(data) - 1
-	for lastNonZero >= 0 && data[lastNonZero] == 0 {
-		lastNonZero--
+	// Check TLS version from cipher suite in handshake disclosure
+	isTLS12 := c.handshakeDisclosure != nil && c.isTLS12CipherSuite(c.handshakeDisclosure.CipherSuite)
+
+	if isTLS12 {
+		// TLS 1.2: No inner content type or padding, content type comes from record header
+		// All decrypted data is actual content, content type is always ApplicationData (0x17)
+		return data, 0x17
+	} else {
+		// TLS 1.3: Has inner content type byte + zero padding
+		// Find the last non-zero byte which indicates the content type
+		lastNonZero := len(data) - 1
+		for lastNonZero >= 0 && data[lastNonZero] == 0 {
+			lastNonZero--
+		}
+
+		if lastNonZero < 0 {
+			// All zeros, likely a padding-only record
+			return nil, 0
+		}
+
+		// The byte at lastNonZero is the content type
+		contentType := data[lastNonZero]
+		// The data before that byte is the actual content
+		actualContent := data[:lastNonZero]
+
+		return actualContent, contentType
 	}
-
-	if lastNonZero < 0 {
-		// All zeros, likely a padding-only record
-		return nil, 0
-	}
-
-	// The byte at lastNonZero is the content type
-	contentType := data[lastNonZero]
-	// The data before that byte is the actual content
-	actualContent := data[:lastNonZero]
-
-	return actualContent, contentType
 }
 
 // State for processing TLS records directly from TCP data
@@ -748,5 +802,17 @@ func (c *Client) processTLSRecordFromData(data []byte) {
 			// Not enough data for complete record, wait for more
 			break
 		}
+	}
+}
+
+// isTLS12CipherSuite checks if a cipher suite belongs to TLS 1.2
+func (c *Client) isTLS12CipherSuite(cipherSuite uint16) bool {
+	switch cipherSuite {
+	case 0xc02f, 0xc02b, 0xc030, 0xc02c: // TLS 1.2 AES-GCM cipher suites
+		return true
+	case 0xcca8, 0xcca9: // TLS 1.2 ChaCha20-Poly1305 cipher suites
+		return true
+	default:
+		return false // TLS 1.3 or other
 	}
 }

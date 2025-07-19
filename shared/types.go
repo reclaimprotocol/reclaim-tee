@@ -344,10 +344,11 @@ type RedactionVerificationData struct {
 
 // ResponseLengthData contains response length information
 type ResponseLengthData struct {
-	Length       int    `json:"length"`        // Length of encrypted response data (without tag)
-	RecordHeader []byte `json:"record_header"` // Actual TLS record header used by server (5 bytes)
-	SeqNum       uint64 `json:"seq_num"`       // TLS sequence number for AEAD
-	CipherSuite  uint16 `json:"cipher_suite"`  // TLS cipher suite
+	Length       int    `json:"length"`                // Length of encrypted response data (without tag)
+	RecordHeader []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
+	SeqNum       uint64 `json:"seq_num"`               // TLS sequence number for AEAD
+	CipherSuite  uint16 `json:"cipher_suite"`          // TLS cipher suite
+	ExplicitIV   []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
 }
 
 // ResponseTagSecretsData contains tag secrets for response verification
@@ -393,11 +394,12 @@ type EncryptedRequestData struct {
 }
 
 type EncryptedResponseData struct {
-	EncryptedData []byte `json:"encrypted_data"` // Raw TLS record payload (encrypted data + tag)
-	Tag           []byte `json:"tag"`            // Authentication tag extracted from TLS record
-	RecordHeader  []byte `json:"record_header"`  // Actual TLS record header used by server (5 bytes)
-	SeqNum        uint64 `json:"seq_num"`        // TLS sequence number for AEAD
-	CipherSuite   uint16 `json:"cipher_suite"`   // TLS cipher suite
+	EncryptedData []byte `json:"encrypted_data"`        // Raw TLS record payload (encrypted data + tag)
+	Tag           []byte `json:"tag"`                   // Authentication tag extracted from TLS record
+	RecordHeader  []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
+	SeqNum        uint64 `json:"seq_num"`               // TLS sequence number for AEAD
+	CipherSuite   uint16 `json:"cipher_suite"`          // TLS cipher suite
+	ExplicitIV    []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
 }
 
 // Single Session Mode data structures

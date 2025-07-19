@@ -1013,6 +1013,11 @@ func (c *Client) GetNegotiatedVersion() uint16 {
 	return c.negotiatedVersion
 }
 
+// GetTLS12AEAD returns the TLS 1.2 AEAD context for TEE integration
+func (c *Client) GetTLS12AEAD() *TLS12AEADContext {
+	return c.tls12AEAD
+}
+
 // Add this method to detect TLS version and use appropriate AEAD
 func (c *Client) sendApplicationDataWithCorrectAEAD(data []byte) error {
 	if c.negotiatedVersion == VersionTLS12 {

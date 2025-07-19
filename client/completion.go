@@ -121,12 +121,11 @@ func (c *Client) sendRedactionSpec() error {
 	// Analyze response content to identify redaction ranges
 	redactionSpec := c.analyzeResponseRedaction()
 
-	// Count expected redacted streams based on response sequences
-	c.responseContentMutex.Lock()
-	c.expectedRedactedStreams = len(c.responseContentBySeq)
-	c.responseContentMutex.Unlock()
+	// Count expected redacted streams based on records sent to TEE_T for processing
+	// Use recordsSent instead of responseContentBySeq length to avoid race conditions
+	c.expectedRedactedStreams = int(atomic.LoadInt64(&c.recordsSent))
 
-	log.Printf("[Client] Expecting %d redacted streams based on response sequences", c.expectedRedactedStreams)
+	log.Printf("[Client] Expecting %d redacted streams based on records sent to TEE_T", c.expectedRedactedStreams)
 
 	// Send redaction spec to TEE_K
 	msg := shared.CreateSessionMessage(shared.MsgRedactionSpec, c.sessionID, redactionSpec)
@@ -143,7 +142,7 @@ func (c *Client) sendRedactionSpec() error {
 }
 
 // calculateRedactionBytes calculates what should replace parts of decryption stream to produce '*' when XORed with ciphertext
-func (c *Client) calculateRedactionBytes(ciphertext []byte, startOffset, length int) []byte {
+func (c *Client) calculateRedactionBytes(ciphertext []byte, startOffset, length int, seqNum uint64) []byte {
 	redactionBytes := make([]byte, length)
 	asterisk := byte('*') // 0x2A
 
@@ -157,6 +156,19 @@ func (c *Client) calculateRedactionBytes(ciphertext []byte, startOffset, length 
 	}
 
 	return redactionBytes
+}
+
+// isTLS12AESGCMCipher checks if the current connection is using TLS 1.2 AES-GCM
+func (c *Client) isTLS12AESGCMCipher() bool {
+	if c.handshakeDisclosure == nil {
+		return false
+	}
+
+	cipherSuite := c.handshakeDisclosure.CipherSuite
+	return cipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+		cipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+		cipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+		cipherSuite == 0xc02c // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
 }
 
 // analyzeResponseRedaction analyzes all response content to identify redaction ranges and calculate redaction bytes
@@ -204,7 +216,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 				log.Printf("[Client] Redacting NewSessionTicket at offset %d-%d", totalOffset, totalOffset+len(actualContent)-1)
 
 				// Redact the entire actual content of the handshake message
-				redactionBytes := c.calculateRedactionBytes(ciphertext, 0, len(actualContent))
+				redactionBytes := c.calculateRedactionBytes(ciphertext, 0, len(actualContent), seqNum)
 				redactionRanges = append(redactionRanges, shared.RedactionRange{
 					Start:          totalOffset,
 					Length:         len(actualContent),
@@ -252,6 +264,7 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 	}{
 		{"ETag:", "etag"},
 		{"Alt-Svc:", "alt_svc"},
+		{"Server:", "server_header"}, // Test pattern for example.com
 	}
 
 	for _, p := range sensitivePatterns {
@@ -290,7 +303,7 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 
 			// The ciphertext offset must also start where the value starts
 			ciphertextOffset := valueStartIndex
-			redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, rangeLength)
+			redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, rangeLength, 0) // Pass 0 for seqNum as it's not a record sequence number
 
 			ranges = append(ranges, shared.RedactionRange{
 				Start:          rangeStart,
@@ -323,7 +336,7 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 					rangeStart, rangeStart+rangeLength-1)
 
 				ciphertextOffset := titleContentStartIndex
-				redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, rangeLength)
+				redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, rangeLength, 0) // Pass 0 for seqNum
 
 				ranges = append(ranges, shared.RedactionRange{
 					Start:          rangeStart,

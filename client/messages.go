@@ -255,19 +255,21 @@ type RedactionVerificationData struct {
 
 // EncryptedResponseData contains encrypted response data and tag from website
 type EncryptedResponseData struct {
-	EncryptedData []byte `json:"encrypted_data"` // Raw TLS record payload (encrypted data + tag)
-	Tag           []byte `json:"tag"`            // Authentication tag extracted from TLS record
-	RecordHeader  []byte `json:"record_header"`  // Actual TLS record header used by server (5 bytes)
-	SeqNum        uint64 `json:"seq_num"`        // TLS sequence number for AEAD
-	CipherSuite   uint16 `json:"cipher_suite"`   // TLS cipher suite
+	EncryptedData []byte `json:"encrypted_data"`        // Raw TLS record payload (encrypted data + tag)
+	Tag           []byte `json:"tag"`                   // Authentication tag extracted from TLS record
+	RecordHeader  []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
+	SeqNum        uint64 `json:"seq_num"`               // TLS sequence number for AEAD
+	CipherSuite   uint16 `json:"cipher_suite"`          // TLS cipher suite
+	ExplicitIV    []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
 }
 
 // ResponseLengthData contains the length of encrypted response for tag secret generation
 type ResponseLengthData struct {
-	Length       int    `json:"length"`        // Length of encrypted response data (without tag)
-	RecordHeader []byte `json:"record_header"` // Actual TLS record header used by server (5 bytes)
-	SeqNum       uint64 `json:"seq_num"`       // TLS sequence number for AEAD
-	CipherSuite  uint16 `json:"cipher_suite"`  // TLS cipher suite
+	Length       int    `json:"length"`                // Length of encrypted response data (without tag)
+	RecordHeader []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
+	SeqNum       uint64 `json:"seq_num"`               // TLS sequence number for AEAD
+	CipherSuite  uint16 `json:"cipher_suite"`          // TLS cipher suite
+	ExplicitIV   []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
 }
 
 // ResponseTagSecretsData contains tag computation secrets from TEE_K to TEE_T

@@ -205,12 +205,20 @@ func (ctx *TLS12AEADContext) Decrypt(ciphertext []byte, recordHeader []byte) ([]
 		if len(ciphertext) < 8 {
 			return nil, fmt.Errorf("AES-GCM ciphertext too short for explicit IV")
 		}
+		fmt.Printf("[minitls] DEBUG: ciphertext first 16 bytes: %x\n", ciphertext[:min(16, len(ciphertext))])
 		explicitIV := binary.BigEndian.Uint64(ciphertext[0:8])
+		explicitIVBytes := ciphertext[0:8]
+		fmt.Printf("[minitls] DEBUG: extracted explicitIVBytes: %x\n", explicitIVBytes)
 
 		// 12-byte nonce = implicit_iv(4) || explicit_nonce(8)
 		nonce = make([]byte, 12)
 		copy(nonce[0:4], ctx.readIV)                        // 4-byte salt
 		binary.BigEndian.PutUint64(nonce[4:12], explicitIV) // 8-byte explicit IV from record
+
+		fmt.Printf("[minitls] DEBUG: TLS 1.2 decrypt - seq=%d, readKey: %x\n", ctx.readSeq, ctx.readKey)
+		fmt.Printf("[minitls] DEBUG: readIV: %x, explicitIVBytes: %x, explicitIV: %016x\n", ctx.readIV, explicitIVBytes, explicitIV)
+		fmt.Printf("[minitls] DEBUG: constructed nonce: %x\n", nonce)
+		fmt.Printf("[minitls] DEBUG: AAD: %x\n", additionalData)
 	}
 
 	// For AES-GCM, strip explicit IV from ciphertext before decryption
@@ -226,26 +234,20 @@ func (ctx *TLS12AEADContext) Decrypt(ciphertext []byte, recordHeader []byte) ([]
 		aeadCiphertext = ciphertext
 	}
 
+	fmt.Printf("[minitls] DEBUG: aeadCiphertext length=%d, first 32 bytes: %x\n", len(aeadCiphertext), aeadCiphertext[:min(32, len(aeadCiphertext))])
+
 	// Decrypt using native Go AEAD - no overriding sequence numbers!
 	plaintext, err := aead.Open(nil, nonce, aeadCiphertext, additionalData)
 	if err != nil {
 		return nil, fmt.Errorf("AEAD decryption failed: %v", err)
 	}
 
+	fmt.Printf("[minitls] DEBUG: decrypted plaintext length=%d, first 32 bytes: %x\n", len(plaintext), plaintext[:min(32, len(plaintext))])
+
 	// Increment sequence number
 	ctx.readSeq++
 
 	return plaintext, nil
-}
-
-// GetWriteSequence returns the current write sequence number
-func (ctx *TLS12AEADContext) GetWriteSequence() uint64 {
-	return ctx.writeSeq
-}
-
-// GetReadSequence returns the current read sequence number
-func (ctx *TLS12AEADContext) GetReadSequence() uint64 {
-	return ctx.readSeq
 }
 
 // ResetSequenceNumbers resets both read and write sequence numbers to 0
@@ -261,4 +263,36 @@ func (ctx *TLS12AEADContext) ResetSequenceNumbers() {
 func (ctx *TLS12AEADContext) ResetWriteSequenceOnly() {
 	ctx.writeSeq = 0
 	// Keep readSeq as-is since server has already sent encrypted messages
+}
+
+// Getter methods for TEE integration
+
+// GetWriteKey returns the client write key
+func (ctx *TLS12AEADContext) GetWriteKey() []byte {
+	return ctx.writeKey
+}
+
+// GetWriteIV returns the client write IV
+func (ctx *TLS12AEADContext) GetWriteIV() []byte {
+	return ctx.writeIV
+}
+
+// GetReadKey returns the server write key (used for reading server data)
+func (ctx *TLS12AEADContext) GetReadKey() []byte {
+	return ctx.readKey
+}
+
+// GetReadIV returns the server write IV (used for reading server data)
+func (ctx *TLS12AEADContext) GetReadIV() []byte {
+	return ctx.readIV
+}
+
+// GetWriteSequence returns the current write sequence number
+func (ctx *TLS12AEADContext) GetWriteSequence() uint64 {
+	return ctx.writeSeq
+}
+
+// GetReadSequence returns the current read sequence number
+func (ctx *TLS12AEADContext) GetReadSequence() uint64 {
+	return ctx.readSeq
 }

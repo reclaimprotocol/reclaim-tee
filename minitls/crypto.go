@@ -531,8 +531,15 @@ func (sa *SplitAEAD) generateChaChaTagSecrets(nonce []byte) []byte {
 
 // ComputeTagFromSecrets computes GCM authentication tag using proper GHASH (TEE_T responsibility)
 func ComputeTagFromSecrets(ciphertext, tagSecrets []byte, cipherSuite uint16, additionalData []byte) ([]byte, error) {
+	fmt.Printf("[ComputeTagFromSecrets] DEBUG: cipher=0x%04x, aad_len=%d, ciphertext_len=%d\n",
+		cipherSuite, len(additionalData), len(ciphertext))
+	fmt.Printf("[ComputeTagFromSecrets] AAD: %x\n", additionalData)
+	fmt.Printf("[ComputeTagFromSecrets] Tag secrets: %x\n", tagSecrets)
+
 	switch cipherSuite {
-	case TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384:
+	case TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+		TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
 		// Extract E_K(0^128) and E_K(IV || 0^31 || 1) from tag secrets
 		if len(tagSecrets) != 32 {
 			return nil, fmt.Errorf("tag secrets wrong size: got %d, need 32", len(tagSecrets))
@@ -564,9 +571,13 @@ func ComputeTagFromSecrets(ciphertext, tagSecrets []byte, cipherSuite uint16, ad
 			tag[i] = ghashResult[i] ^ encryptedCounter[i]
 		}
 
+		fmt.Printf("[ComputeTagFromSecrets] GHASH result: %x\n", ghashResult)
+		fmt.Printf("[ComputeTagFromSecrets] Encrypted counter: %x\n", encryptedCounter)
+		fmt.Printf("[ComputeTagFromSecrets] Computed tag: %x\n", tag)
+
 		return tag, nil
 
-	case TLS_CHACHA20_POLY1305_SHA256:
+	case TLS_CHACHA20_POLY1305_SHA256, TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
 		// ChaCha20-Poly1305 tag computation using Poly1305 key from tag secrets
 		if len(tagSecrets) != 32 {
 			return nil, fmt.Errorf("ChaCha20-Poly1305 tag secrets wrong size: got %d, need 32", len(tagSecrets))

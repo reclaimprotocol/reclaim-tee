@@ -43,7 +43,7 @@ func main() {
 		log.Fatalf("[Client] Failed to connect: %v", err)
 	}
 
-	// Request HTTP to example.com
+	// Request HTTP to example.com (original target with proper redaction patterns)
 	if err := client.RequestHTTP("example.com", 443); err != nil {
 		log.Fatalf("[Client] Failed to request HTTP: %v", err)
 	}
@@ -190,6 +190,8 @@ func (d *DemoResponseCallback) OnResponseReceived(response *HTTPResponse) (*Reda
 
 	var redactionRanges []RedactionRange
 	var proofClaims []ProofClaim
+
+	// For demo purposes, no automatic redaction ranges - they're handled by redaction specification
 
 	// Example: If this is an HTTP response, create some demo proof claims
 	if response.StatusCode == 200 {

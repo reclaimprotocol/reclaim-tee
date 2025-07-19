@@ -388,20 +388,44 @@ func (t *TEET) handleEncryptedResponseSession(sessionID string, msg *shared.Mess
 	fmt.Printf("[TEE_T] Received encrypted response (seq=%d, %d bytes) for session %s\n", encryptedResp.SeqNum, len(encryptedResp.EncryptedData), sessionID)
 
 	// Session-aware transcript collection
-	lengthHeader := []byte{0x17, 0x03, 0x03, 0x00, 0x00} // TLS 1.2 ApplicationData header
-	totalLength := len(encryptedResp.EncryptedData) + len(encryptedResp.Tag)
-	if totalLength > 0xFFFF {
-		log.Printf("[TEE_T] Warning: TLS record too large (%d bytes), truncating length", totalLength)
-		totalLength = 0xFFFF
-	}
-	lengthHeader[3] = byte(totalLength >> 8)
-	lengthHeader[4] = byte(totalLength & 0xFF)
+	// For TLS 1.2 AES-GCM, we need to include the explicit IV in the response record too
 
-	// Build the complete TLS record
-	record := make([]byte, 0, len(lengthHeader)+len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
-	record = append(record, lengthHeader...)
-	record = append(record, encryptedResp.EncryptedData...)
-	record = append(record, encryptedResp.Tag...)
+	// Check if this is TLS 1.2 AES-GCM cipher suite
+	isTLS12AESGCMCipher := encryptedResp.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+		encryptedResp.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+		encryptedResp.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+		encryptedResp.CipherSuite == 0xc02c // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+
+	var payload []byte
+	if isTLS12AESGCMCipher && encryptedResp.ExplicitIV != nil && len(encryptedResp.ExplicitIV) == 8 {
+		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)
+		// Use the explicit IV provided by the client
+		payload = make([]byte, 8+len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
+		copy(payload[0:8], encryptedResp.ExplicitIV)
+		copy(payload[8:8+len(encryptedResp.EncryptedData)], encryptedResp.EncryptedData)
+		copy(payload[8+len(encryptedResp.EncryptedData):], encryptedResp.Tag)
+
+		fmt.Printf("[TEE_T] TLS 1.2 AES-GCM response: Added explicit IV %x to transcript record\n", encryptedResp.ExplicitIV)
+	} else {
+		// TLS 1.3 or ChaCha20: encrypted_data + auth_tag (no explicit IV)
+		payload = make([]byte, len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
+		copy(payload, encryptedResp.EncryptedData)
+		copy(payload[len(encryptedResp.EncryptedData):], encryptedResp.Tag)
+	}
+
+	recordLength := len(payload)
+	if recordLength > 0xFFFF {
+		log.Printf("[TEE_T] Warning: TLS record too large (%d bytes), truncating length", recordLength)
+		recordLength = 0xFFFF
+	}
+
+	record := make([]byte, 5+recordLength)
+	record[0] = 0x17                      // ApplicationData
+	record[1] = 0x03                      // TLS version major
+	record[2] = 0x03                      // TLS version minor
+	record[3] = byte(recordLength >> 8)   // Length high byte
+	record[4] = byte(recordLength & 0xFF) // Length low byte
+	copy(record[5:], payload)             // Complete payload with explicit IV if needed
 
 	// Add to session transcript
 	t.addToTranscriptForSessionWithType(sessionID, record, shared.TranscriptPacketTypeTLSRecord)
@@ -413,10 +437,11 @@ func (t *TEET) handleEncryptedResponseSession(sessionID string, msg *shared.Mess
 
 	// Send response length to TEE_K with session ID
 	lengthData := shared.ResponseLengthData{
-		Length:       len(encryptedResp.EncryptedData),
-		RecordHeader: encryptedResp.RecordHeader, // Copy the actual TLS record header
+		Length:       len(encryptedResp.EncryptedData), // Full encrypted data length
+		RecordHeader: encryptedResp.RecordHeader,       // Copy the actual TLS record header
 		SeqNum:       encryptedResp.SeqNum,
 		CipherSuite:  encryptedResp.CipherSuite, // Use actual cipher suite from response
+		ExplicitIV:   encryptedResp.ExplicitIV,  // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
 	}
 
 	lengthMsg := shared.CreateSessionMessage(shared.MsgResponseLength, sessionID, lengthData)
@@ -752,20 +777,50 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 
 	// *** CRITICAL FIX: Add complete TLS record to transcript ***
 	// Construct the complete TLS record that will be sent to the server
-	tagSize := 16 // GCM tag size
-	recordLength := len(reconstructedData) + tagSize
-	tlsRecord := make([]byte, 5+len(reconstructedData)+tagSize) // header + data + tag
+	// For TLS 1.2 AES-GCM, we need to include the explicit IV
 
-	// TLS record header
+	// Check if this is TLS 1.2 AES-GCM cipher suite
+	isTLS12AESGCMCipher := encReq.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+		encReq.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+		encReq.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+		encReq.CipherSuite == 0xc02c // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+
+	var payload []byte
+	if isTLS12AESGCMCipher {
+		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)
+		// Explicit IV = sequence number (big-endian, 8 bytes)
+		seqNum := encReq.SeqNum
+		explicitIV := make([]byte, 8)
+		explicitIV[0] = byte(seqNum >> 56)
+		explicitIV[1] = byte(seqNum >> 48)
+		explicitIV[2] = byte(seqNum >> 40)
+		explicitIV[3] = byte(seqNum >> 32)
+		explicitIV[4] = byte(seqNum >> 24)
+		explicitIV[5] = byte(seqNum >> 16)
+		explicitIV[6] = byte(seqNum >> 8)
+		explicitIV[7] = byte(seqNum)
+
+		payload = make([]byte, 8+len(reconstructedData)+len(authTag))
+		copy(payload[0:8], explicitIV)
+		copy(payload[8:8+len(reconstructedData)], reconstructedData)
+		copy(payload[8+len(reconstructedData):], authTag)
+
+		fmt.Printf("[TEE_T] TLS 1.2 AES-GCM: Added explicit IV %x to transcript record\n", explicitIV)
+	} else {
+		// TLS 1.3 or ChaCha20: encrypted_data + auth_tag (no explicit IV)
+		payload = make([]byte, len(reconstructedData)+len(authTag))
+		copy(payload, reconstructedData)
+		copy(payload[len(reconstructedData):], authTag)
+	}
+
+	recordLength := len(payload)
+	tlsRecord := make([]byte, 5+recordLength)
 	tlsRecord[0] = 0x17                      // ApplicationData
 	tlsRecord[1] = 0x03                      // TLS version major
 	tlsRecord[2] = 0x03                      // TLS version minor
 	tlsRecord[3] = byte(recordLength >> 8)   // Length high byte
 	tlsRecord[4] = byte(recordLength & 0xFF) // Length low byte
-
-	// Copy encrypted data and tag
-	copy(tlsRecord[5:], reconstructedData)
-	copy(tlsRecord[5+len(reconstructedData):], authTag)
+	copy(tlsRecord[5:], payload)             // Complete payload with explicit IV if needed
 
 	// Add the complete TLS record to TEE_T's transcript
 	t.addToTranscriptForSessionWithType(sessionID, tlsRecord, shared.TranscriptPacketTypeTLSRecord)
@@ -790,21 +845,48 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 }
 
 func (t *TEET) computeAuthenticationTag(encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64) ([]byte, error) {
-	// *** CRITICAL FIX: Match TEE_K's additional data format exactly ***
-	// Additional data for TLS application records - MUST match TEE_K's recordHeader
-	tagSize := 16 // GCM tag size
-	recordLength := len(encryptedData) + tagSize
-	additionalData := []byte{
-		0x17,                      // Application data content type
-		0x03,                      // TLS version major
-		0x03,                      // TLS version minor
-		byte(recordLength >> 8),   // Length high byte (FIXED: includes tag)
-		byte(recordLength & 0xFF), // Length low byte (FIXED: includes tag)
+	// *** VERSION-SPECIFIC AAD CONSTRUCTION ***
+	var additionalData []byte
+
+	// Determine TLS version based on cipher suite
+	if cipherSuite == 0x1301 || cipherSuite == 0x1302 || cipherSuite == 0x1303 {
+		// TLS 1.3: AAD = record header only (5 bytes)
+		tagSize := 16 // GCM tag size
+		recordLength := len(encryptedData) + tagSize
+		additionalData = []byte{
+			0x17,                      // Application data content type
+			0x03,                      // TLS version major
+			0x03,                      // TLS version minor
+			byte(recordLength >> 8),   // Length high byte (includes tag for TLS 1.3)
+			byte(recordLength & 0xFF), // Length low byte (includes tag for TLS 1.3)
+		}
+	} else {
+		// TLS 1.2: AAD = seq_num + record header (13 bytes) - RFC 5246
+		plaintextLength := len(encryptedData) // For TLS 1.2 AAD, use plaintext length
+		additionalData = make([]byte, 13)     // 8 bytes seq_num + 5 bytes record header
+
+		// Sequence number (8 bytes, big-endian)
+		additionalData[0] = byte(seqNum >> 56)
+		additionalData[1] = byte(seqNum >> 48)
+		additionalData[2] = byte(seqNum >> 40)
+		additionalData[3] = byte(seqNum >> 32)
+		additionalData[4] = byte(seqNum >> 24)
+		additionalData[5] = byte(seqNum >> 16)
+		additionalData[6] = byte(seqNum >> 8)
+		additionalData[7] = byte(seqNum)
+
+		// Record header (5 bytes)
+		additionalData[8] = 0x17                          // Application data content type
+		additionalData[9] = 0x03                          // TLS version major
+		additionalData[10] = 0x03                         // TLS version minor
+		additionalData[11] = byte(plaintextLength >> 8)   // Plaintext length high byte
+		additionalData[12] = byte(plaintextLength & 0xFF) // Plaintext length low byte
 	}
 
 	fmt.Printf("[TEE_T] DEBUG: Split AEAD computation:\n")
 	fmt.Printf(" Ciphertext (%d bytes): %x\n", len(encryptedData), encryptedData[:min(32, len(encryptedData))])
-	fmt.Printf(" Additional data: %x (length includes %d-byte tag)\n", additionalData, tagSize)
+	fmt.Printf(" Additional data (%d bytes): %x\n", len(additionalData), additionalData)
+	fmt.Printf(" Sequence number: %d\n", seqNum)
 	fmt.Printf(" Tag secrets (%d bytes): %x\n", len(tagSecrets), tagSecrets)
 
 	if len(tagSecrets) != 32 {
@@ -1096,10 +1178,11 @@ func (t *TEET) handleEncryptedResponse(conn *websocket.Conn, msg *shared.Message
 
 	// Send response length to TEE_K to request tag secrets
 	lengthData := shared.ResponseLengthData{
-		Length:       len(encryptedResp.EncryptedData),
-		RecordHeader: encryptedResp.RecordHeader, // Copy the actual TLS record header
+		Length:       len(encryptedResp.EncryptedData), // Full encrypted data length
+		RecordHeader: encryptedResp.RecordHeader,       // Copy the actual TLS record header
 		SeqNum:       encryptedResp.SeqNum,
 		CipherSuite:  encryptedResp.CipherSuite, // Use actual cipher suite from response
+		ExplicitIV:   encryptedResp.ExplicitIV,  // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
 	}
 
 	lengthMsg := shared.CreateMessage(shared.MsgResponseLength, lengthData)
@@ -1189,10 +1272,55 @@ func (t *TEET) handleResponseTagSecrets(conn *websocket.Conn, msg *shared.Messag
 
 // verifyResponseTag verifies the authentication tag using split AEAD
 func (t *TEET) verifyResponseTag(encryptedResp *shared.EncryptedResponseData, tagSecrets []byte, cipherSuite uint16) (bool, error) {
-	// Use the actual TLS record header from the server instead of constructing our own
-	additionalData := encryptedResp.RecordHeader
-	if len(additionalData) != 5 {
-		return false, fmt.Errorf("invalid record header length: expected 5, got %d", len(additionalData))
+	// Construct version-specific AAD for tag verification
+	var additionalData []byte
+
+	// Determine TLS version based on cipher suite and construct appropriate AAD
+	if cipherSuite == 0x1301 || cipherSuite == 0x1302 || cipherSuite == 0x1303 {
+		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
+		tagSize := 16                                                  // GCM tag size
+		ciphertextLength := len(encryptedResp.EncryptedData) + tagSize // encrypted data + authentication tag
+		additionalData = []byte{
+			0x17,                          // ApplicationData
+			0x03,                          // TLS version major (compatibility)
+			0x03,                          // TLS version minor (compatibility)
+			byte(ciphertextLength >> 8),   // Length high byte (includes tag)
+			byte(ciphertextLength & 0xFF), // Length low byte (includes tag)
+		}
+		fmt.Printf("[TEE_T] TLS 1.3 AAD: %x (ciphertext+tag length: %d)\n", additionalData, ciphertextLength)
+	} else {
+		// TLS 1.2: AAD = seq_num(8) + record header(5) = 13 bytes total
+		recordHeader := encryptedResp.RecordHeader
+		if len(recordHeader) != 5 {
+			return false, fmt.Errorf("invalid TLS 1.2 record header length: expected 5, got %d", len(recordHeader))
+		}
+
+		// Construct TLS 1.2 AAD: sequence_number(8) + record_header(5)
+		additionalData = make([]byte, 13)
+
+		// Sequence number (8 bytes, big-endian) - extract from encrypted response
+		seqNum := encryptedResp.SeqNum
+		additionalData[0] = byte(seqNum >> 56)
+		additionalData[1] = byte(seqNum >> 48)
+		additionalData[2] = byte(seqNum >> 40)
+		additionalData[3] = byte(seqNum >> 32)
+		additionalData[4] = byte(seqNum >> 24)
+		additionalData[5] = byte(seqNum >> 16)
+		additionalData[6] = byte(seqNum >> 8)
+		additionalData[7] = byte(seqNum)
+
+		// Record header (5 bytes) - but use PLAINTEXT length, not ciphertext+tag length
+		additionalData[8] = recordHeader[0]  // content type (0x17)
+		additionalData[9] = recordHeader[1]  // version major (0x03)
+		additionalData[10] = recordHeader[2] // version minor (0x03)
+
+		// For TLS 1.2 AAD, use plaintext length (encrypted data without tag)
+		plaintextLength := len(encryptedResp.EncryptedData)
+		additionalData[11] = byte(plaintextLength >> 8)   // length high byte
+		additionalData[12] = byte(plaintextLength & 0xFF) // length low byte
+
+		fmt.Printf("[TEE_T] TLS 1.2 AAD: seq=%d, plaintext_len=%d, aad=%x\n",
+			seqNum, plaintextLength, additionalData)
 	}
 
 	// Use the ComputeTagFromSecrets function from minitls

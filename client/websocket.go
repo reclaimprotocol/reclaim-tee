@@ -231,6 +231,12 @@ func (c *Client) sendMessage(msg *Message) error {
 	return conn.WriteMessage(websocket.TextMessage, msgBytes)
 }
 
+// isEnclaveMode checks if the client is running in enclave mode
+func (c *Client) isEnclaveMode() bool {
+	return (strings.HasPrefix(c.teekURL, "wss://") && strings.Contains(c.teekURL, "reclaimprotocol.org")) ||
+		(strings.HasPrefix(c.teetURL, "wss://") && strings.Contains(c.teetURL, "reclaimprotocol.org"))
+}
+
 // sendMessageToTEET sends a message to TEE_T
 func (c *Client) sendMessageToTEET(msg *Message) error {
 	conn := c.teetConn
@@ -364,19 +370,49 @@ func (c *Client) handleEncryptedData(msg *Message) {
 	}
 
 	// Create TLS record with encrypted data and authentication tag
-	// TLS ApplicationData record format: [type(1)] [version(2)] [length(2)] [encrypted_payload + tag]
-	taggedData := make([]byte, len(encData.EncryptedData)+len(encData.AuthTag))
-	copy(taggedData, encData.EncryptedData)
-	copy(taggedData[len(encData.EncryptedData):], encData.AuthTag)
+	// Format depends on TLS version and cipher suite
+	var payload []byte
 
-	recordLength := len(taggedData)
+	// Check if this is TLS 1.2 AES-GCM (needs explicit IV)
+	isTLS12AESGCMCipher := c.handshakeDisclosure != nil &&
+		(c.handshakeDisclosure.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+			c.handshakeDisclosure.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+			c.handshakeDisclosure.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+			c.handshakeDisclosure.CipherSuite == 0xc02c) // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+
+	if isTLS12AESGCMCipher {
+		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)
+		// Explicit IV = sequence number (big-endian, 8 bytes)
+		seqNum := uint64(1) // Application data sequence number after handshake
+		explicitIV := make([]byte, 8)
+		explicitIV[0] = byte(seqNum >> 56)
+		explicitIV[1] = byte(seqNum >> 48)
+		explicitIV[2] = byte(seqNum >> 40)
+		explicitIV[3] = byte(seqNum >> 32)
+		explicitIV[4] = byte(seqNum >> 24)
+		explicitIV[5] = byte(seqNum >> 16)
+		explicitIV[6] = byte(seqNum >> 8)
+		explicitIV[7] = byte(seqNum)
+
+		payload = make([]byte, 8+len(encData.EncryptedData)+len(encData.AuthTag))
+		copy(payload[0:8], explicitIV)
+		copy(payload[8:8+len(encData.EncryptedData)], encData.EncryptedData)
+		copy(payload[8+len(encData.EncryptedData):], encData.AuthTag)
+	} else {
+		// TLS 1.3 or ChaCha20: encrypted_data + auth_tag
+		payload = make([]byte, len(encData.EncryptedData)+len(encData.AuthTag))
+		copy(payload, encData.EncryptedData)
+		copy(payload[len(encData.EncryptedData):], encData.AuthTag)
+	}
+
+	recordLength := len(payload)
 	tlsRecord := make([]byte, 5+recordLength)
 	tlsRecord[0] = 0x17                      // ApplicationData record type
 	tlsRecord[1] = 0x03                      // TLS version major
 	tlsRecord[2] = 0x03                      // TLS version minor
 	tlsRecord[3] = byte(recordLength >> 8)   // Length high byte
 	tlsRecord[4] = byte(recordLength & 0xFF) // Length low byte
-	copy(tlsRecord[5:], taggedData)          // Encrypted payload + tag
+	copy(tlsRecord[5:], payload)             // Complete payload
 
 	fmt.Printf("[Client] Sending TLS record (%d bytes)\n", len(tlsRecord))
 
@@ -875,7 +911,10 @@ func (c *Client) handleAttestationResponse(msg *Message) {
 	}
 
 	if !attestResp.Success {
-		log.Printf("[Client] Attestation request failed: %s", attestResp.ErrorMessage)
+		// Only log attestation failures in enclave mode - they're expected in standalone mode
+		if c.isEnclaveMode() {
+			log.Printf("[Client] Attestation request failed: %s", attestResp.ErrorMessage)
+		}
 		return
 	}
 

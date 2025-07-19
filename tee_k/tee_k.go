@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -48,8 +49,9 @@ type TEEK struct {
 	combinedKey []byte
 
 	// Response handling
-	responseLengthBySeq map[uint64]int // Store response lengths by sequence number
-	serverSequenceNum   uint64         // Track server's actual sequence number manually
+	responseLengthBySeq map[uint64]int    // Store response lengths by sequence number
+	explicitIVBySeq     map[uint64][]byte // Store explicit IVs for TLS 1.2 AES-GCM by sequence number
+	serverSequenceNum   uint64            // Track server's actual sequence number manually
 
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
@@ -450,6 +452,14 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	// Initialize TLS client for this session
 	tlsClient := minitls.NewClient(tlsConn)
 
+	// Use default config (supports both TLS 1.2 and TLS 1.3)
+	config := &minitls.Config{
+		// Let the server choose between TLS 1.2 and TLS 1.3
+		// MinVersion: defaults to TLS 1.2
+		// MaxVersion: defaults to TLS 1.3
+	}
+	tlsClient = minitls.NewClientWithConfig(tlsConn, config)
+
 	// For backward compatibility with TCP data handler, store in global fields
 	t.tlsClient = tlsClient
 	t.wsConn2TLS = tlsConn
@@ -488,6 +498,8 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 		log.Printf("[TEE_K] Failed to send handshake key disclosure to session %s: %v", sessionID, err)
 		return
 	}
+
+	fmt.Printf("[TEE_K] Session %s: Handshake finished - ready for split AEAD\n", sessionID)
 
 	// Send handshake complete message
 	handshakeMsg := shared.CreateSessionMessage(shared.MsgHandshakeComplete, sessionID, shared.HandshakeCompleteData{
@@ -577,40 +589,73 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 
 	// Get cipher suite and encryption parameters
 	cipherSuite := t.tlsClient.GetCipherSuite()
-	clientAEAD := t.tlsClient.GetClientApplicationAEAD()
-	if clientAEAD == nil {
-		log.Printf("[TEE_K] No client application AEAD available")
-		t.sendErrorToSession(sessionID, "No client application AEAD available")
-		return
-	}
 
-	actualSeqNum := clientAEAD.GetSequence()
+	// Prepare data for encryption based on TLS version
+	var dataToEncrypt []byte
+	var clientAppKey, clientAppIV []byte
+	var actualSeqNum uint64
 
-	// Prepare request with TLS content type
-	redactedWithContentType := make([]byte, len(redactedRequest.RedactedRequest)+2)
-	copy(redactedWithContentType, redactedRequest.RedactedRequest)
-	redactedWithContentType[len(redactedRequest.RedactedRequest)] = 0x17   // shared.ApplicationData content type
-	redactedWithContentType[len(redactedRequest.RedactedRequest)+1] = 0x00 // TLS 1.3 padding
+	tlsVersion := t.tlsClient.GetNegotiatedVersion()
+	fmt.Printf("🔍 TEE_K Session %s: TLS version 0x%04x, cipher 0x%04x\n", sessionID, tlsVersion, cipherSuite)
 
-	// Get encryption keys
-	keySchedule := t.tlsClient.GetKeySchedule()
-	if keySchedule == nil {
-		log.Printf("[TEE_K] No key schedule available")
-		t.sendErrorToSession(sessionID, "No key schedule available")
-		return
-	}
+	if tlsVersion == 0x0303 { // TLS 1.2
+		// TLS 1.2: encrypt raw application data directly, no inner content type
+		dataToEncrypt = redactedRequest.RedactedRequest
+		fmt.Printf("[TEE_K] Session %s: TLS 1.2 - Encrypting raw HTTP data (%d bytes)\n", sessionID, len(dataToEncrypt))
 
-	clientAppKey := keySchedule.GetClientApplicationKey()
-	clientAppIV := keySchedule.GetClientApplicationIV()
+		tls12AEAD := t.tlsClient.GetTLS12AEAD()
+		if tls12AEAD == nil {
+			log.Printf("[TEE_K] No TLS 1.2 AEAD available")
+			t.sendErrorToSession(sessionID, "No TLS 1.2 AEAD available")
+			return
+		}
 
-	if len(clientAppKey) == 0 || len(clientAppIV) == 0 {
-		log.Printf("[TEE_K] No application keys available")
-		t.sendErrorToSession(sessionID, "No application keys available")
-		return
+		clientAppKey = tls12AEAD.GetWriteKey()
+		clientAppIV = tls12AEAD.GetWriteIV()
+		actualSeqNum = tls12AEAD.GetWriteSequence()
+
+		fmt.Printf("🔍 TEE_K Session %s TLS 1.2 Key Material:\n", sessionID)
+		fmt.Printf("  Write Key (%d bytes): %x\n", len(clientAppKey), clientAppKey)
+		fmt.Printf("  Write IV (%d bytes): %x\n", len(clientAppIV), clientAppIV)
+		fmt.Printf("  Write Sequence: %d\n", actualSeqNum)
+
+	} else { // TLS 1.3
+		// TLS 1.3: Add inner content type byte + padding (RFC 8446)
+		dataToEncrypt = make([]byte, len(redactedRequest.RedactedRequest)+2) // +2 for content type + padding
+		copy(dataToEncrypt, redactedRequest.RedactedRequest)
+		dataToEncrypt[len(redactedRequest.RedactedRequest)] = 0x17   // ApplicationData content type
+		dataToEncrypt[len(redactedRequest.RedactedRequest)+1] = 0x00 // Required TLS 1.3 padding byte
+		fmt.Printf("[TEE_K] Session %s: TLS 1.3 - Added inner content type + padding (%d bytes)\n", sessionID, len(dataToEncrypt))
+
+		clientAEAD := t.tlsClient.GetClientApplicationAEAD()
+		if clientAEAD == nil {
+			log.Printf("[TEE_K] No client application AEAD available")
+			t.sendErrorToSession(sessionID, "No client application AEAD available")
+			return
+		}
+
+		actualSeqNum = clientAEAD.GetSequence()
+
+		// Get encryption keys
+		keySchedule := t.tlsClient.GetKeySchedule()
+		if keySchedule == nil {
+			log.Printf("[TEE_K] No key schedule available")
+			t.sendErrorToSession(sessionID, "No key schedule available")
+			return
+		}
+
+		clientAppKey = keySchedule.GetClientApplicationKey()
+		clientAppIV = keySchedule.GetClientApplicationIV()
+
+		if len(clientAppKey) == 0 || len(clientAppIV) == 0 {
+			log.Printf("[TEE_K] No application keys available")
+			t.sendErrorToSession(sessionID, "No application keys available")
+			return
+		}
 	}
 
 	// Encrypt using cipher-agnostic function
-	encryptedData, err := t.encryptWithCipherSuite(redactedWithContentType, clientAppKey, clientAppIV, actualSeqNum, cipherSuite)
+	encryptedData, err := t.encryptWithCipherSuite(dataToEncrypt, clientAppKey, clientAppIV, actualSeqNum, cipherSuite)
 	if err != nil {
 		log.Printf("[TEE_K] Failed to encrypt data: %v", err)
 		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to encrypt data: %v", err))
@@ -618,12 +663,8 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	}
 
 	// Generate tag secrets using cipher-agnostic function
-	// Create nonce for tag secret generation
-	nonce := make([]byte, len(clientAppIV))
-	copy(nonce, clientAppIV)
-	for i := 0; i < 8; i++ {
-		nonce[len(nonce)-1-i] ^= byte(actualSeqNum >> (8 * i))
-	}
+	// Create nonce for tag secret generation using cipher-suite-specific method
+	nonce := t.constructNonce(clientAppIV, actualSeqNum, cipherSuite)
 
 	tagSecrets, err := t.generateTagSecrets(clientAppKey, nonce, cipherSuite)
 	if err != nil {
@@ -703,6 +744,14 @@ func (t *TEEK) performTLSHandshakeAndHTTP() {
 	// Create TLS client using WebSocket proxy through Client
 	t.tlsClient = minitls.NewClient(t.wsConn2TLS)
 
+	// Use default config (supports both TLS 1.2 and TLS 1.3)
+	config := &minitls.Config{
+		// Let the server choose between TLS 1.2 and TLS 1.3
+		// MinVersion: defaults to TLS 1.2
+		// MaxVersion: defaults to TLS 1.3
+	}
+	t.tlsClient = minitls.NewClientWithConfig(t.wsConn2TLS, config)
+
 	fmt.Println(" TEE_K starting TLS handshake over direct connection")
 
 	// Perform TLS handshake directly to website
@@ -721,6 +770,22 @@ func (t *TEEK) performTLSHandshakeAndHTTP() {
 	cipherSuite := t.tlsClient.GetCipherSuite()
 	algorithm := getCipherSuiteAlgorithm(cipherSuite)
 
+	// *** DEBUG: Print TLS key material comparison ***
+	fmt.Printf("🔍 TEE_K TLS %s handshake complete, cipher=0x%04x\n",
+		map[uint16]string{0x0303: "1.2", 0x0304: "1.3"}[t.tlsClient.GetNegotiatedVersion()], cipherSuite)
+
+	if t.tlsClient.GetNegotiatedVersion() == 0x0303 { // TLS 1.2
+		if tls12AEAD := t.tlsClient.GetTLS12AEAD(); tls12AEAD != nil {
+			fmt.Printf("🔍 TEE_K TLS 1.2 Key Material:\n")
+			fmt.Printf("  Write Key (%d bytes): %x\n", len(tls12AEAD.GetWriteKey()), tls12AEAD.GetWriteKey())
+			fmt.Printf("  Write IV (%d bytes): %x\n", len(tls12AEAD.GetWriteIV()), tls12AEAD.GetWriteIV())
+			fmt.Printf("  Read Key (%d bytes): %x\n", len(tls12AEAD.GetReadKey()), tls12AEAD.GetReadKey())
+			fmt.Printf("  Read IV (%d bytes): %x\n", len(tls12AEAD.GetReadIV()), tls12AEAD.GetReadIV())
+		} else {
+			fmt.Printf("❌ TEE_K TLS 1.2 AEAD context is NULL!\n")
+		}
+	}
+
 	// Send handshake key disclosure to Client
 	disclosureMsg := shared.CreateMessage(shared.MsgHandshakeKeyDisclosure, shared.HandshakeKeyDisclosureData{
 		HandshakeKey:      hsKey,
@@ -734,6 +799,8 @@ func (t *TEEK) performTLSHandshakeAndHTTP() {
 		log.Printf("[TEE_K] Failed to send handshake key disclosure: %v", err)
 		return
 	}
+
+	fmt.Printf("[TEE_K] Handshake finished - ready for split AEAD\n")
 
 	// Phase 2: Complete TLS handshake setup for split AEAD protocol
 	fmt.Printf("[TEE_K] TLS handshake complete, cipher suite 0x%04x\n", cipherSuite)
@@ -793,54 +860,86 @@ func (t *TEEK) handleRedactedRequest(conn *websocket.Conn, msg *shared.Message) 
 	// Phase 2: Split AEAD Protocol Implementation using proper TLS 1.3 application keys
 	cipherSuite := t.tlsClient.GetCipherSuite()
 
-	// Step 1: Add TLS 1.3 content type byte to redacted request (0x17 for shared.ApplicationData inner content)
-	// RFC 8446: plaintext = content || content_type || zero_padding
-	redactedWithContentType := make([]byte, len(redactedRequest.RedactedRequest)+2) // +2 for content type + padding
-	copy(redactedWithContentType, redactedRequest.RedactedRequest)
-	redactedWithContentType[len(redactedRequest.RedactedRequest)] = 0x17   // shared.ApplicationData content type (0x17, not 0x16!)
-	redactedWithContentType[len(redactedRequest.RedactedRequest)+1] = 0x00 // Required TLS 1.3 padding byte
+	// Step 1: Prepare data for encryption based on TLS version
+	var dataToEncrypt []byte
+	tlsVersion := t.tlsClient.GetNegotiatedVersion()
 
-	// Step 2: Get client application AEAD
-	clientAEAD := t.tlsClient.GetClientApplicationAEAD()
-	if clientAEAD == nil {
-		log.Printf("[TEE_K] No client application AEAD available")
-		t.sendError(conn, fmt.Sprintf("No client application AEAD available"))
-		return
+	if tlsVersion == 0x0303 { // TLS 1.2
+		// TLS 1.2: encrypt raw application data directly, no inner content type
+		dataToEncrypt = redactedRequest.RedactedRequest
+		fmt.Printf("[TEE_K] TLS 1.2: Encrypting raw HTTP data (%d bytes)\n", len(dataToEncrypt))
+	} else { // TLS 1.3
+		// TLS 1.3: Add inner content type byte + padding (RFC 8446)
+		// RFC 8446: plaintext = content || content_type || zero_padding
+		dataToEncrypt = make([]byte, len(redactedRequest.RedactedRequest)+2) // +2 for content type + padding
+		copy(dataToEncrypt, redactedRequest.RedactedRequest)
+		dataToEncrypt[len(redactedRequest.RedactedRequest)] = 0x17   // ApplicationData content type
+		dataToEncrypt[len(redactedRequest.RedactedRequest)+1] = 0x00 // Required TLS 1.3 padding byte
+		fmt.Printf("[TEE_K] TLS 1.3: Added inner content type + padding (%d bytes)\n", len(dataToEncrypt))
 	}
 
-	actualSeqNum := clientAEAD.GetSequence()
-	fmt.Printf("[TEE_K] DEBUG: Using sequence number %d (not hardcoded 0)\n", actualSeqNum)
+	// Step 2: Get application keys based on TLS version
+	var clientAppKey, clientAppIV []byte
+	var actualSeqNum uint64
+	fmt.Printf("🔍 TEE_K Split AEAD: TLS version 0x%04x, cipher 0x%04x\n", tlsVersion, cipherSuite)
 
-	// Create TLS record header for shared.ApplicationData
+	if tlsVersion == 0x0303 { // TLS 1.2
+		tls12AEAD := t.tlsClient.GetTLS12AEAD()
+		if tls12AEAD == nil {
+			log.Printf("[TEE_K] No TLS 1.2 AEAD available")
+			t.sendError(conn, fmt.Sprintf("No TLS 1.2 AEAD available"))
+			return
+		}
+
+		clientAppKey = tls12AEAD.GetWriteKey()
+		clientAppIV = tls12AEAD.GetWriteIV()
+		actualSeqNum = tls12AEAD.GetWriteSequence()
+
+		fmt.Printf("🔍 TEE_K TLS 1.2 Key Material for Split AEAD:\n")
+		fmt.Printf("  Write Key (%d bytes): %x\n", len(clientAppKey), clientAppKey)
+		fmt.Printf("  Write IV (%d bytes): %x\n", len(clientAppIV), clientAppIV)
+		fmt.Printf("  Write Sequence: %d\n", actualSeqNum)
+
+	} else { // TLS 1.3
+		clientAEAD := t.tlsClient.GetClientApplicationAEAD()
+		if clientAEAD == nil {
+			log.Printf("[TEE_K] No client application AEAD available")
+			t.sendError(conn, fmt.Sprintf("No client application AEAD available"))
+			return
+		}
+
+		actualSeqNum = clientAEAD.GetSequence()
+
+		// Get the raw key and IV from TLS client for manual GCM operations
+		keySchedule := t.tlsClient.GetKeySchedule()
+		if keySchedule == nil {
+			log.Printf("[TEE_K] No key schedule available")
+			t.sendError(conn, fmt.Sprintf("No key schedule available"))
+			return
+		}
+
+		clientAppKey = keySchedule.GetClientApplicationKey()
+		clientAppIV = keySchedule.GetClientApplicationIV()
+
+		if len(clientAppKey) == 0 || len(clientAppIV) == 0 {
+			log.Printf("[TEE_K] No application keys available")
+			t.sendError(conn, fmt.Sprintf("No application keys available"))
+			return
+		}
+
+		fmt.Printf("[TEE_K] DEBUG: TLS 1.3 Key (%d bytes): %x\n", len(clientAppKey), clientAppKey)
+		fmt.Printf("[TEE_K] DEBUG: TLS 1.3 IV (%d bytes): %x\n", len(clientAppIV), clientAppIV)
+	}
+
+	// Create TLS record header for ApplicationData
 	tagSize := 16 // GCM tag size
-	recordLength := len(redactedWithContentType) + tagSize
+	recordLength := len(dataToEncrypt) + tagSize
 	recordHeader := []byte{0x17, 0x03, 0x03, byte(recordLength >> 8), byte(recordLength & 0xFF)}
 
 	fmt.Printf("[TEE_K] DEBUG: TLS record header: %x (length includes %d-byte tag)\n", recordHeader, tagSize)
 
-	// Step 3: For split AEAD, use proper AES-CTR encryption + provide GCM authentication material
-	// Get the raw key and IV from TLS client for manual GCM operations
-	keySchedule := t.tlsClient.GetKeySchedule()
-	if keySchedule == nil {
-		log.Printf("[TEE_K] No key schedule available")
-		t.sendError(conn, fmt.Sprintf("No key schedule available"))
-		return
-	}
-
-	clientAppKey := keySchedule.GetClientApplicationKey()
-	clientAppIV := keySchedule.GetClientApplicationIV()
-
-	if len(clientAppKey) == 0 || len(clientAppIV) == 0 {
-		log.Printf("[TEE_K] No application keys available")
-		t.sendError(conn, fmt.Sprintf("No application keys available"))
-		return
-	}
-
-	fmt.Printf("[TEE_K] DEBUG: Key (%d bytes): %x\n", len(clientAppKey), clientAppKey)
-	fmt.Printf("[TEE_K] DEBUG: IV (%d bytes): %x\n", len(clientAppIV), clientAppIV)
-
 	// Step 4: Encrypt redacted request using cipher-agnostic function
-	encryptedData, err := t.encryptWithCipherSuite(redactedWithContentType, clientAppKey, clientAppIV, actualSeqNum, cipherSuite)
+	encryptedData, err := t.encryptWithCipherSuite(dataToEncrypt, clientAppKey, clientAppIV, actualSeqNum, cipherSuite)
 	if err != nil {
 		log.Printf("[TEE_K] Failed to encrypt data: %v", err)
 		t.sendError(conn, fmt.Sprintf("Failed to encrypt data: %v", err))
@@ -1097,11 +1196,25 @@ func isNetworkShutdownError(err error) bool {
 // getCipherSuiteAlgorithm maps TLS cipher suite numbers to algorithm names
 func getCipherSuiteAlgorithm(cipherSuite uint16) string {
 	switch cipherSuite {
+	// TLS 1.3 cipher suites
 	case 0x1301: // TLS_AES_128_GCM_SHA256
 		return "AES-128-GCM"
 	case 0x1302: // TLS_AES_256_GCM_SHA384
 		return "AES-256-GCM"
 	case 0x1303: // TLS_CHACHA20_POLY1305_SHA256
+		return "ChaCha20-Poly1305"
+	// TLS 1.2 cipher suites
+	case 0xc02f: // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+		return "AES-128-GCM"
+	case 0xc02b: // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+		return "AES-128-GCM"
+	case 0xc030: // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+		return "AES-256-GCM"
+	case 0xc02c: // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+		return "AES-256-GCM"
+	case 0xcca8: // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+		return "ChaCha20-Poly1305"
+	case 0xcca9: // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
 		return "ChaCha20-Poly1305"
 	default:
 		return fmt.Sprintf("Unknown-0x%04x", cipherSuite)
@@ -1141,12 +1254,20 @@ func (t *TEEK) requestKeyShareFromTEET(cipherSuite uint16) error {
 
 	// Determine key and IV lengths based on cipher suite
 	switch cipherSuite {
+	// TLS 1.3 cipher suites
 	case 0x1301: // TLS_AES_128_GCM_SHA256
 		keyLen, ivLen = 16, 12
 	case 0x1302: // TLS_AES_256_GCM_SHA384
 		keyLen, ivLen = 32, 12
 	case 0x1303: // TLS_CHACHA20_POLY1305_SHA256
 		keyLen, ivLen = 32, 12
+	// TLS 1.2 cipher suites
+	case 0xc02f, 0xc02b: // TLS_ECDHE_RSA/ECDSA_WITH_AES_128_GCM_SHA256
+		keyLen, ivLen = 16, 4 // AES-128: 16-byte key, 4-byte implicit IV
+	case 0xc030, 0xc02c: // TLS_ECDHE_RSA/ECDSA_WITH_AES_256_GCM_SHA384
+		keyLen, ivLen = 32, 4 // AES-256: 32-byte key, 4-byte implicit IV
+	case 0xcca8, 0xcca9: // TLS_ECDHE_RSA/ECDSA_WITH_CHACHA20_POLY1305_SHA256
+		keyLen, ivLen = 32, 12 // ChaCha20: 32-byte key, 12-byte IV (same as TLS 1.3)
 	default:
 		return fmt.Errorf("unsupported cipher suite: 0x%04x", cipherSuite)
 	}
@@ -1169,12 +1290,20 @@ func (t *TEEK) requestKeyShareFromTEETWithSession(sessionID string, cipherSuite 
 
 	// Determine key and IV lengths based on cipher suite
 	switch cipherSuite {
+	// TLS 1.3 cipher suites
 	case 0x1301: // TLS_AES_128_GCM_SHA256
 		keyLen, ivLen = 16, 12
 	case 0x1302: // TLS_AES_256_GCM_SHA384
 		keyLen, ivLen = 32, 12
 	case 0x1303: // TLS_CHACHA20_POLY1305_SHA256
 		keyLen, ivLen = 32, 12
+	// TLS 1.2 cipher suites
+	case 0xc02f, 0xc02b: // TLS_ECDHE_RSA/ECDSA_WITH_AES_128_GCM_SHA256
+		keyLen, ivLen = 16, 4 // AES-128: 16-byte key, 4-byte implicit IV
+	case 0xc030, 0xc02c: // TLS_ECDHE_RSA/ECDSA_WITH_AES_256_GCM_SHA384
+		keyLen, ivLen = 32, 4 // AES-256: 32-byte key, 4-byte implicit IV
+	case 0xcca8, 0xcca9: // TLS_ECDHE_RSA/ECDSA_WITH_CHACHA20_POLY1305_SHA256
+		keyLen, ivLen = 32, 12 // ChaCha20: 32-byte key, 12-byte IV (same as TLS 1.3)
 	default:
 		return fmt.Errorf("unsupported cipher suite: 0x%04x", cipherSuite)
 	}
@@ -1255,11 +1384,19 @@ func (t *TEEK) handleResponseLengthSession(sessionID string, msg *shared.Message
 	}
 	t.responseLengthBySeq[lengthData.SeqNum] = lengthData.Length
 
+	// Store explicit IV for TLS 1.2 AES-GCM decryption stream generation
+	if t.explicitIVBySeq == nil {
+		t.explicitIVBySeq = make(map[uint64][]byte)
+	}
+	if lengthData.ExplicitIV != nil {
+		t.explicitIVBySeq[lengthData.SeqNum] = lengthData.ExplicitIV
+	}
+
 	fmt.Printf("[TEE_K] Received response length from TEE_T (seq=%d, length=%d)\n",
 		lengthData.SeqNum, lengthData.Length)
 
 	// Generate tag secrets for the response
-	tagSecrets, err := t.generateResponseTagSecrets(lengthData.Length, lengthData.SeqNum, lengthData.CipherSuite, lengthData.RecordHeader)
+	tagSecrets, err := t.generateResponseTagSecrets(lengthData.Length, lengthData.SeqNum, lengthData.CipherSuite, lengthData.RecordHeader, lengthData.ExplicitIV)
 	if err != nil {
 		log.Printf("[TEE_K] Failed to generate response tag secrets for session %s: %v", sessionID, err)
 		return
@@ -1310,18 +1447,38 @@ func (t *TEEK) generateAndSendDecryptionStreamSession(sessionID string, seqNum u
 		return fmt.Errorf("no response length found for seq=%d", seqNum)
 	}
 
+	// TEE_T already sends the correct ciphertext length - no adjustment needed
+
 	// DON'T delete the stored length - we need it later for redaction processing
 	// delete(t.responseLengthBySeq, seqNum)
 
-	// Get key schedule to access server application keys
-	keySchedule := t.tlsClient.GetKeySchedule()
-	if keySchedule == nil {
-		return fmt.Errorf("no key schedule available")
-	}
+	// Get server application keys based on TLS version
+	var serverAppKey, serverAppIV []byte
 
-	// Get server application key and IV from key schedule
-	serverAppKey := keySchedule.GetServerApplicationKey()
-	serverAppIV := keySchedule.GetServerApplicationIV()
+	tlsVersion := t.tlsClient.GetNegotiatedVersion()
+	if tlsVersion == 0x0303 { // TLS 1.2
+		// Get server keys from TLS 1.2 AEAD context
+		tls12AEAD := t.tlsClient.GetTLS12AEAD()
+		if tls12AEAD == nil {
+			return fmt.Errorf("no TLS 1.2 AEAD available for decryption")
+		}
+
+		serverAppKey = tls12AEAD.GetReadKey()
+		serverAppIV = tls12AEAD.GetReadIV()
+
+		fmt.Printf("[TEE_K] Session %s: Using TLS 1.2 server keys for decryption stream\n", sessionID)
+	} else { // TLS 1.3
+		// Get key schedule to access server application keys
+		keySchedule := t.tlsClient.GetKeySchedule()
+		if keySchedule == nil {
+			return fmt.Errorf("no key schedule available")
+		}
+
+		serverAppKey = keySchedule.GetServerApplicationKey()
+		serverAppIV = keySchedule.GetServerApplicationIV()
+
+		fmt.Printf("[TEE_K] Session %s: Using TLS 1.3 server keys for decryption stream\n", sessionID)
+	}
 
 	if serverAppKey == nil || serverAppIV == nil {
 		return fmt.Errorf("missing server application key or IV")
@@ -1330,8 +1487,16 @@ func (t *TEEK) generateAndSendDecryptionStreamSession(sessionID string, seqNum u
 	// Get cipher suite from TLS client
 	cipherSuite := t.tlsClient.GetCipherSuite()
 
-	// Generate cipher-agnostic decryption stream
-	decryptionStream, err := t.generateDecryptionStream(serverAppKey, serverAppIV, seqNum, streamLength, cipherSuite)
+	// Get stored explicit IV for TLS 1.2 AES-GCM
+	var explicitIV []byte
+	if t.explicitIVBySeq != nil {
+		explicitIV = t.explicitIVBySeq[seqNum]
+	}
+
+	// Generate cipher-agnostic decryption stream with explicit IV support
+	// Use server sequence (client seq - 1) for keystream generation to match tag secrets
+	serverSeqNum := seqNum - 1
+	decryptionStream, err := t.generateDecryptionStreamWithExplicitIV(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite, explicitIV)
 	if err != nil {
 		return fmt.Errorf("failed to generate decryption stream: %v", err)
 	}
@@ -1353,72 +1518,192 @@ func (t *TEEK) generateAndSendDecryptionStreamSession(sessionID string, seqNum u
 	return nil
 }
 
-// generateDecryptionStream generates cipher-agnostic keystream for decryption
+// generateDecryptionStream generates cipher-agnostic keystream for decryption (legacy)
 func (t *TEEK) generateDecryptionStream(key, iv []byte, seqNum uint64, length int, cipherSuite uint16) ([]byte, error) {
+	return t.generateDecryptionStreamWithExplicitIV(key, iv, seqNum, length, cipherSuite, nil)
+}
+
+// generateDecryptionStreamWithExplicitIV generates cipher-agnostic keystream for decryption with TLS 1.2 explicit IV support
+func (t *TEEK) generateDecryptionStreamWithExplicitIV(key, iv []byte, seqNum uint64, length int, cipherSuite uint16, explicitIV []byte) ([]byte, error) {
 	// Generate keystream by encrypting zeros with the appropriate cipher
 	zeros := make([]byte, length)
-	keystream, err := t.encryptWithCipherSuite(zeros, key, iv, seqNum, cipherSuite)
+	keystream, err := t.encryptWithCipherSuiteWithExplicitIV(zeros, key, iv, seqNum, cipherSuite, explicitIV)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate keystream: %v", err)
 	}
 
+	fmt.Printf("[TEE_K] DEBUG: Generated keystream for seq=%d, length=%d\n", seqNum, length)
+	fmt.Printf("[TEE_K] DEBUG: Key: %x\n", key)
+	fmt.Printf("[TEE_K] DEBUG: IV: %x\n", iv)
+	if explicitIV != nil {
+		fmt.Printf("[TEE_K] DEBUG: ExplicitIV: %x\n", explicitIV)
+	}
+	fmt.Printf("[TEE_K] DEBUG: Keystream first 32 bytes: %x\n", keystream[:min(32, len(keystream))])
+
 	return keystream, nil
 }
 
-func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cipherSuite uint16, recordHeader []byte) ([]byte, error) {
+func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cipherSuite uint16, recordHeader []byte, explicitIV []byte) ([]byte, error) {
 	if t.tlsClient == nil {
 		return nil, fmt.Errorf("no TLS client available")
 	}
 
-	// Get server application AEAD for tag secret generation
-	serverAEAD := t.tlsClient.GetServerApplicationAEAD()
-	if serverAEAD == nil {
-		return nil, fmt.Errorf("no server application AEAD available")
-	}
+	// Get server application keys based on TLS version
+	var serverAppKey, serverAppIV []byte
 
-	// Get key schedule to access server application keys
-	keySchedule := t.tlsClient.GetKeySchedule()
-	if keySchedule == nil {
-		return nil, fmt.Errorf("no key schedule available")
-	}
+	tlsVersion := t.tlsClient.GetNegotiatedVersion()
+	if tlsVersion == 0x0303 { // TLS 1.2
+		// Get server keys from TLS 1.2 AEAD context
+		tls12AEAD := t.tlsClient.GetTLS12AEAD()
+		if tls12AEAD == nil {
+			return nil, fmt.Errorf("no TLS 1.2 AEAD available for response tag secrets")
+		}
 
-	// Get server application key and IV from key schedule
-	serverAppKey := keySchedule.GetServerApplicationKey()
-	serverAppIV := keySchedule.GetServerApplicationIV()
+		serverAppKey = tls12AEAD.GetReadKey()
+		serverAppIV = tls12AEAD.GetReadIV()
+
+		fmt.Printf("[TEE_K] Using TLS 1.2 server keys for response tag secrets\n")
+		fmt.Printf("[TEE_K] 🔑 Server Read Key: %x\n", serverAppKey)
+		fmt.Printf("[TEE_K] 🔑 Server Read IV:  %x\n", serverAppIV)
+	} else { // TLS 1.3
+		// Get server application AEAD for tag secret generation
+		serverAEAD := t.tlsClient.GetServerApplicationAEAD()
+		if serverAEAD == nil {
+			return nil, fmt.Errorf("no server application AEAD available")
+		}
+
+		// Get key schedule to access server application keys
+		keySchedule := t.tlsClient.GetKeySchedule()
+		if keySchedule == nil {
+			return nil, fmt.Errorf("no key schedule available")
+		}
+
+		serverAppKey = keySchedule.GetServerApplicationKey()
+		serverAppIV = keySchedule.GetServerApplicationIV()
+
+		fmt.Printf("[TEE_K] Using TLS 1.3 server keys for response tag secrets\n")
+	}
 
 	if serverAppKey == nil || serverAppIV == nil {
 		return nil, fmt.Errorf("missing server application key or IV")
 	}
 
-	// Use the actual TLS record header from the server instead of constructing our own
-	additionalData := recordHeader
-	if len(additionalData) != 5 {
-		return nil, fmt.Errorf("invalid record header length: expected 5, got %d", len(additionalData))
+	// Construct version-specific AAD for tag secret generation (must match TEE_T's verification)
+	var additionalData []byte
+
+	if tlsVersion == 0x0303 { // TLS 1.2
+		// TLS 1.2: AAD = seq_num(8) + record header(5) = 13 bytes total
+		if len(recordHeader) != 5 {
+			return nil, fmt.Errorf("invalid TLS 1.2 record header length: expected 5, got %d", len(recordHeader))
+		}
+
+		// Construct TLS 1.2 AAD: sequence_number(8) + record_header(5)
+		additionalData = make([]byte, 13)
+
+		// Sequence number (8 bytes, big-endian)
+		additionalData[0] = byte(seqNum >> 56)
+		additionalData[1] = byte(seqNum >> 48)
+		additionalData[2] = byte(seqNum >> 40)
+		additionalData[3] = byte(seqNum >> 32)
+		additionalData[4] = byte(seqNum >> 24)
+		additionalData[5] = byte(seqNum >> 16)
+		additionalData[6] = byte(seqNum >> 8)
+		additionalData[7] = byte(seqNum)
+
+		// Record header (5 bytes) - use PLAINTEXT length for TLS 1.2 AAD
+		additionalData[8] = recordHeader[0]              // content type (0x17)
+		additionalData[9] = recordHeader[1]              // version major (0x03)
+		additionalData[10] = recordHeader[2]             // version minor (0x03)
+		additionalData[11] = byte(responseLength >> 8)   // plaintext length high byte
+		additionalData[12] = byte(responseLength & 0xFF) // plaintext length low byte
+
+		fmt.Printf("[TEE_K] TLS 1.2 tag secret AAD: seq=%d, plaintext_len=%d, aad=%x\n",
+			seqNum, responseLength, additionalData)
+	} else {
+		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
+		tagSize := 16                                // GCM tag size
+		ciphertextLength := responseLength + tagSize // encrypted data + authentication tag
+		additionalData = []byte{
+			0x17,                          // ApplicationData
+			0x03,                          // TLS version major (compatibility)
+			0x03,                          // TLS version minor (compatibility)
+			byte(ciphertextLength >> 8),   // Length high byte (includes tag)
+			byte(ciphertextLength & 0xFF), // Length low byte (includes tag)
+		}
+
+		fmt.Printf("[TEE_K] TLS 1.3 tag secret AAD: %x (ciphertext+tag length: %d)\n", additionalData, ciphertextLength)
 	}
 
-	// *** CRITICAL FIX: Use client's sequence directly ***
-	// The client correctly tracks response order (0, 1, 2, ...) which matches server sequence
-	// Don't use serverAEAD.GetSequence() because it's corrupted by comparison decrypts
-	actualSeqToUse := seqNum
-	fmt.Printf("[TEE_K] Using client sequence %d (matches actual server sequence)\n", actualSeqToUse)
+	// *** CRITICAL FIX: Server sequence = client sequence - 1 ***
+	// Client labels first response as seq=1, but server generated it with seq=0
+	// Client labels second response as seq=2, but server generated it with seq=1, etc.
+	actualSeqToUse := seqNum - 1
+	fmt.Printf("[TEE_K] Using server sequence %d (client sequence %d - 1)\n", actualSeqToUse, seqNum)
 
-	splitAEAD := minitls.NewSplitAEAD(serverAppKey, serverAppIV, cipherSuite)
+	if tlsVersion == 0x0303 && len(explicitIV) > 0 { // TLS 1.2 with explicit IV
+		// For TLS 1.2 AES-GCM, construct nonce exactly like minitls crypto12.go
+		// Parse explicit IV as big-endian uint64, then encode back as big-endian uint64
+		if len(explicitIV) != 8 {
+			return nil, fmt.Errorf("TLS 1.2 explicit IV must be 8 bytes, got %d", len(explicitIV))
+		}
 
-	// Set sequence number to match serverAEAD's current state
-	splitAEAD.SetSequence(actualSeqToUse)
+		// Parse explicit IV as uint64 (like minitls does)
+		explicitIVUint64 := binary.BigEndian.Uint64(explicitIV)
 
-	// Create dummy encrypted data to generate tag secrets
-	dummyEncrypted := make([]byte, responseLength)
+		// Construct nonce: implicit_iv(4) || explicit_nonce(8)
+		nonce := make([]byte, 12)                                 // GCM nonce is 12 bytes
+		copy(nonce[0:4], serverAppIV[0:4])                        // 4-byte implicit IV
+		binary.BigEndian.PutUint64(nonce[4:12], explicitIVUint64) // 8-byte explicit IV as uint64
 
-	// Generate tag secrets using the same method as requests
-	_, tagSecrets, err := splitAEAD.EncryptWithoutTag(dummyEncrypted, additionalData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate tag secrets: %v", err)
+		fmt.Printf("[TEE_K] TLS 1.2 nonce construction: implicit_iv=%x + explicit_iv_uint64=%d = nonce=%x\n",
+			serverAppIV[0:4], explicitIVUint64, nonce)
+
+		// For TLS 1.2 AES-GCM, manually generate tag secrets using the constructed nonce
+		if cipherSuite == 0xc02f || cipherSuite == 0xc02b || cipherSuite == 0xc030 || cipherSuite == 0xc02c {
+			// AES-GCM cipher suites
+			block, err := aes.NewCipher(serverAppKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create AES cipher: %v", err)
+			}
+
+			// Generate tag secrets: E_K(0^128) || E_K(nonce||1)
+			tagSecrets := make([]byte, 32)
+
+			// E_K(0^128) - first 16 bytes
+			zeros := make([]byte, 16)
+			block.Encrypt(tagSecrets[0:16], zeros)
+
+			// E_K(nonce||1) - last 16 bytes
+			nonceWith1 := make([]byte, 16)
+			copy(nonceWith1, nonce)
+			nonceWith1[15] = 1
+			block.Encrypt(tagSecrets[16:32], nonceWith1)
+
+			fmt.Printf("[TEE_K] Generated TLS 1.2 tag secrets: E_K(0^128)=%x, E_K(nonce||1)=%x\n",
+				tagSecrets[0:16], tagSecrets[16:32])
+
+			return tagSecrets, nil
+		} else {
+			return nil, fmt.Errorf("unsupported TLS 1.2 cipher suite for manual tag generation: 0x%04x", cipherSuite)
+		}
+	} else {
+		// TLS 1.3 or TLS 1.2 without explicit IV (use standard SplitAEAD)
+		splitAEAD := minitls.NewSplitAEAD(serverAppKey, serverAppIV, cipherSuite)
+
+		// Set sequence number to match server's current state
+		splitAEAD.SetSequence(actualSeqToUse)
+
+		// Create dummy encrypted data to generate tag secrets
+		dummyEncrypted := make([]byte, responseLength)
+
+		// Generate tag secrets using the same method as requests
+		_, tagSecrets, err := splitAEAD.EncryptWithoutTag(dummyEncrypted, additionalData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate tag secrets: %v", err)
+		}
+
+		return tagSecrets, nil
 	}
-
-	fmt.Printf("[TEE_K] Generated tag secrets for sequence %d\n", actualSeqToUse)
-
-	return tagSecrets, nil
 }
 
 // Legacy handlers for backward compatibility
@@ -1439,7 +1724,7 @@ func (t *TEEK) handleResponseLength(msg *shared.Message) {
 		lengthData.SeqNum, lengthData.Length)
 
 	// Generate tag secrets for the response
-	tagSecrets, err := t.generateResponseTagSecrets(lengthData.Length, lengthData.SeqNum, lengthData.CipherSuite, lengthData.RecordHeader)
+	tagSecrets, err := t.generateResponseTagSecrets(lengthData.Length, lengthData.SeqNum, lengthData.CipherSuite, lengthData.RecordHeader, lengthData.ExplicitIV)
 	if err != nil {
 		log.Printf("[TEE_K] Failed to generate response tag secrets: %v", err)
 		return
@@ -1503,15 +1788,33 @@ func (t *TEEK) generateAndSendDecryptionStream(seqNum uint64) error {
 	// DON'T delete the stored length - we need it later for redaction processing
 	// delete(t.responseLengthBySeq, seqNum)
 
-	// Get key schedule to access server application keys
-	keySchedule := t.tlsClient.GetKeySchedule()
-	if keySchedule == nil {
-		return fmt.Errorf("no key schedule available")
-	}
+	// Get server application keys based on TLS version
+	var serverAppKey, serverAppIV []byte
 
-	// Get server application key and IV from key schedule
-	serverAppKey := keySchedule.GetServerApplicationKey()
-	serverAppIV := keySchedule.GetServerApplicationIV()
+	tlsVersion := t.tlsClient.GetNegotiatedVersion()
+	if tlsVersion == 0x0303 { // TLS 1.2
+		// Get server keys from TLS 1.2 AEAD context
+		tls12AEAD := t.tlsClient.GetTLS12AEAD()
+		if tls12AEAD == nil {
+			return fmt.Errorf("no TLS 1.2 AEAD available for decryption")
+		}
+
+		serverAppKey = tls12AEAD.GetReadKey()
+		serverAppIV = tls12AEAD.GetReadIV()
+
+		fmt.Printf("[TEE_K] Using TLS 1.2 server keys for decryption stream\n")
+	} else { // TLS 1.3
+		// Get key schedule to access server application keys
+		keySchedule := t.tlsClient.GetKeySchedule()
+		if keySchedule == nil {
+			return fmt.Errorf("no key schedule available")
+		}
+
+		serverAppKey = keySchedule.GetServerApplicationKey()
+		serverAppIV = keySchedule.GetServerApplicationIV()
+
+		fmt.Printf("[TEE_K] Using TLS 1.3 server keys for decryption stream\n")
+	}
 
 	if serverAppKey == nil || serverAppIV == nil {
 		return fmt.Errorf("missing server application key or IV")
@@ -1521,7 +1824,9 @@ func (t *TEEK) generateAndSendDecryptionStream(seqNum uint64) error {
 	cipherSuite := t.tlsClient.GetCipherSuite()
 
 	// Generate cipher-agnostic decryption stream
-	decryptionStream, err := t.generateDecryptionStream(serverAppKey, serverAppIV, seqNum, streamLength, cipherSuite)
+	// Use server sequence (client seq - 1) for keystream generation to match tag secrets
+	serverSeqNum := seqNum - 1
+	decryptionStream, err := t.generateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite)
 	if err != nil {
 		return fmt.Errorf("failed to generate decryption stream: %v", err)
 	}
@@ -1826,13 +2131,32 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 			return fmt.Errorf("no TLS client available for decryption key")
 		}
 
-		keySchedule := t.tlsClient.GetKeySchedule()
-		if keySchedule == nil {
-			return fmt.Errorf("no key schedule available")
-		}
+		// Get server application keys based on TLS version
+		var serverAppKey, serverAppIV []byte
 
-		serverAppKey := keySchedule.GetServerApplicationKey()
-		serverAppIV := keySchedule.GetServerApplicationIV()
+		tlsVersion := t.tlsClient.GetNegotiatedVersion()
+		if tlsVersion == 0x0303 { // TLS 1.2
+			// Get server keys from TLS 1.2 AEAD context
+			tls12AEAD := t.tlsClient.GetTLS12AEAD()
+			if tls12AEAD == nil {
+				return fmt.Errorf("no TLS 1.2 AEAD available for redacted decryption")
+			}
+
+			serverAppKey = tls12AEAD.GetReadKey()
+			serverAppIV = tls12AEAD.GetReadIV()
+
+			fmt.Printf("[TEE_K] Session %s: Using TLS 1.2 server keys for redacted decryption stream\n", sessionID)
+		} else { // TLS 1.3
+			keySchedule := t.tlsClient.GetKeySchedule()
+			if keySchedule == nil {
+				return fmt.Errorf("no key schedule available")
+			}
+
+			serverAppKey = keySchedule.GetServerApplicationKey()
+			serverAppIV = keySchedule.GetServerApplicationIV()
+
+			fmt.Printf("[TEE_K] Session %s: Using TLS 1.3 server keys for redacted decryption stream\n", sessionID)
+		}
 
 		if serverAppKey == nil || serverAppIV == nil {
 			return fmt.Errorf("missing server application key or IV")
@@ -1842,7 +2166,15 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		cipherSuite := t.tlsClient.GetCipherSuite()
 
 		// Generate original decryption stream for this sequence using server application key
-		originalStream, err := t.generateDecryptionStream(serverAppKey, serverAppIV, seqNum, length, cipherSuite)
+		// For TLS 1.2 AES-GCM, retrieve the stored explicit IV for this sequence
+		var explicitIV []byte
+		if t.explicitIVBySeq != nil {
+			explicitIV = t.explicitIVBySeq[seqNum]
+		}
+
+		// Use server sequence (client seq - 1) for keystream generation to match tag secrets
+		serverSeqNum := seqNum - 1
+		originalStream, err := t.generateDecryptionStreamWithExplicitIV(serverAppKey, serverAppIV, serverSeqNum, length, cipherSuite, explicitIV)
 		if err != nil {
 			return fmt.Errorf("failed to generate original decryption stream for seq %d: %v", seqNum, err)
 		}
@@ -1855,6 +2187,22 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		for _, redactionRange := range spec.Ranges {
 			rangeStart := redactionRange.Start
 			rangeEnd := redactionRange.Start + redactionRange.Length
+
+			// Check if this is TLS 1.2 AES-GCM cipher suite (needs special handling)
+			// Detect TLS version based on cipher suite for proper offset handling
+			isTLS13Cipher := (cipherSuite >= 0x1301 && cipherSuite <= 0x1305) // TLS 1.3 cipher suite range
+
+			// TLS 1.2: Apply offset for explicit IV in keystream
+			// TLS 1.3: No offset adjustment needed (no explicit IV in records)
+			if isTLS13Cipher {
+				// TLS 1.3: No offset adjustment needed
+				log.Printf("[TEE_K] DEBUG: TLS 1.3 redaction range [%d:%d] (no offset)", rangeStart, rangeEnd)
+			} else {
+				// TLS 1.2: Adjust ranges for explicit IV in keystream
+				rangeStart += 8 // Adjust for explicit IV in TLS 1.2 keystream
+				rangeEnd += 8
+				log.Printf("[TEE_K] DEBUG: TLS 1.2 redaction range [%d:%d] (+8 offset)", rangeStart, rangeEnd)
+			}
 
 			// Check if this range overlaps with current sequence
 			seqStart := currentOffset
@@ -2147,19 +2495,82 @@ func (t *TEEK) sendAttestationResponse(sessionID string, attestationDoc []byte, 
 	}
 }
 
-// encryptWithCipherSuite encrypts data using the appropriate cipher based on the cipher suite
+// constructNonce creates the appropriate nonce for a given cipher suite and sequence number
+// Following RFC specifications and minitls implementation exactly
+func (t *TEEK) constructNonce(iv []byte, seqNum uint64, cipherSuite uint16) []byte {
+	switch cipherSuite {
+	// TLS 1.3 cipher suites - IV XOR sequence number (RFC 8446)
+	case 0x1301, 0x1302, 0x1303: // All TLS 1.3 cipher suites
+		nonce := make([]byte, len(iv))
+		copy(nonce, iv)
+		for i := 0; i < 8; i++ {
+			nonce[len(nonce)-1-i] ^= byte(seqNum >> (8 * i))
+		}
+		return nonce
+
+	// TLS 1.2 AES-GCM - explicit nonce format (RFC 5288)
+	case 0xc02f, 0xc02b, 0xc030, 0xc02c: // TLS 1.2 AES-GCM cipher suites
+		// 12-byte nonce = implicit_iv(4) || explicit_nonce(8)
+		nonce := make([]byte, 12)
+		copy(nonce[0:4], iv) // 4-byte implicit IV
+		// 8-byte explicit nonce = sequence number (big-endian)
+		nonce[4] = byte(seqNum >> 56)
+		nonce[5] = byte(seqNum >> 48)
+		nonce[6] = byte(seqNum >> 40)
+		nonce[7] = byte(seqNum >> 32)
+		nonce[8] = byte(seqNum >> 24)
+		nonce[9] = byte(seqNum >> 16)
+		nonce[10] = byte(seqNum >> 8)
+		nonce[11] = byte(seqNum)
+		return nonce
+
+	// TLS 1.2 ChaCha20 - IV XOR sequence number (RFC 7905)
+	case 0xcca8, 0xcca9: // TLS 1.2 ChaCha20-Poly1305 cipher suites
+		nonce := make([]byte, len(iv))
+		copy(nonce, iv)
+		for i := 0; i < 8; i++ {
+			nonce[len(nonce)-1-i] ^= byte(seqNum >> (8 * i))
+		}
+		return nonce
+
+	default:
+		// Fallback to TLS 1.3 style for unknown cipher suites
+		nonce := make([]byte, len(iv))
+		copy(nonce, iv)
+		for i := 0; i < 8; i++ {
+			nonce[len(nonce)-1-i] ^= byte(seqNum >> (8 * i))
+		}
+		return nonce
+	}
+}
+
+// encryptWithCipherSuite encrypts data using the appropriate cipher based on the cipher suite (legacy)
 func (t *TEEK) encryptWithCipherSuite(data []byte, key, iv []byte, seqNum uint64, cipherSuite uint16) ([]byte, error) {
-	// Create nonce: IV XOR with sequence number (same for both AES-GCM and ChaCha20-Poly1305)
-	nonce := make([]byte, len(iv))
-	copy(nonce, iv)
-	for i := 0; i < 8; i++ {
-		nonce[len(nonce)-1-i] ^= byte(seqNum >> (8 * i))
+	return t.encryptWithCipherSuiteWithExplicitIV(data, key, iv, seqNum, cipherSuite, nil)
+}
+
+// encryptWithCipherSuiteWithExplicitIV encrypts data using the appropriate cipher with TLS 1.2 explicit IV support
+func (t *TEEK) encryptWithCipherSuiteWithExplicitIV(data []byte, key, iv []byte, seqNum uint64, cipherSuite uint16, explicitIV []byte) ([]byte, error) {
+	// Use centralized nonce construction with explicit IV support
+	var nonce []byte
+	if explicitIV != nil && len(explicitIV) == 8 {
+		// TLS 1.2 AES-GCM: use constructNonce with sequence number (not explicit IV from record)
+		nonce = t.constructNonce(iv, seqNum, cipherSuite)
+		explicitIVUint64 := binary.BigEndian.Uint64(explicitIV)
+		fmt.Printf("[TEE_K] DEBUG: TLS 1.2 constructNonce: cipher=0x%04x, seq=%d, nonce: %x\n", cipherSuite, seqNum, nonce)
+		fmt.Printf("[TEE_K] DEBUG: iv: %x, explicitIVBytes: %x, explicitIVUint64: %016x\n", iv, explicitIV, explicitIVUint64)
+	} else {
+		// Use standard nonce construction (TLS 1.3 or TLS 1.2 without explicit IV)
+		nonce = t.constructNonce(iv, seqNum, cipherSuite)
+		fmt.Printf("[TEE_K] DEBUG: Standard nonce: cipher=0x%04x, seq=%d, nonce: %x\n", cipherSuite, seqNum, nonce)
 	}
 
 	switch cipherSuite {
-	case 0x1301, 0x1302: // AES-GCM cipher suites
+	// AES-GCM cipher suites (both TLS 1.2 and 1.3)
+	case 0x1301, 0x1302, 0xc02f, 0xc02b, 0xc030, 0xc02c:
 		return t.encryptWithAESCTR(data, key, nonce)
-	case 0x1303: // ChaCha20-Poly1305
+	// ChaCha20-Poly1305 cipher suites (both TLS 1.2 and 1.3)
+	case 0x1303, 0xcca8, 0xcca9:
 		return t.encryptWithChaCha20(data, key, nonce)
 	default:
 		return nil, fmt.Errorf("unsupported cipher suite for encryption: 0x%04x", cipherSuite)
@@ -2176,7 +2587,10 @@ func (t *TEEK) encryptWithAESCTR(data []byte, key, nonce []byte) ([]byte, error)
 	// Create CTR stream with GCM counter format: nonce (12 bytes) + counter (4 bytes)
 	ctrNonce := make([]byte, 16)
 	copy(ctrNonce, nonce) // 12-byte nonce
-	ctrNonce[15] = 2      // GCM data encryption starts at counter 2
+
+	// Use counter = 2 (confirmed by split AEAD test - matches Go GCM)
+	// Go GCM uses counter 1 for tag generation, counter 2 for data encryption
+	ctrNonce[15] = 2 // Standard GCM data encryption starts at counter 2
 
 	stream := cipher.NewCTR(block, ctrNonce)
 	encryptedData := make([]byte, len(data))
@@ -2213,9 +2627,15 @@ func (t *TEEK) encryptWithChaCha20(data []byte, key, nonce []byte) ([]byte, erro
 // generateTagSecrets generates tag computation secrets for the given cipher suite
 func (t *TEEK) generateTagSecrets(key, nonce []byte, cipherSuite uint16) ([]byte, error) {
 	switch cipherSuite {
-	case 0x1301, 0x1302: // AES-GCM cipher suites
+	// TLS 1.3 cipher suites
+	case 0x1301, 0x1302: // TLS 1.3 AES-GCM
 		return t.generateAESGCMTagSecrets(key, nonce)
-	case 0x1303: // ChaCha20-Poly1305
+	case 0x1303: // TLS 1.3 ChaCha20-Poly1305
+		return t.generateChaCha20Poly1305TagSecrets(key, nonce)
+	// TLS 1.2 cipher suites
+	case 0xc02f, 0xc02b, 0xc030, 0xc02c: // TLS 1.2 AES-GCM
+		return t.generateAESGCMTagSecrets(key, nonce)
+	case 0xcca8, 0xcca9: // TLS 1.2 ChaCha20-Poly1305
 		return t.generateChaCha20Poly1305TagSecrets(key, nonce)
 	default:
 		return nil, fmt.Errorf("unsupported cipher suite for tag secrets: 0x%04x", cipherSuite)

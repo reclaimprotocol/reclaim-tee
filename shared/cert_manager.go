@@ -417,7 +417,7 @@ func (m *VSockLegoManager) CreateTLSConfig() *tls.Config {
 	return &tls.Config{
 		GetCertificate: m.GetCertificate,
 		MinVersion:     tls.VersionTLS12,
-		MaxVersion:     tls.VersionTLS13,
+		MaxVersion:     tls.VersionTLS13, // Allow both TLS 1.2 and 1.3
 	}
 }
 
