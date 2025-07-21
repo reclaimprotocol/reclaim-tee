@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -56,6 +57,7 @@ func NewReclaimClient(config ClientConfig) ReclaimClient {
 	// Store config for later use
 	client.forceTLSVersion = config.ForceTLSVersion
 	client.forceCipherSuite = config.ForceCipherSuite
+	client.SetMode(config.Mode)
 
 	return &reclaimClientImpl{
 		client: client,
@@ -76,8 +78,12 @@ func (r *reclaimClientImpl) Connect() error {
 	}
 
 	// Fetch and verify attestations (only in enclave mode)
-	if err := r.client.fetchAndVerifyAttestations(); err != nil {
-		return NewAttestationError(err)
+	if r.config.Mode == ModeEnclave {
+		if err := r.client.fetchAndVerifyAttestations(); err != nil {
+			return NewAttestationError(err)
+		}
+	} else {
+		fmt.Printf("[Client] Skipping attestation verification in standalone mode\n")
 	}
 
 	return nil

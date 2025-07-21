@@ -420,7 +420,12 @@ func (t *TEET) handleEncryptedResponseSession(sessionID string, msg *shared.Mess
 	}
 
 	record := make([]byte, 5+recordLength)
-	record[0] = 0x17                      // ApplicationData
+	// Use original record type from client's captured header (preserves 0x15 for alerts, etc.)
+	if len(encryptedResp.RecordHeader) >= 1 {
+		record[0] = encryptedResp.RecordHeader[0] // Preserve original record type
+	} else {
+		record[0] = 0x17 // Default to ApplicationData if header missing
+	}
 	record[1] = 0x03                      // TLS version major
 	record[2] = 0x03                      // TLS version minor
 	record[3] = byte(recordLength >> 8)   // Length high byte
@@ -709,8 +714,39 @@ func (t *TEET) processEncryptedRequestWithStreams(encReq *shared.EncryptedReques
 
 	fmt.Printf("[TEE_T] Successfully reconstructed original request data\n")
 
-	// Compute authentication tag using the tag secrets
-	authTag, err := t.computeAuthenticationTag(reconstructedData, encReq.TagSecrets, encReq.CipherSuite, encReq.SeqNum)
+	// Create AAD for tag computation based on TLS version
+	var additionalData []byte
+	if encReq.CipherSuite == 0x1301 || encReq.CipherSuite == 0x1302 || encReq.CipherSuite == 0x1303 {
+		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
+		tagSize := 16                                    // GCM tag size
+		recordLength := len(reconstructedData) + tagSize // encrypted data + authentication tag
+		additionalData = []byte{
+			0x17,                      // ApplicationData
+			0x03,                      // TLS version major (compatibility)
+			0x03,                      // TLS version minor (compatibility)
+			byte(recordLength >> 8),   // Length high byte (includes tag)
+			byte(recordLength & 0xFF), // Length low byte (includes tag)
+		}
+	} else {
+		// TLS 1.2: AAD = seq_num + record header (13 bytes)
+		plaintextLength := len(reconstructedData) // For TLS 1.2 AAD, use plaintext length
+		additionalData = make([]byte, 13)         // 8 bytes seq_num + 5 bytes record header
+
+		// Sequence number (8 bytes, big-endian)
+		for i := 0; i < 8; i++ {
+			additionalData[i] = byte(encReq.SeqNum >> (8 * (7 - i)))
+		}
+
+		// Record header (5 bytes)
+		additionalData[8] = 0x17                          // Application data content type
+		additionalData[9] = 0x03                          // TLS version major
+		additionalData[10] = 0x03                         // TLS version minor
+		additionalData[11] = byte(plaintextLength >> 8)   // Plaintext length high byte
+		additionalData[12] = byte(plaintextLength & 0xFF) // Plaintext length low byte
+	}
+
+	// Use consolidated minitls function for tag computation
+	authTag, err := minitls.ComputeTagFromSecrets(reconstructedData, encReq.TagSecrets, encReq.CipherSuite, additionalData)
 	if err != nil {
 		log.Printf("[TEE_T] Failed to compute authentication tag: %v", err)
 		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
@@ -765,8 +801,39 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 
 	fmt.Printf("[TEE_T] Successfully reconstructed original request data\n")
 
-	// Compute authentication tag using the tag secrets
-	authTag, err := t.computeAuthenticationTag(reconstructedData, encReq.TagSecrets, encReq.CipherSuite, encReq.SeqNum)
+	// Create AAD for tag computation based on TLS version
+	var additionalData []byte
+	if encReq.CipherSuite == 0x1301 || encReq.CipherSuite == 0x1302 || encReq.CipherSuite == 0x1303 {
+		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
+		tagSize := 16                                    // GCM tag size
+		recordLength := len(reconstructedData) + tagSize // encrypted data + authentication tag
+		additionalData = []byte{
+			0x17,                      // ApplicationData
+			0x03,                      // TLS version major (compatibility)
+			0x03,                      // TLS version minor (compatibility)
+			byte(recordLength >> 8),   // Length high byte (includes tag)
+			byte(recordLength & 0xFF), // Length low byte (includes tag)
+		}
+	} else {
+		// TLS 1.2: AAD = seq_num + record header (13 bytes)
+		plaintextLength := len(reconstructedData) // For TLS 1.2 AAD, use plaintext length
+		additionalData = make([]byte, 13)         // 8 bytes seq_num + 5 bytes record header
+
+		// Sequence number (8 bytes, big-endian)
+		for i := 0; i < 8; i++ {
+			additionalData[i] = byte(encReq.SeqNum >> (8 * (7 - i)))
+		}
+
+		// Record header (5 bytes)
+		additionalData[8] = 0x17                          // Application data content type
+		additionalData[9] = 0x03                          // TLS version major
+		additionalData[10] = 0x03                         // TLS version minor
+		additionalData[11] = byte(plaintextLength >> 8)   // Plaintext length high byte
+		additionalData[12] = byte(plaintextLength & 0xFF) // Plaintext length low byte
+	}
+
+	// Use consolidated minitls function for tag computation
+	authTag, err := minitls.ComputeTagFromSecrets(reconstructedData, encReq.TagSecrets, encReq.CipherSuite, additionalData)
 	if err != nil {
 		log.Printf("[TEE_T] Failed to compute authentication tag: %v", err)
 		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
@@ -844,69 +911,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 
 }
 
-func (t *TEET) computeAuthenticationTag(encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64) ([]byte, error) {
-	// *** VERSION-SPECIFIC AAD CONSTRUCTION ***
-	var additionalData []byte
-
-	// Determine TLS version based on cipher suite
-	if cipherSuite == 0x1301 || cipherSuite == 0x1302 || cipherSuite == 0x1303 {
-		// TLS 1.3: AAD = record header only (5 bytes)
-		tagSize := 16 // GCM tag size
-		recordLength := len(encryptedData) + tagSize
-		additionalData = []byte{
-			0x17,                      // Application data content type
-			0x03,                      // TLS version major
-			0x03,                      // TLS version minor
-			byte(recordLength >> 8),   // Length high byte (includes tag for TLS 1.3)
-			byte(recordLength & 0xFF), // Length low byte (includes tag for TLS 1.3)
-		}
-	} else {
-		// TLS 1.2: AAD = seq_num + record header (13 bytes) - RFC 5246
-		plaintextLength := len(encryptedData) // For TLS 1.2 AAD, use plaintext length
-		additionalData = make([]byte, 13)     // 8 bytes seq_num + 5 bytes record header
-
-		// Sequence number (8 bytes, big-endian)
-		additionalData[0] = byte(seqNum >> 56)
-		additionalData[1] = byte(seqNum >> 48)
-		additionalData[2] = byte(seqNum >> 40)
-		additionalData[3] = byte(seqNum >> 32)
-		additionalData[4] = byte(seqNum >> 24)
-		additionalData[5] = byte(seqNum >> 16)
-		additionalData[6] = byte(seqNum >> 8)
-		additionalData[7] = byte(seqNum)
-
-		// Record header (5 bytes)
-		additionalData[8] = 0x17                          // Application data content type
-		additionalData[9] = 0x03                          // TLS version major
-		additionalData[10] = 0x03                         // TLS version minor
-		additionalData[11] = byte(plaintextLength >> 8)   // Plaintext length high byte
-		additionalData[12] = byte(plaintextLength & 0xFF) // Plaintext length low byte
-	}
-
-	fmt.Printf("[TEE_T] DEBUG: Split AEAD computation:\n")
-	fmt.Printf(" Ciphertext (%d bytes): %x\n", len(encryptedData), encryptedData[:min(32, len(encryptedData))])
-	fmt.Printf(" Additional data (%d bytes): %x\n", len(additionalData), additionalData)
-	fmt.Printf(" Sequence number: %d\n", seqNum)
-	fmt.Printf(" Tag secrets (%d bytes): %x\n", len(tagSecrets), tagSecrets)
-
-	if len(tagSecrets) != 32 {
-		return nil, fmt.Errorf("tag secrets wrong size: got %d, need 32", len(tagSecrets))
-	}
-
-	fmt.Printf(" E_K(0^128): %x\n", tagSecrets[0:16])
-	fmt.Printf(" E_K(nonce||1): %x\n", tagSecrets[16:32])
-
-	// Use the ComputeTagFromSecrets function from minitls
-	computedTag, err := minitls.ComputeTagFromSecrets(encryptedData, tagSecrets, cipherSuite, additionalData)
-
-	if err != nil {
-		fmt.Printf("[TEE_T] Tag computation failed: %v\n", err)
-		return nil, err
-	}
-
-	fmt.Printf("[TEE_T] Split AEAD tag computation successful\n")
-	return computedTag, nil
-}
+// Note: computeAuthenticationTag function has been consolidated into minitls.ComputeTagFromSecrets
 
 func (t *TEET) sendMessageToClient(msg *shared.Message) error {
 	conn := t.clientConn

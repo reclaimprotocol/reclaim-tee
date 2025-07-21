@@ -233,8 +233,7 @@ func (c *Client) sendMessage(msg *Message) error {
 
 // isEnclaveMode checks if the client is running in enclave mode
 func (c *Client) isEnclaveMode() bool {
-	return (strings.HasPrefix(c.teekURL, "wss://") && strings.Contains(c.teekURL, "reclaimprotocol.org")) ||
-		(strings.HasPrefix(c.teetURL, "wss://") && strings.Contains(c.teetURL, "reclaimprotocol.org"))
+	return c.clientMode == ModeEnclave
 }
 
 // sendMessageToTEET sends a message to TEE_T

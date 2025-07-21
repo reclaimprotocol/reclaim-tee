@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/aes"
-	"crypto/cipher"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/mdlayher/vsock"
-	"golang.org/x/crypto/chacha20"
 )
 
 var teekUpgrader = websocket.Upgrader{
@@ -714,22 +712,42 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		}
 	}
 
-	// Encrypt using cipher-agnostic function
-	encryptedData, err := t.encryptWithCipherSuite(dataToEncrypt, clientAppKey, clientAppIV, actualSeqNum, cipherSuite)
+	// Use consolidated crypto functions from minitls
+	splitAEAD := minitls.NewSplitAEAD(clientAppKey, clientAppIV, cipherSuite)
+	splitAEAD.SetSequence(actualSeqNum)
+
+	// Create AAD based on TLS version
+	var additionalData []byte
+	if tlsVersion == 0x0303 { // TLS 1.2
+		// TLS 1.2: AAD = seq_num(8) + record header(5)
+		additionalData = make([]byte, 13)
+		// Sequence number (8 bytes, big-endian)
+		for i := 0; i < 8; i++ {
+			additionalData[i] = byte(actualSeqNum >> (8 * (7 - i)))
+		}
+		// Record header (5 bytes) - use plaintext length
+		additionalData[8] = 0x17                             // ApplicationData
+		additionalData[9] = 0x03                             // TLS version major
+		additionalData[10] = 0x03                            // TLS version minor
+		additionalData[11] = byte(len(dataToEncrypt) >> 8)   // plaintext length high byte
+		additionalData[12] = byte(len(dataToEncrypt) & 0xFF) // plaintext length low byte
+	} else { // TLS 1.3
+		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
+		tagSize := 16                                // GCM tag size
+		recordLength := len(dataToEncrypt) + tagSize // encrypted data + authentication tag
+		additionalData = []byte{
+			0x17,                      // ApplicationData
+			0x03,                      // TLS version major (compatibility)
+			0x03,                      // TLS version minor (compatibility)
+			byte(recordLength >> 8),   // Length high byte (includes tag)
+			byte(recordLength & 0xFF), // Length low byte (includes tag)
+		}
+	}
+
+	encryptedData, tagSecrets, err := splitAEAD.EncryptWithoutTag(dataToEncrypt, additionalData)
 	if err != nil {
 		log.Printf("[TEE_K] Failed to encrypt data: %v", err)
 		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to encrypt data: %v", err))
-		return
-	}
-
-	// Generate tag secrets using cipher-agnostic function
-	// Create nonce for tag secret generation using cipher-suite-specific method
-	nonce := t.constructNonce(clientAppIV, actualSeqNum, cipherSuite)
-
-	tagSecrets, err := t.generateTagSecrets(clientAppKey, nonce, cipherSuite)
-	if err != nil {
-		log.Printf("[TEE_K] Failed to generate tag secrets: %v", err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to generate tag secrets: %v", err))
 		return
 	}
 
@@ -1024,28 +1042,42 @@ func (t *TEEK) handleRedactedRequest(conn *websocket.Conn, msg *shared.Message) 
 
 	fmt.Printf("[TEE_K] DEBUG: TLS record header: %x (length includes %d-byte tag)\n", recordHeader, tagSize)
 
-	// Step 4: Encrypt redacted request using cipher-agnostic function
-	encryptedData, err := t.encryptWithCipherSuite(dataToEncrypt, clientAppKey, clientAppIV, actualSeqNum, cipherSuite)
+	// Use consolidated crypto functions from minitls
+	splitAEAD := minitls.NewSplitAEAD(clientAppKey, clientAppIV, cipherSuite)
+	splitAEAD.SetSequence(actualSeqNum)
+
+	// Create AAD based on TLS version
+	var additionalData []byte
+	if tlsVersion == 0x0303 { // TLS 1.2
+		// TLS 1.2: AAD = seq_num(8) + record header(5)
+		additionalData = make([]byte, 13)
+		// Sequence number (8 bytes, big-endian)
+		for i := 0; i < 8; i++ {
+			additionalData[i] = byte(actualSeqNum >> (8 * (7 - i)))
+		}
+		// Record header (5 bytes) - use plaintext length
+		additionalData[8] = 0x17                             // ApplicationData
+		additionalData[9] = 0x03                             // TLS version major
+		additionalData[10] = 0x03                            // TLS version minor
+		additionalData[11] = byte(len(dataToEncrypt) >> 8)   // plaintext length high byte
+		additionalData[12] = byte(len(dataToEncrypt) & 0xFF) // plaintext length low byte
+	} else { // TLS 1.3
+		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
+		tagSize := 16                                // GCM tag size
+		recordLength := len(dataToEncrypt) + tagSize // encrypted data + authentication tag
+		additionalData = []byte{
+			0x17,                      // ApplicationData
+			0x03,                      // TLS version major (compatibility)
+			0x03,                      // TLS version minor (compatibility)
+			byte(recordLength >> 8),   // Length high byte (includes tag)
+			byte(recordLength & 0xFF), // Length low byte (includes tag)
+		}
+	}
+
+	encryptedData, tagSecrets, err := splitAEAD.EncryptWithoutTag(dataToEncrypt, additionalData)
 	if err != nil {
 		log.Printf("[TEE_K] Failed to encrypt data: %v", err)
 		t.sendError(conn, fmt.Sprintf("Failed to encrypt data: %v", err))
-		return
-	}
-
-	// Step 5: Generate tag secrets using cipher-agnostic function
-	// Create nonce for tag secret generation (same logic as in cipher-agnostic function)
-	nonce := make([]byte, len(clientAppIV))
-	copy(nonce, clientAppIV)
-	for i := 0; i < 8; i++ {
-		nonce[len(nonce)-1-i] ^= byte(actualSeqNum >> (8 * i))
-	}
-
-	fmt.Printf("[TEE_K] DEBUG: Nonce (IV ⊕ seq=%d): %x\n", actualSeqNum, nonce)
-
-	tagSecrets, err := t.generateTagSecrets(clientAppKey, nonce, cipherSuite)
-	if err != nil {
-		log.Printf("[TEE_K] Failed to generate tag secrets: %v", err)
-		t.sendError(conn, fmt.Sprintf("Failed to generate tag secrets: %v", err))
 		return
 	}
 
@@ -1532,7 +1564,7 @@ func (t *TEEK) generateAndSendDecryptionStreamSession(sessionID string, seqNum u
 		serverSeqNum = seqNum - 1
 		fmt.Printf("[TEE_K] TLS 1.3 decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
 	}
-	decryptionStream, err := t.generateDecryptionStreamWithExplicitIV(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite, explicitIV)
+	decryptionStream, err := minitls.GenerateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite, explicitIV)
 	if err != nil {
 		return fmt.Errorf("failed to generate decryption stream: %v", err)
 	}
@@ -1555,29 +1587,7 @@ func (t *TEEK) generateAndSendDecryptionStreamSession(sessionID string, seqNum u
 }
 
 // generateDecryptionStream generates cipher-agnostic keystream for decryption (legacy)
-func (t *TEEK) generateDecryptionStream(key, iv []byte, seqNum uint64, length int, cipherSuite uint16) ([]byte, error) {
-	return t.generateDecryptionStreamWithExplicitIV(key, iv, seqNum, length, cipherSuite, nil)
-}
-
-// generateDecryptionStreamWithExplicitIV generates cipher-agnostic keystream for decryption with TLS 1.2 explicit IV support
-func (t *TEEK) generateDecryptionStreamWithExplicitIV(key, iv []byte, seqNum uint64, length int, cipherSuite uint16, explicitIV []byte) ([]byte, error) {
-	// Generate keystream by encrypting zeros with the appropriate cipher
-	zeros := make([]byte, length)
-	keystream, err := t.encryptWithCipherSuiteWithExplicitIV(zeros, key, iv, seqNum, cipherSuite, explicitIV)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate keystream: %v", err)
-	}
-
-	fmt.Printf("[TEE_K] DEBUG: Generated keystream for seq=%d, length=%d\n", seqNum, length)
-	fmt.Printf("[TEE_K] DEBUG: Key: %x\n", key)
-	fmt.Printf("[TEE_K] DEBUG: IV: %x\n", iv)
-	if explicitIV != nil {
-		fmt.Printf("[TEE_K] DEBUG: ExplicitIV: %x\n", explicitIV)
-	}
-	fmt.Printf("[TEE_K] DEBUG: Keystream first 32 bytes: %x\n", keystream[:min(32, len(keystream))])
-
-	return keystream, nil
-}
+// Note: generateDecryptionStream functions have been consolidated into minitls.GenerateDecryptionStream
 
 func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cipherSuite uint16, recordHeader []byte, explicitIV []byte) ([]byte, error) {
 	if t.tlsClient == nil {
@@ -1735,8 +1745,20 @@ func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cip
 			fmt.Printf("[TEE_K] TLS 1.2 ChaCha20 nonce construction: iv=%x XOR seq=%d = nonce=%x\n",
 				serverAppIV, actualSeqToUse, nonce)
 
-			// Generate ChaCha20-Poly1305 tag secrets
-			return t.generateChaCha20Poly1305TagSecrets(serverAppKey, nonce)
+			// Use consolidated minitls function for ChaCha20-Poly1305 tag secrets
+			splitAEAD := minitls.NewSplitAEAD(serverAppKey, serverAppIV, cipherSuite)
+			splitAEAD.SetSequence(actualSeqToUse)
+
+			// Create dummy encrypted data to generate tag secrets
+			dummyEncrypted := make([]byte, responseLength)
+
+			// Generate tag secrets using the same method as requests
+			_, tagSecrets, err := splitAEAD.EncryptWithoutTag(dummyEncrypted, nil)
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate tag secrets: %v", err)
+			}
+
+			return tagSecrets, nil
 		} else {
 			return nil, fmt.Errorf("unsupported TLS 1.2 cipher suite: 0x%04x", cipherSuite)
 		}
@@ -1887,7 +1909,7 @@ func (t *TEEK) generateAndSendDecryptionStream(seqNum uint64) error {
 		serverSeqNum = seqNum - 1
 		fmt.Printf("[TEE_K] TLS 1.3 legacy decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
 	}
-	decryptionStream, err := t.generateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite)
+	decryptionStream, err := minitls.GenerateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite, nil)
 	if err != nil {
 		return fmt.Errorf("failed to generate decryption stream: %v", err)
 	}
@@ -2242,7 +2264,7 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 			serverSeqNum = seqNum - 1
 			fmt.Printf("[TEE_K] TLS 1.3 redacted decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
 		}
-		originalStream, err := t.generateDecryptionStreamWithExplicitIV(serverAppKey, serverAppIV, serverSeqNum, length, cipherSuite, explicitIV)
+		originalStream, err := minitls.GenerateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, length, cipherSuite, explicitIV)
 		if err != nil {
 			return fmt.Errorf("failed to generate original decryption stream for seq %d: %v", seqNum, err)
 		}
@@ -2602,159 +2624,5 @@ func (t *TEEK) constructNonce(iv []byte, seqNum uint64, cipherSuite uint16) []by
 	}
 }
 
-// encryptWithCipherSuite encrypts data using the appropriate cipher based on the cipher suite (legacy)
-func (t *TEEK) encryptWithCipherSuite(data []byte, key, iv []byte, seqNum uint64, cipherSuite uint16) ([]byte, error) {
-	return t.encryptWithCipherSuiteWithExplicitIV(data, key, iv, seqNum, cipherSuite, nil)
-}
-
-// encryptWithCipherSuiteWithExplicitIV encrypts data using the appropriate cipher with TLS 1.2 explicit IV support
-func (t *TEEK) encryptWithCipherSuiteWithExplicitIV(data []byte, key, iv []byte, seqNum uint64, cipherSuite uint16, explicitIV []byte) ([]byte, error) {
-	// Use centralized nonce construction with explicit IV support
-	var nonce []byte
-	if explicitIV != nil && len(explicitIV) == 8 {
-		// *** CRITICAL FIX: For TLS 1.2 AES-GCM, construct nonce using ACTUAL explicit IV from record ***
-		// This matches minitls crypto12.go behavior: nonce = implicit_iv(4) || explicit_iv(8)
-		if cipherSuite == 0xc02f || cipherSuite == 0xc02b || cipherSuite == 0xc030 || cipherSuite == 0xc02c {
-			// TLS 1.2 AES-GCM: use explicit IV from record for nonce construction
-			nonce = make([]byte, 12)
-			copy(nonce[0:4], iv)          // 4-byte implicit IV
-			copy(nonce[4:12], explicitIV) // 8-byte explicit IV from actual TLS record
-
-			explicitIVUint64 := binary.BigEndian.Uint64(explicitIV)
-			fmt.Printf("[TEE_K] DEBUG: TLS 1.2 explicit IV nonce: cipher=0x%04x, implicit_iv=%x, explicit_iv=%x (uint64=%d), nonce=%x\n",
-				cipherSuite, iv, explicitIV, explicitIVUint64, nonce)
-		} else {
-			// Use standard nonce construction for other cipher suites
-			nonce = t.constructNonce(iv, seqNum, cipherSuite)
-			fmt.Printf("[TEE_K] DEBUG: Standard nonce with explicit IV: cipher=0x%04x, seq=%d, nonce=%x\n", cipherSuite, seqNum, nonce)
-		}
-	} else {
-		// Use standard nonce construction (TLS 1.3 or TLS 1.2 without explicit IV)
-		nonce = t.constructNonce(iv, seqNum, cipherSuite)
-		fmt.Printf("[TEE_K] DEBUG: Standard nonce: cipher=0x%04x, seq=%d, nonce=%x\n", cipherSuite, seqNum, nonce)
-	}
-
-	switch cipherSuite {
-	// AES-GCM cipher suites (both TLS 1.2 and 1.3)
-	case 0x1301, 0x1302, 0xc02f, 0xc02b, 0xc030, 0xc02c:
-		return t.encryptWithAESCTR(data, key, nonce)
-	// ChaCha20-Poly1305 cipher suites (both TLS 1.2 and 1.3)
-	case 0x1303, 0xcca8, 0xcca9:
-		return t.encryptWithChaCha20(data, key, nonce)
-	default:
-		return nil, fmt.Errorf("unsupported cipher suite for encryption: 0x%04x", cipherSuite)
-	}
-}
-
-// encryptWithAESCTR encrypts data using AES-CTR (for AES-GCM cipher suites)
-func (t *TEEK) encryptWithAESCTR(data []byte, key, nonce []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AES cipher: %v", err)
-	}
-
-	// Create CTR stream with GCM counter format: nonce (12 bytes) + counter (4 bytes)
-	ctrNonce := make([]byte, 16)
-	copy(ctrNonce, nonce) // 12-byte nonce
-
-	// Use counter = 2 (confirmed by split AEAD test - matches Go GCM)
-	// Go GCM uses counter 1 for tag generation, counter 2 for data encryption
-	ctrNonce[15] = 2 // Standard GCM data encryption starts at counter 2
-
-	stream := cipher.NewCTR(block, ctrNonce)
-	encryptedData := make([]byte, len(data))
-	stream.XORKeyStream(encryptedData, data)
-
-	return encryptedData, nil
-}
-
-// encryptWithChaCha20 encrypts data using ChaCha20 stream cipher
-func (t *TEEK) encryptWithChaCha20(data []byte, key, nonce []byte) ([]byte, error) {
-	// ChaCha20 uses a 32-byte key and 12-byte nonce
-	if len(key) != 32 {
-		return nil, fmt.Errorf("ChaCha20 requires 32-byte key, got %d bytes", len(key))
-	}
-	if len(nonce) != 12 {
-		return nil, fmt.Errorf("ChaCha20 requires 12-byte nonce, got %d bytes", len(nonce))
-	}
-
-	// Create ChaCha20 cipher with counter starting at 1 (RFC 8439)
-	cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ChaCha20 cipher: %v", err)
-	}
-
-	// Set counter to 1 for data encryption (counter 0 is reserved for Poly1305 key generation)
-	cipher.SetCounter(1)
-
-	encryptedData := make([]byte, len(data))
-	cipher.XORKeyStream(encryptedData, data)
-
-	return encryptedData, nil
-}
-
-// generateTagSecrets generates tag computation secrets for the given cipher suite
-func (t *TEEK) generateTagSecrets(key, nonce []byte, cipherSuite uint16) ([]byte, error) {
-	switch cipherSuite {
-	// TLS 1.3 cipher suites
-	case 0x1301, 0x1302: // TLS 1.3 AES-GCM
-		return t.generateAESGCMTagSecrets(key, nonce)
-	case 0x1303: // TLS 1.3 ChaCha20-Poly1305
-		return t.generateChaCha20Poly1305TagSecrets(key, nonce)
-	// TLS 1.2 cipher suites
-	case 0xc02f, 0xc02b, 0xc030, 0xc02c: // TLS 1.2 AES-GCM
-		return t.generateAESGCMTagSecrets(key, nonce)
-	case 0xcca8, 0xcca9: // TLS 1.2 ChaCha20-Poly1305
-		return t.generateChaCha20Poly1305TagSecrets(key, nonce)
-	default:
-		return nil, fmt.Errorf("unsupported cipher suite for tag secrets: 0x%04x", cipherSuite)
-	}
-}
-
-// generateAESGCMTagSecrets generates AES-GCM tag secrets: E_K(0^128) and E_K(IV || 0^31 || 1)
-func (t *TEEK) generateAESGCMTagSecrets(key, nonce []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AES cipher: %v", err)
-	}
-
-	tagSecrets := make([]byte, 32) // 16 bytes for each value
-
-	// E_K(0^128) - GHASH key H
-	zeros := make([]byte, 16)
-	block.Encrypt(tagSecrets[0:16], zeros)
-
-	// E_K(IV || 0^31 || 1) - encrypted counter block for final XOR
-	counterBlock := make([]byte, 16)
-	copy(counterBlock[:12], nonce) // Copy nonce (IV)
-	counterBlock[15] = 1           // Set counter to 1
-	block.Encrypt(tagSecrets[16:32], counterBlock)
-
-	return tagSecrets, nil
-}
-
-// generateChaCha20Poly1305TagSecrets generates ChaCha20-Poly1305 tag secrets
-func (t *TEEK) generateChaCha20Poly1305TagSecrets(key, nonce []byte) ([]byte, error) {
-	// ChaCha20-Poly1305 uses the first 32 bytes of the keystream for Poly1305 key
-	if len(key) != 32 {
-		return nil, fmt.Errorf("ChaCha20 requires 32-byte key, got %d bytes", len(key))
-	}
-	if len(nonce) != 12 {
-		return nil, fmt.Errorf("ChaCha20 requires 12-byte nonce, got %d bytes", len(nonce))
-	}
-
-	// Create ChaCha20 cipher with counter 0 for Poly1305 key generation
-	cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ChaCha20 cipher: %v", err)
-	}
-
-	// Get first 32 bytes of keystream (counter 0) for Poly1305 key
-	poly1305Key := make([]byte, 32)
-	zeros := make([]byte, 32)
-	cipher.XORKeyStream(poly1305Key, zeros)
-
-	// For ChaCha20-Poly1305, we only need the Poly1305 key material
-	// Return 32 bytes for consistency with AES-GCM (which returns 32 bytes)
-	return poly1305Key, nil
-}
+// Note: All crypto functions have been consolidated into minitls package
+// This eliminates code duplication and ensures consistent behavior

@@ -299,6 +299,11 @@ func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLe
 			c.analyzeAlertMessage(record[5 : 5+recordLength])
 		}
 
+		// *** FIX: Process alert records through split AEAD for complete decryption ***
+		// Alert records need to be decrypted for offline validation, not just transcripted
+		fmt.Printf("[Client] → Processing alert record with split AEAD\n")
+		c.processTLSRecord(record)
+
 	case 0x16: // Handshake
 		fmt.Printf("[Client] → Handshake record (post-handshake message)\n")
 		if recordLength >= 1 {

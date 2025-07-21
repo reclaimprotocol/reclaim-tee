@@ -413,13 +413,8 @@ func NewSplitAEAD(key, iv []byte, cipherSuite uint16) *SplitAEAD {
 
 // EncryptWithoutTag encrypts plaintext but doesn't compute the tag (TEE_K responsibility)
 func (sa *SplitAEAD) EncryptWithoutTag(plaintext, additionalData []byte) ([]byte, []byte, error) {
-	nonce := make([]byte, len(sa.iv))
-	copy(nonce, sa.iv)
-
-	// XOR sequence number into nonce
-	for i := 0; i < 8; i++ {
-		nonce[len(nonce)-1-i] ^= byte(sa.seq >> (8 * i))
-	}
+	// Use cipher-suite-specific nonce construction
+	nonce := sa.constructNonce(sa.seq)
 
 	var ciphertext []byte
 	var tagSecrets []byte
@@ -435,11 +430,11 @@ func (sa *SplitAEAD) EncryptWithoutTag(plaintext, additionalData []byte) ([]byte
 		}
 
 		// For AES-CTR, we need 16-byte IV. TLS uses 12-byte IV, so pad with 4 bytes counter
-		// GCM nonce format: IV (12 bytes) || counter (4 bytes) starting with 1
+		// GCM nonce format: IV (12 bytes) || counter (4 bytes) starting with 2
 		ctrNonce := make([]byte, 16)
 		copy(ctrNonce, nonce) // Copy 12-byte TLS nonce
-		// Set counter to 1 (big-endian) in the last 4 bytes
-		ctrNonce[15] = 1
+		// Set counter to 2 (matches Go GCM implementation)
+		ctrNonce[15] = 2
 
 		// Encrypt plaintext using AES-CTR mode (GCM encryption without tag)
 		stream := cipher.NewCTR(block, ctrNonce)
@@ -476,15 +471,60 @@ func (sa *SplitAEAD) EncryptWithoutTag(plaintext, additionalData []byte) ([]byte
 	}
 
 	sa.seq++
-	// fmt.Printf("SplitAEAD Encrypt: cipher=0x%04x, seq=%d, ciphertext=%d bytes, tagSecrets=%d bytes\n",
-	//	sa.cipherSuite, sa.seq-1, len(ciphertext), len(tagSecrets))
-
 	return ciphertext, tagSecrets, nil
 }
 
 // SetSequence sets the sequence number for the SplitAEAD
 func (sa *SplitAEAD) SetSequence(seq uint64) {
 	sa.seq = seq
+}
+
+// GetSequence returns the current sequence number
+func (sa *SplitAEAD) GetSequence() uint64 {
+	return sa.seq
+}
+
+// constructNonce creates a nonce based on the cipher suite and sequence number
+// This consolidates nonce construction logic from TEE_K
+func (sa *SplitAEAD) constructNonce(seqNum uint64) []byte {
+	switch sa.cipherSuite {
+	// TLS 1.3 cipher suites - IV XOR sequence number (RFC 8446)
+	case TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256:
+		nonce := make([]byte, len(sa.iv))
+		copy(nonce, sa.iv)
+		for i := 0; i < 8; i++ {
+			nonce[len(nonce)-1-i] ^= byte(seqNum >> (8 * i))
+		}
+		return nonce
+
+	// TLS 1.2 AES-GCM - explicit nonce format (RFC 5288)
+	case TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
+		// 12-byte nonce = implicit_iv(4) || explicit_nonce(8)
+		nonce := make([]byte, 12)
+		copy(nonce[0:4], sa.iv) // 4-byte implicit IV
+		// 8-byte explicit nonce = sequence number (big-endian)
+		binary.BigEndian.PutUint64(nonce[4:12], seqNum)
+		return nonce
+
+	// TLS 1.2 ChaCha20 - IV XOR sequence number (RFC 7905)
+	case TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
+		nonce := make([]byte, len(sa.iv))
+		copy(nonce, sa.iv)
+		for i := 0; i < 8; i++ {
+			nonce[len(nonce)-1-i] ^= byte(seqNum >> (8 * i))
+		}
+		return nonce
+
+	default:
+		// Fallback to TLS 1.3 style for unknown cipher suites
+		nonce := make([]byte, len(sa.iv))
+		copy(nonce, sa.iv)
+		for i := 0; i < 8; i++ {
+			nonce[len(nonce)-1-i] ^= byte(seqNum >> (8 * i))
+		}
+		return nonce
+	}
 }
 
 // generateGCMTagSecrets generates tag computation material for AES-GCM
@@ -497,37 +537,129 @@ func (sa *SplitAEAD) generateGCMTagSecrets(block cipher.Block, nonce []byte) []b
 	block.Encrypt(secrets[0:16], zeros)
 
 	// E_K(IV || 0^{31} || 1) - encrypt nonce padded with zeros and ending with 1
-	// For GCM, this is the initial counter block
 	counterBlock := make([]byte, 16)
 	copy(counterBlock, nonce[:min(len(nonce), 12)]) // Copy up to 12 bytes of nonce
 	counterBlock[15] = 1                            // Set counter to 1
 	block.Encrypt(secrets[16:32], counterBlock)
 
-	// fmt.Printf("GCM Tag Secrets: E_K(0^128)=%x, E_K(nonce||counter=1)=%x\n",
-	//	secrets[0:16], secrets[16:32])
-
 	return secrets
+}
+
+// ConstructTLS12NonceWithExplicitIV constructs TLS 1.2 nonce using explicit IV from TLS record
+// This handles the special case where TLS 1.2 AES-GCM uses explicit IV in the record
+func ConstructTLS12NonceWithExplicitIV(implicitIV, explicitIV []byte, cipherSuite uint16) ([]byte, error) {
+	// Only applies to TLS 1.2 AES-GCM cipher suites
+	if cipherSuite != TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 &&
+		cipherSuite != TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 &&
+		cipherSuite != TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 &&
+		cipherSuite != TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 {
+		return nil, fmt.Errorf("explicit IV only used with TLS 1.2 AES-GCM, got cipher suite 0x%04x", cipherSuite)
+	}
+
+	if len(implicitIV) != 4 {
+		return nil, fmt.Errorf("TLS 1.2 implicit IV must be 4 bytes, got %d", len(implicitIV))
+	}
+	if len(explicitIV) != 8 {
+		return nil, fmt.Errorf("TLS 1.2 explicit IV must be 8 bytes, got %d", len(explicitIV))
+	}
+
+	// TLS 1.2 AES-GCM nonce: implicit_iv(4) || explicit_iv(8)
+	nonce := make([]byte, 12)
+	copy(nonce[0:4], implicitIV)  // 4-byte implicit IV
+	copy(nonce[4:12], explicitIV) // 8-byte explicit IV from actual TLS record
+
+	return nonce, nil
+}
+
+// GenerateDecryptionStream generates a decryption stream for response decryption
+// This consolidates decryption stream logic from TEE_K
+func GenerateDecryptionStream(key, iv []byte, seqNum uint64, length int, cipherSuite uint16, explicitIV []byte) ([]byte, error) {
+	// Create split AEAD instance for nonce construction
+	splitAEAD := NewSplitAEAD(key, iv, cipherSuite)
+
+	var nonce []byte
+	if explicitIV != nil && len(explicitIV) == 8 {
+		// Use explicit IV for TLS 1.2 AES-GCM
+		var err error
+		nonce, err = ConstructTLS12NonceWithExplicitIV(iv, explicitIV, cipherSuite)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Use standard nonce construction
+		nonce = splitAEAD.constructNonce(seqNum)
+	}
+
+	// Generate decryption stream based on cipher suite
+	switch cipherSuite {
+	case TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+		TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
+		return generateAESDecryptionStream(key, nonce, length)
+
+	case TLS_CHACHA20_POLY1305_SHA256,
+		TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
+		return generateChaCha20DecryptionStream(key, nonce, length)
+
+	default:
+		return nil, fmt.Errorf("unsupported cipher suite for decryption stream: 0x%04x", cipherSuite)
+	}
+}
+
+// generateAESDecryptionStream generates AES-CTR decryption stream
+func generateAESDecryptionStream(key, nonce []byte, length int) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %v", err)
+	}
+
+	// Create CTR stream with GCM counter format: nonce (12 bytes) + counter (4 bytes)
+	ctrNonce := make([]byte, 16)
+	copy(ctrNonce, nonce) // 12-byte nonce
+	ctrNonce[15] = 2      // Use counter = 2 (matches encryption)
+
+	stream := cipher.NewCTR(block, ctrNonce)
+	decryptionStream := make([]byte, length)
+
+	// Generate keystream by XORing with zeros
+	stream.XORKeyStream(decryptionStream, make([]byte, length))
+
+	return decryptionStream, nil
+}
+
+// generateChaCha20DecryptionStream generates ChaCha20 decryption stream
+func generateChaCha20DecryptionStream(key, nonce []byte, length int) ([]byte, error) {
+	cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ChaCha20 cipher: %v", err)
+	}
+
+	// Set counter to 1 for data decryption (matches encryption)
+	cipher.SetCounter(1)
+
+	// Generate keystream by XORing with zeros
+	decryptionStream := make([]byte, length)
+	cipher.XORKeyStream(decryptionStream, make([]byte, length))
+
+	return decryptionStream, nil
 }
 
 // generateChaChaTagSecrets generates tag computation material for ChaCha20-Poly1305
 // Returns first 32 bytes of the Stream Block derived using key K, nonce N and counter 0
 func (sa *SplitAEAD) generateChaChaTagSecrets(nonce []byte) []byte {
-	// For ChaCha20-Poly1305, we need the first 32 bytes of the stream block (counter 0)
-	// This is used for Poly1305 key derivation per RFC 8439
-
-	// Create ChaCha20 cipher with counter 0 for Poly1305 key generation
 	cipher, err := chacha20.NewUnauthenticatedCipher(sa.key, nonce)
 	if err != nil {
 		// This should not happen with valid key/nonce lengths
-		return make([]byte, 32) // Return zeros on error
+		return nil
 	}
+
+	// Set counter to 0 for Poly1305 key generation
+	cipher.SetCounter(0)
 
 	// Get first 32 bytes of keystream (counter 0) for Poly1305 key
 	poly1305Key := make([]byte, 32)
 	zeros := make([]byte, 32)
 	cipher.XORKeyStream(poly1305Key, zeros)
-
-	// fmt.Printf("ChaCha20 Tag Secrets (32 bytes): %x\n", poly1305Key)
 
 	return poly1305Key
 }

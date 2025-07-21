@@ -19,17 +19,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Client state constants for atomic state machine
 const (
 	ClientStateInitial = iota
-	ClientStateConnecting
-	ClientStateHandshaking
-	ClientStateReady
-	ClientStateProcessingRecords
-	ClientStateEOFReached
-	ClientStateRedactionSent
-	ClientStateFinished
-	ClientStateCompleted
 )
 
 // Completion flags for atomic bit operations
@@ -116,6 +107,7 @@ type Client struct {
 	// Library interface fields
 	requestRedactions []RedactionSpec  // Request redactions from config
 	responseCallback  ResponseCallback // Response callback for redactions
+	clientMode        ClientMode       // Client operational mode (enclave vs standalone)
 
 	// Result tracking fields
 	protocolStartTime            time.Time                     // When protocol started
@@ -169,6 +161,7 @@ func NewClient(teekURL string) *Client {
 		teetTranscriptPackets:        nil,
 		requestRedactions:            nil,
 		responseCallback:             nil,
+		clientMode:                   ModeAuto, // Default to auto-detect
 		protocolStartTime:            time.Now(),
 		lastResponseData:             nil,
 		lastProofClaims:              nil,
@@ -184,6 +177,11 @@ func NewClient(teekURL string) *Client {
 // SetTEETURL sets the TEE_T connection URL
 func (c *Client) SetTEETURL(url string) {
 	c.teetURL = url
+}
+
+// SetMode sets the client operational mode
+func (c *Client) SetMode(mode ClientMode) {
+	c.clientMode = mode
 }
 
 // WaitForCompletion - moved to completion.go
@@ -705,6 +703,12 @@ func (c *Client) hasAllCompletionFlags(flags int64) bool {
 // fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T via WebSocket
 // Now waits for session coordination before sending requests
 func (c *Client) fetchAndVerifyAttestations() error {
+	// Skip attestations entirely in standalone mode
+	if c.clientMode == ModeStandalone {
+		fmt.Printf("[Client] Skipping attestation in standalone mode - public keys will be extracted from signed transcripts\n")
+		return nil
+	}
+
 	fmt.Printf("[Client] Requesting attestations from both TEE_K and TEE_T via WebSocket\n")
 
 	// Wait for session ID from TEE_K (indicates successful session coordination)

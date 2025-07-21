@@ -89,15 +89,38 @@ func Validate(bundlePath string) error {
 	}
 	// Build ordered slice of ciphertexts (application data) from TEET transcript
 	var ciphertexts [][]byte
+
+	// Check if this is TLS 1.2 AES-GCM (has explicit IV)
+	isTLS12AESGCM := bundle.HandshakeKeys.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+		bundle.HandshakeKeys.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+		bundle.HandshakeKeys.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+		bundle.HandshakeKeys.CipherSuite == 0xc02c // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+
 	for _, pkt := range bundle.Transcripts.TEET.Packets {
-		if len(pkt) < 5+16 || pkt[0] != 0x17 {
+		if len(pkt) < 5+16 {
 			continue
 		}
-		ctLen := len(pkt) - 5 - 16
+		// Skip non-ApplicationData packets, but allow Alert packets (0x15) for completeness
+		if pkt[0] != 0x17 && pkt[0] != 0x15 {
+			continue
+		}
+
+		var ctLen int
+		var startOffset int
+		if isTLS12AESGCM {
+			// TLS 1.2 AES-GCM (both ApplicationData and Alert): Header(5) + ExplicitIV(8) + EncryptedData + Tag(16)
+			ctLen = len(pkt) - 5 - 8 - 16 // Skip explicit IV and tag
+			startOffset = 5 + 8           // Skip header and explicit IV
+		} else {
+			// TLS 1.3: Header(5) + EncryptedData + Tag(16)
+			ctLen = len(pkt) - 5 - 16 // Skip header and tag
+			startOffset = 5           // Skip header only
+		}
+
 		if ctLen <= 0 {
 			continue
 		}
-		ciphertexts = append(ciphertexts, pkt[5:5+ctLen])
+		ciphertexts = append(ciphertexts, pkt[startOffset:startOffset+ctLen])
 	}
 
 	// Reconstruct plaintext by walking streams and finding the next ciphertext with matching length
