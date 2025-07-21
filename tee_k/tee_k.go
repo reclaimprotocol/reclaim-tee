@@ -40,17 +40,18 @@ type TEEK struct {
 	forceTLSVersion  string // Force specific TLS version: "1.2", "1.3", or "" for auto
 	forceCipherSuite string // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
 
+	// Legacy global state - TODO: migrate to session-aware architecture
 	tlsClient      *minitls.Client
 	wsConn2TLS     *WebSocketConn
 	currentConn    *websocket.Conn
 	currentRequest *shared.RequestConnectionData
 	tcpReady       chan bool
 
-	// Phase 2: Split AEAD
+	// Phase 2: Split AEAD - TODO: migrate to session-aware
 	keyShare    []byte
 	combinedKey []byte
 
-	// Response handling
+	// Response handling - TODO: migrate to session-aware
 	responseLengthBySeq map[uint64]int    // Store response lengths by sequence number
 	explicitIVBySeq     map[uint64][]byte // Store explicit IVs for TLS 1.2 AES-GCM by sequence number
 	serverSequenceNum   uint64            // Track server's actual sequence number manually
@@ -101,6 +102,7 @@ func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 		teetURL:             "ws://localhost:8081/teek", // Default TEE_T URL
 		tcpReady:            make(chan bool, 1),
 		responseLengthBySeq: make(map[uint64]int),
+		explicitIVBySeq:     make(map[uint64][]byte),
 		signingKeyPair:      signingKeyPair,
 		enclaveManager:      enclaveManager,
 	}
@@ -518,7 +520,8 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 
 	tlsClient = minitls.NewClientWithConfig(tlsConn, config)
 
-	// For backward compatibility with TCP data handler, store in global fields
+	// Store in global fields for backward compatibility
+	// TODO: Migrate to session-aware architecture
 	t.tlsClient = tlsClient
 	t.wsConn2TLS = tlsConn
 	t.currentConn = wsConn.GetWebSocketConn()
@@ -573,12 +576,6 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 }
 
 func (t *TEEK) handleTCPDataSession(sessionID string, msg *shared.Message) {
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		log.Printf("[TEE_K] Failed to get session %s: %v", sessionID, err)
-		return
-	}
-
 	var tcpData shared.TCPData
 	if err := msg.UnmarshalData(&tcpData); err != nil {
 		log.Printf("[TEE_K] Failed to unmarshal TCP data: %v", err)
@@ -586,9 +583,15 @@ func (t *TEEK) handleTCPDataSession(sessionID string, msg *shared.Message) {
 		return
 	}
 
-	// Handle incoming data from Client - for now, use legacy method with the underlying connection from session
-	wsConn := session.ClientConn.(*shared.WSConnection)
-	t.handleTCPData(wsConn.GetWebSocketConn(), msg)
+	// Handle incoming data from Client (TLS handshake data or encrypted application data)
+	// TODO: Migrate to session-aware architecture - currently uses global wsConn2TLS
+	if t.wsConn2TLS != nil {
+		// Forward data to TLS client for processing
+		t.wsConn2TLS.pendingData <- tcpData.Data
+	} else {
+		log.Printf("[TEE_K] Session %s: No WebSocket-to-TLS adapter available", sessionID)
+		t.sendErrorToSession(sessionID, "No WebSocket-to-TLS adapter available")
+	}
 }
 
 func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Message) {
@@ -762,354 +765,6 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	}
 
 	fmt.Printf("[TEE_K] Session %s: Encrypted request sent to TEE_T successfully\n", sessionID)
-}
-
-func (t *TEEK) handleRequestConnection(conn *websocket.Conn, msg *shared.Message) {
-	var reqData shared.RequestConnectionData
-	if err := msg.UnmarshalData(&reqData); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal connection request: %v", err)
-		t.sendError(conn, fmt.Sprintf("Failed to unmarshal connection request: %v", err))
-		return
-	}
-
-	fmt.Printf("[TEE_K] Connection request to %s:%d\n", reqData.Hostname, reqData.Port)
-
-	// Store request data for later use
-	t.currentRequest = &reqData
-	t.currentConn = conn
-
-	// Send connection ready message to client
-	readyMsg := shared.CreateMessage(shared.MsgConnectionReady, shared.ConnectionReadyData{Success: true})
-	if err := t.sendMessage(conn, readyMsg); err != nil {
-		log.Printf("[TEE_K] Failed to send connection ready message: %v", err)
-		return
-	}
-
-}
-
-func (t *TEEK) handleTCPReady(conn *websocket.Conn, msg *shared.Message) {
-	var tcpReadyData shared.TCPReadyData
-	if err := msg.UnmarshalData(&tcpReadyData); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal TCP ready data: %v", err)
-		t.sendError(conn, fmt.Sprintf("Failed to unmarshal TCP ready data: %v", err))
-		return
-	}
-
-	if tcpReadyData.Success && t.currentRequest != nil {
-
-		go t.performTLSHandshakeAndHTTP()
-	} else {
-		log.Printf("[TEE_K] Client not ready or no current request")
-		t.sendError(conn, "Client not ready or no current request")
-	}
-}
-
-func (t *TEEK) performTLSHandshakeAndHTTP() {
-	if t.currentRequest == nil {
-		log.Printf("[TEE_K] No current request available")
-		return
-	}
-
-	fmt.Printf("[TEE_K] TLS handshake to %s:%d via Client proxy\n", t.currentRequest.Hostname, t.currentRequest.Port)
-
-	// Create WebSocket-to-TLS adapter for TLS handshake through Client
-	t.wsConn2TLS = &WebSocketConn{
-		wsConn:      t.currentConn,
-		pendingData: make(chan []byte, 10),
-		teek:        t, // Add TEEK reference for transcript collection
-	}
-
-	// Create TLS client using WebSocket proxy through Client
-	t.tlsClient = minitls.NewClient(t.wsConn2TLS)
-
-	// Configure TLS version based on forced setting
-	config := &minitls.Config{}
-
-	switch t.forceTLSVersion {
-	case "1.2":
-		config.MinVersion = minitls.VersionTLS12
-		config.MaxVersion = minitls.VersionTLS12
-		fmt.Printf("[TEE_K] Forcing TLS 1.2\n")
-	case "1.3":
-		config.MinVersion = minitls.VersionTLS13
-		config.MaxVersion = minitls.VersionTLS13
-		fmt.Printf("[TEE_K] Forcing TLS 1.3\n")
-	default:
-		// Auto-negotiate (default behavior)
-		config.MinVersion = minitls.VersionTLS12
-		config.MaxVersion = minitls.VersionTLS13
-		fmt.Printf("[TEE_K] TLS version auto-negotiation enabled\n")
-	}
-
-	// Configure cipher suite restrictions if specified
-	if err := configureCipherSuites(config, t.forceCipherSuite, t.forceTLSVersion); err != nil {
-		log.Printf("[TEE_K] Cipher suite configuration error: %v", err)
-		t.sendError(t.currentConn, fmt.Sprintf("Invalid cipher suite configuration: %v", err))
-		return
-	}
-
-	if t.forceCipherSuite != "" {
-		fmt.Printf("[TEE_K] Forcing cipher suite %s\n", t.forceCipherSuite)
-	} else {
-		fmt.Printf("[TEE_K] Cipher suite auto-negotiation enabled\n")
-	}
-
-	t.tlsClient = minitls.NewClientWithConfig(t.wsConn2TLS, config)
-
-	fmt.Println(" TEE_K starting TLS handshake over direct connection")
-
-	// Perform TLS handshake directly to website
-	if err := t.tlsClient.Handshake(t.currentRequest.Hostname); err != nil {
-		log.Printf("[TEE_K] TLS handshake failed: %v", err)
-		t.sendError(t.currentConn, fmt.Sprintf("TLS handshake failed: %v", err))
-		return
-	}
-
-	// Get crypto material for certificate verification
-	hsKey := t.tlsClient.GetHandshakeKey()
-	hsIV := t.tlsClient.GetHandshakeIV()
-	certPacket := t.tlsClient.GetCertificatePacket()
-
-	// Get cipher suite information
-	cipherSuite := t.tlsClient.GetCipherSuite()
-	algorithm := getCipherSuiteAlgorithm(cipherSuite)
-
-	// *** DEBUG: Print TLS key material comparison ***
-	fmt.Printf("🔍 TEE_K TLS %s handshake complete, cipher=0x%04x\n",
-		map[uint16]string{0x0303: "1.2", 0x0304: "1.3"}[t.tlsClient.GetNegotiatedVersion()], cipherSuite)
-
-	if t.tlsClient.GetNegotiatedVersion() == 0x0303 { // TLS 1.2
-		if tls12AEAD := t.tlsClient.GetTLS12AEAD(); tls12AEAD != nil {
-			fmt.Printf("🔍 TEE_K TLS 1.2 Key Material:\n")
-			fmt.Printf("  Write Key (%d bytes): %x\n", len(tls12AEAD.GetWriteKey()), tls12AEAD.GetWriteKey())
-			fmt.Printf("  Write IV (%d bytes): %x\n", len(tls12AEAD.GetWriteIV()), tls12AEAD.GetWriteIV())
-			fmt.Printf("  Read Key (%d bytes): %x\n", len(tls12AEAD.GetReadKey()), tls12AEAD.GetReadKey())
-			fmt.Printf("  Read IV (%d bytes): %x\n", len(tls12AEAD.GetReadIV()), tls12AEAD.GetReadIV())
-		} else {
-			fmt.Printf("❌ TEE_K TLS 1.2 AEAD context is NULL!\n")
-		}
-	}
-
-	// Send handshake key disclosure to Client
-	disclosureMsg := shared.CreateMessage(shared.MsgHandshakeKeyDisclosure, shared.HandshakeKeyDisclosureData{
-		HandshakeKey:      hsKey,
-		HandshakeIV:       hsIV,
-		CertificatePacket: certPacket,
-		CipherSuite:       cipherSuite,
-		Algorithm:         algorithm,
-		Success:           true,
-	})
-	if err := t.sendMessage(t.currentConn, disclosureMsg); err != nil {
-		log.Printf("[TEE_K] Failed to send handshake key disclosure: %v", err)
-		return
-	}
-
-	fmt.Printf("[TEE_K] Handshake finished - ready for split AEAD\n")
-
-	// Phase 2: Complete TLS handshake setup for split AEAD protocol
-	fmt.Printf("[TEE_K] TLS handshake complete, cipher suite 0x%04x\n", cipherSuite)
-	fmt.Printf("[TEE_K] Ready for Phase 4 split AEAD response handling\n")
-}
-
-func (t *TEEK) handleTCPData(conn *websocket.Conn, msg *shared.Message) {
-	var tcpData shared.TCPData
-	if err := msg.UnmarshalData(&tcpData); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal TCP data: %v", err)
-		t.sendError(conn, fmt.Sprintf("Failed to unmarshal TCP data: %v", err))
-		return
-	}
-
-	// Handle incoming data from Client (could be TLS handshake data or encrypted application data)
-	if t.wsConn2TLS != nil {
-		// Forward data to TLS client for processing (handshake or application data)
-		t.wsConn2TLS.pendingData <- tcpData.Data
-	} else {
-		log.Printf("[TEE_K] No WebSocket-to-TLS adapter available")
-		t.sendError(conn, "No WebSocket-to-TLS adapter available")
-	}
-}
-
-// handleRedactedRequest processes redacted request data from client for split AEAD encryption
-func (t *TEEK) handleRedactedRequest(conn *websocket.Conn, msg *shared.Message) {
-	var redactedRequest shared.RedactedRequestData
-	if err := msg.UnmarshalData(&redactedRequest); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal redacted request: %v", err)
-		t.sendError(conn, fmt.Sprintf("Failed to unmarshal redacted request: %v", err))
-		return
-	}
-
-	fmt.Printf("[TEE_K] Validating redacted request (%d bytes, %d ranges)\n", len(redactedRequest.RedactedRequest), len(redactedRequest.RedactionRanges))
-
-	// Validate redacted request format and positions
-	if err := t.validateHTTPRequestFormat(redactedRequest.RedactedRequest, redactedRequest.RedactionRanges); err != nil {
-		log.Printf("[TEE_K] Failed to validate redacted request format: %v", err)
-		t.sendError(conn, fmt.Sprintf("Failed to validate redacted request format: %v", err))
-		return
-	}
-
-	if err := t.validateRedactionPositions(redactedRequest.RedactionRanges, len(redactedRequest.RedactedRequest)); err != nil {
-		log.Printf("[TEE_K] Failed to validate redaction positions: %v", err)
-		t.sendError(conn, fmt.Sprintf("Failed to validate redaction positions: %v", err))
-		return
-	}
-
-	fmt.Printf("[TEE_K] Split AEAD: encrypting redacted request %d bytes\n", len(redactedRequest.RedactedRequest))
-
-	if t.tlsClient == nil {
-		log.Printf("[TEE_K] No TLS client available for encryption")
-		t.sendError(conn, "No TLS client available for encryption")
-		return
-	}
-
-	// Phase 2: Split AEAD Protocol Implementation using proper TLS 1.3 application keys
-	cipherSuite := t.tlsClient.GetCipherSuite()
-
-	// Step 1: Prepare data for encryption based on TLS version
-	var dataToEncrypt []byte
-	tlsVersion := t.tlsClient.GetNegotiatedVersion()
-
-	if tlsVersion == 0x0303 { // TLS 1.2
-		// TLS 1.2: encrypt raw application data directly, no inner content type
-		dataToEncrypt = redactedRequest.RedactedRequest
-		fmt.Printf("[TEE_K] TLS 1.2: Encrypting raw HTTP data (%d bytes)\n", len(dataToEncrypt))
-	} else { // TLS 1.3
-		// TLS 1.3: Add inner content type byte + padding (RFC 8446)
-		// RFC 8446: plaintext = content || content_type || zero_padding
-		dataToEncrypt = make([]byte, len(redactedRequest.RedactedRequest)+2) // +2 for content type + padding
-		copy(dataToEncrypt, redactedRequest.RedactedRequest)
-		dataToEncrypt[len(redactedRequest.RedactedRequest)] = 0x17   // ApplicationData content type
-		dataToEncrypt[len(redactedRequest.RedactedRequest)+1] = 0x00 // Required TLS 1.3 padding byte
-		fmt.Printf("[TEE_K] TLS 1.3: Added inner content type + padding (%d bytes)\n", len(dataToEncrypt))
-	}
-
-	// Step 2: Get application keys based on TLS version
-	var clientAppKey, clientAppIV []byte
-	var actualSeqNum uint64
-	fmt.Printf("🔍 TEE_K Split AEAD: TLS version 0x%04x, cipher 0x%04x\n", tlsVersion, cipherSuite)
-
-	if tlsVersion == 0x0303 { // TLS 1.2
-		tls12AEAD := t.tlsClient.GetTLS12AEAD()
-		if tls12AEAD == nil {
-			log.Printf("[TEE_K] No TLS 1.2 AEAD available")
-			t.sendError(conn, fmt.Sprintf("No TLS 1.2 AEAD available"))
-			return
-		}
-
-		clientAppKey = tls12AEAD.GetWriteKey()
-		clientAppIV = tls12AEAD.GetWriteIV()
-		actualSeqNum = tls12AEAD.GetWriteSequence()
-
-		fmt.Printf("🔍 TEE_K TLS 1.2 Key Material for Split AEAD:\n")
-		fmt.Printf("  Write Key (%d bytes): %x\n", len(clientAppKey), clientAppKey)
-		fmt.Printf("  Write IV (%d bytes): %x\n", len(clientAppIV), clientAppIV)
-		fmt.Printf("  Write Sequence: %d\n", actualSeqNum)
-
-	} else { // TLS 1.3
-		clientAEAD := t.tlsClient.GetClientApplicationAEAD()
-		if clientAEAD == nil {
-			log.Printf("[TEE_K] No client application AEAD available")
-			t.sendError(conn, fmt.Sprintf("No client application AEAD available"))
-			return
-		}
-
-		actualSeqNum = clientAEAD.GetSequence()
-
-		// Get the raw key and IV from TLS client for manual GCM operations
-		keySchedule := t.tlsClient.GetKeySchedule()
-		if keySchedule == nil {
-			log.Printf("[TEE_K] No key schedule available")
-			t.sendError(conn, fmt.Sprintf("No key schedule available"))
-			return
-		}
-
-		clientAppKey = keySchedule.GetClientApplicationKey()
-		clientAppIV = keySchedule.GetClientApplicationIV()
-
-		if len(clientAppKey) == 0 || len(clientAppIV) == 0 {
-			log.Printf("[TEE_K] No application keys available")
-			t.sendError(conn, fmt.Sprintf("No application keys available"))
-			return
-		}
-
-		fmt.Printf("[TEE_K] DEBUG: TLS 1.3 Key (%d bytes): %x\n", len(clientAppKey), clientAppKey)
-		fmt.Printf("[TEE_K] DEBUG: TLS 1.3 IV (%d bytes): %x\n", len(clientAppIV), clientAppIV)
-	}
-
-	// Create TLS record header for ApplicationData
-	tagSize := 16 // GCM tag size
-	recordLength := len(dataToEncrypt) + tagSize
-	recordHeader := []byte{0x17, 0x03, 0x03, byte(recordLength >> 8), byte(recordLength & 0xFF)}
-
-	fmt.Printf("[TEE_K] DEBUG: TLS record header: %x (length includes %d-byte tag)\n", recordHeader, tagSize)
-
-	// Use consolidated crypto functions from minitls
-	splitAEAD := minitls.NewSplitAEAD(clientAppKey, clientAppIV, cipherSuite)
-	splitAEAD.SetSequence(actualSeqNum)
-
-	// Create AAD based on TLS version
-	var additionalData []byte
-	if tlsVersion == 0x0303 { // TLS 1.2
-		// TLS 1.2: AAD = seq_num(8) + record header(5)
-		additionalData = make([]byte, 13)
-		// Sequence number (8 bytes, big-endian)
-		for i := 0; i < 8; i++ {
-			additionalData[i] = byte(actualSeqNum >> (8 * (7 - i)))
-		}
-		// Record header (5 bytes) - use plaintext length
-		additionalData[8] = 0x17                             // ApplicationData
-		additionalData[9] = 0x03                             // TLS version major
-		additionalData[10] = 0x03                            // TLS version minor
-		additionalData[11] = byte(len(dataToEncrypt) >> 8)   // plaintext length high byte
-		additionalData[12] = byte(len(dataToEncrypt) & 0xFF) // plaintext length low byte
-	} else { // TLS 1.3
-		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
-		tagSize := 16                                // GCM tag size
-		recordLength := len(dataToEncrypt) + tagSize // encrypted data + authentication tag
-		additionalData = []byte{
-			0x17,                      // ApplicationData
-			0x03,                      // TLS version major (compatibility)
-			0x03,                      // TLS version minor (compatibility)
-			byte(recordLength >> 8),   // Length high byte (includes tag)
-			byte(recordLength & 0xFF), // Length low byte (includes tag)
-		}
-	}
-
-	encryptedData, tagSecrets, err := splitAEAD.EncryptWithoutTag(dataToEncrypt, additionalData)
-	if err != nil {
-		log.Printf("[TEE_K] Failed to encrypt data: %v", err)
-		t.sendError(conn, fmt.Sprintf("Failed to encrypt data: %v", err))
-		return
-	}
-
-	fmt.Printf("[TEE_K] Generated client application tag secrets for sequence %d\n", actualSeqNum)
-	fmt.Printf("[TEE_K] Encrypted %d bytes using split AEAD\n", len(encryptedData))
-
-	// Step 6: Send encrypted request and tag secrets to TEE_T
-	if err := t.sendEncryptedRequestToTEET(encryptedData, tagSecrets, cipherSuite, actualSeqNum, redactedRequest.RedactionRanges); err != nil {
-		log.Printf("[TEE_K] Failed to send encrypted request to TEE_T: %v", err)
-		t.sendError(conn, fmt.Sprintf("Failed to send encrypted request to TEE_T: %v", err))
-		return
-	}
-
-	// Step 7: Create what TEE_K WOULD send as a complete TLS record (for debugging comparison)
-	// TLS shared.ApplicationData record format: [type(1)] [version(2)] [length(2)] [encrypted_payload]
-	// completeRecord := make([]byte, 5+len(encryptedData))
-	// completeRecord[0] = 0x17                            // shared.ApplicationData record type
-	// completeRecord[1] = 0x03                            // TLS version major
-	// completeRecord[2] = 0x03                            // TLS version minor
-	// completeRecord[3] = byte(len(encryptedData) >> 8)   // Length high byte
-	// completeRecord[4] = byte(len(encryptedData) & 0xFF) // Length low byte
-	// copy(completeRecord[5:], encryptedData)             // Encrypted payload
-	//
-	// fmt.Printf("[TEE_K] DEBUG: Complete TLS record that WOULD be sent (%d bytes):\n", len(completeRecord))
-	// previewLen := 64
-	// if len(completeRecord) < previewLen {
-	// 	previewLen = len(completeRecord)
-	// }
-	// fmt.Printf(" Would-send record: %x\n", completeRecord[:previewLen])
-	// fmt.Printf(" Record header: type=0x%02x version=0x%04x length=%d\n",
-	// 	completeRecord[0], uint16(completeRecord[1])<<8|uint16(completeRecord[2]), len(encryptedData))
-
 }
 
 // validateHTTPRequestFormat validates that the redacted request maintains proper HTTP format

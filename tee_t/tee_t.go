@@ -35,7 +35,7 @@ type TEET struct {
 	ready bool
 
 	// Legacy fields for backward compatibility during migration
-	// TODO: Remove these after full migration
+	// TODO: Remove these after full migration to session-aware handlers
 	clientConn              *websocket.Conn
 	keyShare                []byte
 	cipherSuite             uint16
@@ -497,9 +497,43 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 		return
 	}
 
-	// Get underlying websocket connection
+	var keyReq shared.KeyShareRequestData
+	if err := msg.UnmarshalData(&keyReq); err != nil {
+		log.Printf("[TEE_T] Failed to unmarshal key share request: %v", err)
+		t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to unmarshal key share request: %v", err))
+		return
+	}
+
+	// Generate random key share
+	keyShare := make([]byte, keyReq.KeyLength)
+	if _, err := rand.Read(keyShare); err != nil {
+		log.Printf("[TEE_T] Failed to generate key share: %v", err)
+		t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to generate key share: %v", err))
+		return
+	}
+
+	// TODO: Store in session state instead of global fields
+	// For now, store in global fields (requires Session struct enhancement)
+	t.keyShare = keyShare
+	t.cipherSuite = keyReq.CipherSuite
+
+	// Send key share response
+	response := shared.KeyShareResponseData{
+		KeyShare: keyShare,
+		Success:  true,
+	}
+
+	responseMsg := shared.CreateMessage(shared.MsgKeyShareResponse, response)
+	msgBytes, err := json.Marshal(responseMsg)
+	if err != nil {
+		log.Printf("[TEE_T] Failed to marshal key share response: %v", err)
+		return
+	}
+
 	wsConn := session.TEEKConn.(*shared.WSConnection)
-	t.handleKeyShareRequest(wsConn.GetWebSocketConn(), msg)
+	if err := wsConn.GetWebSocketConn().WriteMessage(websocket.TextMessage, msgBytes); err != nil {
+		log.Printf("[TEE_T] Failed to send key share response: %v", err)
+	}
 }
 
 func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
@@ -602,11 +636,82 @@ func (t *TEET) handleResponseTagSecretsSession(msg *shared.Message) {
 		return
 	}
 
-	// Verify the authentication tag
-	success, err := t.verifyResponseTag(encryptedResp, tagSecrets.TagSecrets, tagSecrets.CipherSuite)
+	// Verify the authentication tag using consolidated minitls functions
+	var additionalData []byte
+	cipherSuite := tagSecrets.CipherSuite
+
+	// Determine TLS version based on cipher suite and construct appropriate AAD
+	if cipherSuite == 0x1301 || cipherSuite == 0x1302 || cipherSuite == 0x1303 {
+		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
+		tagSize := 16
+		ciphertextLength := len(encryptedResp.EncryptedData) + tagSize
+
+		var recordType byte = 0x17 // Default to ApplicationData
+		if len(encryptedResp.RecordHeader) >= 1 {
+			recordType = encryptedResp.RecordHeader[0] // Use actual record type
+		}
+
+		additionalData = []byte{
+			recordType,                    // Use actual record type (0x17 for data, 0x15 for alerts, etc.)
+			0x03,                          // TLS version major (compatibility)
+			0x03,                          // TLS version minor (compatibility)
+			byte(ciphertextLength >> 8),   // Length high byte (includes tag)
+			byte(ciphertextLength & 0xFF), // Length low byte (includes tag)
+		}
+
+		fmt.Printf("[TEE_T] TLS 1.3 AAD: record_type=0x%02x, ciphertext+tag_len=%d\n",
+			recordType, ciphertextLength)
+	} else {
+		// TLS 1.2: AAD = seq_num(8) + record header(5) = 13 bytes total
+		additionalData = make([]byte, 13)
+		// Sequence number (8 bytes, big-endian)
+		for i := 0; i < 8; i++ {
+			additionalData[i] = byte(encryptedResp.SeqNum >> (8 * (7 - i)))
+		}
+		// Record header (5 bytes) - use actual record type and plaintext length
+		if len(encryptedResp.RecordHeader) >= 1 {
+			additionalData[8] = encryptedResp.RecordHeader[0] // Use actual record type (0x17 for data, 0x15 for alerts, etc.)
+		} else {
+			additionalData[8] = 0x17 // Fallback to ApplicationData
+		}
+		additionalData[9] = 0x03                                           // TLS version major
+		additionalData[10] = 0x03                                          // TLS version minor
+		additionalData[11] = byte(len(encryptedResp.EncryptedData) >> 8)   // plaintext length high byte
+		additionalData[12] = byte(len(encryptedResp.EncryptedData) & 0xFF) // plaintext length low byte
+
+		fmt.Printf("[TEE_T] TLS 1.2 AAD: seq=%d, record_type=0x%02x, plaintext_len=%d\n",
+			encryptedResp.SeqNum, additionalData[8], len(encryptedResp.EncryptedData))
+	}
+
+	// Compute authentication tag using consolidated crypto functions
+	computedTag, err := minitls.ComputeTagFromSecrets(
+		encryptedResp.EncryptedData,
+		tagSecrets.TagSecrets,
+		cipherSuite,
+		additionalData,
+	)
+
+	var success bool
 	if err != nil {
-		log.Printf("[TEE_T] Failed to verify response tag for session %s: %v", sessionID, err)
+		log.Printf("[TEE_T] Failed to compute tag for session %s: %v", sessionID, err)
 		success = false
+	} else {
+		// Compare tags
+		success = len(computedTag) == len(encryptedResp.Tag)
+		if success {
+			for i := 0; i < len(computedTag); i++ {
+				if computedTag[i] != encryptedResp.Tag[i] {
+					success = false
+					break
+				}
+			}
+		}
+	}
+
+	if success {
+		fmt.Printf("[TEE_T] Tag verification SUCCESS for seq=%d\n", encryptedResp.SeqNum)
+	} else {
+		fmt.Printf("[TEE_T] Tag verification FAILED for seq=%d\n", encryptedResp.SeqNum)
 	}
 
 	// Send verification result to both TEE_K and Client with session IDs
@@ -635,69 +740,6 @@ func (t *TEET) handleResponseTagSecretsSession(msg *shared.Message) {
 	} else {
 		fmt.Printf("[TEE_T] Response tag verification failed (seq=%d) for session %s\n", tagSecrets.SeqNum, sessionID)
 	}
-}
-
-func (t *TEET) handleKeyShareRequest(conn *websocket.Conn, msg *shared.Message) {
-	var keyReq shared.KeyShareRequestData
-	if err := msg.UnmarshalData(&keyReq); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal key share request: %v", err)
-		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to unmarshal key share request: %v", err))
-		return
-	}
-
-	// Generate random key share
-	keyShare := make([]byte, keyReq.KeyLength)
-	if _, err := rand.Read(keyShare); err != nil {
-		log.Printf("[TEE_T] Failed to generate key share: %v", err)
-		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to generate key share: %v", err))
-		return
-	}
-
-	t.keyShare = keyShare
-	t.cipherSuite = keyReq.CipherSuite
-
-	// Send key share response
-	response := shared.KeyShareResponseData{
-		KeyShare: keyShare,
-		Success:  true,
-	}
-
-	responseMsg := shared.CreateMessage(shared.MsgKeyShareResponse, response)
-	msgBytes, err := json.Marshal(responseMsg)
-	if err != nil {
-		log.Printf("[TEE_T] Failed to marshal key share response: %v", err)
-		return
-	}
-
-	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-		log.Printf("[TEE_T] Failed to send key share response: %v", err)
-	}
-}
-
-func (t *TEET) handleEncryptedRequest(conn *websocket.Conn, msg *shared.Message) {
-	var encReq shared.EncryptedRequestData
-	if err := msg.UnmarshalData(&encReq); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal encrypted request: %v", err)
-		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to unmarshal encrypted request: %v", err))
-		return
-	}
-
-	fmt.Printf("[TEE_T] Computing tag for %d byte ciphertext using seq=%d with %d redaction ranges\n", len(encReq.EncryptedData), encReq.SeqNum, len(encReq.RedactionRanges))
-
-	// Store redaction ranges for stream application
-	t.redactionRanges = encReq.RedactionRanges
-
-	// *** FIX: Store encrypted request and wait for redaction streams ***
-	if len(t.redactionStreams) == 0 {
-		// No redaction streams available yet - store request and wait
-		t.pendingEncryptedRequest = &encReq
-		t.teekConn_for_pending = conn
-		fmt.Printf("[TEE_T] Storing encrypted request, waiting for redaction streams...\n")
-		return
-	}
-
-	// Process immediately if streams are already available
-	t.processEncryptedRequestWithStreams(&encReq, conn)
 }
 
 // processEncryptedRequestWithStreams handles the actual processing once streams are available
@@ -995,55 +1037,6 @@ func (t *TEET) sendErrorToTEEK(conn *websocket.Conn, errMsg string) {
 
 // Phase 3: Redaction system implementation
 
-// handleRedactionStreams processes redaction streams from client for later stream application
-func (t *TEET) handleRedactionStreams(conn *websocket.Conn, msg *shared.Message) {
-	var streamsData shared.RedactionStreamsData
-	if err := msg.UnmarshalData(&streamsData); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal redaction streams: %v", err)
-		t.sendErrorToClient(conn, fmt.Sprintf("Failed to unmarshal redaction streams: %v", err))
-		return
-	}
-
-	fmt.Printf("[TEE_T] Received redaction streams: %d streams, %d keys\n", len(streamsData.Streams), len(streamsData.CommitmentKeys))
-
-	// Verify commitments to ensure stream integrity
-	if err := t.verifyCommitments(streamsData.Streams, streamsData.CommitmentKeys); err != nil {
-		log.Printf("[TEE_T] Failed to verify redaction commitments: %v", err)
-		t.sendErrorToClient(conn, fmt.Sprintf("Failed to verify redaction commitments: %v", err))
-		return
-	}
-
-	// Store streams and keys for later use when encrypted request arrives
-	t.redactionStreams = streamsData.Streams
-	t.commitmentKeys = streamsData.CommitmentKeys
-
-	fmt.Printf("[TEE_T] Redaction streams stored and verified\n")
-
-	// *** FIX: Process pending encrypted request if available ***
-	if t.pendingEncryptedRequest != nil && t.teekConn_for_pending != nil {
-		fmt.Printf("[TEE_T] Processing pending encrypted request with newly received streams\n")
-		t.processEncryptedRequestWithStreams(t.pendingEncryptedRequest, t.teekConn_for_pending)
-
-		// Clear pending request
-		t.pendingEncryptedRequest = nil
-		t.teekConn_for_pending = nil
-	}
-
-	// Send verification response to client
-	verificationResponse := shared.RedactionVerificationData{
-		Success: true,
-		Message: "Redaction streams verified and stored",
-	}
-
-	verificationMsg := shared.CreateMessage(shared.MsgRedactionVerification, verificationResponse)
-	if err := t.sendMessageToClient(verificationMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send verification message: %v", err)
-		t.sendErrorToClient(conn, fmt.Sprintf("Failed to send verification message: %v", err))
-	}
-
-	fmt.Printf("[TEE_T] DEBUG: handleRedactionStreams completed at %s, returning to message loop\n", time.Now().Format("15:04:05.000"))
-}
-
 // verifyCommitments verifies that HMAC(stream, key) matches the expected commitments
 func (t *TEET) verifyCommitments(streams, keys [][]byte) error {
 	if len(streams) != len(keys) {
@@ -1152,241 +1145,7 @@ func (t *TEET) reconstructFullEncryptedRequest(encryptedRedacted []byte, ranges 
 	return reconstructed, nil
 }
 
-// Phase 4: Response handling methods
-
-// handleEncryptedResponse processes encrypted response from client for tag verification
-func (t *TEET) handleEncryptedResponse(conn *websocket.Conn, msg *shared.Message) {
-	fmt.Printf("[TEE_T] DEBUG: Received encrypted response message from client\n")
-
-	var encryptedResp shared.EncryptedResponseData
-	if err := msg.UnmarshalData(&encryptedResp); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal encrypted response: %v", err)
-		t.sendErrorToClient(conn, fmt.Sprintf("Failed to unmarshal encrypted response: %v", err))
-		return
-	}
-
-	fmt.Printf("[TEE_T] Received encrypted response (%d bytes encrypted data, %d bytes tag, seq=%d)\n",
-		len(encryptedResp.EncryptedData), len(encryptedResp.Tag), encryptedResp.SeqNum)
-	fmt.Printf("[TEE_T] RECEIVED FROM CLIENT: encrypted=%x, tag=%x\n",
-		encryptedResp.EncryptedData[:min(16, len(encryptedResp.EncryptedData))],
-		encryptedResp.Tag)
-
-	// Legacy method: transcript collection disabled as it should use session-aware methods
-	// TODO: This legacy method should be refactored to use session-aware transcript collection
-
-	// Store the encrypted response for processing when tag secrets arrive
-	// This logic needs to be moved to the session's ResponseState
-	// For now, we'll just send the length and rely on the session's state
-	t.responsesMutex.Lock()
-	t.pendingResponses[encryptedResp.SeqNum] = &encryptedResp
-	t.responsesMutex.Unlock()
-
-	// Send response length to TEE_K to request tag secrets
-	lengthData := shared.ResponseLengthData{
-		Length:       len(encryptedResp.EncryptedData), // Full encrypted data length
-		RecordHeader: encryptedResp.RecordHeader,       // Copy the actual TLS record header
-		SeqNum:       encryptedResp.SeqNum,
-		CipherSuite:  encryptedResp.CipherSuite, // Use actual cipher suite from response
-		ExplicitIV:   encryptedResp.ExplicitIV,  // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
-	}
-
-	lengthMsg := shared.CreateMessage(shared.MsgResponseLength, lengthData)
-
-	msgBytes, err := json.Marshal(lengthMsg)
-	if err != nil {
-		log.Printf("[TEE_T] Failed to marshal response length message: %v", err)
-		t.sendErrorToClient(conn, fmt.Sprintf("Failed to marshal response length message: %v", err))
-		return
-	}
-
-	// Use a global TEE_K connection for legacy methods - this is a temporary workaround
-	// TODO: Refactor these legacy methods to be session-aware
-	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-		log.Printf("[TEE_T] Failed to send response length to TEE_K: %v", err)
-		t.sendErrorToClient(conn, fmt.Sprintf("Failed to send response length to TEE_K: %v", err))
-		return
-	}
-
-	fmt.Printf("[TEE_T] Sent response length to TEE_K (seq=%d, length=%d)\n", encryptedResp.SeqNum, len(encryptedResp.EncryptedData))
-}
-
-// handleResponseTagSecrets processes tag secrets from TEE_K and verifies response tag
-func (t *TEET) handleResponseTagSecrets(conn *websocket.Conn, msg *shared.Message) {
-	var tagSecrets shared.ResponseTagSecretsData
-	if err := msg.UnmarshalData(&tagSecrets); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal response tag secrets: %v", err)
-		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to unmarshal response tag secrets: %v", err))
-		return
-	}
-
-	fmt.Printf("[TEE_T] Received tag secrets for seq=%d (%d bytes)\n",
-		tagSecrets.SeqNum, len(tagSecrets.TagSecrets))
-
-	// Find the pending response in global map (legacy approach)
-	t.responsesMutex.Lock()
-	encryptedResp, exists := t.pendingResponses[tagSecrets.SeqNum]
-	if exists {
-		delete(t.pendingResponses, tagSecrets.SeqNum)
-	}
-	t.responsesMutex.Unlock()
-
-	if !exists {
-		log.Printf("[TEE_T] No pending response found for seq=%d", tagSecrets.SeqNum)
-		return
-	}
-
-	// Verify the authentication tag
-	success, err := t.verifyResponseTag(encryptedResp, tagSecrets.TagSecrets, tagSecrets.CipherSuite)
-	if err != nil {
-		log.Printf("[TEE_T] Failed to verify response tag: %v", err)
-		success = false
-	}
-
-	// Send verification result to both TEE_K and Client
-	verificationData := shared.ResponseTagVerificationData{
-		Success: success,
-		SeqNum:  tagSecrets.SeqNum,
-	}
-
-	if !success {
-		verificationData.Message = "Authentication tag verification failed"
-	}
-
-	// Send to Client
-	verificationMsg := shared.CreateMessage(shared.MsgResponseTagVerification, verificationData)
-	if err := t.sendMessageToClient(verificationMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send verification to client: %v", err)
-	}
-
-	// Send to TEE_K
-	msgBytes, err := json.Marshal(verificationMsg)
-	if err != nil {
-		log.Printf("[TEE_T] Failed to marshal verification message: %v", err)
-	} else {
-		if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-			log.Printf("[TEE_T] Failed to send verification to TEE_K: %v", err)
-		}
-	}
-
-	if success {
-		fmt.Printf("[TEE_T] Response tag verification successful (seq=%d)\n", tagSecrets.SeqNum)
-	} else {
-		fmt.Printf("[TEE_T] Response tag verification failed (seq=%d)\n", tagSecrets.SeqNum)
-	}
-}
-
-// verifyResponseTag verifies the authentication tag using split AEAD
-func (t *TEET) verifyResponseTag(encryptedResp *shared.EncryptedResponseData, tagSecrets []byte, cipherSuite uint16) (bool, error) {
-	// Construct version-specific AAD for tag verification
-	var additionalData []byte
-
-	// Determine TLS version based on cipher suite and construct appropriate AAD
-	if cipherSuite == 0x1301 || cipherSuite == 0x1302 || cipherSuite == 0x1303 {
-		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
-		tagSize := 16                                                  // GCM tag size
-		ciphertextLength := len(encryptedResp.EncryptedData) + tagSize // encrypted data + authentication tag
-		additionalData = []byte{
-			0x17,                          // ApplicationData
-			0x03,                          // TLS version major (compatibility)
-			0x03,                          // TLS version minor (compatibility)
-			byte(ciphertextLength >> 8),   // Length high byte (includes tag)
-			byte(ciphertextLength & 0xFF), // Length low byte (includes tag)
-		}
-		fmt.Printf("[TEE_T] TLS 1.3 AAD: %x (ciphertext+tag length: %d)\n", additionalData, ciphertextLength)
-	} else {
-		// TLS 1.2: AAD = seq_num(8) + record header(5) = 13 bytes total
-		recordHeader := encryptedResp.RecordHeader
-		if len(recordHeader) != 5 {
-			return false, fmt.Errorf("invalid TLS 1.2 record header length: expected 5, got %d", len(recordHeader))
-		}
-
-		// Construct TLS 1.2 AAD: sequence_number(8) + record_header(5)
-		additionalData = make([]byte, 13)
-
-		// Sequence number (8 bytes, big-endian) - extract from encrypted response
-		seqNum := encryptedResp.SeqNum
-		additionalData[0] = byte(seqNum >> 56)
-		additionalData[1] = byte(seqNum >> 48)
-		additionalData[2] = byte(seqNum >> 40)
-		additionalData[3] = byte(seqNum >> 32)
-		additionalData[4] = byte(seqNum >> 24)
-		additionalData[5] = byte(seqNum >> 16)
-		additionalData[6] = byte(seqNum >> 8)
-		additionalData[7] = byte(seqNum)
-
-		// Record header (5 bytes) - but use PLAINTEXT length, not ciphertext+tag length
-		additionalData[8] = recordHeader[0]  // content type (0x17)
-		additionalData[9] = recordHeader[1]  // version major (0x03)
-		additionalData[10] = recordHeader[2] // version minor (0x03)
-
-		// For TLS 1.2 AAD, use plaintext length (encrypted data without tag)
-		plaintextLength := len(encryptedResp.EncryptedData)
-		additionalData[11] = byte(plaintextLength >> 8)   // length high byte
-		additionalData[12] = byte(plaintextLength & 0xFF) // length low byte
-
-		fmt.Printf("[TEE_T] TLS 1.2 AAD: seq=%d, plaintext_len=%d, aad=%x\n",
-			seqNum, plaintextLength, additionalData)
-	}
-
-	// Use the ComputeTagFromSecrets function from minitls
-	computedTag, err := minitls.ComputeTagFromSecrets(
-		encryptedResp.EncryptedData,
-		tagSecrets,
-		cipherSuite,
-		additionalData,
-	)
-	if err != nil {
-		return false, fmt.Errorf("failed to compute tag: %v", err)
-	}
-
-	// *** CRITICAL DEBUG: Show exact tag comparison ***
-	fmt.Printf("[TEE_T] TAG COMPARISON DEBUG:\n")
-
-	// Compare computed tag with received tag
-	if len(computedTag) != len(encryptedResp.Tag) {
-		return false, fmt.Errorf("tag length mismatch: computed %d, received %d",
-			len(computedTag), len(encryptedResp.Tag))
-	}
-
-	tagMatch := true
-	for i := 0; i < len(computedTag); i++ {
-		if computedTag[i] != encryptedResp.Tag[i] {
-			tagMatch = false
-			break
-		}
-	}
-
-	if tagMatch {
-		fmt.Printf("[TEE_T] TAGS MATCH!\n")
-		return true, nil
-	} else {
-		fmt.Printf("[TEE_T] TAGS DO NOT MATCH!\n")
-
-		// *** CRITICAL INSIGHT: The issue is that all tag secrets are identical! ***
-		// The tag secrets were computed for sequence 2, but we're testing sequences 0-10
-		// with the SAME tag secrets. That's why all computed tags are identical.
-		fmt.Printf("[TEE_T] CRITICAL: Tag secrets were computed for seq=%d, but we need to test other sequences\n", encryptedResp.SeqNum)
-		fmt.Printf("[TEE_T] All computed tags are identical because tag secrets don't vary with sequence!\n")
-
-		// *** SIMPLE FIX: Try the most likely server sequence numbers ***
-		// Server sequences typically start from 0, but our client is at sequence 2
-		// This suggests there may be a sequence number offset issue
-
-		fmt.Printf("[TEE_T] TESTING LIKELY SERVER SEQUENCES (need different tag secrets for each):\n")
-		fmt.Printf(" Current client seq: %d\n", encryptedResp.SeqNum)
-		fmt.Printf(" Target tag: %x\n", encryptedResp.Tag)
-
-		// Try sequence 0 first (server's likely actual sequence)
-		if encryptedResp.SeqNum != 0 {
-			fmt.Printf("[TEE_T] HYPOTHESIS: Server is using sequence 0, but client sent sequence %d\n", encryptedResp.SeqNum)
-			fmt.Printf("[TEE_T] Need TEE_K to generate tag secrets for sequence 0 instead of %d\n", encryptedResp.SeqNum)
-		}
-
-		return false, nil
-	}
-}
-
-// Legacy handler methods (still needed for backward compatibility)
+// Phase 4: Response handling methods (moved to session-aware versions)
 
 func (t *TEET) handleTEETReady(conn *websocket.Conn, msg *shared.Message) {
 	var readyData shared.TEETReadyData
@@ -1687,3 +1446,5 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			clientFinished, teekFinished)
 	}
 }
+
+// Legacy handler methods (still needed for backward compatibility)
