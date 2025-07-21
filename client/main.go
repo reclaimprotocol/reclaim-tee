@@ -78,8 +78,8 @@ func main() {
 		log.Fatalf("[Client] Failed to connect: %v", err)
 	}
 
-	// Request HTTP to example.com (original target with proper redaction patterns)
-	if err := client.RequestHTTP("example.com", 443); err != nil {
+	// Request HTTP to github.com (supports all cipher suites)
+	if err := client.RequestHTTP("github.com", 443); err != nil {
 		log.Fatalf("[Client] Failed to request HTTP: %v", err)
 	}
 

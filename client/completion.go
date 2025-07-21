@@ -257,95 +257,78 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 
 	httpStr := string(httpData)
 
-	// Look for common sensitive patterns in HTTP responses
-	sensitivePatterns := []struct {
-		pattern string
-		name    string
-	}{
-		{"ETag:", "etag"},
-		{"Alt-Svc:", "alt_svc"},
-		{"Server:", "server_header"}, // Test pattern for example.com
-	}
-
-	for _, p := range sensitivePatterns {
-		start := 0
-		for {
-			index := strings.Index(httpStr[start:], p.pattern)
-			if index == -1 {
-				break
-			}
-
-			absoluteIndex := start + index
-
-			// Find the start of the header value (after the pattern and whitespace)
-			valueStartIndex := absoluteIndex + len(p.pattern)
-			for valueStartIndex < len(httpStr) && (httpStr[valueStartIndex] == ' ' || httpStr[valueStartIndex] == '\t') {
-				valueStartIndex++
-			}
-
-			// Find the end of the line
-			lineEndIndex := strings.Index(httpStr[valueStartIndex:], "\r\n")
-			if lineEndIndex == -1 {
-				lineEndIndex = len(httpStr)
-			} else {
-				lineEndIndex = valueStartIndex + lineEndIndex
-			}
-
-			// The range to redact is from the start of the value to the end of the line
-			rangeStart := baseOffset + valueStartIndex
-			rangeLength := lineEndIndex - valueStartIndex
-
-			// Skip if there's nothing to redact
-			if rangeLength <= 0 {
-				start = lineEndIndex
-				continue
-			}
-
-			// The ciphertext offset must also start where the value starts
-			ciphertextOffset := valueStartIndex
-			redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, rangeLength, 0) // Pass 0 for seqNum as it's not a record sequence number
-
-			ranges = append(ranges, shared.RedactionRange{
-				Start:          rangeStart,
-				Length:         rangeLength,
-				Type:           p.name,
-				RedactionBytes: redactionBytes,
-			})
-
-			start = lineEndIndex
-		}
-	}
-
-	// *** ADDED: Redact content inside <title> tag ***
+	// NEW STRATEGY: Redact EVERYTHING except the title content for github.com
+	// Find the title tags and preserve only the content inside them
 	titleStartTag := "<title>"
 	titleEndTag := "</title>"
 	titleStartIndex := strings.Index(httpStr, titleStartTag)
+
 	if titleStartIndex != -1 {
 		titleContentStartIndex := titleStartIndex + len(titleStartTag)
 		titleEndIndex := strings.Index(httpStr[titleContentStartIndex:], titleEndTag)
+
 		if titleEndIndex != -1 {
-			// The end index is relative to the start of the substring, so we adjust it
+			// Adjust titleEndIndex to be absolute
 			titleEndIndex = titleContentStartIndex + titleEndIndex
 
-			// Calculate the range for the content *inside* the tags
-			rangeStart := baseOffset + titleContentStartIndex
-			rangeLength := titleEndIndex - titleContentStartIndex
+			log.Printf("[Client] Found title content at offset %d-%d (preserving this content)",
+				titleContentStartIndex, titleEndIndex-1)
 
-			if rangeLength > 0 {
-				log.Printf("[Client] Found sensitive pattern 'title' at offset %d-%d",
-					rangeStart, rangeStart+rangeLength-1)
-
-				ciphertextOffset := titleContentStartIndex
-				redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, rangeLength, 0) // Pass 0 for seqNum
+			// Redact everything BEFORE the title content
+			if titleContentStartIndex > 0 {
+				beforeTitleLength := titleContentStartIndex
+				redactionBytes := c.calculateRedactionBytes(ciphertext, 0, beforeTitleLength, 0)
 
 				ranges = append(ranges, shared.RedactionRange{
-					Start:          rangeStart,
-					Length:         rangeLength,
-					Type:           "html_title",
+					Start:          baseOffset,
+					Length:         beforeTitleLength,
+					Type:           "everything_before_title",
 					RedactionBytes: redactionBytes,
 				})
+
+				log.Printf("[Client] Redacting everything before title: offset %d-%d (%d bytes)",
+					baseOffset, baseOffset+beforeTitleLength-1, beforeTitleLength)
 			}
+
+			// Redact everything AFTER the title content
+			if titleEndIndex < len(httpStr) {
+				afterTitleStart := titleEndIndex
+				afterTitleLength := len(httpStr) - afterTitleStart
+				redactionBytes := c.calculateRedactionBytes(ciphertext, afterTitleStart, afterTitleLength, 0)
+
+				ranges = append(ranges, shared.RedactionRange{
+					Start:          baseOffset + afterTitleStart,
+					Length:         afterTitleLength,
+					Type:           "everything_after_title",
+					RedactionBytes: redactionBytes,
+				})
+
+				log.Printf("[Client] Redacting everything after title: offset %d-%d (%d bytes)",
+					baseOffset+afterTitleStart, baseOffset+afterTitleStart+afterTitleLength-1, afterTitleLength)
+			}
+		} else {
+			// No closing title tag found, redact everything
+			log.Printf("[Client] No closing title tag found, redacting entire content")
+			redactionBytes := c.calculateRedactionBytes(ciphertext, 0, len(httpStr), 0)
+
+			ranges = append(ranges, shared.RedactionRange{
+				Start:          baseOffset,
+				Length:         len(httpStr),
+				Type:           "entire_content",
+				RedactionBytes: redactionBytes,
+			})
 		}
+	} else {
+		// No title tag found, redact everything
+		log.Printf("[Client] No title tag found, redacting entire content")
+		redactionBytes := c.calculateRedactionBytes(ciphertext, 0, len(httpStr), 0)
+
+		ranges = append(ranges, shared.RedactionRange{
+			Start:          baseOffset,
+			Length:         len(httpStr),
+			Type:           "entire_content",
+			RedactionBytes: redactionBytes,
+		})
 	}
 
 	return ranges

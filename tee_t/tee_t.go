@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"tee-mpc/minitls"
@@ -45,9 +44,7 @@ type TEET struct {
 	pendingEncryptedRequest *shared.EncryptedRequestData // Store encrypted request until streams arrive
 	teekConn_for_pending    *websocket.Conn              // Store TEE_K connection for pending request
 
-	// Legacy global response storage for backward compatibility during transition
-	pendingResponses map[uint64]*shared.EncryptedResponseData // Responses awaiting tag secrets by seq num
-	responsesMutex   sync.Mutex                               // Protects pendingResponses map access
+	// Legacy global response storage has been migrated to session-aware storage
 
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
@@ -76,7 +73,6 @@ func NewTEETWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 		sessionManager:          shared.NewSessionManager(),
 		pendingEncryptedRequest: nil,
 		signingKeyPair:          signingKeyPair,
-		pendingResponses:        make(map[uint64]*shared.EncryptedResponseData),
 		enclaveManager:          enclaveManager,
 	}
 }
@@ -102,7 +98,6 @@ func NewTEETWithSessionManagerAndEnclaveManager(port int, sessionManager shared.
 		sessionManager:          sessionManager,
 		pendingEncryptedRequest: nil,
 		signingKeyPair:          signingKeyPair,
-		pendingResponses:        make(map[uint64]*shared.EncryptedResponseData),
 		enclaveManager:          enclaveManager,
 	}
 }
