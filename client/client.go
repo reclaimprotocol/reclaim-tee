@@ -90,6 +90,15 @@ type Client struct {
 	decryptionStreamBySeq  map[uint64][]byte // Store decryption streams by sequence
 	redactedPlaintextBySeq map[uint64][]byte // *** ADDED: Store final redacted plaintext for ordered printing ***
 
+	// *** NEW: Response packet batching fields ***
+	batchedResponses      []EncryptedResponseData // Collect response packets until EOF
+	batchedResponsesMutex sync.Mutex              // Protect batched responses collection
+
+	// *** NEW: Response processing success tracking ***
+	responseProcessingSuccessful bool       // Track if response was successfully processed
+	reconstructedResponseSize    int        // Size of reconstructed response data
+	responseProcessingMutex      sync.Mutex // Protect response processing flags
+
 	// Track redaction ranges so we can prettify later and include in bundle
 	requestRedactionRanges []RedactionRange
 	// Attestation verification fields
@@ -132,25 +141,31 @@ type Client struct {
 
 func NewClient(teekURL string) *Client {
 	return &Client{
-		teekURL:                      teekURL,
-		teetURL:                      "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
-		pendingResponsesData:         make(map[uint64][]byte),
-		completionChan:               make(chan struct{}),
-		state:                        ClientStateInitial,
-		recordsSent:                  0,
-		recordsProcessed:             0,
-		decryptionStreamsReceived:    0,
-		eofReached:                   0,
-		completionFlags:              0,
-		httpRequestSent:              false,
-		httpResponseExpected:         false,
-		httpResponseReceived:         false,
-		responseContentBySeq:         make(map[uint64][]byte),
-		responseContentMutex:         sync.Mutex{},
-		ciphertextBySeq:              make(map[uint64][]byte),
-		decryptionStreamBySeq:        make(map[uint64][]byte),
-		redactedPlaintextBySeq:       make(map[uint64][]byte),
-		requestRedactionRanges:       nil,
+		teekURL:                   teekURL,
+		teetURL:                   "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
+		pendingResponsesData:      make(map[uint64][]byte),
+		completionChan:            make(chan struct{}),
+		state:                     ClientStateInitial,
+		recordsSent:               0,
+		recordsProcessed:          0,
+		decryptionStreamsReceived: 0,
+		eofReached:                0,
+		completionFlags:           0,
+		httpRequestSent:           false,
+		httpResponseExpected:      false,
+		httpResponseReceived:      false,
+		responseContentMutex:      sync.Mutex{},
+		ciphertextBySeq:           make(map[uint64][]byte),
+		decryptionStreamBySeq:     make(map[uint64][]byte),
+		redactedPlaintextBySeq:    make(map[uint64][]byte),
+		requestRedactionRanges:    nil,
+
+		// *** NEW: Initialize batching fields ***
+		batchedResponses:             make([]EncryptedResponseData, 0),
+		batchedResponsesMutex:        sync.Mutex{},
+		responseProcessingSuccessful: false,
+		reconstructedResponseSize:    0,
+		responseProcessingMutex:      sync.Mutex{},
 		teekAttestationPublicKey:     nil,
 		teetAttestationPublicKey:     nil,
 		teekTranscriptPublicKey:      nil,
@@ -953,7 +968,13 @@ func (c *Client) buildResponseResults() (*ResponseResults, error) {
 		responseTimestamp = time.Now() // TODO: Track actual timestamp
 	}
 
-	// Calculate total decrypted data size
+	// *** NEW: Use batched response processing success flags ***
+	c.responseProcessingMutex.Lock()
+	batchedSuccess := c.responseProcessingSuccessful
+	batchedDataSize := c.reconstructedResponseSize
+	c.responseProcessingMutex.Unlock()
+
+	// Calculate total decrypted data size (fallback if batched processing didn't run)
 	c.responseContentMutex.Lock()
 	totalDataSize := 0
 	for _, data := range c.responseContentBySeq {
@@ -961,14 +982,20 @@ func (c *Client) buildResponseResults() (*ResponseResults, error) {
 	}
 	c.responseContentMutex.Unlock()
 
+	// Use batched data size if available, otherwise fall back to individual processing
+	finalDataSize := batchedDataSize
+	if finalDataSize == 0 {
+		finalDataSize = totalDataSize
+	}
+
 	return &ResponseResults{
 		HTTPResponse:         c.lastResponseData,
 		ProofClaims:          c.lastProofClaims,
-		ResponseReceived:     c.httpResponseReceived,
-		CallbackExecuted:     c.responseCallback != nil && c.httpResponseReceived,
+		ResponseReceived:     batchedSuccess || c.httpResponseReceived,
+		CallbackExecuted:     batchedSuccess || (c.responseCallback != nil && c.httpResponseReceived),
+		DecryptionSuccessful: batchedSuccess || (finalDataSize > 0),
+		DecryptedDataSize:    finalDataSize,
 		ResponseTimestamp:    responseTimestamp,
-		DecryptionSuccessful: totalDataSize > 0,
-		DecryptedDataSize:    totalDataSize,
 	}, nil
 }
 

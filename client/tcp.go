@@ -288,6 +288,12 @@ func (c *Client) tcpToWebsocket() {
 		// After processing any final data, break if EOF was received
 		if eofReceived {
 			fmt.Printf("[Client] EOF reached, checking for protocol completion...\n")
+
+			// *** NEW: Send batched responses if any were collected ***
+			if err := c.sendBatchedResponses(); err != nil {
+				log.Printf("[Client] Failed to send batched responses on EOF: %v", err)
+			}
+
 			break
 		}
 	}

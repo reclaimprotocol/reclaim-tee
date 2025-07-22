@@ -150,6 +150,13 @@ func (c *Client) handleMessages() {
 			c.handleSignedTranscript(msg)
 		case MsgAttestationResponse:
 			c.handleAttestationResponse(msg)
+
+		// *** NEW: Handle batched response messages ***
+		case MsgBatchedTagVerifications:
+			c.handleBatchedTagVerifications(msg)
+		case MsgBatchedDecryptionStreams:
+			c.handleBatchedDecryptionStreams(msg)
+
 		default:
 			if !closing {
 				log.Printf("[Client] Unknown message type: %s", msg.Type)
@@ -202,6 +209,11 @@ func (c *Client) handleTEETMessages() {
 			c.handleAttestationResponse(msg)
 		case MsgError:
 			c.handleTEETError(msg)
+
+		// *** NEW: Handle batched response messages from TEE_T ***
+		case MsgBatchedTagVerifications:
+			c.handleBatchedTagVerifications(msg)
+
 		default:
 			if !closing {
 				log.Printf("[Client] Unknown TEE_T message type: %s", msg.Type)
@@ -839,7 +851,8 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 	c.redactedPlaintextBySeq[redactedStream.SeqNum] = redactedPlaintext
 	c.responseContentMutex.Unlock()
 
-	c.printRedactedResponse()
+	// *** REMOVED: Don't print individual streams - wait for all streams ***
+	// c.printRedactedResponse()
 
 	// Check protocol completion after processing redacted stream
 	c.checkProtocolCompletion("redacted stream processed")
@@ -974,6 +987,169 @@ func (c *Client) handleAttestationResponse(msg *Message) {
 				log.Printf("[Client] Attestation public key verification successful")
 				fmt.Printf("[Client] ATTESTATION VERIFICATION SUCCESSFUL - transcripts are from verified enclaves\n")
 			}
+		}
+	}
+}
+
+// *** NEW: Handle batched tag verification results ***
+func (c *Client) handleBatchedTagVerifications(msg *Message) {
+	var batchedVerification BatchedTagVerificationData
+	if err := msg.UnmarshalData(&batchedVerification); err != nil {
+		log.Printf("[Client] Failed to unmarshal batched tag verification: %v", err)
+		return
+	}
+
+	fmt.Printf("[Client] BATCHING: Received batch tag verification for %d responses (all successful: %v)\n",
+		batchedVerification.TotalCount, batchedVerification.AllSuccessful)
+
+	// Process each verification result to update completion counters
+	for _, verification := range batchedVerification.Verifications {
+		if verification.Success {
+			fmt.Printf("[Client] Response tag verification successful (seq=%d)\n", verification.SeqNum)
+			// *** CRITICAL: Increment completion counters to match existing logic ***
+			atomic.AddInt64(&c.recordsProcessed, 1)
+			fmt.Printf("[Client] BATCHING: Incremented recordsProcessed to %d\n", atomic.LoadInt64(&c.recordsProcessed))
+		} else {
+			log.Printf("[Client] Response tag verification failed (seq=%d): %s", verification.SeqNum, verification.Message)
+		}
+	}
+
+	fmt.Printf("[Client] BATCHING: Processed %d tag verifications\n", len(batchedVerification.Verifications))
+}
+
+// *** NEW: Handle batched decryption streams ***
+func (c *Client) handleBatchedDecryptionStreams(msg *Message) {
+	fmt.Printf("[Client] BATCHING: handleBatchedDecryptionStreams started\n")
+	defer fmt.Printf("[Client] BATCHING: handleBatchedDecryptionStreams FINISHED\n")
+
+	var batchedStreams BatchedDecryptionStreamData
+	if err := msg.UnmarshalData(&batchedStreams); err != nil {
+		log.Printf("[Client] Failed to unmarshal batched decryption streams: %v", err)
+		return
+	}
+
+	fmt.Printf("[Client] BATCHING: Received batch of %d decryption streams\n", batchedStreams.TotalCount)
+	fmt.Printf("[Client] BATCHING: About to process %d streams\n", len(batchedStreams.DecryptionStreams))
+
+	if len(batchedStreams.DecryptionStreams) == 0 {
+		fmt.Printf("[Client] BATCHING: No streams to process, calling completion check\n")
+		c.checkProtocolCompletion("batched decryption streams processed (empty)")
+		return
+	}
+
+	// Process each decryption stream
+	for i, streamData := range batchedStreams.DecryptionStreams {
+		if i%100 == 0 { // Log every 100 streams to avoid spam
+			fmt.Printf("[Client] BATCHING: Processing stream %d/%d\n", i+1, len(batchedStreams.DecryptionStreams))
+		}
+
+		// Store decryption stream by sequence number (preserve existing logic)
+		c.responseContentMutex.Lock()
+		c.decryptionStreamBySeq[streamData.SeqNum] = streamData.DecryptionStream
+		c.responseContentMutex.Unlock()
+
+		// Decrypt and store redacted plaintext (preserve existing logic)
+		if ciphertext, exists := c.ciphertextBySeq[streamData.SeqNum]; exists {
+			redactedPlaintext := make([]byte, len(ciphertext))
+			for j := 0; j < len(ciphertext); j++ {
+				redactedPlaintext[j] = ciphertext[j] ^ streamData.DecryptionStream[j]
+			}
+
+			// *** SIMPLIFIED: Minimize mutex usage ***
+			c.responseContentMutex.Lock()
+
+			// *** CRITICAL: Initialize maps if they're nil to prevent panic ***
+			if c.redactedPlaintextBySeq == nil {
+				c.redactedPlaintextBySeq = make(map[uint64][]byte)
+			}
+			if c.responseContentBySeq == nil {
+				c.responseContentBySeq = make(map[uint64][]byte)
+			}
+
+			c.redactedPlaintextBySeq[streamData.SeqNum] = redactedPlaintext
+			c.responseContentBySeq[streamData.SeqNum] = redactedPlaintext
+			c.responseContentMutex.Unlock()
+
+			// *** CRITICAL: Increment completion counters to match existing logic ***
+			atomic.AddInt64(&c.decryptionStreamsReceived, 1)
+		} else {
+			log.Printf("[Client] No ciphertext found for seq=%d", streamData.SeqNum)
+		}
+	}
+
+	fmt.Printf("[Client] BATCHING: Processed %d decryption streams\n", len(batchedStreams.DecryptionStreams))
+
+	// *** CRITICAL: Also reconstruct HTTP response from decrypted data ***
+	c.reconstructHTTPResponseFromDecryptedData()
+
+	// *** CRITICAL: Trigger completion check after processing batched streams ***
+	fmt.Printf("[Client] BATCHING: About to call checkProtocolCompletion...\n")
+	c.checkProtocolCompletion("batched decryption streams processed")
+	fmt.Printf("[Client] BATCHING: checkProtocolCompletion returned\n")
+}
+
+// *** NEW: Reconstruct HTTP response from all decrypted response data ***
+func (c *Client) reconstructHTTPResponseFromDecryptedData() {
+	c.responseContentMutex.Lock()
+	defer c.responseContentMutex.Unlock()
+
+	if len(c.redactedPlaintextBySeq) == 0 {
+		fmt.Printf("[Client] No decrypted response data to reconstruct\n")
+		return
+	}
+
+	// Sort sequence numbers and concatenate response data
+	var seqNums []uint64
+	for seqNum := range c.redactedPlaintextBySeq {
+		seqNums = append(seqNums, seqNum)
+	}
+	sort.Slice(seqNums, func(i, j int) bool { return seqNums[i] < seqNums[j] })
+
+	var fullResponse []byte
+	for _, seqNum := range seqNums {
+		if seqNum > 0 { // Skip handshake sequences (seq 0)
+			plaintext := c.redactedPlaintextBySeq[seqNum]
+
+			// *** CRITICAL FIX: Remove TLS content type byte and extract actual content ***
+			if len(plaintext) > 0 {
+				// TLS records have content type as first byte, actual content follows
+				contentType := plaintext[0]
+				actualContent := plaintext[1:]
+
+				// Only include application data (0x17), skip handshake (0x16) and alerts (0x15)
+				if contentType == 0x17 && len(actualContent) > 0 {
+					fullResponse = append(fullResponse, actualContent...)
+				}
+			}
+		}
+	}
+
+	fmt.Printf("[Client] BATCHING: Reconstructed HTTP response (%d bytes total)\n", len(fullResponse))
+
+	// Parse HTTP response and set success flags
+	if len(fullResponse) > 0 {
+		responseStr := string(fullResponse)
+		// Basic validation - should start with HTTP response line
+		if strings.HasPrefix(responseStr, "HTTP/") {
+			fmt.Printf("[Client] BATCHING: HTTP response reconstruction successful\n")
+
+			// *** CRITICAL: Set success flags for results reporting ***
+			c.responseProcessingMutex.Lock()
+			c.responseProcessingSuccessful = true
+			c.reconstructedResponseSize = len(fullResponse)
+			c.responseProcessingMutex.Unlock()
+
+			// *** CRITICAL: Store the reconstructed response and print it ONCE ***
+			c.fullRedactedResponse = fullResponse
+			fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", responseStr)
+
+			fmt.Printf("[Client] BATCHING: Response processing marked as successful (%d bytes)\n", len(fullResponse))
+		} else {
+			previewLen := 100
+			if len(responseStr) < previewLen {
+				previewLen = len(responseStr)
+			}
+			fmt.Printf("[Client] BATCHING: Warning - reconstructed response doesn't look like HTTP: %q\n", responseStr[:previewLen])
 		}
 	}
 }

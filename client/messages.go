@@ -42,6 +42,11 @@ const (
 	MsgResponseDecryptionStream MessageType = "response_decryption_stream"
 	MsgDecryptedResponse        MessageType = "decrypted_response"
 
+	// *** NEW: Batched response handling messages ***
+	MsgBatchedEncryptedResponses MessageType = "batched_encrypted_responses"
+	MsgBatchedTagVerifications   MessageType = "batched_tag_verifications"
+	MsgBatchedDecryptionStreams  MessageType = "batched_decryption_streams"
+
 	// Session management messages
 	MsgSessionReady MessageType = "session_ready"
 
@@ -301,8 +306,31 @@ type AttestationRequestData struct {
 
 // AttestationResponseData represents an attestation response over WebSocket
 type AttestationResponseData struct {
-	// RequestID removed - no longer needed since we wait for session coordination
 	AttestationDoc []byte `json:"attestation_doc"` // Base64-encoded attestation document
 	Success        bool   `json:"success"`
 	ErrorMessage   string `json:"error_message,omitempty"`
+}
+
+// *** NEW: Batched response data structures for optimization ***
+
+// BatchedEncryptedResponseData contains multiple encrypted response packets for batch processing
+type BatchedEncryptedResponseData struct {
+	Responses  []EncryptedResponseData `json:"responses"`   // Array of encrypted responses
+	SessionID  string                  `json:"session_id"`  // Session identifier
+	TotalCount int                     `json:"total_count"` // Total number of responses in batch
+}
+
+// BatchedTagVerificationData contains verification results for multiple responses
+type BatchedTagVerificationData struct {
+	Verifications []ResponseTagVerificationData `json:"verifications"`  // Array of verification results
+	SessionID     string                        `json:"session_id"`     // Session identifier
+	TotalCount    int                           `json:"total_count"`    // Total number of verifications in batch
+	AllSuccessful bool                          `json:"all_successful"` // True if all verifications passed
+}
+
+// BatchedDecryptionStreamData contains decryption streams for multiple responses
+type BatchedDecryptionStreamData struct {
+	DecryptionStreams []ResponseDecryptionStreamData `json:"decryption_streams"` // Array of decryption streams
+	SessionID         string                         `json:"session_id"`         // Session identifier
+	TotalCount        int                            `json:"total_count"`        // Total number of streams in batch
 }

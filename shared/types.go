@@ -111,6 +111,15 @@ const (
 	MsgSignedRedactedDecryptionStream MessageType = "signed_redacted_decryption_stream"
 )
 
+// *** NEW: Batched message types for response optimization ***
+const (
+	MsgBatchedEncryptedResponses MessageType = "batched_encrypted_responses"
+	MsgBatchedResponseLengths    MessageType = "batched_response_lengths"
+	MsgBatchedTagSecrets         MessageType = "batched_tag_secrets"
+	MsgBatchedTagVerifications   MessageType = "batched_tag_verifications"
+	MsgBatchedDecryptionStreams  MessageType = "batched_decryption_streams"
+)
+
 // Message represents a protocol message with session context
 type Message struct {
 	Type      MessageType `json:"type"`
@@ -438,6 +447,44 @@ type RedactionSpec struct {
 type SignedRedactedDecryptionStream struct {
 	RedactedStream []byte `json:"redacted_stream"` // Decryption stream with "*" for redacted parts
 	SeqNum         uint64 `json:"seq_num"`         // TLS sequence number
+}
+
+// *** NEW: Batched response data structures (built from existing individual types) ***
+
+// BatchedEncryptedResponseData contains multiple encrypted response packets for batch processing
+type BatchedEncryptedResponseData struct {
+	Responses  []EncryptedResponseData `json:"responses"`   // Array of individual encrypted responses
+	SessionID  string                  `json:"session_id"`  // Session identifier
+	TotalCount int                     `json:"total_count"` // Total number of responses in batch
+}
+
+// BatchedResponseLengthData contains multiple response lengths for batch processing
+type BatchedResponseLengthData struct {
+	Lengths    []ResponseLengthData `json:"lengths"`     // Array of individual response lengths
+	SessionID  string               `json:"session_id"`  // Session identifier
+	TotalCount int                  `json:"total_count"` // Total number of lengths in batch
+}
+
+// BatchedTagSecretsData contains multiple tag secrets for batch processing
+type BatchedTagSecretsData struct {
+	TagSecrets []ResponseTagSecretsData `json:"tag_secrets"` // Array of individual tag secrets
+	SessionID  string                   `json:"session_id"`  // Session identifier
+	TotalCount int                      `json:"total_count"` // Total number of tag secrets in batch
+}
+
+// BatchedTagVerificationData contains multiple tag verification results for batch processing
+type BatchedTagVerificationData struct {
+	Verifications []ResponseTagVerificationData `json:"verifications"`  // Array of individual verifications
+	SessionID     string                        `json:"session_id"`     // Session identifier
+	TotalCount    int                           `json:"total_count"`    // Total number of verifications in batch
+	AllSuccessful bool                          `json:"all_successful"` // True if all verifications passed
+}
+
+// BatchedDecryptionStreamData contains multiple decryption streams for batch processing
+type BatchedDecryptionStreamData struct {
+	DecryptionStreams []ResponseDecryptionStreamData `json:"decryption_streams"` // Array of individual streams
+	SessionID         string                         `json:"session_id"`         // Session identifier
+	TotalCount        int                            `json:"total_count"`        // Total number of streams in batch
 }
 
 // Single Session Mode: Cryptographic signing infrastructure

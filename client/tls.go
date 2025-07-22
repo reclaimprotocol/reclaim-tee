@@ -402,6 +402,27 @@ func (c *Client) processTLSRecord(record []byte) {
 		ExplicitIV:    explicitIV,  // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
 	}
 
+	// *** NEW: Batch responses until EOF instead of sending immediately ***
+	eofReached := atomic.LoadInt64(&c.eofReached) == 1
+
+	if !eofReached {
+		// EOF not reached yet - collect packet for batch processing
+		fmt.Printf("[Client] BATCHING: Collecting response packet (seq=%d) until EOF\n", c.responseSeqNum)
+
+		c.batchedResponsesMutex.Lock()
+		c.batchedResponses = append(c.batchedResponses, encryptedResponseData)
+		c.batchedResponsesMutex.Unlock()
+
+		// *** CRITICAL: Still increment sequence number and track records ***
+		atomic.AddInt64(&c.recordsSent, 1)
+		fmt.Printf("[Client] BATCHING: Collected packet #%d, will send batch on EOF\n", atomic.LoadInt64(&c.recordsSent))
+		c.responseSeqNum++
+		return // Don't send yet - wait for EOF
+	}
+
+	// *** FALLBACK: If EOF already reached, send immediately (shouldn't happen) ***
+	fmt.Printf("[Client] EOF already reached, sending packet immediately\n")
+
 	responseMsg, err := CreateMessage(MsgEncryptedResponse, encryptedResponseData)
 	if err != nil {
 		log.Printf("[Client] Failed to create encrypted response message: %v", err)
@@ -424,6 +445,42 @@ func (c *Client) processTLSRecord(record []byte) {
 	atomic.AddInt64(&c.recordsSent, 1)
 	fmt.Printf("[Client] EXPECTING decryption stream #%d\n", atomic.LoadInt64(&c.recordsSent))
 	c.responseSeqNum++
+}
+
+// *** NEW: Send batched responses when EOF is detected ***
+func (c *Client) sendBatchedResponses() error {
+	c.batchedResponsesMutex.Lock()
+	defer c.batchedResponsesMutex.Unlock()
+
+	if len(c.batchedResponses) == 0 {
+		fmt.Printf("[Client] BATCHING: No response packets to send\n")
+		return nil
+	}
+
+	fmt.Printf("[Client] BATCHING: Sending batch of %d response packets to TEE_T\n", len(c.batchedResponses))
+
+	// Create batched message using new data structure
+	batchedData := BatchedEncryptedResponseData{
+		Responses:  c.batchedResponses,
+		SessionID:  c.sessionID,
+		TotalCount: len(c.batchedResponses),
+	}
+
+	// Send batch to TEE_T using new message type
+	batchMsg, err := CreateMessage(MsgBatchedEncryptedResponses, batchedData)
+	if err != nil {
+		return fmt.Errorf("failed to create batched encrypted responses message: %v", err)
+	}
+
+	if err := c.sendMessageToTEET(batchMsg); err != nil {
+		return fmt.Errorf("failed to send batched responses to TEE_T: %v", err)
+	}
+
+	fmt.Printf("[Client] BATCHING: Successfully sent batch of %d packets to TEE_T\n", len(c.batchedResponses))
+
+	// Clear the batch after successful send
+	c.batchedResponses = make([]EncryptedResponseData, 0)
+	return nil
 }
 
 // handleResponseTagVerification handles tag verification result from TEE_T
