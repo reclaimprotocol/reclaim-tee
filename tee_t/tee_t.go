@@ -173,9 +173,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgRedactionStreams:
 			fmt.Printf("[TEE_T] DEBUG: Handling MsgRedactionStreams\n")
 			t.handleRedactionStreamsSession(sessionID, msg)
-		case shared.MsgEncryptedResponse:
-			fmt.Printf("[TEE_T] DEBUG: Handling MsgEncryptedResponse\n")
-			t.handleEncryptedResponseSession(sessionID, msg)
 		case shared.MsgAttestationRequest:
 			fmt.Printf("[TEE_T] DEBUG: Handling MsgAttestationRequest\n")
 			t.handleAttestationRequestSession(sessionID, msg)
@@ -260,8 +257,6 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 			t.handleKeyShareRequestSession(msg)
 		case shared.MsgEncryptedRequest:
 			t.handleEncryptedRequestSession(msg)
-		case shared.MsgResponseTagSecrets:
-			t.handleResponseTagSecretsSession(msg)
 		case shared.MsgFinished:
 			t.handleFinishedFromTEEKSession(msg)
 
@@ -368,102 +363,7 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 	fmt.Printf("[TEE_T] DEBUG: handleRedactionStreamsSession completed for session %s at %s, returning to message loop\n", sessionID, time.Now().Format("15:04:05.000"))
 }
 
-func (t *TEET) handleEncryptedResponseSession(sessionID string, msg *shared.Message) {
-	fmt.Printf("[TEE_T] Handling encrypted response for session %s\n", sessionID)
-
-	var encryptedResp shared.EncryptedResponseData
-	if err := msg.UnmarshalData(&encryptedResp); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal encrypted response: %v", err)
-		return
-	}
-
-	// Get session to access response state
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for encrypted response: %v", sessionID, err)
-		return
-	}
-
-	// Initialize ResponseState if needed
-	if session.ResponseState == nil {
-		session.ResponseState = &shared.ResponseSessionState{
-			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
-		}
-	}
-
-	fmt.Printf("[TEE_T] Received encrypted response (seq=%d, %d bytes) for session %s\n", encryptedResp.SeqNum, len(encryptedResp.EncryptedData), sessionID)
-
-	// Session-aware transcript collection
-	// For TLS 1.2 AES-GCM, we need to include the explicit IV in the response record too
-
-	// Check if this is TLS 1.2 AES-GCM cipher suite
-	isTLS12AESGCMCipher := encryptedResp.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-		encryptedResp.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-		encryptedResp.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-		encryptedResp.CipherSuite == 0xc02c // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-
-	var payload []byte
-	if isTLS12AESGCMCipher && encryptedResp.ExplicitIV != nil && len(encryptedResp.ExplicitIV) == 8 {
-		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)
-		// Use the explicit IV provided by the client
-		payload = make([]byte, 8+len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
-		copy(payload[0:8], encryptedResp.ExplicitIV)
-		copy(payload[8:8+len(encryptedResp.EncryptedData)], encryptedResp.EncryptedData)
-		copy(payload[8+len(encryptedResp.EncryptedData):], encryptedResp.Tag)
-
-		fmt.Printf("[TEE_T] TLS 1.2 AES-GCM response: Added explicit IV %x to transcript record\n", encryptedResp.ExplicitIV)
-	} else {
-		// TLS 1.3 or ChaCha20: encrypted_data + auth_tag (no explicit IV)
-		payload = make([]byte, len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
-		copy(payload, encryptedResp.EncryptedData)
-		copy(payload[len(encryptedResp.EncryptedData):], encryptedResp.Tag)
-	}
-
-	recordLength := len(payload)
-	if recordLength > 0xFFFF {
-		log.Printf("[TEE_T] Warning: TLS record too large (%d bytes), truncating length", recordLength)
-		recordLength = 0xFFFF
-	}
-
-	record := make([]byte, 5+recordLength)
-	// Use original record type from client's captured header (preserves 0x15 for alerts, etc.)
-	if len(encryptedResp.RecordHeader) >= 1 {
-		record[0] = encryptedResp.RecordHeader[0] // Preserve original record type
-	} else {
-		record[0] = 0x17 // Default to ApplicationData if header missing
-	}
-	record[1] = 0x03                      // TLS version major
-	record[2] = 0x03                      // TLS version minor
-	record[3] = byte(recordLength >> 8)   // Length high byte
-	record[4] = byte(recordLength & 0xFF) // Length low byte
-	copy(record[5:], payload)             // Complete payload with explicit IV if needed
-
-	// Add to session transcript
-	t.addToTranscriptForSessionWithType(sessionID, record, shared.TranscriptPacketTypeTLSRecord)
-
-	// Store the encrypted response for processing when tag secrets arrive
-	session.ResponseState.ResponsesMutex.Lock()
-	session.ResponseState.PendingEncryptedResponses[encryptedResp.SeqNum] = &encryptedResp
-	session.ResponseState.ResponsesMutex.Unlock()
-
-	// Send response length to TEE_K with session ID
-	lengthData := shared.ResponseLengthData{
-		Length:       len(encryptedResp.EncryptedData), // Full encrypted data length
-		RecordHeader: encryptedResp.RecordHeader,       // Copy the actual TLS record header
-		SeqNum:       encryptedResp.SeqNum,
-		CipherSuite:  encryptedResp.CipherSuite, // Use actual cipher suite from response
-		ExplicitIV:   encryptedResp.ExplicitIV,  // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
-	}
-
-	lengthMsg := shared.CreateSessionMessage(shared.MsgResponseLength, sessionID, lengthData)
-
-	if err := t.sendMessageToTEEKForSession(sessionID, lengthMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send response length to TEE_K for session %s: %v", sessionID, err)
-		return
-	}
-
-	fmt.Printf("[TEE_T] Sent response length to TEE_K (seq=%d, length=%d)\n", encryptedResp.SeqNum, len(encryptedResp.EncryptedData))
-}
+// Legacy handleEncryptedResponseSession function removed - now using batched approach
 
 // *** NEW: Handle batched encrypted responses for optimization ***
 func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *shared.Message) {
@@ -493,7 +393,13 @@ func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *sha
 	}
 
 	// Process each response in the batch and collect lengths for TEE_K
-	var responseLengths []shared.ResponseLengthData
+	var responseLengths []struct {
+		Length       int    `json:"length"`
+		RecordHeader []byte `json:"record_header"`
+		SeqNum       uint64 `json:"seq_num"`
+		CipherSuite  uint16 `json:"cipher_suite"`
+		ExplicitIV   []byte `json:"explicit_iv,omitempty"`
+	}
 
 	session.ResponseState.ResponsesMutex.Lock()
 	for _, encryptedResp := range batchedResponses.Responses {
@@ -504,7 +410,13 @@ func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *sha
 		t.addSingleResponseToTranscript(sessionID, &encryptedResp)
 
 		// Create length data for TEE_K
-		lengthData := shared.ResponseLengthData{
+		lengthData := struct {
+			Length       int    `json:"length"`
+			RecordHeader []byte `json:"record_header"`
+			SeqNum       uint64 `json:"seq_num"`
+			CipherSuite  uint16 `json:"cipher_suite"`
+			ExplicitIV   []byte `json:"explicit_iv,omitempty"`
+		}{
 			Length:       len(encryptedResp.EncryptedData),
 			RecordHeader: encryptedResp.RecordHeader,
 			SeqNum:       encryptedResp.SeqNum,
@@ -719,156 +631,7 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 	t.processEncryptedRequestWithStreamsForSession(sessionID, &encReq, wsConn.GetWebSocketConn())
 }
 
-func (t *TEET) handleResponseTagSecretsSession(msg *shared.Message) {
-	sessionID := msg.SessionID
-	if sessionID == "" {
-		log.Printf("[TEE_T] Response tag secrets missing session ID")
-		return
-	}
-
-	log.Printf("[TEE_T] Handling response tag secrets for session %s", sessionID)
-
-	var tagSecrets shared.ResponseTagSecretsData
-	if err := msg.UnmarshalData(&tagSecrets); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal response tag secrets for session %s: %v", sessionID, err)
-		return
-	}
-
-	fmt.Printf("[TEE_T] Received tag secrets for seq=%d (%d bytes) for session %s\n",
-		tagSecrets.SeqNum, len(tagSecrets.TagSecrets), sessionID)
-
-	// Get session to access pending responses
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for response tag secrets: %v", sessionID, err)
-		return
-	}
-
-	// Initialize ResponseState if needed
-	if session.ResponseState == nil {
-		session.ResponseState = &shared.ResponseSessionState{
-			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
-		}
-	}
-
-	// Find the pending response in session state
-	session.ResponseState.ResponsesMutex.Lock()
-	encryptedResp, exists := session.ResponseState.PendingEncryptedResponses[tagSecrets.SeqNum]
-	if exists {
-		delete(session.ResponseState.PendingEncryptedResponses, tagSecrets.SeqNum)
-	}
-	session.ResponseState.ResponsesMutex.Unlock()
-
-	if !exists {
-		log.Printf("[TEE_T] No pending response found for seq=%d in session %s", tagSecrets.SeqNum, sessionID)
-		return
-	}
-
-	// Verify the authentication tag using consolidated minitls functions
-	var additionalData []byte
-	cipherSuite := tagSecrets.CipherSuite
-
-	// Determine TLS version based on cipher suite and construct appropriate AAD
-	if cipherSuite == 0x1301 || cipherSuite == 0x1302 || cipherSuite == 0x1303 {
-		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
-		tagSize := 16
-		ciphertextLength := len(encryptedResp.EncryptedData) + tagSize
-
-		var recordType byte = 0x17 // Default to ApplicationData
-		if len(encryptedResp.RecordHeader) >= 1 {
-			recordType = encryptedResp.RecordHeader[0] // Use actual record type
-		}
-
-		additionalData = []byte{
-			recordType,                    // Use actual record type (0x17 for data, 0x15 for alerts, etc.)
-			0x03,                          // TLS version major (compatibility)
-			0x03,                          // TLS version minor (compatibility)
-			byte(ciphertextLength >> 8),   // Length high byte (includes tag)
-			byte(ciphertextLength & 0xFF), // Length low byte (includes tag)
-		}
-
-		fmt.Printf("[TEE_T] TLS 1.3 AAD: record_type=0x%02x, ciphertext+tag_len=%d\n",
-			recordType, ciphertextLength)
-	} else {
-		// TLS 1.2: AAD = seq_num(8) + record header(5) = 13 bytes total
-		additionalData = make([]byte, 13)
-		// Sequence number (8 bytes, big-endian)
-		for i := 0; i < 8; i++ {
-			additionalData[i] = byte(encryptedResp.SeqNum >> (8 * (7 - i)))
-		}
-		// Record header (5 bytes) - use actual record type and plaintext length
-		if len(encryptedResp.RecordHeader) >= 1 {
-			additionalData[8] = encryptedResp.RecordHeader[0] // Use actual record type (0x17 for data, 0x15 for alerts, etc.)
-		} else {
-			additionalData[8] = 0x17 // Fallback to ApplicationData
-		}
-		additionalData[9] = 0x03                                           // TLS version major
-		additionalData[10] = 0x03                                          // TLS version minor
-		additionalData[11] = byte(len(encryptedResp.EncryptedData) >> 8)   // plaintext length high byte
-		additionalData[12] = byte(len(encryptedResp.EncryptedData) & 0xFF) // plaintext length low byte
-
-		fmt.Printf("[TEE_T] TLS 1.2 AAD: seq=%d, record_type=0x%02x, plaintext_len=%d\n",
-			encryptedResp.SeqNum, additionalData[8], len(encryptedResp.EncryptedData))
-	}
-
-	// Compute authentication tag using consolidated crypto functions
-	computedTag, err := minitls.ComputeTagFromSecrets(
-		encryptedResp.EncryptedData,
-		tagSecrets.TagSecrets,
-		cipherSuite,
-		additionalData,
-	)
-
-	var success bool
-	if err != nil {
-		log.Printf("[TEE_T] Failed to compute tag for session %s: %v", sessionID, err)
-		success = false
-	} else {
-		// Compare tags
-		success = len(computedTag) == len(encryptedResp.Tag)
-		if success {
-			for i := 0; i < len(computedTag); i++ {
-				if computedTag[i] != encryptedResp.Tag[i] {
-					success = false
-					break
-				}
-			}
-		}
-	}
-
-	if success {
-		fmt.Printf("[TEE_T] Tag verification SUCCESS for seq=%d\n", encryptedResp.SeqNum)
-	} else {
-		fmt.Printf("[TEE_T] Tag verification FAILED for seq=%d\n", encryptedResp.SeqNum)
-	}
-
-	// Send verification result to both TEE_K and Client with session IDs
-	verificationData := shared.ResponseTagVerificationData{
-		Success: success,
-		SeqNum:  tagSecrets.SeqNum,
-	}
-
-	if !success {
-		verificationData.Message = "Authentication tag verification failed"
-	}
-
-	if err := t.sessionManager.RouteToClient(sessionID, shared.CreateMessage(shared.MsgResponseTagVerification, verificationData)); err != nil {
-		log.Printf("[TEE_T] Failed to send verification to client for session %s: %v", sessionID, err)
-	}
-
-	// Send to TEE_K with session ID
-	verificationMsgToTEEK := shared.CreateSessionMessage(shared.MsgResponseTagVerification, sessionID, verificationData)
-
-	if err := t.sendMessageToTEEKForSession(sessionID, verificationMsgToTEEK); err != nil {
-		log.Printf("[TEE_T] Failed to send verification to TEE_K for session %s: %v", sessionID, err)
-	}
-
-	if success {
-		fmt.Printf("[TEE_T] Response tag verification successful (seq=%d) for session %s\n", tagSecrets.SeqNum, sessionID)
-	} else {
-		fmt.Printf("[TEE_T] Response tag verification failed (seq=%d) for session %s\n", tagSecrets.SeqNum, sessionID)
-	}
-}
+// Legacy handleResponseTagSecretsSession function removed - now using batched approach
 
 // *** NEW: Handle batched tag secrets for optimization ***
 func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
@@ -902,7 +665,11 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 	}
 
 	// Process tag verification for each response in the batch
-	var verifications []shared.ResponseTagVerificationData
+	var verifications []struct {
+		Success bool   `json:"success"`
+		SeqNum  uint64 `json:"seq_num"`
+		Message string `json:"message"`
+	}
 	allSuccessful := true
 
 	session.ResponseState.ResponsesMutex.Lock()
@@ -956,7 +723,15 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 }
 
 // *** NEW: Helper to verify tag for a single response (extracted from existing logic) ***
-func (t *TEET) verifyTagForResponse(encryptedResp *shared.EncryptedResponseData, tagSecretsData *shared.ResponseTagSecretsData) shared.ResponseTagVerificationData {
+func (t *TEET) verifyTagForResponse(encryptedResp *shared.EncryptedResponseData, tagSecretsData *struct {
+	TagSecrets  []byte `json:"tag_secrets"`
+	SeqNum      uint64 `json:"seq_num"`
+	CipherSuite uint16 `json:"cipher_suite"`
+}) struct {
+	Success bool   `json:"success"`
+	SeqNum  uint64 `json:"seq_num"`
+	Message string `json:"message"`
+} {
 	var additionalData []byte
 	cipherSuite := tagSecretsData.CipherSuite
 
@@ -1034,8 +809,12 @@ func (t *TEET) verifyTagForResponse(encryptedResp *shared.EncryptedResponseData,
 		fmt.Printf("[TEE_T] Tag verification FAILED for seq=%d\n", encryptedResp.SeqNum)
 	}
 
-	// Send verification result to both TEE_K and Client with session IDs
-	verificationData := shared.ResponseTagVerificationData{
+	// Create verification result
+	verificationData := struct {
+		Success bool   `json:"success"`
+		SeqNum  uint64 `json:"seq_num"`
+		Message string `json:"message"`
+	}{
 		Success: success,
 		SeqNum:  tagSecretsData.SeqNum,
 	}

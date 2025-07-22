@@ -190,7 +190,16 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 	// 2. Sort the keys numerically.
 	sort.Ints(keys)
 
-	// 3. Process each sequence number in the correct order.
+	// *** NEW APPROACH: Collect all HTTP application data first, then analyze as a whole ***
+	var allHTTPContent []byte
+	var httpContentMappings []struct {
+		seqNum     uint64
+		startPos   int
+		length     int
+		ciphertext []byte
+	}
+
+	// 3. First pass: collect all HTTP application data and build mappings
 	for _, k := range keys {
 		seqNum := uint64(k)
 		content := c.responseContentBySeq[seqNum]
@@ -226,16 +235,88 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 			}
 
 		case 0x17: // ApplicationData - HTTP response
-			log.Printf("[Client] Found HTTP response at offset %d (seq %d)", totalOffset, seqNum)
-			httpRanges := c.analyzeHTTPRedactionWithBytes(actualContent, totalOffset, ciphertext)
-			redactionRanges = append(redactionRanges, httpRanges...)
+			log.Printf("[Client] Found HTTP response part at offset %d (seq %d) - collecting for combined analysis", totalOffset, seqNum)
+
+			// Collect this HTTP content for combined analysis
+			httpContentMappings = append(httpContentMappings, struct {
+				seqNum     uint64
+				startPos   int
+				length     int
+				ciphertext []byte
+			}{
+				seqNum:     seqNum,
+				startPos:   len(allHTTPContent),
+				length:     len(actualContent),
+				ciphertext: ciphertext,
+			})
+
+			allHTTPContent = append(allHTTPContent, actualContent...)
 
 		case 0x15: // Alert - usually safe to keep
 			log.Printf("[Client] Found TLS alert at offset %d (seq %d) - keeping visible", totalOffset, seqNum)
 		}
 
-		// *** FIX: Increment offset by the length of the ORIGINAL PADDED content ***
+		// ***  Increment offset by the length of the ORIGINAL PADDED content ***
 		totalOffset += len(content)
+	}
+
+	// *** NEW: Analyze all HTTP content as a single unit if we collected any ***
+	if len(allHTTPContent) > 0 && len(httpContentMappings) > 0 {
+		log.Printf("[Client] Analyzing combined HTTP content (%d bytes) from %d TLS records", len(allHTTPContent), len(httpContentMappings))
+
+		// Analyze the combined HTTP content for redaction ranges
+		combinedHTTPRanges := c.analyzeHTTPRedactionWithBytes(allHTTPContent, 0, nil)
+
+		// Now map these ranges back to the original TLS record positions and calculate proper redaction bytes
+		for _, httpRange := range combinedHTTPRanges {
+			// Find which TLS record(s) this range spans
+			rangeStart := httpRange.Start
+			rangeEnd := httpRange.Start + httpRange.Length
+
+			for _, mapping := range httpContentMappings {
+				mappingStart := mapping.startPos
+				mappingEnd := mapping.startPos + mapping.length
+
+				// Check if this mapping overlaps with the HTTP range
+				overlapStart := max(rangeStart, mappingStart)
+				overlapEnd := min(rangeEnd, mappingEnd)
+
+				if overlapStart < overlapEnd {
+					// There's an overlap - create a redaction range for this TLS record
+					localStart := overlapStart - mappingStart // Position within this TLS record's content
+					overlapLength := overlapEnd - overlapStart
+
+					// Calculate the actual offset in the final transcript
+					actualOffset := totalOffset
+					// Need to recalculate the actual offset by finding this sequence in the original order
+					tempOffset := 0
+					for _, k2 := range keys {
+						seqNum2 := uint64(k2)
+						content2 := c.responseContentBySeq[seqNum2]
+						_, contentType2 := c.removeTLSPadding(content2)
+
+						if seqNum2 == mapping.seqNum && contentType2 == 0x17 {
+							actualOffset = tempOffset + localStart
+							break
+						}
+						tempOffset += len(content2)
+					}
+
+					// Calculate redaction bytes for this specific TLS record portion
+					redactionBytes := c.calculateRedactionBytes(mapping.ciphertext, localStart, overlapLength, mapping.seqNum)
+
+					redactionRanges = append(redactionRanges, shared.RedactionRange{
+						Start:          actualOffset,
+						Length:         overlapLength,
+						Type:           httpRange.Type,
+						RedactionBytes: redactionBytes,
+					})
+
+					log.Printf("[Client] Mapped HTTP range [%d:%d] to TLS record seq=%d at offset %d-%d",
+						rangeStart, rangeEnd-1, mapping.seqNum, actualOffset, actualOffset+overlapLength-1)
+				}
+			}
+		}
 	}
 
 	spec := shared.RedactionSpec{
@@ -257,78 +338,150 @@ func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, 
 
 	httpStr := string(httpData)
 
-	// NEW STRATEGY: Redact EVERYTHING except the title content for github.com
-	// Find the title tags and preserve only the content inside them
+	// NEW STRATEGY: Preserve HTTP headers AND title content, redact everything else
+	// Find the end of headers (double CRLF)
+	headerEndIndex := strings.Index(httpStr, "\r\n\r\n")
+	if headerEndIndex == -1 {
+		// Try with just LF
+		headerEndIndex = strings.Index(httpStr, "\n\n")
+		if headerEndIndex != -1 {
+			headerEndIndex += 2 // Account for \n\n
+		}
+	} else {
+		headerEndIndex += 4 // Account for \r\n\r\n
+	}
+
+	if headerEndIndex == -1 {
+		// No clear header/body separation found, treat everything as headers and preserve it
+		log.Printf("[Client] No header/body separation found, preserving entire response")
+		return ranges // Return empty ranges - preserve everything
+	}
+
+	// Headers section (preserve entirely)
+	log.Printf("[Client] Found HTTP headers (0-%d) - preserving", headerEndIndex-1)
+
+	// Body section - look for title content to preserve
+	bodyContent := httpStr[headerEndIndex:]
+
+	if len(bodyContent) == 0 {
+		log.Printf("[Client] No body content found, only headers")
+		return ranges // Only headers, nothing to redact
+	}
+
+	// Find title tags within the body
 	titleStartTag := "<title>"
 	titleEndTag := "</title>"
-	titleStartIndex := strings.Index(httpStr, titleStartTag)
+	titleStartIndex := strings.Index(bodyContent, titleStartTag)
 
 	if titleStartIndex != -1 {
 		titleContentStartIndex := titleStartIndex + len(titleStartTag)
-		titleEndIndex := strings.Index(httpStr[titleContentStartIndex:], titleEndTag)
+		titleEndIndex := strings.Index(bodyContent[titleContentStartIndex:], titleEndTag)
 
 		if titleEndIndex != -1 {
-			// Adjust titleEndIndex to be absolute
+			// Adjust titleEndIndex to be absolute within bodyContent
 			titleEndIndex = titleContentStartIndex + titleEndIndex
 
-			log.Printf("[Client] Found title content at offset %d-%d (preserving this content)",
+			log.Printf("[Client] Found title content at body offset %d-%d (preserving this content)",
 				titleContentStartIndex, titleEndIndex-1)
 
-			// Redact everything BEFORE the title content
+			// Calculate absolute positions in the full HTTP response
+			bodyStartInFull := headerEndIndex
+			titleEndInFull := bodyStartInFull + titleEndIndex
+
+			// Redact everything in body BEFORE the title content
 			if titleContentStartIndex > 0 {
 				beforeTitleLength := titleContentStartIndex
-				redactionBytes := c.calculateRedactionBytes(ciphertext, 0, beforeTitleLength, 0)
+				beforeTitleStart := bodyStartInFull
 
-				ranges = append(ranges, shared.RedactionRange{
-					Start:          baseOffset,
-					Length:         beforeTitleLength,
-					Type:           "everything_before_title",
-					RedactionBytes: redactionBytes,
-				})
+				if ciphertext != nil {
+					redactionBytes := c.calculateRedactionBytes(ciphertext, beforeTitleStart, beforeTitleLength, 0)
+					ranges = append(ranges, shared.RedactionRange{
+						Start:          baseOffset + beforeTitleStart,
+						Length:         beforeTitleLength,
+						Type:           "body_before_title",
+						RedactionBytes: redactionBytes,
+					})
+				} else {
+					// For combined analysis, we'll calculate redaction bytes later
+					ranges = append(ranges, shared.RedactionRange{
+						Start:          beforeTitleStart,
+						Length:         beforeTitleLength,
+						Type:           "body_before_title",
+						RedactionBytes: nil,
+					})
+				}
 
-				log.Printf("[Client] Redacting everything before title: offset %d-%d (%d bytes)",
-					baseOffset, baseOffset+beforeTitleLength-1, beforeTitleLength)
+				log.Printf("[Client] Redacting body content before title: offset %d-%d (%d bytes)",
+					beforeTitleStart, beforeTitleStart+beforeTitleLength-1, beforeTitleLength)
 			}
 
-			// Redact everything AFTER the title content
-			if titleEndIndex < len(httpStr) {
-				afterTitleStart := titleEndIndex
-				afterTitleLength := len(httpStr) - afterTitleStart
-				redactionBytes := c.calculateRedactionBytes(ciphertext, afterTitleStart, afterTitleLength, 0)
+			// Redact everything in body AFTER the title content
+			if titleEndIndex < len(bodyContent) {
+				afterTitleStart := titleEndInFull
+				afterTitleLength := len(bodyContent) - titleEndIndex
 
-				ranges = append(ranges, shared.RedactionRange{
-					Start:          baseOffset + afterTitleStart,
-					Length:         afterTitleLength,
-					Type:           "everything_after_title",
-					RedactionBytes: redactionBytes,
-				})
+				if ciphertext != nil {
+					redactionBytes := c.calculateRedactionBytes(ciphertext, afterTitleStart, afterTitleLength, 0)
+					ranges = append(ranges, shared.RedactionRange{
+						Start:          baseOffset + afterTitleStart,
+						Length:         afterTitleLength,
+						Type:           "body_after_title",
+						RedactionBytes: redactionBytes,
+					})
+				} else {
+					// For combined analysis, we'll calculate redaction bytes later
+					ranges = append(ranges, shared.RedactionRange{
+						Start:          afterTitleStart,
+						Length:         afterTitleLength,
+						Type:           "body_after_title",
+						RedactionBytes: nil,
+					})
+				}
 
-				log.Printf("[Client] Redacting everything after title: offset %d-%d (%d bytes)",
-					baseOffset+afterTitleStart, baseOffset+afterTitleStart+afterTitleLength-1, afterTitleLength)
+				log.Printf("[Client] Redacting body content after title: offset %d-%d (%d bytes)",
+					afterTitleStart, afterTitleStart+afterTitleLength-1, afterTitleLength)
 			}
 		} else {
-			// No closing title tag found, redact everything
-			log.Printf("[Client] No closing title tag found, redacting entire content")
-			redactionBytes := c.calculateRedactionBytes(ciphertext, 0, len(httpStr), 0)
+			// No closing title tag found, redact everything in body except headers
+			log.Printf("[Client] No closing title tag found, redacting entire body content")
 
-			ranges = append(ranges, shared.RedactionRange{
-				Start:          baseOffset,
-				Length:         len(httpStr),
-				Type:           "entire_content",
-				RedactionBytes: redactionBytes,
-			})
+			if ciphertext != nil {
+				redactionBytes := c.calculateRedactionBytes(ciphertext, headerEndIndex, len(bodyContent), 0)
+				ranges = append(ranges, shared.RedactionRange{
+					Start:          baseOffset + headerEndIndex,
+					Length:         len(bodyContent),
+					Type:           "entire_body",
+					RedactionBytes: redactionBytes,
+				})
+			} else {
+				ranges = append(ranges, shared.RedactionRange{
+					Start:          headerEndIndex,
+					Length:         len(bodyContent),
+					Type:           "entire_body",
+					RedactionBytes: nil,
+				})
+			}
 		}
 	} else {
-		// No title tag found, redact everything
-		log.Printf("[Client] No title tag found, redacting entire content")
-		redactionBytes := c.calculateRedactionBytes(ciphertext, 0, len(httpStr), 0)
+		// No title tag found, redact entire body but preserve headers
+		log.Printf("[Client] No title tag found, redacting entire body content but preserving headers")
 
-		ranges = append(ranges, shared.RedactionRange{
-			Start:          baseOffset,
-			Length:         len(httpStr),
-			Type:           "entire_content",
-			RedactionBytes: redactionBytes,
-		})
+		if ciphertext != nil {
+			redactionBytes := c.calculateRedactionBytes(ciphertext, headerEndIndex, len(bodyContent), 0)
+			ranges = append(ranges, shared.RedactionRange{
+				Start:          baseOffset + headerEndIndex,
+				Length:         len(bodyContent),
+				Type:           "entire_body",
+				RedactionBytes: redactionBytes,
+			})
+		} else {
+			ranges = append(ranges, shared.RedactionRange{
+				Start:          headerEndIndex,
+				Length:         len(bodyContent),
+				Type:           "entire_body",
+				RedactionBytes: nil,
+			})
+		}
 	}
 
 	return ranges

@@ -215,10 +215,6 @@ func (t *TEEK) handleTEETMessagesForSession(sessionID string, conn *websocket.Co
 
 		// Route session-aware messages
 		switch msg.Type {
-		case shared.MsgResponseLength:
-			t.handleResponseLengthSession(msg.SessionID, msg)
-		case shared.MsgResponseTagVerification:
-			t.handleResponseTagVerificationSession(msg.SessionID, msg)
 		case shared.MsgFinished:
 			t.handleFinishedFromTEETSession(msg.SessionID, msg)
 
@@ -1078,177 +1074,7 @@ func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encrypted
 }
 
 // Session-aware response handling methods
-func (t *TEEK) handleResponseLengthSession(sessionID string, msg *shared.Message) {
-	var lengthData shared.ResponseLengthData
-	if err := msg.UnmarshalData(&lengthData); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal response length for session %s: %v", sessionID, err)
-		return
-	}
-
-	// Get session to store response length
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		log.Printf("[TEE_K] Failed to get session %s for response length storage: %v", sessionID, err)
-		return
-	}
-
-	// Initialize response state if needed
-	if session.ResponseState == nil {
-		session.ResponseState = &shared.ResponseSessionState{
-			ResponseLengthBySeq:       make(map[uint64]uint32),
-			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
-		}
-	}
-
-	// Store response length for this sequence number in session state
-	session.ResponseState.ResponseLengthBySeq[lengthData.SeqNum] = uint32(lengthData.Length)
-
-	// Also store in global map for backward compatibility with legacy methods
-	if t.responseLengthBySeq == nil {
-		t.responseLengthBySeq = make(map[uint64]int)
-	}
-	t.responseLengthBySeq[lengthData.SeqNum] = lengthData.Length
-
-	// Store explicit IV for TLS 1.2 AES-GCM decryption stream generation
-	if t.explicitIVBySeq == nil {
-		t.explicitIVBySeq = make(map[uint64][]byte)
-	}
-	if lengthData.ExplicitIV != nil {
-		t.explicitIVBySeq[lengthData.SeqNum] = lengthData.ExplicitIV
-	}
-
-	fmt.Printf("[TEE_K] Received response length from TEE_T (seq=%d, length=%d)\n",
-		lengthData.SeqNum, lengthData.Length)
-
-	// Generate tag secrets for the response
-	tagSecrets, err := t.generateResponseTagSecrets(lengthData.Length, lengthData.SeqNum, lengthData.CipherSuite, lengthData.RecordHeader, lengthData.ExplicitIV)
-	if err != nil {
-		log.Printf("[TEE_K] Failed to generate response tag secrets for session %s: %v", sessionID, err)
-		return
-	}
-
-	// Send tag secrets to TEE_T with session ID
-	secretsData := shared.ResponseTagSecretsData{
-		TagSecrets:  tagSecrets,
-		SeqNum:      lengthData.SeqNum,
-		CipherSuite: lengthData.CipherSuite,
-	}
-
-	secretsMsg := shared.CreateSessionMessage(shared.MsgResponseTagSecrets, sessionID, secretsData)
-
-	if err := t.sendMessageToTEETForSession(sessionID, secretsMsg); err != nil {
-		log.Printf("[TEE_K] Failed to send tag secrets to TEE_T for session %s: %v", sessionID, err)
-		return
-	}
-
-	fmt.Printf("[TEE_K] Sent response tag secrets to TEE_T (seq=%d)\n", lengthData.SeqNum)
-}
-
-func (t *TEEK) handleResponseTagVerificationSession(sessionID string, msg *shared.Message) {
-	var verificationData shared.ResponseTagVerificationData
-	if err := msg.UnmarshalData(&verificationData); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal response tag verification for session %s: %v", sessionID, err)
-		return
-	}
-
-	if verificationData.Success {
-		fmt.Printf("[TEE_K] Session %s: Response tag verification successful (seq=%d), generating decryption stream", sessionID, verificationData.SeqNum)
-		t.generateAndSendDecryptionStreamSession(sessionID, verificationData.SeqNum)
-	} else {
-		fmt.Printf("[TEE_K] Session %d: Response tag verification failed (seq=%d): %s\n",
-			verificationData.SeqNum, verificationData.SeqNum, verificationData.Message)
-	}
-}
-
-// Session-aware decryption stream generation
-func (t *TEEK) generateAndSendDecryptionStreamSession(sessionID string, seqNum uint64) error {
-	if t.tlsClient == nil {
-		return fmt.Errorf("no TLS client available")
-	}
-
-	// Get the actual response length from stored data
-	streamLength, exists := t.responseLengthBySeq[seqNum]
-	if !exists {
-		return fmt.Errorf("no response length found for seq=%d", seqNum)
-	}
-
-	// TEE_T already sends the correct ciphertext length - no adjustment needed
-
-	// DON'T delete the stored length - we need it later for redaction processing
-	// delete(t.responseLengthBySeq, seqNum)
-
-	// Get server application keys based on TLS version
-	var serverAppKey, serverAppIV []byte
-
-	tlsVersion := t.tlsClient.GetNegotiatedVersion()
-	if tlsVersion == 0x0303 { // TLS 1.2
-		// Get server keys from TLS 1.2 AEAD context
-		tls12AEAD := t.tlsClient.GetTLS12AEAD()
-		if tls12AEAD == nil {
-			return fmt.Errorf("no TLS 1.2 AEAD available for decryption")
-		}
-
-		serverAppKey = tls12AEAD.GetReadKey()
-		serverAppIV = tls12AEAD.GetReadIV()
-
-		fmt.Printf("[TEE_K] Session %s: Using TLS 1.2 server keys for decryption stream\n", sessionID)
-	} else { // TLS 1.3
-		// Get key schedule to access server application keys
-		keySchedule := t.tlsClient.GetKeySchedule()
-		if keySchedule == nil {
-			return fmt.Errorf("no key schedule available")
-		}
-
-		serverAppKey = keySchedule.GetServerApplicationKey()
-		serverAppIV = keySchedule.GetServerApplicationIV()
-
-		fmt.Printf("[TEE_K] Session %s: Using TLS 1.3 server keys for decryption stream\n", sessionID)
-	}
-
-	if serverAppKey == nil || serverAppIV == nil {
-		return fmt.Errorf("missing server application key or IV")
-	}
-
-	// Get cipher suite from TLS client
-	cipherSuite := t.tlsClient.GetCipherSuite()
-
-	// Get stored explicit IV for TLS 1.2 AES-GCM
-	var explicitIV []byte
-	if t.explicitIVBySeq != nil {
-		explicitIV = t.explicitIVBySeq[seqNum]
-	}
-
-	// Generate cipher-agnostic decryption stream with explicit IV support
-	// Use same sequence logic as tag generation for consistency
-	var serverSeqNum uint64
-	if tlsVersion == 0x0303 { // TLS 1.2
-		serverSeqNum = seqNum // Server sequence matches client sequence
-		fmt.Printf("[TEE_K] TLS 1.2 decryption: Using server sequence %d (same as client)\n", serverSeqNum)
-	} else { // TLS 1.3
-		serverSeqNum = seqNum - 1
-		fmt.Printf("[TEE_K] TLS 1.3 decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
-	}
-	decryptionStream, err := minitls.GenerateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite, explicitIV)
-	if err != nil {
-		return fmt.Errorf("failed to generate decryption stream: %v", err)
-	}
-
-	// Send decryption stream to client via session routing
-	streamData := shared.ResponseDecryptionStreamData{
-		DecryptionStream: decryptionStream,
-		SeqNum:           seqNum,
-		Length:           streamLength,
-	}
-
-	streamMsg := shared.CreateSessionMessage(shared.MsgResponseDecryptionStream, sessionID, streamData)
-
-	if err := t.sessionManager.RouteToClient(sessionID, streamMsg); err != nil {
-		return fmt.Errorf("failed to send decryption stream to client: %v", err)
-	}
-
-	fmt.Printf("[TEE_K] Sent decryption stream to client (seq=%d, %d bytes) for session %s\n", seqNum, len(decryptionStream), sessionID)
-	return nil
-}
+// Legacy response handler functions removed - now using batched approach
 
 // generateDecryptionStream generates cipher-agnostic keystream for decryption (legacy)
 // Note: generateDecryptionStream functions have been consolidated into minitls.GenerateDecryptionStream
@@ -1446,154 +1272,7 @@ func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cip
 	}
 }
 
-// Legacy handlers for backward compatibility
-func (t *TEEK) handleResponseLength(msg *shared.Message) {
-	var lengthData shared.ResponseLengthData
-	if err := msg.UnmarshalData(&lengthData); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal response length: %v", err)
-		return
-	}
-
-	// Store response length for later decryption stream generation
-	if t.responseLengthBySeq == nil {
-		t.responseLengthBySeq = make(map[uint64]int)
-	}
-	t.responseLengthBySeq[lengthData.SeqNum] = lengthData.Length
-
-	fmt.Printf("[TEE_K] Received response length from TEE_T (seq=%d, length=%d)\n",
-		lengthData.SeqNum, lengthData.Length)
-
-	// Generate tag secrets for the response
-	tagSecrets, err := t.generateResponseTagSecrets(lengthData.Length, lengthData.SeqNum, lengthData.CipherSuite, lengthData.RecordHeader, lengthData.ExplicitIV)
-	if err != nil {
-		log.Printf("[TEE_K] Failed to generate response tag secrets: %v", err)
-		return
-	}
-
-	// Send tag secrets to TEE_T
-	secretsData := shared.ResponseTagSecretsData{
-		TagSecrets:  tagSecrets,
-		SeqNum:      lengthData.SeqNum,
-		CipherSuite: lengthData.CipherSuite,
-	}
-
-	secretsMsg := shared.CreateMessage(shared.MsgResponseTagSecrets, secretsData)
-
-	if err := t.sendMessageToTEETForSession("", secretsMsg); err != nil {
-		log.Printf("[TEE_K] Failed to send tag secrets to TEE_T: %v", err)
-		return
-	}
-
-	fmt.Printf("[TEE_K] Sent response tag secrets to TEE_T (seq=%d)\n", lengthData.SeqNum)
-}
-
-func (t *TEEK) handleResponseTagVerification(msg *shared.Message) {
-	var verificationData shared.ResponseTagVerificationData
-	if err := msg.UnmarshalData(&verificationData); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal response tag verification: %v", err)
-		return
-	}
-
-	if verificationData.Success {
-		fmt.Printf("[TEE_K] Response tag verification successful (seq=%d), generating decryption stream\n",
-			verificationData.SeqNum)
-
-		// Generate decryption stream and send to client
-		if err := t.generateAndSendDecryptionStream(verificationData.SeqNum); err != nil {
-			log.Printf("[TEE_K] Failed to generate decryption stream: %v", err)
-		}
-	} else {
-		fmt.Printf("[TEE_K] Response tag verification failed (seq=%d): %s\n",
-			verificationData.SeqNum, verificationData.Message)
-	}
-}
-
-func (t *TEEK) generateAndSendDecryptionStream(seqNum uint64) error {
-	if t.tlsClient == nil {
-		return fmt.Errorf("no TLS client available")
-	}
-
-	// Get server application AEAD
-	serverAEAD := t.tlsClient.GetServerApplicationAEAD()
-	if serverAEAD == nil {
-		return fmt.Errorf("no server application AEAD available")
-	}
-
-	// Get the actual response length from stored data
-	streamLength, exists := t.responseLengthBySeq[seqNum]
-	if !exists {
-		return fmt.Errorf("no response length found for seq=%d", seqNum)
-	}
-
-	// DON'T delete the stored length - we need it later for redaction processing
-	// delete(t.responseLengthBySeq, seqNum)
-
-	// Get server application keys based on TLS version
-	var serverAppKey, serverAppIV []byte
-
-	tlsVersion := t.tlsClient.GetNegotiatedVersion()
-	if tlsVersion == 0x0303 { // TLS 1.2
-		// Get server keys from TLS 1.2 AEAD context
-		tls12AEAD := t.tlsClient.GetTLS12AEAD()
-		if tls12AEAD == nil {
-			return fmt.Errorf("no TLS 1.2 AEAD available for decryption")
-		}
-
-		serverAppKey = tls12AEAD.GetReadKey()
-		serverAppIV = tls12AEAD.GetReadIV()
-
-		fmt.Printf("[TEE_K] Using TLS 1.2 server keys for decryption stream\n")
-	} else { // TLS 1.3
-		// Get key schedule to access server application keys
-		keySchedule := t.tlsClient.GetKeySchedule()
-		if keySchedule == nil {
-			return fmt.Errorf("no key schedule available")
-		}
-
-		serverAppKey = keySchedule.GetServerApplicationKey()
-		serverAppIV = keySchedule.GetServerApplicationIV()
-
-		fmt.Printf("[TEE_K] Using TLS 1.3 server keys for decryption stream\n")
-	}
-
-	if serverAppKey == nil || serverAppIV == nil {
-		return fmt.Errorf("missing server application key or IV")
-	}
-
-	// Get cipher suite from TLS client
-	cipherSuite := t.tlsClient.GetCipherSuite()
-
-	// Generate cipher-agnostic decryption stream
-	// Use same sequence logic as tag generation for consistency
-	var serverSeqNum uint64
-	if tlsVersion == 0x0303 { // TLS 1.2
-		serverSeqNum = seqNum // Server sequence matches client sequence
-		fmt.Printf("[TEE_K] TLS 1.2 legacy decryption: Using server sequence %d (same as client)\n", serverSeqNum)
-	} else { // TLS 1.3
-		serverSeqNum = seqNum - 1
-		fmt.Printf("[TEE_K] TLS 1.3 legacy decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
-	}
-	decryptionStream, err := minitls.GenerateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite, nil)
-	if err != nil {
-		return fmt.Errorf("failed to generate decryption stream: %v", err)
-	}
-
-	// Send decryption stream to client
-	streamData := shared.ResponseDecryptionStreamData{
-		DecryptionStream: decryptionStream,
-		SeqNum:           seqNum,
-		Length:           streamLength,
-	}
-
-	streamMsg := shared.CreateMessage(shared.MsgResponseDecryptionStream, streamData)
-
-	if err := t.sendMessage(t.currentConn, streamMsg); err != nil {
-		return fmt.Errorf("failed to send decryption stream to client: %v", err)
-	}
-
-	fmt.Printf("[TEE_K] Sent decryption stream to client (seq=%d, %d bytes)\n", seqNum, len(decryptionStream))
-	return nil
-}
+// All legacy response handler functions removed - now using batched approach only
 
 // Single Session Mode: Transcript collection methods
 
@@ -2318,7 +1997,11 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 	}
 
 	// Process each length in the batch and generate tag secrets
-	var tagSecrets []shared.ResponseTagSecretsData
+	var tagSecrets []struct {
+		TagSecrets  []byte `json:"tag_secrets"`
+		SeqNum      uint64 `json:"seq_num"`
+		CipherSuite uint16 `json:"cipher_suite"`
+	}
 
 	session.ResponseState.ResponsesMutex.Lock()
 	for _, lengthData := range batchedLengths.Lengths {
@@ -2340,13 +2023,27 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 		}
 
 		// Generate tag secrets for this response
-		tagSecretsData, err := t.generateTagSecretsForResponse(sessionID, &lengthData)
+		tagSecretsBytes, err := t.generateResponseTagSecrets(
+			lengthData.Length,
+			lengthData.SeqNum,
+			lengthData.CipherSuite,
+			lengthData.RecordHeader,
+			lengthData.ExplicitIV,
+		)
 		if err != nil {
 			log.Printf("[TEE_K] Failed to generate tag secrets for seq %d in batch: %v", lengthData.SeqNum, err)
 			continue
 		}
 
-		tagSecrets = append(tagSecrets, *tagSecretsData)
+		tagSecrets = append(tagSecrets, struct {
+			TagSecrets  []byte `json:"tag_secrets"`
+			SeqNum      uint64 `json:"seq_num"`
+			CipherSuite uint16 `json:"cipher_suite"`
+		}{
+			TagSecrets:  tagSecretsBytes,
+			SeqNum:      lengthData.SeqNum,
+			CipherSuite: lengthData.CipherSuite,
+		})
 	}
 	session.ResponseState.ResponsesMutex.Unlock()
 
@@ -2369,27 +2066,7 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 	fmt.Printf("[TEE_K] BATCHING: Successfully sent batch of %d tag secrets to TEE_T\n", len(tagSecrets))
 }
 
-// *** NEW: Helper to generate tag secrets for a single response (extracted from existing logic) ***
-func (t *TEEK) generateTagSecretsForResponse(sessionID string, lengthData *shared.ResponseLengthData) (*shared.ResponseTagSecretsData, error) {
-	// Use the existing working tag secret generation function
-	tagSecrets, err := t.generateResponseTagSecrets(
-		lengthData.Length,
-		lengthData.SeqNum,
-		lengthData.CipherSuite,
-		lengthData.RecordHeader,
-		lengthData.ExplicitIV,
-	)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate tag secrets for seq %d: %v", lengthData.SeqNum, err)
-	}
-
-	return &shared.ResponseTagSecretsData{
-		TagSecrets:  tagSecrets,
-		SeqNum:      lengthData.SeqNum,
-		CipherSuite: lengthData.CipherSuite,
-	}, nil
-}
+// Legacy helper function removed - logic inlined in batched handler
 
 // *** NEW: Handle batched tag verification results for optimization ***
 func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *shared.Message) {
@@ -2408,7 +2085,11 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 	}
 
 	// Generate decryption streams for all successful verifications
-	var decryptionStreams []shared.ResponseDecryptionStreamData
+	var decryptionStreams []struct {
+		DecryptionStream []byte `json:"decryption_stream"`
+		SeqNum           uint64 `json:"seq_num"`
+		Length           int    `json:"length"`
+	}
 
 	for _, verification := range batchedVerification.Verifications {
 		if !verification.Success {
@@ -2430,9 +2111,14 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 		}
 
 		// Create decryption stream data
-		streamData := shared.ResponseDecryptionStreamData{
+		streamData := struct {
+			DecryptionStream []byte `json:"decryption_stream"`
+			SeqNum           uint64 `json:"seq_num"`
+			Length           int    `json:"length"`
+		}{
 			DecryptionStream: decryptionStream,
 			SeqNum:           verification.SeqNum,
+			Length:           responseLength,
 		}
 
 		decryptionStreams = append(decryptionStreams, streamData)

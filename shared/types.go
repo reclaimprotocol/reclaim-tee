@@ -75,10 +75,8 @@ const (
 
 	// Phase 2: Split AEAD messages
 	// TEE_K to TEE_T messages
-	MsgKeyShareRequest   MessageType = "key_share_request"
-	MsgEncryptedRequest  MessageType = "encrypted_request"
-	MsgResponseLength    MessageType = "response_length"
-	MsgEncryptedResponse MessageType = "encrypted_response"
+	MsgKeyShareRequest  MessageType = "key_share_request"
+	MsgEncryptedRequest MessageType = "encrypted_request"
 
 	// TEE_T to TEE_K messages
 	MsgKeyShareResponse MessageType = "key_share_response"
@@ -93,12 +91,9 @@ const (
 	MsgSessionReady   MessageType = "session_ready"
 
 	// Additional message types
-	MsgResponseTagVerification  MessageType = "response_tag_verification"
-	MsgError                    MessageType = "error"
-	MsgTEETReady                MessageType = "teet_ready"
-	MsgRedactionStreams         MessageType = "redaction_streams"
-	MsgResponseTagSecrets       MessageType = "response_tag_secrets"
-	MsgResponseDecryptionStream MessageType = "response_decryption_stream"
+	MsgError            MessageType = "error"
+	MsgTEETReady        MessageType = "teet_ready"
+	MsgRedactionStreams MessageType = "redaction_streams"
 
 	// Attestation request over WebSocket
 	MsgAttestationRequest  MessageType = "attestation_request"
@@ -353,35 +348,7 @@ type RedactionVerificationData struct {
 	Message string `json:"message"`
 }
 
-// ResponseLengthData contains response length information
-type ResponseLengthData struct {
-	Length       int    `json:"length"`                // Length of encrypted response data (without tag)
-	RecordHeader []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
-	SeqNum       uint64 `json:"seq_num"`               // TLS sequence number for AEAD
-	CipherSuite  uint16 `json:"cipher_suite"`          // TLS cipher suite
-	ExplicitIV   []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
-}
-
-// ResponseTagSecretsData contains tag secrets for response verification
-type ResponseTagSecretsData struct {
-	TagSecrets  []byte `json:"tag_secrets"`  // E_K(0^128) and E_K(nonce||1) for GCM
-	SeqNum      uint64 `json:"seq_num"`      // TLS sequence number for AEAD
-	CipherSuite uint16 `json:"cipher_suite"` // TLS cipher suite
-}
-
-// ResponseTagVerificationData contains tag verification results
-type ResponseTagVerificationData struct {
-	Success bool   `json:"success"` // Whether tag verification passed
-	SeqNum  uint64 `json:"seq_num"` // TLS sequence number for AEAD
-	Message string `json:"message"` // Optional error message
-}
-
-// ResponseDecryptionStreamData contains decryption stream data
-type ResponseDecryptionStreamData struct {
-	DecryptionStream []byte `json:"decryption_stream"` // AES-CTR keystream for XOR decryption
-	SeqNum           uint64 `json:"seq_num"`           // TLS sequence number for AEAD
-	Length           int    `json:"length"`            // Length of encrypted data to decrypt
-}
+// Legacy individual response data structures removed - now using batched approach only
 
 // DecryptedResponseData contains decrypted response data
 type DecryptedResponseData struct {
@@ -460,31 +427,49 @@ type BatchedEncryptedResponseData struct {
 
 // BatchedResponseLengthData contains multiple response lengths for batch processing
 type BatchedResponseLengthData struct {
-	Lengths    []ResponseLengthData `json:"lengths"`     // Array of individual response lengths
-	SessionID  string               `json:"session_id"`  // Session identifier
-	TotalCount int                  `json:"total_count"` // Total number of lengths in batch
+	Lengths []struct {
+		Length       int    `json:"length"`                // Length of encrypted response data (without tag)
+		RecordHeader []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
+		SeqNum       uint64 `json:"seq_num"`               // TLS sequence number for AEAD
+		CipherSuite  uint16 `json:"cipher_suite"`          // TLS cipher suite
+		ExplicitIV   []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
+	} `json:"lengths"` // Array of individual response lengths
+	SessionID  string `json:"session_id"`  // Session identifier
+	TotalCount int    `json:"total_count"` // Total number of lengths in batch
 }
 
 // BatchedTagSecretsData contains multiple tag secrets for batch processing
 type BatchedTagSecretsData struct {
-	TagSecrets []ResponseTagSecretsData `json:"tag_secrets"` // Array of individual tag secrets
-	SessionID  string                   `json:"session_id"`  // Session identifier
-	TotalCount int                      `json:"total_count"` // Total number of tag secrets in batch
+	TagSecrets []struct {
+		TagSecrets  []byte `json:"tag_secrets"`  // E_K(0^128) and E_K(nonce||1) for GCM
+		SeqNum      uint64 `json:"seq_num"`      // TLS sequence number for AEAD
+		CipherSuite uint16 `json:"cipher_suite"` // TLS cipher suite
+	} `json:"tag_secrets"` // Array of individual tag secrets
+	SessionID  string `json:"session_id"`  // Session identifier
+	TotalCount int    `json:"total_count"` // Total number of tag secrets in batch
 }
 
 // BatchedTagVerificationData contains multiple tag verification results for batch processing
 type BatchedTagVerificationData struct {
-	Verifications []ResponseTagVerificationData `json:"verifications"`  // Array of individual verifications
-	SessionID     string                        `json:"session_id"`     // Session identifier
-	TotalCount    int                           `json:"total_count"`    // Total number of verifications in batch
-	AllSuccessful bool                          `json:"all_successful"` // True if all verifications passed
+	Verifications []struct {
+		Success bool   `json:"success"` // Whether tag verification passed
+		SeqNum  uint64 `json:"seq_num"` // TLS sequence number for AEAD
+		Message string `json:"message"` // Optional error message
+	} `json:"verifications"` // Array of individual verifications
+	SessionID     string `json:"session_id"`     // Session identifier
+	TotalCount    int    `json:"total_count"`    // Total number of verifications in batch
+	AllSuccessful bool   `json:"all_successful"` // True if all verifications passed
 }
 
 // BatchedDecryptionStreamData contains multiple decryption streams for batch processing
 type BatchedDecryptionStreamData struct {
-	DecryptionStreams []ResponseDecryptionStreamData `json:"decryption_streams"` // Array of individual streams
-	SessionID         string                         `json:"session_id"`         // Session identifier
-	TotalCount        int                            `json:"total_count"`        // Total number of streams in batch
+	DecryptionStreams []struct {
+		DecryptionStream []byte `json:"decryption_stream"` // AES-CTR keystream for XOR decryption
+		SeqNum           uint64 `json:"seq_num"`           // TLS sequence number for AEAD
+		Length           int    `json:"length"`            // Length of encrypted data to decrypt
+	} `json:"decryption_streams"` // Array of individual streams
+	SessionID  string `json:"session_id"`  // Session identifier
+	TotalCount int    `json:"total_count"` // Total number of streams in batch
 }
 
 // Single Session Mode: Cryptographic signing infrastructure

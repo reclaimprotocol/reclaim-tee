@@ -610,11 +610,11 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 
 	// Show packet summary
 	fmt.Printf("[Client] %s transcript summary:\n", sourceName)
-	for i, packet := range signedTranscript.Packets {
-		if len(packet) > 0 {
-			fmt.Printf("[Client]   Packet %d: %d bytes (starts with %02x)\n", i+1, len(packet), packet[0])
-		}
-	}
+	// for i, packet := range signedTranscript.Packets {
+	// 	if len(packet) > 0 {
+	// 		fmt.Printf("[Client]   Packet %d: %d bytes (starts with %02x)\n", i+1, len(packet), packet[0])
+	// 	}
+	// }
 
 	// *** CRITICAL VALIDATION: Compare TEE transcripts with client's captured traffic ***
 	if transcriptsComplete && signaturesValid {
@@ -651,8 +651,8 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 			continue
 		}
 
-		fmt.Printf("[Client] Chunk %d: %d bytes, First 16 bytes: %x\n",
-			i, len(chunk), chunk[:min(16, len(chunk))])
+		// fmt.Printf("[Client] Chunk %d: %d bytes, First 16 bytes: %x\n",
+		// 	i, len(chunk), chunk[:min(16, len(chunk))])
 	}
 
 	// Calculate total sizes
@@ -705,18 +705,18 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 
 	handshakePacketsMatched := 0
 	totalCompared := 0 // number of transcript packets that we actually compared against captures
-	for i, teekPacket := range c.teekTranscriptPackets {
-		fmt.Printf("[Client]   TEE_K packet %d: %d bytes (type: 0x%02x)\n",
-			i+1, len(teekPacket), teekPacket[0])
+	for _, teekPacket := range c.teekTranscriptPackets {
+		// fmt.Printf("[Client]   TEE_K packet %d: %d bytes (type: 0x%02x)\n",
+		// 	i+1, len(teekPacket), teekPacket[0])
 
 		// All transcript packets are now TLS records by definition
 		totalCompared++
 
 		// Check if this packet matches any of the client's captured data
 		found := false
-		for j, chunk := range c.capturedTraffic {
+		for _, chunk := range c.capturedTraffic {
 			if len(teekPacket) == len(chunk) && bytes.Equal(teekPacket, chunk) {
-				fmt.Printf("[Client]     Exactly matches client capture %d\n", j+1)
+				// fmt.Printf("[Client]     Exactly matches client capture %d\n", j+1)
 				handshakePacketsMatched++
 				found = true
 				break
@@ -755,9 +755,9 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 
 		// Check if this packet matches any of our captured packets
 		found := false
-		for j, clientPacket := range c.capturedTraffic {
+		for _, clientPacket := range c.capturedTraffic {
 			if len(teetPacket) == len(clientPacket) && bytes.Equal(teetPacket, clientPacket) {
-				fmt.Printf("[Client]     Exactly matches client capture %d\n", j+1)
+				// fmt.Printf("[Client]     Exactly matches client capture %d\n", j+1)
 				packetsMatched++
 				found = true
 				break
@@ -885,7 +885,7 @@ func (c *Client) printRedactedResponse() {
 	c.fullRedactedResponse = []byte(fullResponse.String())
 
 	// Print the final, ordered, redacted response
-	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", fullResponse.String())
+	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", collapseAsterisks(fullResponse.String()))
 }
 
 // Close closes all WebSocket connections
@@ -1129,21 +1129,42 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 	// Parse HTTP response and set success flags
 	if len(fullResponse) > 0 {
 		responseStr := string(fullResponse)
-		// Basic validation - should start with HTTP response line
-		if strings.HasPrefix(responseStr, "HTTP/") {
-			fmt.Printf("[Client] BATCHING: HTTP response reconstruction successful\n")
+
+		// *** FIX: Search for HTTP status line anywhere in the response, not just at the beginning ***
+		// This handles cases where redacted session tickets prefix the response with asterisks
+		httpIndex := strings.Index(responseStr, "HTTP/1.1 ")
+		if httpIndex == -1 {
+			httpIndex = strings.Index(responseStr, "HTTP/1.0 ")
+		}
+		if httpIndex == -1 {
+			httpIndex = strings.Index(responseStr, "HTTP/2 ")
+		}
+
+		if httpIndex != -1 {
+			fmt.Printf("[Client] BATCHING: HTTP response reconstruction successful at offset %d\n", httpIndex)
+
+			// Extract the actual HTTP response
+			actualHTTPResponse := responseStr[httpIndex:]
+
+			// If there was data before the HTTP response, log it
+			if httpIndex > 0 {
+				prefixData := responseStr[:httpIndex]
+				previewData := prefixData[:min(100, len(prefixData))] // Show more data but collapse asterisks
+				fmt.Printf("[Client] BATCHING: Found %d bytes before HTTP response (likely redacted session tickets): %q\n",
+					httpIndex, collapseAsterisks(previewData))
+			}
 
 			// *** CRITICAL: Set success flags for results reporting ***
 			c.responseProcessingMutex.Lock()
 			c.responseProcessingSuccessful = true
-			c.reconstructedResponseSize = len(fullResponse)
+			c.reconstructedResponseSize = len(actualHTTPResponse)
 			c.responseProcessingMutex.Unlock()
 
 			// *** CRITICAL: Store the reconstructed response and print it ONCE ***
-			c.fullRedactedResponse = fullResponse
-			fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", responseStr)
+			c.fullRedactedResponse = []byte(actualHTTPResponse)
+			fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", collapseAsterisks(actualHTTPResponse))
 
-			fmt.Printf("[Client] BATCHING: Response processing marked as successful (%d bytes)\n", len(fullResponse))
+			fmt.Printf("[Client] BATCHING: Response processing marked as successful (%d bytes)\n", len(actualHTTPResponse))
 		} else {
 			previewLen := 100
 			if len(responseStr) < previewLen {

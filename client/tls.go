@@ -11,6 +11,46 @@ import (
 	"sync/atomic"
 )
 
+// collapseAsterisks reduces consecutive asterisks to a maximum of 10 followed by "..." if more exist
+func collapseAsterisks(data string) string {
+	if len(data) == 0 {
+		return data
+	}
+
+	var result strings.Builder
+	asteriskCount := 0
+
+	for _, char := range data {
+		if char == '*' {
+			asteriskCount++
+		} else {
+			// We hit a non-asterisk character
+			if asteriskCount > 0 {
+				if asteriskCount <= 10 {
+					// 10 or fewer asterisks, show them all
+					result.WriteString(strings.Repeat("*", asteriskCount))
+				} else {
+					// More than 10 asterisks, show 10 + "..."
+					result.WriteString("**********...")
+				}
+				asteriskCount = 0
+			}
+			result.WriteRune(char)
+		}
+	}
+
+	// Handle trailing asterisks
+	if asteriskCount > 0 {
+		if asteriskCount <= 10 {
+			result.WriteString(strings.Repeat("*", asteriskCount))
+		} else {
+			result.WriteString("**********...")
+		}
+	}
+
+	return result.String()
+}
+
 // handleHandshakeComplete processes handshake completion messages from TEE_K
 func (c *Client) handleHandshakeComplete(msg *Message) {
 	var completeData HandshakeCompleteData
@@ -704,23 +744,43 @@ func (c *Client) analyzeHTTPContent(data []byte) {
 	// Check if this looks like HTTP
 	dataStr := string(data)
 
-	// Check for HTTP response status line
-	if strings.HasPrefix(dataStr, "HTTP/1.1 ") || strings.HasPrefix(dataStr, "HTTP/1.0 ") {
-		fmt.Printf("[Client] VALID HTTP RESPONSE DETECTED!\n")
-		lines := strings.Split(dataStr, "\r\n")
+	// *** FIX: Search for HTTP status line anywhere in the data, not just at the beginning ***
+	// This handles cases where redacted session tickets prefix the response with asterisks
+	httpIndex := strings.Index(dataStr, "HTTP/1.1 ")
+	if httpIndex == -1 {
+		httpIndex = strings.Index(dataStr, "HTTP/1.0 ")
+	}
+	if httpIndex == -1 {
+		httpIndex = strings.Index(dataStr, "HTTP/2 ")
+	}
+
+	if httpIndex != -1 {
+		fmt.Printf("[Client] VALID HTTP RESPONSE DETECTED at offset %d!\n", httpIndex)
+
+		// Extract the HTTP response starting from the found position
+		httpResponseData := dataStr[httpIndex:]
+		lines := strings.Split(httpResponseData, "\r\n")
 		if len(lines) > 0 {
 			fmt.Printf("[Client] Status line: %s\n", lines[0])
 		}
 
 		// Show response content (truncated if long)
-		if len(dataStr) > 500 {
-			fmt.Printf("[Client] Response content:\n%s\n... (truncated, total %d bytes)\n", dataStr[:500], len(data))
+		if len(httpResponseData) > 500 {
+			fmt.Printf("[Client] Response content:\n%s\n... (truncated, total %d bytes)\n", collapseAsterisks(httpResponseData[:500]), len(httpResponseData))
 		} else {
-			fmt.Printf("[Client] Response content:\n%s\n", dataStr)
+			fmt.Printf("[Client] Response content:\n%s\n", collapseAsterisks(httpResponseData))
 		}
 
-		// Trigger response callback if configured
-		c.triggerResponseCallback(data)
+		// If there was data before the HTTP response, log it
+		if httpIndex > 0 {
+			prefixData := dataStr[:httpIndex]
+			previewData := prefixData[:min(100, len(prefixData))] // Show more data but collapse asterisks
+			fmt.Printf("[Client] Found %d bytes before HTTP response (likely redacted session tickets): %q\n",
+				httpIndex, collapseAsterisks(previewData))
+		}
+
+		// Trigger response callback with the actual HTTP response data
+		c.triggerResponseCallback([]byte(httpResponseData))
 	} else {
 		fmt.Printf("[Client] NON-HTTP APPLICATION DATA (binary content):\n")
 
@@ -734,7 +794,7 @@ func (c *Client) analyzeHTTPContent(data []byte) {
 
 		threshold := min(64, len(data))
 		if float64(printableCount)/float64(threshold) > 0.7 {
-			fmt.Printf("[Client] Appears to be text data: %s\n", dataStr[:min(200, len(dataStr))])
+			fmt.Printf("[Client] Appears to be text data: %s\n", collapseAsterisks(dataStr[:min(200, len(dataStr))]))
 		} else {
 			fmt.Printf("[Client] Appears to be binary data: %x\n", data[:min(64, len(data))])
 		}

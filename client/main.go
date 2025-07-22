@@ -91,7 +91,7 @@ func main() {
 	case <-client.WaitForCompletion():
 		fmt.Println(" Split AEAD protocol completed successfully!")
 	case <-time.After(30 * time.Second): // Reasonable timeout instead of hardcoded wait
-		fmt.Println("⏰ Processing timeout - may indicate an issue")
+		panic("⏰ Processing timeout - may indicate an issue")
 	}
 
 	// *** NEW: Demonstrate accessing protocol results ***
