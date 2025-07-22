@@ -89,6 +89,7 @@ type Client struct {
 	ciphertextBySeq        map[uint64][]byte // Store encrypted response data by sequence
 	decryptionStreamBySeq  map[uint64][]byte // Store decryption streams by sequence
 	redactedPlaintextBySeq map[uint64][]byte // *** ADDED: Store final redacted plaintext for ordered printing ***
+	recordTypeBySeq        map[uint64]byte   // *** NEW: Store TLS record type by sequence number ***
 
 	// *** NEW: Response packet batching fields ***
 	batchedResponses      []EncryptedResponseData // Collect response packets until EOF
@@ -158,6 +159,7 @@ func NewClient(teekURL string) *Client {
 		ciphertextBySeq:           make(map[uint64][]byte),
 		decryptionStreamBySeq:     make(map[uint64][]byte),
 		redactedPlaintextBySeq:    make(map[uint64][]byte),
+		recordTypeBySeq:           make(map[uint64]byte),
 		requestRedactionRanges:    nil,
 
 		// *** NEW: Initialize batching fields ***
@@ -676,17 +678,9 @@ func (c *Client) hasAllCompletionFlags(flags int64) bool {
 
 // handleResponseTagVerification - moved to tls.go
 
-// handleResponseDecryptionStream - moved to tls.go
-
-// handleDecryptedResponse - moved to tls.go
-
-// analyzeServerContent - moved to tls.go
-
 // analyzeHandshakeMessage - moved to tls.go
 
 // analyzeNewSessionTicket - moved to tls.go
-
-// analyzeHTTPContent - moved to tls.go
 
 // analyzeAlertMessage - moved to tls.go
 

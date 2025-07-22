@@ -424,6 +424,8 @@ func (c *Client) processTLSRecord(record []byte) {
 	// *** FIX: Use the correct shared mutex to prevent race conditions ***
 	c.responseContentMutex.Lock()
 	c.ciphertextBySeq[c.responseSeqNum] = encryptedData
+	// *** NEW: Store TLS record type for reconstruction ***
+	c.recordTypeBySeq[c.responseSeqNum] = record[0] // TLS record type from header
 	c.responseContentMutex.Unlock()
 
 	// Prepare data to send to TEE_T for tag verification
@@ -545,132 +547,6 @@ func (c *Client) handleResponseTagVerification(msg *Message) {
 	}
 }
 
-// handleResponseDecryptionStream handles decryption stream from TEE_K
-func (c *Client) handleResponseDecryptionStream(msg *Message) {
-	var streamData ResponseDecryptionStreamData
-	if err := msg.UnmarshalData(&streamData); err != nil {
-		log.Printf("[Client] Failed to unmarshal response decryption stream: %v", err)
-		return
-	}
-
-	log.Printf("[Client] Received decryption stream (%d bytes) for seq=%d", len(streamData.DecryptionStream), streamData.SeqNum)
-
-	// Store the decryption stream
-	c.responseContentMutex.Lock()
-	c.decryptionStreamBySeq[streamData.SeqNum] = streamData.DecryptionStream
-
-	// Decrypt the corresponding pending response data
-	ciphertext, exists := c.ciphertextBySeq[streamData.SeqNum]
-	if !exists {
-		c.responseContentMutex.Unlock()
-		log.Printf("[Client] No pending response data found for sequence %d", streamData.SeqNum)
-		return
-	}
-
-	// XOR ciphertext with decryption stream to get plaintext
-	fmt.Printf("[Client] DEBUG: Ciphertext length=%d, DecryptionStream length=%d\n", len(ciphertext), len(streamData.DecryptionStream))
-
-	if len(ciphertext) != len(streamData.DecryptionStream) {
-		log.Printf("[Client] LENGTH MISMATCH: ciphertext=%d bytes, stream=%d bytes", len(ciphertext), len(streamData.DecryptionStream))
-		c.responseContentMutex.Unlock()
-		return
-	}
-
-	plaintext := make([]byte, len(ciphertext))
-	for i := 0; i < len(ciphertext); i++ {
-		plaintext[i] = ciphertext[i] ^ streamData.DecryptionStream[i]
-	}
-	c.responseContentMutex.Unlock()
-
-	log.Printf("[Client] Successfully decrypted response (%d bytes, seq=%d)", len(plaintext), streamData.SeqNum)
-
-	// *** FIX: Increment the received streams counter ***
-	atomic.AddInt64(&c.decryptionStreamsReceived, 1)
-	log.Printf("[Client] RECEIVED decryption stream #%d of %d expected",
-		atomic.LoadInt64(&c.decryptionStreamsReceived), atomic.LoadInt64(&c.recordsSent))
-
-	// Handle the decrypted content
-	c.handleDecryptedResponse(&Message{
-		Type:      MsgDecryptedResponse,
-		SessionID: c.sessionID,
-		Data: DecryptedResponseData{
-			SeqNum:        streamData.SeqNum,
-			PlaintextData: plaintext,
-			Success:       true,
-		},
-	})
-}
-
-// handleDecryptedResponse handles final decrypted response
-func (c *Client) handleDecryptedResponse(msg *Message) {
-	var responseData DecryptedResponseData
-	if err := msg.UnmarshalData(&responseData); err != nil {
-		log.Printf("[Client] Failed to unmarshal decrypted response data: %v", err)
-		return
-	}
-
-	if !responseData.Success {
-		log.Printf("[Client] Response decryption failed (seq=%d)", responseData.SeqNum)
-		return
-	}
-
-	// 1. Store decrypted response content
-	c.responseContentMutex.Lock()
-	c.responseContentBySeq[responseData.SeqNum] = responseData.PlaintextData
-	c.responseContentMutex.Unlock()
-
-	// 2. Analyze the content of the decrypted response
-	c.analyzeServerContent(responseData.PlaintextData, responseData.SeqNum)
-
-	// 3. Check for completion after storing and analyzing content
-	c.checkProtocolCompletion("decrypted response received")
-}
-
-// analyzeServerContent analyzes the decrypted server response to identify its type
-// (e.g., handshake, application data, alert) and handle it accordingly.
-func (c *Client) analyzeServerContent(content []byte, seqNum uint64) {
-	fmt.Printf("[Client] ANALYZING SERVER CONTENT (seq=%d, %d bytes):\n", seqNum, len(content))
-
-	if len(content) == 0 {
-		fmt.Printf("[Client] Empty content received\n")
-		return
-	}
-
-	// Remove TLS padding and extract actual content
-	actualContent, contentType := c.removeTLSPadding(content)
-	if len(actualContent) == 0 {
-		fmt.Printf("[Client] No content after removing TLS padding\n")
-		return
-	}
-
-	fmt.Printf("[Client] Content type: 0x%02x, actual data: %d bytes\n", contentType, len(actualContent))
-
-	switch contentType {
-	case 0x16: // Handshake message in application data phase
-		fmt.Printf("[Client] POST-HANDSHAKE MESSAGE:\n")
-		c.analyzeHandshakeMessage(actualContent)
-		// This is NewSessionTicket - not the HTTP response we're waiting for
-
-	case 0x17: // ApplicationData - this should be the HTTP response
-		fmt.Printf("[Client] HTTP APPLICATION DATA:\n")
-		c.analyzeHTTPContent(actualContent)
-
-		// Track that HTTP response content has been received (but don't complete yet - wait for TCP EOF)
-		if c.httpRequestSent && c.httpResponseExpected && !c.httpResponseReceived {
-			c.httpResponseReceived = true
-			fmt.Printf("[Client] HTTP response content received - waiting for TCP EOF to complete protocol\n")
-		}
-
-	case 0x15: // Alert
-		fmt.Printf("[Client] TLS ALERT:\n")
-		c.analyzeAlertMessage(actualContent)
-
-	default:
-		fmt.Printf("[Client] UNKNOWN CONTENT TYPE: 0x%02x\n", contentType)
-		fmt.Printf("[Client] Raw data preview: %x\n", actualContent[:min(64, len(actualContent))])
-	}
-}
-
 // analyzeHandshakeMessage analyzes post-handshake messages
 func (c *Client) analyzeHandshakeMessage(data []byte) {
 	if len(data) < 4 {
@@ -732,73 +608,6 @@ func (c *Client) analyzeNewSessionTicket(data []byte) {
 	}
 
 	fmt.Printf("[Client] This is likely a session resumption ticket, not HTTP content\n")
-}
-
-// analyzeHTTPContent analyzes what should be HTTP response data
-func (c *Client) analyzeHTTPContent(data []byte) {
-	if len(data) == 0 {
-		fmt.Printf("[Client] No HTTP data\n")
-		return
-	}
-
-	// Check if this looks like HTTP
-	dataStr := string(data)
-
-	// *** FIX: Search for HTTP status line anywhere in the data, not just at the beginning ***
-	// This handles cases where redacted session tickets prefix the response with asterisks
-	httpIndex := strings.Index(dataStr, "HTTP/1.1 ")
-	if httpIndex == -1 {
-		httpIndex = strings.Index(dataStr, "HTTP/1.0 ")
-	}
-	if httpIndex == -1 {
-		httpIndex = strings.Index(dataStr, "HTTP/2 ")
-	}
-
-	if httpIndex != -1 {
-		fmt.Printf("[Client] VALID HTTP RESPONSE DETECTED at offset %d!\n", httpIndex)
-
-		// Extract the HTTP response starting from the found position
-		httpResponseData := dataStr[httpIndex:]
-		lines := strings.Split(httpResponseData, "\r\n")
-		if len(lines) > 0 {
-			fmt.Printf("[Client] Status line: %s\n", lines[0])
-		}
-
-		// Show response content (truncated if long)
-		if len(httpResponseData) > 500 {
-			fmt.Printf("[Client] Response content:\n%s\n... (truncated, total %d bytes)\n", collapseAsterisks(httpResponseData[:500]), len(httpResponseData))
-		} else {
-			fmt.Printf("[Client] Response content:\n%s\n", collapseAsterisks(httpResponseData))
-		}
-
-		// If there was data before the HTTP response, log it
-		if httpIndex > 0 {
-			prefixData := dataStr[:httpIndex]
-			previewData := prefixData[:min(100, len(prefixData))] // Show more data but collapse asterisks
-			fmt.Printf("[Client] Found %d bytes before HTTP response (likely redacted session tickets): %q\n",
-				httpIndex, collapseAsterisks(previewData))
-		}
-
-		// Trigger response callback with the actual HTTP response data
-		c.triggerResponseCallback([]byte(httpResponseData))
-	} else {
-		fmt.Printf("[Client] NON-HTTP APPLICATION DATA (binary content):\n")
-
-		// Check if it's mostly printable
-		printableCount := 0
-		for _, b := range data[:min(64, len(data))] {
-			if (b >= 0x20 && b <= 0x7E) || b == 0x09 || b == 0x0A || b == 0x0D {
-				printableCount++
-			}
-		}
-
-		threshold := min(64, len(data))
-		if float64(printableCount)/float64(threshold) > 0.7 {
-			fmt.Printf("[Client] Appears to be text data: %s\n", collapseAsterisks(dataStr[:min(200, len(dataStr))]))
-		} else {
-			fmt.Printf("[Client] Appears to be binary data: %x\n", data[:min(64, len(data))])
-		}
-	}
 }
 
 // analyzeAlertMessage analyzes TLS alert messages

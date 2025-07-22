@@ -140,10 +140,6 @@ func (c *Client) handleMessages() {
 			c.handleSessionReady(msg)
 		case MsgError:
 			c.handleError(msg)
-		case MsgResponseDecryptionStream:
-			c.handleResponseDecryptionStream(msg)
-		case MsgDecryptedResponse:
-			c.handleDecryptedResponse(msg)
 		case MsgSignedRedactedDecryptionStream:
 			c.handleSignedRedactedDecryptionStream(msg)
 		case MsgSignedTranscript:
@@ -624,9 +620,9 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 
 	if transcriptsComplete {
 		if signaturesValid {
-			log.Printf("[Client] Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+			log.Println("[Client] Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
 		} else {
-			log.Printf("[Client] Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
+			log.Println("[Client] Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
 		}
 	}
 
@@ -1065,6 +1061,9 @@ func (c *Client) handleBatchedDecryptionStreams(msg *Message) {
 			if c.responseContentBySeq == nil {
 				c.responseContentBySeq = make(map[uint64][]byte)
 			}
+			if c.recordTypeBySeq == nil {
+				c.recordTypeBySeq = make(map[uint64]byte)
+			}
 
 			c.redactedPlaintextBySeq[streamData.SeqNum] = redactedPlaintext
 			c.responseContentBySeq[streamData.SeqNum] = redactedPlaintext
@@ -1110,11 +1109,27 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 		if seqNum > 0 { // Skip handshake sequences (seq 0)
 			plaintext := c.redactedPlaintextBySeq[seqNum]
 
-			// *** CRITICAL FIX: Remove TLS content type byte and extract actual content ***
+			// *** FIX: Use stored TLS record type instead of extracting from plaintext ***
 			if len(plaintext) > 0 {
-				// TLS records have content type as first byte, actual content follows
-				contentType := plaintext[0]
-				actualContent := plaintext[1:]
+				// Get the TLS record type that was stored during processing
+				recordType, hasRecordType := c.recordTypeBySeq[seqNum]
+				if !hasRecordType {
+					log.Printf("[Client] No record type found for seq %d, skipping", seqNum)
+					continue
+				}
+
+				// For TLS 1.3, we need to remove padding and extract content type
+				var actualContent []byte
+				var contentType byte
+
+				if c.handshakeDisclosure != nil && c.isTLS12CipherSuite(c.handshakeDisclosure.CipherSuite) {
+					// TLS 1.2: No inner content type, use record type
+					actualContent = plaintext
+					contentType = recordType
+				} else {
+					// TLS 1.3: Remove padding and get inner content type
+					actualContent, contentType = c.removeTLSPadding(plaintext)
+				}
 
 				// Only include application data (0x17), skip handshake (0x16) and alerts (0x15)
 				if contentType == 0x17 && len(actualContent) > 0 {
@@ -1160,11 +1175,26 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			c.reconstructedResponseSize = len(actualHTTPResponse)
 			c.responseProcessingMutex.Unlock()
 
-			// *** CRITICAL: Store the reconstructed response and print it ONCE ***
-			c.fullRedactedResponse = []byte(actualHTTPResponse)
-			fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", collapseAsterisks(actualHTTPResponse))
+			// *** CRITICAL: Apply redaction for display and store the redacted response ***
+			fmt.Printf("[Client] DEBUG: Applying redaction to HTTP response (%d bytes)\n", len(actualHTTPResponse))
+			previewLen := 200
+			if len(actualHTTPResponse) < previewLen {
+				previewLen = len(actualHTTPResponse)
+			}
+			fmt.Printf("[Client] DEBUG: HTTP response preview: %s\n", actualHTTPResponse[:previewLen])
+			redactedResponse := c.applyRedactionForDisplay(actualHTTPResponse)
+			redactedPreviewLen := 200
+			if len(redactedResponse) < redactedPreviewLen {
+				redactedPreviewLen = len(redactedResponse)
+			}
+			fmt.Printf("[Client] DEBUG: Redacted response (%d bytes), preview: %s\n", len(redactedResponse), redactedResponse[:redactedPreviewLen])
+			c.fullRedactedResponse = []byte(redactedResponse)
+			fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", collapseAsterisks(redactedResponse))
 
-			fmt.Printf("[Client] BATCHING: Response processing marked as successful (%d bytes)\n", len(actualHTTPResponse))
+			fmt.Printf("[Client] BATCHING: Response processing marked as successful (%d bytes, redacted display: %d bytes)\n", len(actualHTTPResponse), len(redactedResponse))
+
+			// *** NEW: Trigger response callback with the redacted response for display ***
+			c.triggerResponseCallback([]byte(redactedResponse))
 		} else {
 			previewLen := 100
 			if len(responseStr) < previewLen {
@@ -1173,4 +1203,65 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			fmt.Printf("[Client] BATCHING: Warning - reconstructed response doesn't look like HTTP: %q\n", responseStr[:previewLen])
 		}
 	}
+}
+
+// applyRedactionForDisplay applies HTTP-level redaction for display purposes
+func (c *Client) applyRedactionForDisplay(httpResponse string) string {
+	// Find the end of headers (double CRLF)
+	headerEndIndex := strings.Index(httpResponse, "\r\n\r\n")
+	if headerEndIndex == -1 {
+		// Try with just LF
+		headerEndIndex = strings.Index(httpResponse, "\n\n")
+		if headerEndIndex != -1 {
+			headerEndIndex += 2 // Account for \n\n
+		}
+	} else {
+		headerEndIndex += 4 // Account for \r\n\r\n
+	}
+
+	if headerEndIndex == -1 {
+		// No clear header/body separation found, preserve everything (might be just headers)
+		return httpResponse
+	}
+
+	// Split into headers and body
+	headers := httpResponse[:headerEndIndex]
+	bodyContent := httpResponse[headerEndIndex:]
+
+	if len(bodyContent) == 0 {
+		// Only headers, nothing to redact
+		return httpResponse
+	}
+
+	// Find title content within the body to preserve
+	titleStartTag := "<title>"
+	titleEndTag := "</title>"
+	titleStartIndex := strings.Index(bodyContent, titleStartTag)
+
+	var redactedBody string
+	if titleStartIndex != -1 {
+		titleContentStartIndex := titleStartIndex + len(titleStartTag)
+		titleEndIndex := strings.Index(bodyContent[titleContentStartIndex:], titleEndTag)
+
+		if titleEndIndex != -1 {
+			// We found both opening and closing title tags
+			titleEndIndex = titleContentStartIndex + titleEndIndex
+
+			// Build redacted body: redact before title, preserve title, redact after title
+			beforeTitle := strings.Repeat("*", titleStartIndex)
+			titleContent := bodyContent[titleStartIndex : titleEndIndex+len(titleEndTag)]
+			afterTitleStart := titleEndIndex + len(titleEndTag)
+			afterTitle := strings.Repeat("*", len(bodyContent)-afterTitleStart)
+
+			redactedBody = beforeTitle + titleContent + afterTitle
+		} else {
+			// Found opening tag but no closing tag, redact entire body
+			redactedBody = strings.Repeat("*", len(bodyContent))
+		}
+	} else {
+		// No title tag found, redact entire body
+		redactedBody = strings.Repeat("*", len(bodyContent))
+	}
+
+	return headers + redactedBody
 }

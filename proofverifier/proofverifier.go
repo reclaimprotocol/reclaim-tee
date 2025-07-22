@@ -13,6 +13,46 @@ import (
 	"tee-mpc/shared"
 )
 
+// collapseAsterisks reduces consecutive asterisks to a maximum of 10 followed by "..." if more exist
+func collapseAsterisks(data string) string {
+	if len(data) == 0 {
+		return data
+	}
+
+	var result strings.Builder
+	asteriskCount := 0
+
+	for _, char := range data {
+		if char == '*' {
+			asteriskCount++
+		} else {
+			// We hit a non-asterisk character
+			if asteriskCount > 0 {
+				if asteriskCount <= 10 {
+					// 10 or fewer asterisks, show them all
+					result.WriteString(strings.Repeat("*", asteriskCount))
+				} else {
+					// More than 10 asterisks, show 10 + "..."
+					result.WriteString("**********...")
+				}
+				asteriskCount = 0
+			}
+			result.WriteRune(char)
+		}
+	}
+
+	// Handle trailing asterisks
+	if asteriskCount > 0 {
+		if asteriskCount <= 10 {
+			result.WriteString(strings.Repeat("*", asteriskCount))
+		} else {
+			result.WriteString("**********...")
+		}
+	}
+
+	return result.String()
+}
+
 // Validate loads the verification bundle from the given file path and performs
 // a minimal set of checks (transcript signature verification, redacted stream
 // XOR match against redacted response). It returns an error if any check fails.
@@ -144,7 +184,7 @@ func Validate(bundlePath string) error {
 			cipherIdx++
 		}
 
-		fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + string(reconstructed) + "\n---")
+		fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + collapseAsterisks(string(reconstructed)) + "\n---")
 		fmt.Println("[Verifier] Redacted streams applied successfully ✅")
 	} else {
 		fmt.Println("[Verifier] No redacted streams available for reconstruction")
@@ -310,7 +350,7 @@ func verifyAndRevealProofData(bundle shared.VerificationBundle) error {
 		}
 	}
 
-	fmt.Printf("%s\n---\n", string(prettyRequest))
+	fmt.Printf("%s\n---\n", collapseAsterisks(string(prettyRequest)))
 	fmt.Printf("[Verifier] Successfully revealed %d proof ranges while keeping sensitive data hidden ✅\n", proofRangesFound)
 
 	return nil
