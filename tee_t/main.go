@@ -4,28 +4,41 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"tee-mpc/shared"
+
+	"go.uber.org/zap"
 )
 
 func main() {
+	// Initialize global loggers first
+	if err := shared.InitializeGlobalLoggers(); err != nil {
+		fmt.Printf("FATAL: Failed to initialize loggers: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Get the TEE_T logger for this service
+	logger := shared.GetTEETLogger()
+	defer logger.Sync()
+
 	config := LoadTEETConfig()
 
 	if config.EnclaveMode {
-		fmt.Println("=== TEE_T Enclave Mode ===")
-		startEnclaveMode(config)
+		logger.InfoIf("Starting TEE_T in enclave mode")
+		startEnclaveMode(config, logger)
 	} else {
-		fmt.Println("=== TEE_T Standalone Mode ===")
-		startStandaloneMode(config)
+		logger.InfoIf("Starting TEE_T in standalone mode")
+		startStandaloneMode(config, logger)
 	}
 }
 
-func startStandaloneMode(config *TEETConfig) {
-	teet := NewTEET(config.Port)
+func startStandaloneMode(config *TEETConfig, logger *shared.Logger) {
+	teet := NewTEETWithLogger(config.Port, logger)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
@@ -35,10 +48,10 @@ func startStandaloneMode(config *TEETConfig) {
 	}
 
 	// Start server
-	log.Printf("[TEE_T] Starting standalone server on port %d", config.Port)
+	logger.InfoIf("Starting standalone server", zap.Int("port", config.Port))
 	go func() {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("[TEE_T] CRITICAL ERROR: Server failed: %v", err)
+			logger.Critical("Server failed", zap.Error(err))
 			// Signal shutdown instead of crashing
 			sigChan := make(chan os.Signal, 1)
 			signal.Notify(sigChan, syscall.SIGTERM)
@@ -56,17 +69,17 @@ func startStandaloneMode(config *TEETConfig) {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("[TEE_T] Shutting down...")
+	logger.InfoIf("Shutting down...")
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("[TEE_T] Shutdown error: %v", err)
+		logger.Error("Shutdown error", zap.Error(err))
 	}
 
-	log.Println("[TEE_T] Shutdown complete")
+	logger.InfoIf("Shutdown complete")
 }
 
 func setupRoutes(teet *TEET) *http.ServeMux {

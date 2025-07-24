@@ -608,7 +608,6 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 	fmt.Printf("[Client] %s transcript summary:\n", sourceName)
 	// for i, packet := range signedTranscript.Packets {
 	// 	if len(packet) > 0 {
-	// 		fmt.Printf("[Client]   Packet %d: %d bytes (starts with %02x)\n", i+1, len(packet), packet[0])
 	// 	}
 	// }
 
@@ -647,8 +646,6 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 			continue
 		}
 
-		// fmt.Printf("[Client] Chunk %d: %d bytes, First 16 bytes: %x\n",
-		// 	i, len(chunk), chunk[:min(16, len(chunk))])
 	}
 
 	// Calculate total sizes
@@ -702,8 +699,6 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 	handshakePacketsMatched := 0
 	totalCompared := 0 // number of transcript packets that we actually compared against captures
 	for _, teekPacket := range c.teekTranscriptPackets {
-		// fmt.Printf("[Client]   TEE_K packet %d: %d bytes (type: 0x%02x)\n",
-		// 	i+1, len(teekPacket), teekPacket[0])
 
 		// All transcript packets are now TLS records by definition
 		totalCompared++
@@ -712,7 +707,6 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 		found := false
 		for _, chunk := range c.capturedTraffic {
 			if len(teekPacket) == len(chunk) && bytes.Equal(teekPacket, chunk) {
-				// fmt.Printf("[Client]     Exactly matches client capture %d\n", j+1)
 				handshakePacketsMatched++
 				found = true
 				break
@@ -753,7 +747,6 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 		found := false
 		for _, clientPacket := range c.capturedTraffic {
 			if len(teetPacket) == len(clientPacket) && bytes.Equal(teetPacket, clientPacket) {
-				// fmt.Printf("[Client]     Exactly matches client capture %d\n", j+1)
 				packetsMatched++
 				found = true
 				break

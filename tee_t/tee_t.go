@@ -7,15 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"tee-mpc/minitls"
 	"tee-mpc/shared"
 
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 )
 
 var teetUpgrader = websocket.Upgrader{
@@ -30,6 +29,10 @@ type TEET struct {
 
 	// Session management
 	sessionManager shared.SessionManagerInterface
+
+	// Logging and error handling
+	logger            *shared.Logger
+	sessionTerminator *shared.SessionTerminator
 
 	ready bool
 
@@ -61,16 +64,58 @@ func NewTEETWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
-		log.Printf("[TEE_T] Failed to generate signing key pair: %v", err)
+		shared.GetTEETLogger().Error("Failed to generate signing key pair, continuing without signing capability", zap.Error(err))
 		// Continue without signing capability rather than failing
 		signingKeyPair = nil
 	} else {
-		fmt.Printf("[TEE_T] Generated ECDSA signing key pair (P-256 curve)\n")
+		shared.GetTEETLogger().InfoIf("Generated ECDSA signing key pair (P-256 curve)")
 	}
 
 	return &TEET{
 		port:                    port,
 		sessionManager:          shared.NewSessionManager(),
+		logger:                  shared.GetTEETLogger(), // Use global logger for backward compatibility
+		sessionTerminator:       shared.NewSessionTerminator(shared.GetTEETLogger()),
+		pendingEncryptedRequest: nil,
+		signingKeyPair:          signingKeyPair,
+		enclaveManager:          enclaveManager,
+	}
+}
+
+// NewTEETWithLogger creates a TEET with a specific logger
+func NewTEETWithLogger(port int, logger *shared.Logger) *TEET {
+	return NewTEETWithEnclaveManagerAndLogger(port, nil, logger)
+}
+
+// NewTEETWithEnclaveManagerAndLogger creates a TEET with enclave manager and logger
+func NewTEETWithEnclaveManagerAndLogger(port int, enclaveManager *shared.EnclaveManager, logger *shared.Logger) *TEET {
+	sessionTerminator := shared.NewSessionTerminator(logger)
+
+	// Generate ECDSA signing key pair
+	signingKeyPair, err := shared.GenerateSigningKeyPair()
+	if err != nil {
+		if sessionTerminator != nil {
+			if sessionTerminator.CriticalError("", shared.ReasonCryptoKeyGenerationFailed, err) {
+				// In enclave mode, this is critical - should terminate
+				return nil
+			}
+		}
+		if logger != nil {
+			logger.Error("Failed to generate signing key pair, continuing without signing capability", zap.Error(err))
+		}
+		// Continue without signing capability rather than failing
+		signingKeyPair = nil
+	} else {
+		if logger != nil {
+			logger.InfoIf("Generated ECDSA signing key pair", zap.String("curve", "P-256"))
+		}
+	}
+
+	return &TEET{
+		port:                    port,
+		sessionManager:          shared.NewSessionManager(),
+		logger:                  logger,
+		sessionTerminator:       sessionTerminator,
 		pendingEncryptedRequest: nil,
 		signingKeyPair:          signingKeyPair,
 		enclaveManager:          enclaveManager,
@@ -86,16 +131,20 @@ func NewTEETWithSessionManagerAndEnclaveManager(port int, sessionManager shared.
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
-		log.Printf("[TEE_T] Failed to generate signing key pair: %v", err)
+		shared.GetTEETLogger().Error("Failed to generate signing key pair, continuing without signing capability", zap.Error(err))
 		// Continue without signing capability rather than failing
 		signingKeyPair = nil
 	} else {
-		fmt.Printf("[TEE_T] Generated ECDSA signing key pair (P-256 curve)\n")
+		shared.GetTEETLogger().InfoIf("Generated ECDSA signing key pair (P-256 curve)")
 	}
+
+	logger := shared.GetTEETLogger()
 
 	return &TEET{
 		port:                    port,
 		sessionManager:          sessionManager,
+		logger:                  logger,
+		sessionTerminator:       shared.NewSessionTerminator(logger),
 		pendingEncryptedRequest: nil,
 		signingKeyPair:          signingKeyPair,
 		enclaveManager:          enclaveManager,
@@ -107,45 +156,57 @@ func NewTEETWithSessionManagerAndEnclaveManager(port int, sessionManager shared.
 func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := teetUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to upgrade client websocket: %v", err)
+		t.logger.Error("Failed to upgrade client websocket",
+			zap.Error(err),
+			zap.String("remote_addr", r.RemoteAddr))
 		return
 	}
 
-	fmt.Printf("[TEE_T] DEBUG: Client WebSocket connection established from %s\n", r.RemoteAddr)
-	fmt.Printf("[TEE_T] DEBUG: WebSocket local addr: %s, remote addr: %s\n",
-		conn.LocalAddr().String(), conn.RemoteAddr().String())
+	t.logger.DebugIf("Client WebSocket connection established",
+		zap.String("remote_addr", r.RemoteAddr),
+		zap.String("local_addr", conn.LocalAddr().String()))
 
 	var sessionID string
 
-	fmt.Printf("[TEE_T] DEBUG: Client connection stored, starting message loop\n")
+	t.logger.DebugIf("Client connection stored, starting message loop")
 
 	for {
-		fmt.Printf("[TEE_T] DEBUG: Waiting for next client message...\n")
+		t.logger.DebugIf("Waiting for next client message...")
 
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				fmt.Printf("[TEE_T] DEBUG: Client connection closed normally: %v\n", err)
+				t.logger.DebugIf("Client connection closed normally", zap.Error(err))
 			} else if !isNetworkShutdownError(err) {
-				log.Printf("[TEE_T] Failed to read client websocket message: %v", err)
-				fmt.Printf("[TEE_T] DEBUG: Unexpected read error: %v\n", err)
+				// This is potentially a protocol violation or network issue
+				if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonConnectionLost, err,
+					zap.String("remote_addr", r.RemoteAddr)) {
+					break // Terminate session due to repeated errors
+				}
 			}
 			break
 		}
 
-		fmt.Printf("[TEE_T] DEBUG: Received raw message from client (%d bytes)\n", len(msgBytes))
-		fmt.Printf("[TEE_T] DEBUG: Raw message preview: %s\n", string(msgBytes[:min(100, len(msgBytes))]))
-		fmt.Printf("[TEE_T] DEBUG: Message received at: %s\n", time.Now().Format("15:04:05.000"))
+		t.logger.DebugIf("Received raw message from client",
+			zap.Int("bytes", len(msgBytes)),
+			zap.String("preview", string(msgBytes[:min(100, len(msgBytes))])))
 
 		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
-			log.Printf("[TEE_T] Failed to parse client message: %v", err)
-			fmt.Printf("[TEE_T] DEBUG: Parse error for message: %v\n", err)
+			// Message parsing failure is a protocol violation
+			if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
+				zap.String("remote_addr", r.RemoteAddr),
+				zap.Int("message_size", len(msgBytes))) {
+				t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
+				break // Terminate session
+			}
 			t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
 			continue
 		}
 
-		fmt.Printf("[TEE_T] DEBUG: Received message from client: type=%s\n", msg.Type)
+		t.logger.DebugIf("Received message from client",
+			zap.String("message_type", string(msg.Type)),
+			zap.String("session_id", msg.SessionID))
 
 		// Handle session ID for client messages
 		if msg.SessionID != "" {
@@ -154,76 +215,110 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 				sessionID = msg.SessionID
 				wsConn := shared.NewWSConnection(conn)
 				if err := t.sessionManager.ActivateSession(sessionID, wsConn); err != nil {
-					log.Printf("[TEE_T] Failed to activate session %s: %v", sessionID, err)
-					t.sendErrorToClient(conn, "Failed to activate session")
+					// Session activation failure is critical
+					if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionManagerFailure, err,
+						zap.String("remote_addr", r.RemoteAddr)) {
+						t.sendErrorToClient(conn, "Failed to activate session")
+						break // Terminate session
+					}
 					continue
 				}
-				log.Printf("[TEE_T] Activated session %s for client %s", sessionID, conn.RemoteAddr())
+				t.logger.InfoIf("Activated session for client",
+					zap.String("session_id", sessionID),
+					zap.String("remote_addr", conn.RemoteAddr().String()))
 			} else if msg.SessionID != sessionID {
-				log.Printf("[TEE_T] Session ID mismatch: expected %s, got %s", sessionID, msg.SessionID)
-				t.sendErrorToClient(conn, "Session ID mismatch")
+				// Session ID mismatch is a security violation
+				if t.sessionTerminator.SecurityViolation(sessionID, shared.ReasonSessionIDMismatch,
+					fmt.Errorf("expected %s, got %s", sessionID, msg.SessionID),
+					zap.String("expected_session", sessionID),
+					zap.String("received_session", msg.SessionID),
+					zap.String("remote_addr", r.RemoteAddr)) {
+					t.sendErrorToClient(conn, "Session ID mismatch")
+					break // Terminate session
+				}
 				continue
 			}
 		}
 
 		switch msg.Type {
 		case shared.MsgTEETReady:
-			fmt.Printf("[TEE_T] DEBUG: Handling MsgTEETReady\n")
+			t.logger.DebugIf("Handling MsgTEETReady", zap.String("session_id", sessionID))
 			t.handleTEETReadySession(sessionID, msg)
 		case shared.MsgRedactionStreams:
-			fmt.Printf("[TEE_T] DEBUG: Handling MsgRedactionStreams\n")
+			t.logger.DebugIf("Handling MsgRedactionStreams", zap.String("session_id", sessionID))
 			t.handleRedactionStreamsSession(sessionID, msg)
 		case shared.MsgAttestationRequest:
-			fmt.Printf("[TEE_T] DEBUG: Handling MsgAttestationRequest\n")
+			t.logger.DebugIf("Handling MsgAttestationRequest", zap.String("session_id", sessionID))
 			t.handleAttestationRequestSession(sessionID, msg)
 		case shared.MsgFinished:
-			fmt.Printf("[TEE_T] DEBUG: Handling MsgFinished from client\n")
+			t.logger.DebugIf("Handling MsgFinished from client", zap.String("session_id", sessionID))
 			t.handleFinishedFromClientSession(sessionID, msg)
 
 		// *** NEW: Handle batched messages ***
 		case shared.MsgBatchedEncryptedResponses:
-			fmt.Printf("[TEE_T] DEBUG: Handling MsgBatchedEncryptedResponses\n")
+			t.logger.DebugIf("Handling MsgBatchedEncryptedResponses", zap.String("session_id", sessionID))
 			t.handleBatchedEncryptedResponsesSession(sessionID, msg)
 
 		default:
-			log.Printf("[TEE_T] Unknown client message type: %s", msg.Type)
-			fmt.Printf("[TEE_T] DEBUG: Unknown message type: %s\n", msg.Type)
+			// Unknown message type is a protocol violation
+			if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonUnknownMessageType,
+				fmt.Errorf("unknown message type: %s", string(msg.Type)),
+				zap.String("message_type", string(msg.Type)),
+				zap.String("remote_addr", r.RemoteAddr)) {
+				t.sendErrorToClient(conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+				break // Terminate session if too many unknown messages
+			}
 			t.sendErrorToClient(conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
 		}
 	}
 
 	// Clean up session when client disconnects
 	if sessionID != "" {
-		log.Printf("[TEE_T] Cleaning up session %s", sessionID)
+		t.logger.InfoIf("Cleaning up session", zap.String("session_id", sessionID))
 		t.sessionManager.CloseSession(sessionID)
+		t.sessionTerminator.CleanupSession(sessionID)
 	}
 }
 
 func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := teetUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to upgrade TEE_K websocket: %v", err)
+		t.logger.Error("Failed to upgrade TEE_K websocket",
+			zap.Error(err),
+			zap.String("remote_addr", r.RemoteAddr))
 		return
 	}
 
 	var sessionID string
 
-	log.Printf("[TEE_T] TEE_K connection established from %s", conn.RemoteAddr())
+	t.logger.InfoIf("TEE_K connection established", zap.String("remote_addr", conn.RemoteAddr().String()))
 
 	for {
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("[TEE_T] TEE_K disconnected normally for session %s", sessionID)
+				t.logger.InfoIf("TEE_K disconnected normally", zap.String("session_id", sessionID))
 			} else if !isNetworkShutdownError(err) {
-				log.Printf("[TEE_T] Failed to read TEE_K websocket message: %v", err)
+				// Network error from TEE_K connection
+				if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonConnectionLost, err,
+					zap.String("remote_addr", r.RemoteAddr),
+					zap.String("connection_type", "teek")) {
+					break // Terminate session due to repeated errors
+				}
 			}
 			break
 		}
 
 		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
-			log.Printf("[TEE_T] Failed to parse TEE_K message: %v", err)
+			// Message parsing failure from TEE_K is critical
+			if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
+				zap.String("remote_addr", r.RemoteAddr),
+				zap.String("connection_type", "teek"),
+				zap.Int("message_size", len(msgBytes))) {
+				t.sendErrorToTEEKForSession("", conn, fmt.Sprintf("Failed to parse message: %v", err))
+				break // Terminate session
+			}
 			t.sendErrorToTEEKForSession("", conn, fmt.Sprintf("Failed to parse message: %v", err))
 			continue
 		}
@@ -231,13 +326,26 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 		// For the first message (session creation), store the session ID
 		if msg.Type == shared.MsgSessionCreated && sessionID == "" {
 			sessionID = msg.SessionID
+			t.logger.InfoIf("Received session creation from TEE_K", zap.String("session_id", sessionID))
 		}
 
 		// Ensure subsequent messages have the correct session ID
 		if sessionID != "" && msg.SessionID != sessionID {
-			log.Printf("[TEE_T] Session ID mismatch: expected %s, got %s", sessionID, msg.SessionID)
+			// Session ID mismatch from TEE_K is a security violation
+			if t.sessionTerminator.SecurityViolation(sessionID, shared.ReasonSessionIDMismatch,
+				fmt.Errorf("expected %s, got %s", sessionID, msg.SessionID),
+				zap.String("expected_session", sessionID),
+				zap.String("received_session", msg.SessionID),
+				zap.String("remote_addr", r.RemoteAddr),
+				zap.String("connection_type", "teek")) {
+				break // Terminate session
+			}
 			continue
 		}
+
+		t.logger.DebugIf("Received message from TEE_K",
+			zap.String("message_type", string(msg.Type)),
+			zap.String("session_id", sessionID))
 
 		switch msg.Type {
 		case shared.MsgSessionCreated:
@@ -247,11 +355,16 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 			if sessionID != "" {
 				session, err := t.sessionManager.GetSession(sessionID)
 				if err != nil {
-					log.Printf("[TEE_T] Failed to get session %s after creation: %v", sessionID, err)
+					// Session manager failure is critical
+					if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionManagerFailure, err,
+						zap.String("remote_addr", r.RemoteAddr),
+						zap.String("connection_type", "teek")) {
+						break // Terminate session
+					}
 					continue
 				}
 				session.TEEKConn = shared.NewWSConnection(conn)
-				log.Printf("[TEE_T] Associated TEE_K connection with session %s", sessionID)
+				t.logger.InfoIf("Associated TEE_K connection with session", zap.String("session_id", sessionID))
 			}
 		case shared.MsgKeyShareRequest:
 			t.handleKeyShareRequestSession(msg)
@@ -265,16 +378,25 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 			t.handleBatchedTagSecretsSession(msg)
 
 		default:
-			log.Printf("[TEE_T] Unknown TEE_K message type: %s", msg.Type)
+			// Unknown message type from TEE_K is a protocol violation
+			if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonUnknownMessageType,
+				fmt.Errorf("unknown message type: %s", string(msg.Type)),
+				zap.String("message_type", string(msg.Type)),
+				zap.String("remote_addr", r.RemoteAddr),
+				zap.String("connection_type", "teek")) {
+				t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+				break // Terminate session if too many unknown messages
+			}
 			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
 		}
 	}
 
 	// Clean up session association when TEE_K disconnects
 	if sessionID != "" {
-		log.Printf("[TEE_T] Cleaning up session %s due to TEE_K disconnect", sessionID)
+		t.logger.InfoIf("Cleaning up session due to TEE_K disconnect", zap.String("session_id", sessionID))
 		// Note: we don't close the session here as the client may still be connected
 		// The session cleanup will be handled when the client disconnects
+		t.sessionTerminator.CleanupSession(sessionID)
 	}
 }
 
@@ -282,16 +404,21 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func (t *TEET) handleTEETReadySession(sessionID string, msg *shared.Message) {
 	if sessionID == "" {
-		log.Printf("[TEE_T] TEE_T ready message missing session ID")
+		if t.sessionTerminator.ProtocolError("", shared.ReasonMissingSessionID,
+			fmt.Errorf("TEE_T ready message missing session ID")) {
+			return
+		}
 		return
 	}
 
-	log.Printf("[TEE_T] Handling TEE_T ready for session %s", sessionID)
+	t.logger.InfoIf("Handling TEE_T ready for session", zap.String("session_id", sessionID))
 
 	// For now, delegate to legacy handler with the client connection
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
+			return
+		}
 		return
 	}
 
@@ -301,30 +428,46 @@ func (t *TEET) handleTEETReadySession(sessionID string, msg *shared.Message) {
 
 func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Message) {
 	if sessionID == "" {
-		log.Printf("[TEE_T] Redaction streams message missing session ID")
+		if t.sessionTerminator.ProtocolError("", shared.ReasonMissingSessionID,
+			fmt.Errorf("redaction streams message missing session ID")) {
+			return
+		}
 		return
 	}
 
-	log.Printf("[TEE_T] Handling redaction streams for session %s", sessionID)
+	t.logger.InfoIf("Handling redaction streams for session", zap.String("session_id", sessionID))
 
 	var streamsData shared.RedactionStreamsData
 	if err := msg.UnmarshalData(&streamsData); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal redaction streams: %v", err)
+		if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
+			zap.String("data_type", "redaction_streams")) {
+			return
+		}
 		return
 	}
 
-	fmt.Printf("[TEE_T] Received redaction streams for session %s: %d streams, %d keys\n", sessionID, len(streamsData.Streams), len(streamsData.CommitmentKeys))
+	t.logger.InfoIf("Received redaction streams for session",
+		zap.String("session_id", sessionID),
+		zap.Int("streams_count", len(streamsData.Streams)),
+		zap.Int("keys_count", len(streamsData.CommitmentKeys)))
 
 	// Verify commitments to ensure stream integrity
 	if err := t.verifyCommitments(streamsData.Streams, streamsData.CommitmentKeys); err != nil {
-		log.Printf("[TEE_T] Failed to verify redaction commitments: %v", err)
+		// Commitment verification failure is a critical cryptographic error
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoCommitmentFailed, err,
+			zap.Int("streams_count", len(streamsData.Streams)),
+			zap.Int("keys_count", len(streamsData.CommitmentKeys))) {
+			return
+		}
 		return
 	}
 
 	// Get session to store streams and keys
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for redaction streams: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
+			return
+		}
 		return
 	}
 
@@ -337,11 +480,11 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 	session.RedactionState.RedactionStreams = streamsData.Streams
 	session.RedactionState.CommitmentKeys = streamsData.CommitmentKeys
 
-	fmt.Printf("[TEE_T] Redaction streams stored and verified for session %s\n", sessionID)
+	t.logger.InfoIf("Redaction streams stored and verified for session", zap.String("session_id", sessionID))
 
 	// Process pending encrypted request if available
 	if session.ResponseState != nil && session.ResponseState.PendingEncryptedRequest != nil {
-		fmt.Printf("[TEE_T] Processing pending encrypted request with newly received streams for session %s\n", sessionID)
+		t.logger.InfoIf("Processing pending encrypted request with newly received streams", zap.String("session_id", sessionID))
 		t.processEncryptedRequestWithStreamsForSession(sessionID, session.ResponseState.PendingEncryptedRequest, t.teekConn_for_pending)
 
 		// Clear pending request
@@ -357,31 +500,40 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 
 	verificationMsg := shared.CreateMessage(shared.MsgRedactionVerification, verificationResponse)
 	if err := t.sessionManager.RouteToClient(sessionID, verificationMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send verification message: %v", err)
+		t.logger.Error("Failed to send verification message",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 	}
 
-	fmt.Printf("[TEE_T] DEBUG: handleRedactionStreamsSession completed for session %s at %s, returning to message loop\n", sessionID, time.Now().Format("15:04:05.000"))
+	t.logger.DebugIf("handleRedactionStreamsSession completed for session",
+		zap.String("session_id", sessionID))
 }
 
 // Legacy handleEncryptedResponseSession function removed - now using batched approach
 
 // *** NEW: Handle batched encrypted responses for optimization ***
 func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *shared.Message) {
-	fmt.Printf("[TEE_T] BATCHING: Handling batched encrypted responses for session %s\n", sessionID)
+	t.logger.InfoIf("BATCHING: Handling batched encrypted responses for session", zap.String("session_id", sessionID))
 
 	var batchedResponses shared.BatchedEncryptedResponseData
 	if err := msg.UnmarshalData(&batchedResponses); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal batched encrypted responses: %v", err)
+		if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
+			zap.String("data_type", "batched_encrypted_responses")) {
+			return
+		}
 		return
 	}
 
-	fmt.Printf("[TEE_T] BATCHING: Received batch of %d encrypted responses for session %s\n",
-		batchedResponses.TotalCount, sessionID)
+	t.logger.InfoIf("BATCHING: Received batch of encrypted responses",
+		zap.String("session_id", sessionID),
+		zap.Int("total_count", batchedResponses.TotalCount))
 
 	// Get session to access response state
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for batched responses: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
+			return
+		}
 		return
 	}
 
@@ -427,7 +579,9 @@ func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *sha
 	}
 	session.ResponseState.ResponsesMutex.Unlock()
 
-	fmt.Printf("[TEE_T] BATCHING: Processed %d responses, sending batch of lengths to TEE_K\n", len(batchedResponses.Responses))
+	t.logger.InfoIf("BATCHING: Processed encrypted responses",
+		zap.String("session_id", sessionID),
+		zap.Int("total_count", len(batchedResponses.Responses)))
 
 	// Send batched lengths to TEE_K
 	batchedLengths := shared.BatchedResponseLengthData{
@@ -439,11 +593,15 @@ func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *sha
 	lengthsMsg := shared.CreateSessionMessage(shared.MsgBatchedResponseLengths, sessionID, batchedLengths)
 
 	if err := t.sendMessageToTEEKForSession(sessionID, lengthsMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send batched lengths to TEE_K for session %s: %v", sessionID, err)
+		t.logger.Error("Failed to send batched lengths to TEE_K",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return
 	}
 
-	fmt.Printf("[TEE_T] BATCHING: Successfully sent batch of %d response lengths to TEE_K\n", len(responseLengths))
+	t.logger.InfoIf("BATCHING: Successfully sent batch of response lengths to TEE_K",
+		zap.String("session_id", sessionID),
+		zap.Int("total_count", len(responseLengths)))
 }
 
 // *** NEW: Helper to add single response to transcript (extracted from existing logic) ***
@@ -466,7 +624,9 @@ func (t *TEET) addSingleResponseToTranscript(sessionID string, encryptedResp *sh
 		copy(payload[8:8+len(encryptedResp.EncryptedData)], encryptedResp.EncryptedData)
 		copy(payload[8+len(encryptedResp.EncryptedData):], encryptedResp.Tag)
 
-		fmt.Printf("[TEE_T] TLS 1.2 AES-GCM response: Added explicit IV %x to transcript record\n", encryptedResp.ExplicitIV)
+		t.logger.DebugIf("Added explicit IV to TLS 1.2 AES-GCM response transcript record",
+			zap.String("session_id", sessionID),
+			zap.Binary("explicit_iv", encryptedResp.ExplicitIV))
 	} else {
 		// TLS 1.3 or ChaCha20: encrypted_data + auth_tag (no explicit IV)
 		payload = make([]byte, len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))
@@ -476,7 +636,10 @@ func (t *TEET) addSingleResponseToTranscript(sessionID string, encryptedResp *sh
 
 	recordLength := len(payload)
 	if recordLength > 0xFFFF {
-		log.Printf("[TEE_T] Warning: TLS record too large (%d bytes), truncating length", recordLength)
+		t.logger.WarnIf("TLS record too large, truncating length",
+			zap.String("session_id", sessionID),
+			zap.Int("original_length", recordLength),
+			zap.Int("truncated_length", 0xFFFF))
 		recordLength = 0xFFFF
 	}
 
@@ -496,59 +659,77 @@ func (t *TEET) addSingleResponseToTranscript(sessionID string, encryptedResp *sh
 	// Add to session transcript
 	t.addToTranscriptForSessionWithType(sessionID, record, shared.TranscriptPacketTypeTLSRecord)
 
-	fmt.Printf("[TEE_T] Added response packet to session %s transcript (seq=%d, %d bytes)\n", sessionID, encryptedResp.SeqNum, len(record))
+	t.logger.DebugIf("Added response packet to session transcript",
+		zap.String("session_id", sessionID),
+		zap.Uint64("seq_num", encryptedResp.SeqNum),
+		zap.Int("record_length", len(record)))
 }
 
 func (t *TEET) handleSessionCreation(msg *shared.Message) {
 	var sessionData map[string]interface{}
 	if err := msg.UnmarshalData(&sessionData); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal session creation data: %v", err)
+		t.logger.Error("Failed to unmarshal session creation data", zap.Error(err))
 		return
 	}
 
 	sessionID, ok := sessionData["session_id"].(string)
 	if !ok {
-		log.Printf("[TEE_T] Invalid session_id in session creation message")
+		t.logger.Error("Invalid session_id in session creation message")
 		return
 	}
 
 	// Register the session in our session manager
 	if err := t.sessionManager.RegisterSession(sessionID); err != nil {
-		log.Printf("[TEE_T] Failed to register session %s: %v", sessionID, err)
+		// Session registration failure is critical
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionManagerFailure, err) {
+			return
+		}
 		return
 	}
 
-	log.Printf("[TEE_T] Registered session %s from TEE_K", sessionID)
+	t.logger.InfoIf("Registered session from TEE_K", zap.String("session_id", sessionID))
 }
 
 func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 	sessionID := msg.SessionID
 	if sessionID == "" {
-		log.Printf("[TEE_T] Key share request missing session ID")
+		if t.sessionTerminator.ProtocolError("", shared.ReasonMissingSessionID,
+			fmt.Errorf("key share request missing session ID")) {
+			return
+		}
 		return
 	}
 
-	log.Printf("[TEE_T] Handling key share request for session %s", sessionID)
+	t.logger.InfoIf("Handling key share request for session", zap.String("session_id", sessionID))
 
 	// Get session to access TEE_K connection
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
+			return
+		}
 		return
 	}
 
 	var keyReq shared.KeyShareRequestData
 	if err := msg.UnmarshalData(&keyReq); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal key share request: %v", err)
-		t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to unmarshal key share request: %v", err))
+		if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
+			zap.String("data_type", "key_share_request")) {
+			t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to unmarshal key share request: %v", err))
+			return
+		}
 		return
 	}
 
 	// Generate random key share
 	keyShare := make([]byte, keyReq.KeyLength)
 	if _, err := rand.Read(keyShare); err != nil {
-		log.Printf("[TEE_T] Failed to generate key share: %v", err)
-		t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to generate key share: %v", err))
+		// Key generation failure is a critical cryptographic error
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoKeyGenerationFailed, err,
+			zap.Int("key_length", keyReq.KeyLength)) {
+			t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to generate key share: %v", err))
+			return
+		}
 		return
 	}
 
@@ -556,6 +737,11 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 	// For now, store in global fields (requires Session struct enhancement)
 	t.keyShare = keyShare
 	t.cipherSuite = keyReq.CipherSuite
+
+	t.logger.InfoIf("Generated key share for session",
+		zap.String("session_id", sessionID),
+		zap.Int("key_length", len(keyShare)),
+		zap.Uint16("cipher_suite", keyReq.CipherSuite))
 
 	// Send key share response
 	response := shared.KeyShareResponseData{
@@ -566,37 +752,53 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 	responseMsg := shared.CreateMessage(shared.MsgKeyShareResponse, response)
 	msgBytes, err := json.Marshal(responseMsg)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to marshal key share response: %v", err)
+		t.logger.Error("Failed to marshal key share response",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return
 	}
 
 	wsConn := session.TEEKConn.(*shared.WSConnection)
 	if err := wsConn.GetWebSocketConn().WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-		log.Printf("[TEE_T] Failed to send key share response: %v", err)
+		t.logger.Error("Failed to send key share response",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 	}
 }
 
 func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 	sessionID := msg.SessionID
 	if sessionID == "" {
-		log.Printf("[TEE_T] Encrypted request missing session ID")
+		if t.sessionTerminator.ProtocolError("", shared.ReasonMissingSessionID,
+			fmt.Errorf("encrypted request missing session ID")) {
+			return
+		}
 		return
 	}
 
-	log.Printf("[TEE_T] Handling encrypted request for session %s", sessionID)
+	t.logger.InfoIf("Handling encrypted request for session", zap.String("session_id", sessionID))
 
 	var encReq shared.EncryptedRequestData
 	if err := msg.UnmarshalData(&encReq); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal encrypted request: %v", err)
+		if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
+			zap.String("data_type", "encrypted_request")) {
+			return
+		}
 		return
 	}
 
-	fmt.Printf("[TEE_T] Computing tag for %d byte ciphertext using seq=%d with %d redaction ranges for session %s\n", len(encReq.EncryptedData), encReq.SeqNum, len(encReq.RedactionRanges), sessionID)
+	t.logger.InfoIf("Computing tag for encrypted request",
+		zap.String("session_id", sessionID),
+		zap.Int("ciphertext_bytes", len(encReq.EncryptedData)),
+		zap.Uint64("seq_num", encReq.SeqNum),
+		zap.Int("redaction_ranges", len(encReq.RedactionRanges)))
 
 	// Get session to access redaction state
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
+			return
+		}
 		return
 	}
 
@@ -621,7 +823,8 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 		// Store TEE_K connection for pending request
 		wsConn := session.TEEKConn.(*shared.WSConnection)
 		t.teekConn_for_pending = wsConn.GetWebSocketConn()
-		fmt.Printf("[TEE_T] Storing encrypted request for session %s, waiting for redaction streams...\n", sessionID)
+		t.logger.InfoIf("Storing encrypted request for session, waiting for redaction streams...",
+			zap.String("session_id", sessionID))
 		return
 	}
 
@@ -637,30 +840,43 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 	sessionID := msg.SessionID
 	if sessionID == "" {
-		log.Printf("[TEE_T] Batched tag secrets missing session ID")
+		if t.sessionTerminator.ProtocolError("", shared.ReasonMissingSessionID,
+			fmt.Errorf("batched tag secrets missing session ID")) {
+			return
+		}
 		return
 	}
 
-	log.Printf("[TEE_T] BATCHING: Handling batched tag secrets for session %s", sessionID)
+	t.logger.InfoIf("Handling batched tag secrets for session",
+		zap.String("session_id", sessionID))
 
 	var batchedTagSecrets shared.BatchedTagSecretsData
 	if err := msg.UnmarshalData(&batchedTagSecrets); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal batched tag secrets for session %s: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonMessageParsingFailed, err,
+			zap.String("message_type", "batched_tag_secrets")) {
+			return
+		}
 		return
 	}
 
-	fmt.Printf("[TEE_T] BATCHING: Received batch of %d tag secrets for session %s\n",
-		batchedTagSecrets.TotalCount, sessionID)
+	t.logger.InfoIf("Received batch of tag secrets",
+		zap.String("session_id", sessionID),
+		zap.Int("batch_count", batchedTagSecrets.TotalCount))
 
 	// Get session to access pending responses
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for tag verification: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
+			return
+		}
 		return
 	}
 
 	if session.ResponseState == nil {
-		log.Printf("[TEE_T] No response state for session %s", sessionID)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted,
+			fmt.Errorf("no response state for session")) {
+			return
+		}
 		return
 	}
 
@@ -677,26 +893,39 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 		// Get the corresponding encrypted response
 		encryptedResp := session.ResponseState.PendingEncryptedResponses[tagSecretsData.SeqNum]
 		if encryptedResp == nil {
-			log.Printf("[TEE_T] No pending encrypted response for seq %d", tagSecretsData.SeqNum)
+			t.logger.Error("No pending encrypted response for sequence number",
+				zap.String("session_id", sessionID),
+				zap.Uint64("seq_num", tagSecretsData.SeqNum))
 			allSuccessful = false
 			continue
 		}
 
-		// Verify tag for this response
-		verificationResult := t.verifyTagForResponse(encryptedResp, &tagSecretsData)
+		// Verify tag for this response - THIS IS CRITICAL
+		verificationResult := t.verifyTagForResponse(sessionID, encryptedResp, &tagSecretsData)
 		verifications = append(verifications, verificationResult)
 
 		if !verificationResult.Success {
+			// Tag verification failure is CRITICAL - compromises protocol integrity
+			if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagVerificationFailed,
+				fmt.Errorf("tag verification failed for seq %d", tagSecretsData.SeqNum),
+				zap.Uint64("seq_num", tagSecretsData.SeqNum)) {
+				session.ResponseState.ResponsesMutex.Unlock()
+				return // Terminate session on crypto failure
+			}
 			allSuccessful = false
 		}
 
-		fmt.Printf("[TEE_T] BATCHING: Tag verification for seq=%d: %v\n",
-			tagSecretsData.SeqNum, verificationResult.Success)
+		t.logger.DebugIf("Tag verification completed",
+			zap.String("session_id", sessionID),
+			zap.Uint64("seq_num", tagSecretsData.SeqNum),
+			zap.Bool("success", verificationResult.Success))
 	}
 	session.ResponseState.ResponsesMutex.Unlock()
 
-	fmt.Printf("[TEE_T] BATCHING: Completed batch tag verification (%d total, all successful: %v)\n",
-		len(verifications), allSuccessful)
+	t.logger.InfoIf("Completed batch tag verification",
+		zap.String("session_id", sessionID),
+		zap.Int("total_count", len(verifications)),
+		zap.Bool("all_successful", allSuccessful))
 
 	// Send batched verification results to client
 	batchedVerification := shared.BatchedTagVerificationData{
@@ -709,21 +938,28 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 	verificationMsg := shared.CreateSessionMessage(shared.MsgBatchedTagVerifications, sessionID, batchedVerification)
 
 	if err := t.sendMessageToClientSession(sessionID, verificationMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send batched tag verification to client for session %s: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonNetworkFailure, err,
+			zap.String("target", "client")) {
+			return
+		}
 		return
 	}
 
 	// Also send batched verification results to TEE_K for decryption stream generation
 	if err := t.sendMessageToTEEKForSession(sessionID, verificationMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send batched tag verification to TEE_K for session %s: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonNetworkFailure, err,
+			zap.String("target", "tee_k")) {
+			return
+		}
 		return
 	}
 
-	fmt.Printf("[TEE_T] BATCHING: Successfully sent batch verification results\n")
+	t.logger.InfoIf("Successfully sent batch verification results",
+		zap.String("session_id", sessionID))
 }
 
 // *** NEW: Helper to verify tag for a single response (extracted from existing logic) ***
-func (t *TEET) verifyTagForResponse(encryptedResp *shared.EncryptedResponseData, tagSecretsData *struct {
+func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.EncryptedResponseData, tagSecretsData *struct {
 	TagSecrets  []byte `json:"tag_secrets"`
 	SeqNum      uint64 `json:"seq_num"`
 	CipherSuite uint16 `json:"cipher_suite"`
@@ -754,8 +990,11 @@ func (t *TEET) verifyTagForResponse(encryptedResp *shared.EncryptedResponseData,
 			byte(ciphertextLength & 0xFF), // Length low byte (includes tag)
 		}
 
-		fmt.Printf("[TEE_T] TLS 1.3 AAD: record_type=0x%02x, ciphertext+tag_len=%d\n",
-			recordType, ciphertextLength)
+		t.logger.DebugIf("Constructed TLS 1.3 AAD for tag verification",
+			zap.String("session_id", sessionID),
+			zap.Uint64("seq_num", tagSecretsData.SeqNum),
+			zap.Uint8("record_type", recordType),
+			zap.Int("ciphertext_tag_len", ciphertextLength))
 	} else {
 		// TLS 1.2: AAD = seq_num + record header (13 bytes)
 		additionalData = make([]byte, 13)
@@ -774,8 +1013,11 @@ func (t *TEET) verifyTagForResponse(encryptedResp *shared.EncryptedResponseData,
 		additionalData[11] = byte(len(encryptedResp.EncryptedData) >> 8)   // plaintext length high byte
 		additionalData[12] = byte(len(encryptedResp.EncryptedData) & 0xFF) // plaintext length low byte
 
-		fmt.Printf("[TEE_T] TLS 1.2 AAD: seq=%d, record_type=0x%02x, plaintext_len=%d\n",
-			encryptedResp.SeqNum, additionalData[8], len(encryptedResp.EncryptedData))
+		t.logger.DebugIf("Constructed TLS 1.2 AAD for tag verification",
+			zap.String("session_id", sessionID),
+			zap.Uint64("seq_num", encryptedResp.SeqNum),
+			zap.Uint8("record_type", additionalData[8]),
+			zap.Int("plaintext_len", len(encryptedResp.EncryptedData)))
 	}
 
 	// Compute authentication tag using consolidated crypto functions
@@ -788,7 +1030,11 @@ func (t *TEET) verifyTagForResponse(encryptedResp *shared.EncryptedResponseData,
 
 	var success bool
 	if err != nil {
-		log.Printf("[TEE_T] Failed to compute tag for seq %d: %v", encryptedResp.SeqNum, err)
+		// Cryptographic computation failure is critical
+		t.logger.Error("Failed to compute authentication tag",
+			zap.String("session_id", sessionID),
+			zap.Uint64("seq_num", encryptedResp.SeqNum),
+			zap.Error(err))
 		success = false
 	} else {
 		// Compare tags
@@ -801,12 +1047,19 @@ func (t *TEET) verifyTagForResponse(encryptedResp *shared.EncryptedResponseData,
 				}
 			}
 		}
-	}
 
-	if success {
-		fmt.Printf("[TEE_T] Tag verification SUCCESS for seq=%d\n", encryptedResp.SeqNum)
-	} else {
-		fmt.Printf("[TEE_T] Tag verification FAILED for seq=%d\n", encryptedResp.SeqNum)
+		// Log detailed verification result
+		if success {
+			t.logger.DebugIf("Tag verification succeeded",
+				zap.String("session_id", sessionID),
+				zap.Uint64("seq_num", encryptedResp.SeqNum))
+		} else {
+			t.logger.Error("Tag verification failed - computed tag does not match",
+				zap.String("session_id", sessionID),
+				zap.Uint64("seq_num", encryptedResp.SeqNum),
+				zap.Binary("computed_tag", computedTag),
+				zap.Binary("expected_tag", encryptedResp.Tag))
+		}
 	}
 
 	// Create verification result
@@ -828,17 +1081,17 @@ func (t *TEET) verifyTagForResponse(encryptedResp *shared.EncryptedResponseData,
 
 // processEncryptedRequestWithStreams handles the actual processing once streams are available
 func (t *TEET) processEncryptedRequestWithStreams(encReq *shared.EncryptedRequestData, conn *websocket.Conn) {
-	fmt.Printf("[TEE_T] Processing encrypted request with available redaction streams\n")
+	t.logger.InfoIf("Processing encrypted request with available redaction streams")
 
 	// Apply redaction streams to reconstruct the full request for tag computation
 	reconstructedData, err := t.reconstructFullRequest(encReq.EncryptedData, encReq.RedactionRanges)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to reconstruct full request: %v", err)
+		t.logger.Error("Failed to reconstruct full request", zap.Error(err))
 		t.sendErrorToClient(conn, fmt.Sprintf("Failed to reconstruct full request: %v", err))
 		return
 	}
 
-	fmt.Printf("[TEE_T] Successfully reconstructed original request data\n")
+	t.logger.InfoIf("Successfully reconstructed original request data")
 
 	// Create AAD for tag computation based on TLS version
 	var additionalData []byte
@@ -874,12 +1127,14 @@ func (t *TEET) processEncryptedRequestWithStreams(encReq *shared.EncryptedReques
 	// Use consolidated minitls function for tag computation
 	authTag, err := minitls.ComputeTagFromSecrets(reconstructedData, encReq.TagSecrets, encReq.CipherSuite, additionalData)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to compute authentication tag: %v", err)
+		t.logger.Error("Failed to compute authentication tag", zap.Error(err))
 		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
 		return
 	}
 
-	fmt.Printf("[TEE_T] COMPUTED SPLIT AEAD TAG: %x\n", authTag)
+	t.logger.InfoIf("Computed split AEAD tag",
+		zap.Binary("tag", authTag),
+		zap.Int("data_length", len(reconstructedData)))
 
 	// Send the RECONSTRUCTED encrypted data with tag to client (not the redacted version!)
 	response := shared.EncryptedDataResponse{
@@ -888,44 +1143,53 @@ func (t *TEET) processEncryptedRequestWithStreams(encReq *shared.EncryptedReques
 		Success:       true,
 	}
 
-	fmt.Printf("[TEE_T] Sending RECONSTRUCTED encrypted data (%d bytes) + tag to client\n", len(reconstructedData))
-	fmt.Printf("[TEE_T] First 32 bytes of reconstructed data: %x\n", reconstructedData[:min(32, len(reconstructedData))])
+	t.logger.InfoIf("Sending reconstructed encrypted data to client",
+		zap.Int("data_length", len(reconstructedData)),
+		zap.Binary("first_32_bytes", reconstructedData[:min(32, len(reconstructedData))]))
 
 	responseMsg := shared.CreateMessage(shared.MsgEncryptedData, response)
 	if err := t.sendMessageToClient(responseMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send encrypted data to client: %v", err)
+		t.logger.Error("Failed to send encrypted data to client", zap.Error(err))
 		return
 	}
-
 }
 
 // processEncryptedRequestWithStreamsForSession is session-aware version
 func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, encReq *shared.EncryptedRequestData, conn *websocket.Conn) {
-	fmt.Printf("[TEE_T] Processing encrypted request with available redaction streams for session %s\n", sessionID)
+	t.logger.InfoIf("Processing encrypted request with available redaction streams for session",
+		zap.String("session_id", sessionID))
 
 	// Get session to access redaction streams
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s: %v", sessionID, err)
-		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to get session: %v", err))
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
+			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to get session: %v", err))
+			return
+		}
 		return
 	}
 
 	if session.RedactionState == nil {
-		log.Printf("[TEE_T] No redaction state available for session %s", sessionID)
-		t.sendErrorToTEEK(conn, "No redaction state available")
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted,
+			fmt.Errorf("no redaction state available for session")) {
+			t.sendErrorToTEEK(conn, "No redaction state available")
+			return
+		}
 		return
 	}
 
 	// Apply redaction streams to reconstruct the full request for tag computation
 	reconstructedData, err := t.reconstructFullRequestWithStreams(encReq.EncryptedData, encReq.RedactionRanges, session.RedactionState.RedactionStreams)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to reconstruct full request: %v", err)
-		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to reconstruct full request: %v", err))
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagComputationFailed, err) {
+			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to reconstruct full request: %v", err))
+			return
+		}
 		return
 	}
 
-	fmt.Printf("[TEE_T] Successfully reconstructed original request data\n")
+	t.logger.InfoIf("Successfully reconstructed original request data",
+		zap.String("session_id", sessionID))
 
 	// Create AAD for tag computation based on TLS version
 	var additionalData []byte
@@ -958,15 +1222,21 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 		additionalData[12] = byte(plaintextLength & 0xFF) // Plaintext length low byte
 	}
 
-	// Use consolidated minitls function for tag computation
+	// Use consolidated minitls function for tag computation - THIS IS CRITICAL
 	authTag, err := minitls.ComputeTagFromSecrets(reconstructedData, encReq.TagSecrets, encReq.CipherSuite, additionalData)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to compute authentication tag: %v", err)
-		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
+		// Cryptographic computation failure is CRITICAL and should terminate session
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagComputationFailed, err) {
+			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
+			return
+		}
 		return
 	}
 
-	fmt.Printf("[TEE_T] COMPUTED SPLIT AEAD TAG: %x\n", authTag)
+	t.logger.InfoIf("Computed split AEAD tag",
+		zap.String("session_id", sessionID),
+		zap.Binary("tag", authTag),
+		zap.Int("data_length", len(reconstructedData)))
 
 	// *** CRITICAL FIX: Add complete TLS record to transcript ***
 	// Construct the complete TLS record that will be sent to the server
@@ -998,7 +1268,9 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 		copy(payload[8:8+len(reconstructedData)], reconstructedData)
 		copy(payload[8+len(reconstructedData):], authTag)
 
-		fmt.Printf("[TEE_T] TLS 1.2 AES-GCM: Added explicit IV %x to transcript record\n", explicitIV)
+		t.logger.DebugIf("Constructed TLS 1.2 AES-GCM record with explicit IV",
+			zap.String("session_id", sessionID),
+			zap.Binary("explicit_iv", explicitIV))
 	} else {
 		// TLS 1.3 or ChaCha20: encrypted_data + auth_tag (no explicit IV)
 		payload = make([]byte, len(reconstructedData)+len(authTag))
@@ -1017,7 +1289,9 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 
 	// Add the complete TLS record to TEE_T's transcript
 	t.addToTranscriptForSessionWithType(sessionID, tlsRecord, shared.TranscriptPacketTypeTLSRecord)
-	fmt.Printf("[TEE_T] Added complete TLS request record to session %s transcript (%d bytes)\n", sessionID, len(tlsRecord))
+	t.logger.InfoIf("Added complete TLS request record to session transcript",
+		zap.String("session_id", sessionID),
+		zap.Int("record_length", len(tlsRecord)))
 
 	// Send the RECONSTRUCTED encrypted data with tag to client using session routing
 	response := shared.EncryptedDataResponse{
@@ -1026,12 +1300,17 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 		Success:       true,
 	}
 
-	fmt.Printf("[TEE_T] Sending RECONSTRUCTED encrypted data (%d bytes) + tag to client session %s\n", len(reconstructedData), sessionID)
-	fmt.Printf("[TEE_T] First 32 bytes of reconstructed data: %x\n", reconstructedData[:min(32, len(reconstructedData))])
+	t.logger.InfoIf("Sending reconstructed encrypted data to client session",
+		zap.String("session_id", sessionID),
+		zap.Int("data_length", len(reconstructedData)),
+		zap.Binary("first_32_bytes", reconstructedData[:min(32, len(reconstructedData))]))
 
 	responseMsg := shared.CreateMessage(shared.MsgEncryptedData, response)
 	if err := t.sessionManager.RouteToClient(sessionID, responseMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send encrypted data response for session %s: %v", sessionID, err)
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonNetworkFailure, err,
+			zap.String("target", "client")) {
+			return
+		}
 		return
 	}
 
@@ -1090,19 +1369,23 @@ func (t *TEET) sendErrorToTEEKForSession(sessionID string, conn *websocket.Conn,
 	errorMsg := shared.CreateSessionMessage(shared.MsgError, sessionID, shared.ErrorData{Message: errMsg})
 	msgBytes, err := json.Marshal(errorMsg)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to marshal error message: %v", err)
+		t.logger.Error("Failed to marshal error message for TEE_K",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return
 	}
 
 	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-		log.Printf("[TEE_T] Failed to send error message: %v", err)
+		t.logger.Error("Failed to send error message to TEE_K",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 	}
 }
 
 func (t *TEET) sendErrorToClient(conn *websocket.Conn, errMsg string) {
 	errorMsg := shared.CreateMessage(shared.MsgError, shared.ErrorData{Message: errMsg})
 	if err := t.sendMessageToClient(errorMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send error message: %v", err)
+		t.logger.Error("Failed to send error message to client", zap.Error(err))
 	}
 }
 
@@ -1110,12 +1393,12 @@ func (t *TEET) sendErrorToTEEK(conn *websocket.Conn, errMsg string) {
 	errorMsg := shared.CreateMessage(shared.MsgError, shared.ErrorData{Message: errMsg})
 	msgBytes, err := json.Marshal(errorMsg)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to marshal error message: %v", err)
+		t.logger.Error("Failed to marshal error message for TEE_K", zap.Error(err))
 		return
 	}
 
 	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-		log.Printf("[TEE_T] Failed to send error message: %v", err)
+		t.logger.Error("Failed to send error message to TEE_K", zap.Error(err))
 	}
 }
 
@@ -1133,12 +1416,14 @@ func (t *TEET) verifyCommitments(streams, keys [][]byte) error {
 		h.Write(streams[i])
 		computedCommitment := h.Sum(nil)
 
-		fmt.Printf("[TEE_T] Stream %d commitment: %x\n", i, computedCommitment)
+		t.logger.DebugIf("Computed stream commitment",
+			zap.Int("stream_index", i),
+			zap.Binary("commitment", computedCommitment))
 	}
 
 	// Note: In a real implementation, we would compare against commitments received from TEE_K
 	// For now, we just verify the streams are properly formatted
-	fmt.Printf("[TEE_T] All redaction commitments verified\n")
+	t.logger.InfoIf("All redaction commitments verified")
 	return nil
 }
 
@@ -1148,7 +1433,8 @@ func (t *TEET) reconstructFullRequest(encryptedRedacted []byte, ranges []shared.
 	reconstructed := make([]byte, len(encryptedRedacted))
 	copy(reconstructed, encryptedRedacted)
 
-	fmt.Printf("[TEE_T] BEFORE stream application: %x\n", encryptedRedacted[:min(64, len(encryptedRedacted))])
+	t.logger.DebugIf("Starting stream application to reconstruct full request",
+		zap.Binary("redacted_data_preview", encryptedRedacted[:min(64, len(encryptedRedacted))]))
 
 	// Apply streams to redacted ranges (this reverses the XOR redaction)
 	for i, r := range ranges {
@@ -1158,7 +1444,11 @@ func (t *TEET) reconstructFullRequest(encryptedRedacted []byte, ranges []shared.
 
 		stream := t.redactionStreams[i]
 
-		fmt.Printf("[TEE_T] Applying stream %d to range [%d:%d]: %x\n", i, r.Start, r.Start+r.Length, stream[:min(16, len(stream))])
+		t.logger.DebugIf("Applying redaction stream to range",
+			zap.Int("stream_index", i),
+			zap.Int("range_start", r.Start),
+			zap.Int("range_end", r.Start+r.Length),
+			zap.Binary("stream_preview", stream[:min(16, len(stream))]))
 
 		// Apply XOR stream to undo redaction (this gives us back the original sensitive data)
 		for j := 0; j < r.Length && r.Start+j < len(reconstructed) && j < len(stream); j++ {
@@ -1166,8 +1456,9 @@ func (t *TEET) reconstructFullRequest(encryptedRedacted []byte, ranges []shared.
 		}
 	}
 
-	fmt.Printf("[TEE_T] AFTER stream application: %x\n", reconstructed[:min(64, len(reconstructed))])
-	fmt.Printf("[TEE_T] Reconstructed full request (%d bytes) from redacted data\n", len(reconstructed))
+	t.logger.DebugIf("Applied redaction streams in legacy function",
+		zap.Binary("reconstructed_preview", reconstructed[:min(64, len(reconstructed))]),
+		zap.Int("total_bytes", len(reconstructed)))
 	return reconstructed, nil
 }
 
@@ -1177,7 +1468,10 @@ func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, range
 	reconstructed := make([]byte, len(encryptedRedacted))
 	copy(reconstructed, encryptedRedacted)
 
-	fmt.Printf("[TEE_T] BEFORE stream application: %x\n", encryptedRedacted[:min(64, len(encryptedRedacted))])
+	t.logger.DebugIf("Starting redaction stream application with provided streams",
+		zap.Binary("redacted_preview", encryptedRedacted[:min(64, len(encryptedRedacted))]),
+		zap.Int("redaction_ranges", len(ranges)),
+		zap.Int("available_streams", len(redactionStreams)))
 
 	// Apply streams to redacted ranges (this reverses the XOR redaction)
 	for i, r := range ranges {
@@ -1187,7 +1481,11 @@ func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, range
 
 		stream := redactionStreams[i]
 
-		fmt.Printf("[TEE_T] Applying stream %d to range [%d:%d]: %x\n", i, r.Start, r.Start+r.Length, stream[:min(16, len(stream))])
+		t.logger.DebugIf("Applying redaction stream to range",
+			zap.Int("stream_index", i),
+			zap.Int("range_start", r.Start),
+			zap.Int("range_end", r.Start+r.Length),
+			zap.Binary("stream_preview", stream[:min(16, len(stream))]))
 
 		// Apply XOR stream to undo redaction (this gives us back the original sensitive data)
 		for j := 0; j < r.Length && r.Start+j < len(reconstructed) && j < len(stream); j++ {
@@ -1195,8 +1493,9 @@ func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, range
 		}
 	}
 
-	fmt.Printf("[TEE_T] AFTER stream application: %x\n", reconstructed[:min(64, len(reconstructed))])
-	fmt.Printf("[TEE_T] Reconstructed full request (%d bytes) from redacted data\n", len(reconstructed))
+	t.logger.DebugIf("Completed redaction stream application",
+		zap.Binary("reconstructed_preview", reconstructed[:min(64, len(reconstructed))]),
+		zap.Int("total_bytes", len(reconstructed)))
 	return reconstructed, nil
 }
 
@@ -1206,7 +1505,9 @@ func (t *TEET) reconstructFullEncryptedRequest(encryptedRedacted []byte, ranges 
 	reconstructed := make([]byte, len(encryptedRedacted))
 	copy(reconstructed, encryptedRedacted)
 
-	fmt.Printf("[TEE_T] BEFORE stream application: %x\n", encryptedRedacted[:min(64, len(encryptedRedacted))])
+	t.logger.DebugIf("Starting legacy stream application to reconstruct full encrypted request",
+		zap.Binary("redacted_preview", encryptedRedacted[:min(64, len(encryptedRedacted))]),
+		zap.Int("redaction_ranges", len(ranges)))
 
 	// Apply streams to redacted ranges (this reverses the XOR redaction)
 	for i, r := range ranges {
@@ -1216,7 +1517,11 @@ func (t *TEET) reconstructFullEncryptedRequest(encryptedRedacted []byte, ranges 
 
 		stream := t.redactionStreams[i]
 
-		fmt.Printf("[TEE_T] Applying stream %d to range [%d:%d]: %x\n", i, r.Start, r.Start+r.Length, stream[:min(16, len(stream))])
+		t.logger.DebugIf("Applying legacy redaction stream to range",
+			zap.Int("stream_index", i),
+			zap.Int("range_start", r.Start),
+			zap.Int("range_end", r.Start+r.Length),
+			zap.Binary("stream_preview", stream[:min(16, len(stream))]))
 
 		// Apply XOR stream to undo redaction (this gives us back the original sensitive data)
 		for j := 0; j < r.Length && r.Start+j < len(reconstructed) && j < len(stream); j++ {
@@ -1224,8 +1529,9 @@ func (t *TEET) reconstructFullEncryptedRequest(encryptedRedacted []byte, ranges 
 		}
 	}
 
-	fmt.Printf("[TEE_T] AFTER stream application: %x\n", reconstructed[:min(64, len(reconstructed))])
-	fmt.Printf("[TEE_T] Reconstructed full request (%d bytes) from redacted data\n", len(reconstructed))
+	t.logger.DebugIf("Completed legacy stream application",
+		zap.Binary("reconstructed_preview", reconstructed[:min(64, len(reconstructed))]),
+		zap.Int("total_bytes", len(reconstructed)))
 	return reconstructed, nil
 }
 
@@ -1234,7 +1540,7 @@ func (t *TEET) reconstructFullEncryptedRequest(encryptedRedacted []byte, ranges 
 func (t *TEET) handleTEETReady(conn *websocket.Conn, msg *shared.Message) {
 	var readyData shared.TEETReadyData
 	if err := msg.UnmarshalData(&readyData); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal TEE_T ready data: %v", err)
+		t.logger.Error("Failed to unmarshal TEE_T ready data", zap.Error(err))
 		t.sendErrorToClient(conn, fmt.Sprintf("Failed to unmarshal TEE_T ready data: %v", err))
 		return
 	}
@@ -1246,7 +1552,7 @@ func (t *TEET) handleTEETReady(conn *websocket.Conn, msg *shared.Message) {
 	responseMsg := shared.CreateMessage(shared.MsgTEETReady, response)
 
 	if err := t.sendMessageToClient(responseMsg); err != nil {
-		log.Printf("[TEE_T] Failed to send TEE_T ready response: %v", err)
+		t.logger.Error("Failed to send TEE_T ready response", zap.Error(err))
 	}
 }
 
@@ -1254,7 +1560,9 @@ func (t *TEET) handleTEETReady(conn *websocket.Conn, msg *shared.Message) {
 func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Message) {
 	var attestReq shared.AttestationRequestData
 	if err := msg.UnmarshalData(&attestReq); err != nil {
-		log.Printf("[TEE_T] Session %s: Failed to unmarshal attestation request: %v", sessionID, err)
+		t.logger.Error("Failed to unmarshal attestation request",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		t.sendErrorToClientSession(sessionID, "Failed to parse attestation request")
 		return
 	}
@@ -1263,15 +1571,18 @@ func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 	// This fixes the race condition where the parameter might be empty
 	actualSessionID := msg.SessionID
 	if actualSessionID == "" {
-		log.Printf("[TEE_T] Session %s: No session ID in message, using parameter", sessionID)
+		t.logger.WarnIf("No session ID in attestation message, using parameter",
+			zap.String("session_id", sessionID))
 		actualSessionID = sessionID
 	}
 
-	log.Printf("[TEE_T] Session %s: Processing attestation request", actualSessionID)
+	t.logger.InfoIf("Processing attestation request",
+		zap.String("session_id", actualSessionID))
 
 	// Get attestation from enclave manager if available
 	if t.signingKeyPair == nil {
-		log.Printf("[TEE_T] Session %s: No signing key pair available for attestation", actualSessionID)
+		t.logger.Error("No signing key pair available for attestation",
+			zap.String("session_id", actualSessionID))
 		t.sendAttestationResponseToClient(actualSessionID, nil, false, "No signing key pair available")
 		return
 	}
@@ -1279,30 +1590,39 @@ func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 	// Generate attestation document using enclave manager
 	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
 	if err != nil {
-		log.Printf("[TEE_T] Session %s: Failed to get public key DER: %v", actualSessionID, err)
+		t.logger.Error("Failed to get public key DER for attestation",
+			zap.String("session_id", actualSessionID),
+			zap.Error(err))
 		t.sendAttestationResponseToClient(actualSessionID, nil, false, "Failed to get public key")
 		return
 	}
 
 	// Create user data containing the hex-encoded ECDSA public key
 	userData := fmt.Sprintf("tee_t_public_key:%x", publicKeyDER)
-	log.Printf("[TEE_T] Session %s: Including ECDSA public key in attestation (DER: %d bytes)", actualSessionID, len(publicKeyDER))
+	t.logger.InfoIf("Including ECDSA public key in attestation",
+		zap.String("session_id", actualSessionID),
+		zap.Int("public_key_der_bytes", len(publicKeyDER)))
 
 	// Generate attestation document using enclave manager
 	if t.enclaveManager == nil {
-		log.Printf("[TEE_T] Session %s: No enclave manager available for attestation", actualSessionID)
+		t.logger.Error("No enclave manager available for attestation",
+			zap.String("session_id", actualSessionID))
 		t.sendAttestationResponseToClient(actualSessionID, nil, false, "No enclave manager available")
 		return
 	}
 
 	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
 	if err != nil {
-		log.Printf("[TEE_T] Session %s: Failed to generate attestation: %v", actualSessionID, err)
+		t.logger.Error("Failed to generate attestation document",
+			zap.String("session_id", actualSessionID),
+			zap.Error(err))
 		t.sendAttestationResponseToClient(actualSessionID, nil, false, fmt.Sprintf("Failed to generate attestation: %v", err))
 		return
 	}
 
-	log.Printf("[TEE_T] Session %s: Generated attestation document (%d bytes)", actualSessionID, len(attestationDoc))
+	t.logger.InfoIf("Generated attestation document",
+		zap.String("session_id", actualSessionID),
+		zap.Int("attestation_bytes", len(attestationDoc)))
 
 	// Send successful response
 	t.sendAttestationResponseToClient(actualSessionID, attestationDoc, true, "")
@@ -1318,7 +1638,9 @@ func (t *TEET) sendAttestationResponseToClient(sessionID string, attestationDoc 
 
 	msg := shared.CreateSessionMessage(shared.MsgAttestationResponse, sessionID, response)
 	if err := t.sendMessageToClientSession(sessionID, msg); err != nil {
-		log.Printf("[TEE_T] Session %s: Failed to send attestation response: %v", sessionID, err)
+		t.logger.Error("Failed to send attestation response",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 	}
 }
 
@@ -1327,7 +1649,9 @@ func (t *TEET) sendErrorToClientSession(sessionID, errMsg string) {
 	errorData := shared.ErrorData{Message: errMsg}
 	errorMsg := shared.CreateSessionMessage(shared.MsgError, sessionID, errorData)
 	if err := t.sessionManager.RouteToClient(sessionID, errorMsg); err != nil {
-		log.Printf("[TEE_T] Session %s: Failed to send error message: %v", sessionID, err)
+		t.logger.Error("Failed to send error message to client session",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 	}
 }
 
@@ -1348,7 +1672,9 @@ func isNetworkShutdownError(err error) bool {
 func (t *TEET) addToTranscriptForSessionWithType(sessionID string, packet []byte, packetType string) {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for transcript: %v", sessionID, err)
+		t.logger.Error("Failed to get session for transcript",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return
 	}
 
@@ -1361,8 +1687,11 @@ func (t *TEET) addToTranscriptForSessionWithType(sessionID string, packet []byte
 	session.TranscriptPackets = append(session.TranscriptPackets, pktCopy)
 	session.TranscriptPacketTypes = append(session.TranscriptPacketTypes, packetType)
 
-	fmt.Printf("[TEE_T] Added packet to session %s transcript (%d bytes, type=%s, total packets: %d)\n",
-		sessionID, len(packet), packetType, len(session.TranscriptPackets))
+	t.logger.DebugIf("Added packet to session transcript",
+		zap.String("session_id", sessionID),
+		zap.Int("packet_bytes", len(packet)),
+		zap.String("packet_type", packetType),
+		zap.Int("total_packets", len(session.TranscriptPackets)))
 }
 
 // addToTranscriptForSession safely adds a packet to the session's transcript collection
@@ -1374,7 +1703,9 @@ func (t *TEET) addToTranscriptForSession(sessionID string, packet []byte) {
 func (t *TEET) getTranscriptForSession(sessionID string) [][]byte {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for transcript: %v", sessionID, err)
+		t.logger.Error("Failed to get session for transcript retrieval",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return nil
 	}
 
@@ -1396,22 +1727,28 @@ func (t *TEET) getTranscriptForSession(sessionID string) [][]byte {
 
 // handleFinishedFromClientSession handles finished messages from clients
 func (t *TEET) handleFinishedFromClientSession(sessionID string, msg *shared.Message) {
-	log.Printf("[TEE_T] Handling finished message from client for session %s", sessionID)
+	t.logger.InfoIf("Handling finished message from client",
+		zap.String("session_id", sessionID))
 
 	var finishedMsg shared.FinishedMessage
 	if err := msg.UnmarshalData(&finishedMsg); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal finished message: %v", err)
+		t.logger.Error("Failed to unmarshal finished message from client",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return
 	}
 
 	// Note: Source field removed - message context determines source
 
-	log.Printf("[TEE_T] Received finished command from client")
+	t.logger.InfoIf("Received finished command from client",
+		zap.String("session_id", sessionID))
 
 	// Update finished state for this session
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for finished tracking: %v", sessionID, err)
+		t.logger.Error("Failed to get session for finished tracking",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return
 	}
 
@@ -1425,24 +1762,30 @@ func (t *TEET) handleFinishedFromClientSession(sessionID string, msg *shared.Mes
 
 // handleFinishedFromTEEKSession handles finished messages from TEE_K
 func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
-	log.Printf("[TEE_T] Handling finished message from TEE_K for session %s", msg.SessionID)
+	t.logger.InfoIf("Handling finished message from TEE_K",
+		zap.String("session_id", msg.SessionID))
 
 	var finishedMsg shared.FinishedMessage
 	if err := msg.UnmarshalData(&finishedMsg); err != nil {
-		log.Printf("[TEE_T] Failed to unmarshal finished message: %v", err)
+		t.logger.Error("Failed to unmarshal finished message from TEE_K",
+			zap.String("session_id", msg.SessionID),
+			zap.Error(err))
 		return
 	}
 
 	// Note: Source field removed - message context determines source
 
-	log.Printf("[TEE_T] Received finished command from TEE_K")
+	t.logger.InfoIf("Received finished command from TEE_K",
+		zap.String("session_id", msg.SessionID))
 
 	sessionID := msg.SessionID
 
 	// Update finished state for this session
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for finished tracking: %v", sessionID, err)
+		t.logger.Error("Failed to get session for TEE_K finished tracking",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return
 	}
 
@@ -1458,7 +1801,9 @@ func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
 func (t *TEET) checkFinishedCondition(sessionID string) {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_T] Failed to get session %s for finished condition check: %v", sessionID, err)
+		t.logger.Error("Failed to get session for finished condition check",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return
 	}
 
@@ -1468,44 +1813,56 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 	session.FinishedStateMutex.Unlock()
 
 	if clientFinished && teekFinished {
-		log.Printf("[TEE_T] Both client and TEE_K have sent finished - starting transcript signing")
+		t.logger.InfoIf("Both client and TEE_K have sent finished - starting transcript signing",
+			zap.String("session_id", sessionID))
 
 		// Generate and sign transcript from session
 		transcript := t.getTranscriptForSession(sessionID)
 		if len(transcript) == 0 {
-			log.Printf("[TEE_T] No transcript packets to sign for session %s", sessionID)
+			t.logger.WarnIf("No transcript packets to sign for session",
+				zap.String("session_id", sessionID))
 			return
 		}
 
 		if t.signingKeyPair == nil {
-			log.Printf("[TEE_T] No signing key pair available")
+			t.logger.Error("No signing key pair available for transcript signing",
+				zap.String("session_id", sessionID))
 			return
 		}
 
 		signature, err := t.signingKeyPair.SignTranscript(transcript)
 		if err != nil {
-			log.Printf("[TEE_T] Failed to sign transcript: %v", err)
+			t.logger.Error("Failed to sign transcript",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
 			return
 		}
 
-		log.Printf("[TEE_T] Successfully signed transcript (%d packets, %d bytes signature)",
-			len(transcript), len(signature))
+		t.logger.InfoIf("Successfully signed transcript",
+			zap.String("session_id", sessionID),
+			zap.Int("total_packets", len(transcript)),
+			zap.Int("signature_bytes", len(signature)))
 
 		// Send "finished" response to TEE_K
 		responseMsg := shared.FinishedMessage{}
 
 		finishedResponse := shared.CreateSessionMessage(shared.MsgFinished, sessionID, responseMsg)
 		if err := t.sendMessageToTEEKForSession(sessionID, finishedResponse); err != nil {
-			log.Printf("[TEE_T] Failed to send finished response to TEE_K: %v", err)
+			t.logger.Error("Failed to send finished response to TEE_K",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
 			return
 		}
 
-		log.Printf("[TEE_T] Sent finished response to TEE_K")
+		t.logger.InfoIf("Sent finished response to TEE_K",
+			zap.String("session_id", sessionID))
 
 		// Get public key in DER format
 		publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
 		if err != nil {
-			log.Printf("[TEE_T] Failed to get public key DER: %v", err)
+			t.logger.Error("Failed to get public key DER for signed transcript",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
 			return
 		}
 
@@ -1518,16 +1875,21 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 		// Send signed transcript to client
 		transcriptMsg := shared.CreateSessionMessage(shared.MsgSignedTranscript, sessionID, signedTranscript)
 		if err := t.sendMessageToClientSession(sessionID, transcriptMsg); err != nil {
-			log.Printf("[TEE_T] Failed to send signed transcript to client: %v", err)
+			t.logger.Error("Failed to send signed transcript to client",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
 			return
 		}
 
-		log.Printf("[TEE_T] Sent signed transcript to client")
+		t.logger.InfoIf("Sent signed transcript to client",
+			zap.String("session_id", sessionID))
 
 		// No need to clean up finished state - it will be cleaned up when session is closed
 	} else {
-		log.Printf("[TEE_T] Waiting for finished from both parties (client: %v, TEE_K: %v)",
-			clientFinished, teekFinished)
+		t.logger.DebugIf("Waiting for finished from both parties",
+			zap.String("session_id", sessionID),
+			zap.Bool("client_finished", clientFinished),
+			zap.Bool("teek_finished", teekFinished))
 	}
 }
 

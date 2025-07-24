@@ -13,7 +13,6 @@ const (
 	MsgRequestConnection MessageType = "request_connection"
 	MsgTCPData           MessageType = "tcp_data"
 	MsgTCPReady          MessageType = "tcp_ready"
-	MsgPlaintextData     MessageType = "plaintext_data"
 
 	// TEE_K to Client messages
 	MsgConnectionReady        MessageType = "connection_ready"
@@ -40,7 +39,6 @@ const (
 	MsgEncryptedResponse        MessageType = "encrypted_response"
 	MsgResponseTagVerification  MessageType = "response_tag_verification"
 	MsgResponseDecryptionStream MessageType = "response_decryption_stream"
-	MsgDecryptedResponse        MessageType = "decrypted_response"
 
 	// *** NEW: Batched response handling messages ***
 	MsgBatchedEncryptedResponses MessageType = "batched_encrypted_responses"
@@ -127,11 +125,6 @@ func CreateMessage(msgType MessageType, data interface{}, sessionID ...string) (
 	return msg, nil
 }
 
-// CreateSessionMessage is kept for backward compatibility but now calls CreateMessage
-func CreateSessionMessage(msgType MessageType, sessionID string, data interface{}) (*Message, error) {
-	return CreateMessage(msgType, data, sessionID)
-}
-
 func ParseMessage(msgBytes []byte) (*Message, error) {
 	var msg Message
 	err := json.Unmarshal(msgBytes, &msg)
@@ -164,46 +157,7 @@ type SessionReadyData struct {
 	Ready     bool   `json:"ready"`
 }
 
-// CreateHandshakeKeyDisclosureMessage creates a handshake key disclosure message
-func CreateHandshakeKeyDisclosureMessage(handshakeKey, handshakeIV, certificatePacket []byte, cipherSuite uint16, algorithm string, success bool) Message {
-	data := HandshakeKeyDisclosureData{
-		HandshakeKey:      handshakeKey,
-		HandshakeIV:       handshakeIV,
-		CertificatePacket: certificatePacket,
-		CipherSuite:       cipherSuite,
-		Algorithm:         algorithm,
-		Success:           success,
-	}
-	return Message{
-		Type:      "handshake_key_disclosure",
-		Data:      data,
-		Timestamp: time.Now(),
-	}
-}
-
 // Phase 2: New message structures for split AEAD protocol
-
-// TEE_K to TEE_T: Request key share for split AEAD
-type KeyShareRequestData struct {
-	CipherSuite uint16 `json:"cipher_suite"`
-	KeyLength   int    `json:"key_length"`
-	IVLength    int    `json:"iv_length"`
-}
-
-// TEE_T to TEE_K: Response with key share
-type KeyShareResponseData struct {
-	KeyShare []byte `json:"key_share"`
-	Success  bool   `json:"success"`
-}
-
-// TEE_K to TEE_T: Send encrypted request data and tag computation material
-type EncryptedRequestData struct {
-	EncryptedData   []byte           `json:"encrypted_data"` // R_red_Enc
-	TagSecrets      []byte           `json:"tag_secrets"`    // Data needed for tag computation
-	CipherSuite     uint16           `json:"cipher_suite"`
-	SeqNum          uint64           `json:"seq_num"`          // Sequence number for AEAD
-	RedactionRanges []RedactionRange `json:"redaction_ranges"` // Redaction position metadata for stream application
-}
 
 // TEE_T to Client: Send encrypted data with authentication tag
 type EncryptedDataResponse struct {
@@ -215,11 +169,6 @@ type EncryptedDataResponse struct {
 // TEE_T ready confirmation
 type TEETReadyData struct {
 	Success bool `json:"success"`
-}
-
-// Client to TEE_K: Send plaintext data for encryption
-type PlaintextData struct {
-	Data []byte `json:"data"`
 }
 
 // Phase 3: Redaction system data structures
@@ -262,22 +211,6 @@ type EncryptedResponseData struct {
 	ExplicitIV    []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
 }
 
-// ResponseLengthData contains the length of encrypted response for tag secret generation
-type ResponseLengthData struct {
-	Length       int    `json:"length"`                // Length of encrypted response data (without tag)
-	RecordHeader []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
-	SeqNum       uint64 `json:"seq_num"`               // TLS sequence number for AEAD
-	CipherSuite  uint16 `json:"cipher_suite"`          // TLS cipher suite
-	ExplicitIV   []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
-}
-
-// ResponseTagSecretsData contains tag computation secrets from TEE_K to TEE_T
-type ResponseTagSecretsData struct {
-	TagSecrets  []byte `json:"tag_secrets"`  // E_K(0^128) and E_K(nonce||1) for GCM
-	SeqNum      uint64 `json:"seq_num"`      // TLS sequence number for AEAD
-	CipherSuite uint16 `json:"cipher_suite"` // TLS cipher suite
-}
-
 // ResponseTagVerificationData contains result of tag verification by TEE_T
 type ResponseTagVerificationData struct {
 	Success bool   `json:"success"` // Whether tag verification passed
@@ -297,11 +230,6 @@ type DecryptedResponseData struct {
 	PlaintextData []byte `json:"plaintext_data"` // Decrypted response data
 	SeqNum        uint64 `json:"seq_num"`        // TLS sequence number for AEAD
 	Success       bool   `json:"success"`        // Whether decryption was successful
-}
-
-// AttestationRequestData represents a request for attestation over WebSocket
-type AttestationRequestData struct {
-	// RequestID removed - no longer needed since we wait for session coordination
 }
 
 // AttestationResponseData represents an attestation response over WebSocket

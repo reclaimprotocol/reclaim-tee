@@ -201,14 +201,6 @@ func (c *Client) SetMode(mode ClientMode) {
 	c.clientMode = mode
 }
 
-// WaitForCompletion - moved to completion.go
-
-// createEnclaveWebSocketDialer - moved to websocket.go
-
-// ConnectToTEEK - moved to websocket.go
-
-// ConnectToTEET - moved to websocket.go
-
 func (c *Client) RequestHTTP(hostname string, port int) error {
 	c.targetHost = hostname
 	c.targetPort = port
@@ -234,60 +226,6 @@ func (c *Client) RequestHTTP(hostname string, port int) error {
 	// Otherwise, request will be sent when session ID is received in handleSessionReady
 	return nil
 }
-
-// sendPendingConnectionRequest - moved to websocket.go
-
-// handleMessages - moved to websocket.go
-
-// handleTEETMessages - moved to websocket.go
-
-// isClientNetworkShutdownError - moved to tcp.go
-
-// handleConnectionReady - moved to tcp.go
-
-// sendTCPReady - moved to tcp.go
-
-// handleSendTCPData - moved to tcp.go
-
-// handleHTTPResponse - moved to websocket.go
-
-// handleError - moved to websocket.go
-
-// handleHandshakeComplete - moved to tls.go
-
-// handleHandshakeKeyDisclosure - moved to tls.go
-
-// verifyCertificateInTraffic - moved to tls.go
-
-// decryptAndVerifyCertificate - moved to tls.go
-
-// parseCertificateMessage - moved to tls.go
-
-// tcpToWebsocket - moved to tcp.go
-
-// processCompleteRecords - moved to tls.go
-
-// processAllRemainingRecords - moved to tls.go
-
-// processSingleTLSRecord - moved to tls.go
-
-// sendMessage - moved to websocket.go
-
-// sendMessageToTEET - moved to websocket.go
-
-// sendError - moved to websocket.go
-
-// Phase 2: TEE_T message handlers
-
-// handleEncryptedData - moved to websocket.go
-
-// handleTEETReady - moved to websocket.go
-
-// handleRedactionVerification - moved to websocket.go
-
-// handleTEETError - moved to websocket.go
-
-// Close - moved to websocket.go
 
 // Phase 3: Redaction system implementation
 
@@ -456,26 +394,8 @@ func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]RedactionRange, erro
 	var ranges []RedactionRange
 	requestStr := string(httpRequest)
 
-	// If no redaction specs configured, fall back to default patterns
+	// If no redaction specs configured, return empty ranges
 	if len(c.requestRedactions) == 0 {
-		// Default fallback: hardcoded patterns for backward compatibility
-		authTokenStart := strings.Index(requestStr, "secret_auth_token_12345")
-		accountIdStart := strings.Index(requestStr, "ACC987654321")
-
-		if authTokenStart != -1 {
-			ranges = append(ranges, RedactionRange{
-				Start:  authTokenStart,
-				Length: len("secret_auth_token_12345"),
-				Type:   "sensitive",
-			})
-		}
-		if accountIdStart != -1 {
-			ranges = append(ranges, RedactionRange{
-				Start:  accountIdStart,
-				Length: len("ACC987654321"),
-				Type:   "sensitive_proof",
-			})
-		}
 		return ranges, nil
 	}
 
@@ -674,40 +594,7 @@ func (c *Client) hasAllCompletionFlags(flags int64) bool {
 
 // processResponseRecords processes accumulated response data for complete TLS records
 
-// processTLSRecord - moved to tls.go
-
-// handleResponseTagVerification - moved to tls.go
-
-// analyzeHandshakeMessage - moved to tls.go
-
-// analyzeNewSessionTicket - moved to tls.go
-
-// analyzeAlertMessage - moved to tls.go
-
-// getClientAlertDescription - moved to tls.go
-
-// removeTLSPadding - moved to tls.go
-
-// checkProtocolCompletion - moved to completion.go
-
-// sendFinishedCommand - moved to completion.go
-
 // handleSessionReady processes session ready messages from TEE_K
-// handleSessionReady - moved to websocket.go
-
-// handleSignedTranscript - moved to websocket.go
-
-// handleSignedRedactedDecryptionStream - moved to websocket.go
-
-// min - moved to tls.go
-
-// calculateRedactionBytes - moved to completion.go
-
-// analyzeResponseRedaction - moved to completion.go
-
-// analyzeHTTPRedactionWithBytes - moved to completion.go
-
-// sendRedactionSpec - moved to completion.go
 
 // fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T via WebSocket
 // Now waits for session coordination before sending requests
@@ -735,7 +622,7 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	fmt.Printf("[Client] Session coordinated (%s), proceeding with attestation requests\n", c.sessionID)
 
 	// Create attestation request (no request ID needed)
-	attestReq := AttestationRequestData{}
+	attestReq := shared.AttestationRequestData{}
 
 	// Send to TEE_K
 	teekMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
@@ -1159,7 +1046,7 @@ func (c *Client) RequestAttestation() (*AttestationResponseData, *AttestationRes
 	fmt.Printf("[Client] Requesting attestation for session: %s\n", c.sessionID)
 
 	// Create attestation request (no request ID needed)
-	attestReq := AttestationRequestData{}
+	attestReq := shared.AttestationRequestData{}
 
 	// Send to TEE_K
 	teekMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
