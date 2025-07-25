@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 )
 
-// collapseAsterisks reduces consecutive asterisks to a maximum of 10 followed by "..." if more exist
+// collapseAsterisks reduces consecutive asterisks to a maximum of 100 followed by "..." if more exist
 func collapseAsterisks(data string) string {
 	if len(data) == 0 {
 		return data
@@ -26,12 +26,12 @@ func collapseAsterisks(data string) string {
 		} else {
 			// We hit a non-asterisk character
 			if asteriskCount > 0 {
-				if asteriskCount <= 10 {
-					// 10 or fewer asterisks, show them all
+				if asteriskCount <= 100 {
+					// 100 or fewer asterisks, show them all
 					result.WriteString(strings.Repeat("*", asteriskCount))
 				} else {
-					// More than 10 asterisks, show 10 + "..."
-					result.WriteString("**********...")
+					// More than 100 asterisks, show 9 + "..."
+					result.WriteString("*********...")
 				}
 				asteriskCount = 0
 			}
@@ -41,10 +41,10 @@ func collapseAsterisks(data string) string {
 
 	// Handle trailing asterisks
 	if asteriskCount > 0 {
-		if asteriskCount <= 10 {
+		if asteriskCount <= 100 {
 			result.WriteString(strings.Repeat("*", asteriskCount))
 		} else {
-			result.WriteString("**********...")
+			result.WriteString("*********...")
 		}
 	}
 

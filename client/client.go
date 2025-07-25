@@ -123,6 +123,9 @@ type Client struct {
 	protocolStartTime            time.Time                     // When protocol started
 	lastResponseData             *HTTPResponse                 // Last received HTTP response
 	lastProofClaims              []ProofClaim                  // Last generated proof claims
+	lastRedactionRanges          []RedactionRange              // Last redaction ranges from callback
+	lastRedactedResponse         []byte                        // Last redacted response from callback
+	responseReconstructed        bool                          // Flag to prevent multiple response reconstruction
 	transcriptValidationResults  *TranscriptValidationResults  // Cached validation results
 	attestationValidationResults *AttestationValidationResults // Cached attestation results
 
@@ -489,12 +492,20 @@ func (c *Client) triggerResponseCallback(responseData []byte) {
 		fmt.Printf("[Client] Response callback completed with %d redaction ranges and %d proof claims\n",
 			len(result.RedactionRanges), len(result.ProofClaims))
 
-		// Store proof claims for library access
+		// Store redaction results for library access and actual redaction processing
 		c.lastProofClaims = result.ProofClaims
+		c.lastRedactionRanges = result.RedactionRanges
+		c.lastRedactedResponse = result.RedactedBody
 
 		// Log proof claims for debugging
 		for i, claim := range result.ProofClaims {
 			fmt.Printf("[Client] Proof claim %d: %s - %s\n", i+1, claim.Type, claim.Description)
+		}
+
+		// Log redaction ranges for debugging
+		for i, redactionRange := range result.RedactionRanges {
+			fmt.Printf("[Client] Redaction range %d: start=%d, length=%d, type=%s\n",
+				i+1, redactionRange.Start, redactionRange.Length, redactionRange.Type)
 		}
 	}
 }
@@ -505,9 +516,10 @@ func (c *Client) parseHTTPResponse(data []byte) *HTTPResponse {
 	lines := strings.Split(dataStr, "\r\n")
 
 	response := &HTTPResponse{
-		StatusCode: 200, // Default
-		Headers:    make(map[string]string),
-		Body:       data,
+		StatusCode:   200, // Default
+		Headers:      make(map[string]string),
+		Body:         data, // Will be updated to just body part below
+		FullResponse: data, // Complete HTTP response for redaction calculations
 		Metadata: ResponseMetadata{
 			Timestamp:     time.Now().Unix(),
 			ContentLength: len(data),
@@ -554,10 +566,12 @@ func (c *Client) parseHTTPResponse(data []byte) *HTTPResponse {
 		}
 	}
 
-	// Extract body
+	// Extract body (just the body part for Body field)
 	if bodyStart < len(lines) {
 		bodyLines := lines[bodyStart:]
 		response.Body = []byte(strings.Join(bodyLines, "\r\n"))
+	} else {
+		response.Body = []byte{} // No body found
 	}
 
 	return response

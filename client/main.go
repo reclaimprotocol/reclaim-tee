@@ -224,14 +224,18 @@ type DemoResponseCallback struct{}
 
 // OnResponseReceived implements the ResponseCallback interface with demo redactions
 func (d *DemoResponseCallback) OnResponseReceived(response *HTTPResponse) (*RedactionResult, error) {
-	// For demo purposes, we'll create some basic redactions and claims
-	redactedBody := make([]byte, len(response.Body))
-	copy(redactedBody, response.Body)
+	// Work with the full HTTP response for redaction calculations
+	fullHTTPResponse := string(response.FullResponse)
 
-	var redactionRanges []RedactionRange
+	fmt.Printf("[DemoCallback] Processing full HTTP response (%d bytes)\n", len(fullHTTPResponse))
+
+	// Apply redaction logic (moved from applyRedactionForDisplay)
+	redactedResponse := d.applyDemoRedaction(fullHTTPResponse)
+
+	// Calculate redaction ranges based on differences between original and redacted
+	redactionRanges := d.calculateRedactionRanges(fullHTTPResponse, redactedResponse)
+
 	var proofClaims []ProofClaim
-
-	// For demo purposes, no automatic redaction ranges - they're handled by redaction specification
 
 	// Example: If this is an HTTP response, create some demo proof claims
 	if response.StatusCode == 200 {
@@ -253,9 +257,162 @@ func (d *DemoResponseCallback) OnResponseReceived(response *HTTPResponse) (*Reda
 		})
 	}
 
+	// Example: Create proof claim about title content preservation
+	if !strings.Contains(redactedResponse, "<title>") && !strings.Contains(redactedResponse, "</title>") {
+		// Count how many title texts we preserved
+		titleStartTag := "<title>"
+		titleCount := strings.Count(string(response.FullResponse), titleStartTag)
+		if titleCount > 0 {
+			proofClaims = append(proofClaims, ProofClaim{
+				Type:        "content_preservation",
+				Field:       "html_title_texts",
+				Value:       fmt.Sprintf("%d", titleCount),
+				Description: fmt.Sprintf("HTML title text content from %d title tags is preserved and verifiable (tags redacted)", titleCount),
+			})
+		}
+	}
+
 	return &RedactionResult{
-		RedactedBody:    redactedBody,
+		RedactedBody:    []byte(redactedResponse),
 		RedactionRanges: redactionRanges,
 		ProofClaims:     proofClaims,
 	}, nil
+}
+
+// applyDemoRedaction applies the demo redaction logic (moved from applyRedactionForDisplay)
+func (d *DemoResponseCallback) applyDemoRedaction(httpResponse string) string {
+	// Find the end of headers (double CRLF)
+	headerEndIndex := strings.Index(httpResponse, "\r\n\r\n")
+	if headerEndIndex == -1 {
+		// Try with just LF
+		headerEndIndex = strings.Index(httpResponse, "\n\n")
+		if headerEndIndex != -1 {
+			headerEndIndex += 2 // Account for \n\n
+		}
+	} else {
+		headerEndIndex += 4 // Account for \r\n\r\n
+	}
+
+	if headerEndIndex == -1 {
+		// No clear header/body separation found, preserve everything (might be just headers)
+		return httpResponse
+	}
+
+	// Split into headers and body
+	headers := httpResponse[:headerEndIndex]
+	bodyContent := httpResponse[headerEndIndex:]
+
+	if len(bodyContent) == 0 {
+		// Only headers, nothing to redact
+		return httpResponse
+	}
+
+	// Find ALL title content within the body to preserve (only text between tags)
+	titleStartTag := "<title>"
+	titleEndTag := "</title>"
+
+	// Find all title tag pairs
+	type titleRange struct {
+		contentStart int
+		contentEnd   int
+		textContent  string
+	}
+
+	var titleRanges []titleRange
+	searchStart := 0
+
+	for {
+		titleStartIndex := strings.Index(bodyContent[searchStart:], titleStartTag)
+		if titleStartIndex == -1 {
+			break // No more title tags
+		}
+
+		titleStartIndex += searchStart // Adjust for search offset
+		titleContentStartIndex := titleStartIndex + len(titleStartTag)
+
+		titleEndIndex := strings.Index(bodyContent[titleContentStartIndex:], titleEndTag)
+		if titleEndIndex != -1 {
+			titleEndIndex = titleContentStartIndex + titleEndIndex
+
+			// Extract the text content only
+			titleText := bodyContent[titleContentStartIndex:titleEndIndex]
+
+			titleRanges = append(titleRanges, titleRange{
+				contentStart: titleContentStartIndex,
+				contentEnd:   titleEndIndex,
+				textContent:  titleText,
+			})
+
+			fmt.Printf("[Debug] Found title %d: %q (positions %d-%d)\n",
+				len(titleRanges), titleText, titleContentStartIndex, titleEndIndex)
+
+			// Continue searching after this closing tag
+			searchStart = titleEndIndex + len(titleEndTag)
+		} else {
+			// Found opening tag but no closing tag, skip it
+			searchStart = titleContentStartIndex
+		}
+	}
+
+	var redactedBody string
+	if len(titleRanges) > 0 {
+		// Build redacted body with all title texts preserved
+		var result strings.Builder
+		lastEnd := 0
+
+		for _, tr := range titleRanges {
+			// Redact from lastEnd to start of this title content
+			if tr.contentStart > lastEnd {
+				result.WriteString(strings.Repeat("*", tr.contentStart-lastEnd))
+			}
+
+			// Preserve the title text content
+			result.WriteString(tr.textContent)
+
+			lastEnd = tr.contentEnd
+		}
+
+		// Redact everything after the last title
+		if lastEnd < len(bodyContent) {
+			result.WriteString(strings.Repeat("*", len(bodyContent)-lastEnd))
+		}
+
+		redactedBody = result.String()
+
+		fmt.Printf("[Debug] Preserved %d title texts, body length: %d → %d\n",
+			len(titleRanges), len(bodyContent), len(redactedBody))
+	} else {
+		// No title tags found, redact entire body
+		redactedBody = strings.Repeat("*", len(bodyContent))
+		fmt.Printf("[Debug] No title tags found, redacting entire body (%d bytes)\n", len(bodyContent))
+	}
+
+	return headers + redactedBody
+}
+
+// calculateRedactionRanges calculates redaction ranges based on differences between original and redacted responses
+func (d *DemoResponseCallback) calculateRedactionRanges(original, redacted string) []RedactionRange {
+	var ranges []RedactionRange
+
+	// Simple implementation: find ranges where characters were replaced with asterisks
+	i := 0
+	for i < len(original) && i < len(redacted) {
+		if original[i] != redacted[i] && redacted[i] == '*' {
+			// Start of a redacted range
+			start := i
+			// Find the end of this redacted range
+			for i < len(original) && i < len(redacted) && redacted[i] == '*' {
+				i++
+			}
+			ranges = append(ranges, RedactionRange{
+				Start:  start,
+				Length: i - start,
+				Type:   "sensitive",
+			})
+		} else {
+			i++
+		}
+	}
+
+	return ranges
 }

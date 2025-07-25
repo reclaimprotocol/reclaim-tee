@@ -805,6 +805,14 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 			}
 		} else {
 			log.Printf("[Client] Received redacted stream %d/%d - waiting for remaining streams before verification", len(c.signedRedactedStreams), c.expectedRedactedStreams)
+			log.Printf("[Client] 🔧 REDACTED STREAM DEBUG: Received seq %d (%d bytes)", redactedStream.SeqNum, len(redactedStream.RedactedStream))
+
+			// Show which sequences have redacted streams so far
+			sequences := make([]uint64, 0, len(c.signedRedactedStreams))
+			for _, stream := range c.signedRedactedStreams {
+				sequences = append(sequences, stream.SeqNum)
+			}
+			log.Printf("[Client] 🔧   Sequences with redacted streams: %v", sequences)
 		}
 	}
 
@@ -832,6 +840,24 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 		redactedPlaintext[i] = ciphertext[i] ^ redactedStream.RedactedStream[i]
 	}
 
+	// *** DEBUG: For session tickets (seq 1-2), show XOR result ***
+	if redactedStream.SeqNum <= 2 {
+		log.Printf("[Client] 🔧 XOR DEBUG for seq %d:", redactedStream.SeqNum)
+		log.Printf("[Client] 🔧   Ciphertext[0:16]: %x", ciphertext[:min(16, len(ciphertext))])
+		log.Printf("[Client] 🔧   RedactedStream[0:16]: %x", redactedStream.RedactedStream[:min(16, len(redactedStream.RedactedStream))])
+		log.Printf("[Client] 🔧   Result[0:16]: %x", redactedPlaintext[:min(16, len(redactedPlaintext))])
+		log.Printf("[Client] 🔧   Result as string[0:16]: %q", string(redactedPlaintext[:min(16, len(redactedPlaintext))]))
+
+		// Count asterisks in result
+		asteriskCount := 0
+		for _, b := range redactedPlaintext {
+			if b == '*' {
+				asteriskCount++
+			}
+		}
+		log.Printf("[Client] 🔧   Asterisk count: %d/%d", asteriskCount, len(redactedPlaintext))
+	}
+
 	log.Printf("[Client] Generated redacted plaintext for seq %d (%d bytes)",
 		redactedStream.SeqNum, len(redactedPlaintext))
 
@@ -840,15 +866,20 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 	c.redactedPlaintextBySeq[redactedStream.SeqNum] = redactedPlaintext
 	c.responseContentMutex.Unlock()
 
-	// *** REMOVED: Don't print individual streams - wait for all streams ***
-	// c.printRedactedResponse()
+	// *** NOTE: No longer printing from XOR streams - client displays immediately from ranges ***
+	log.Printf("[Client] 🔧 XOR STREAM CHECK: Have %d redacted streams, expecting %d",
+		len(c.redactedPlaintextBySeq), c.expectedRedactedStreams)
+	log.Printf("[Client] 🔧 XOR streams are for verifier use only - client displays from ranges")
 
 	// Check protocol completion after processing redacted stream
 	c.checkProtocolCompletion("redacted stream processed")
 }
 
-// printRedactedResponse prints the full redacted response in order once all parts are received
+// printRedactedResponse - DEPRECATED: No longer used for client display
+// Client now displays immediately from ranges, this is kept only for verifier compatibility
 func (c *Client) printRedactedResponse() {
+	log.Printf("[Client] 🔧 DEPRECATED: printRedactedResponse called (XOR-based display no longer used)")
+	return // Early return - client displays from ranges now
 	c.responseContentMutex.Lock()
 	defer c.responseContentMutex.Unlock()
 
@@ -857,24 +888,63 @@ func (c *Client) printRedactedResponse() {
 		return
 	}
 
+	// Guard against multiple prints of the same response
+	if c.fullRedactedResponse != nil {
+		return
+	}
+
 	log.Printf("[Client] All redacted streams received, printing full response...")
 
-	// Get keys and sort them to ensure correct order
+	// *** USE XOR STREAMS (same as verifier) - must produce clean asterisks ***
 	keys := make([]int, 0, len(c.redactedPlaintextBySeq))
 	for k := range c.redactedPlaintextBySeq {
 		keys = append(keys, int(k))
 	}
 	sort.Ints(keys)
 
+	log.Printf("[Client] 🔧 ASSEMBLY DEBUG: Found %d sequences to assemble", len(keys))
+
 	var fullResponse strings.Builder
-	for _, k := range keys {
-		fullResponse.Write(c.redactedPlaintextBySeq[uint64(k)])
+	for i, k := range keys {
+		seqData := c.redactedPlaintextBySeq[uint64(k)]
+		fullResponse.Write(seqData)
+
+		// Debug first few sequences
+		if i < 5 {
+			log.Printf("[Client] 🔧   Seq %d: %d bytes", k, len(seqData))
+			if len(seqData) > 0 {
+				// Count asterisks in this sequence
+				asteriskCount := 0
+				for _, b := range seqData {
+					if b == '*' {
+						asteriskCount++
+					}
+				}
+				log.Printf("[Client] 🔧   Seq %d asterisks: %d/%d", k, asteriskCount, len(seqData))
+
+				// Show first 16 bytes
+				preview := seqData[:min(16, len(seqData))]
+				log.Printf("[Client] 🔧   Seq %d first 16 bytes: %x", k, preview)
+				log.Printf("[Client] 🔧   Seq %d as string: %q", k, string(preview))
+			}
+		}
 	}
 
 	c.fullRedactedResponse = []byte(fullResponse.String())
 
-	// Print the final, ordered, redacted response
-	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", collapseAsterisks(fullResponse.String()))
+	// *** DEBUG: Check assembled response ***
+	assembled := fullResponse.String()
+	log.Printf("[Client] 🔧 ASSEMBLED RESPONSE:")
+	log.Printf("[Client] 🔧   Total length: %d bytes", len(assembled))
+	if len(assembled) > 0 {
+		preview := assembled[:min(64, len(assembled))]
+		log.Printf("[Client] 🔧   First 64 bytes: %x", []byte(preview))
+		log.Printf("[Client] 🔧   As string: %q", preview)
+	}
+
+	// Print the XOR-assembled response (should be identical to verifier)
+	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n",
+		collapseAsterisks(fullResponse.String()))
 }
 
 // Close closes all WebSocket connections
@@ -1071,10 +1141,16 @@ func (c *Client) handleBatchedDecryptionStreams(msg *Message) {
 
 	fmt.Printf("[Client] BATCHING: Processed %d decryption streams\n", len(batchedStreams.DecryptionStreams))
 
-	// *** CRITICAL: Also reconstruct HTTP response from decrypted data ***
-	c.reconstructHTTPResponseFromDecryptedData()
+	// *** CRITICAL: Reconstruct HTTP response and call callback BEFORE protocol completion ***
+	if !c.responseReconstructed {
+		c.reconstructHTTPResponseFromDecryptedData()
+		c.responseReconstructed = true
 
-	// *** CRITICAL: Trigger completion check after processing batched streams ***
+		// Give a moment for callback results to be stored
+		fmt.Printf("[Client] BATCHING: HTTP response reconstruction completed, callback executed\n")
+	}
+
+	// *** CRITICAL: Trigger completion check after callback execution ***
 	fmt.Printf("[Client] BATCHING: About to call checkProtocolCompletion...\n")
 	c.checkProtocolCompletion("batched decryption streams processed")
 	fmt.Printf("[Client] BATCHING: checkProtocolCompletion returned\n")
@@ -1168,26 +1244,50 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			c.reconstructedResponseSize = len(actualHTTPResponse)
 			c.responseProcessingMutex.Unlock()
 
-			// *** CRITICAL: Apply redaction for display and store the redacted response ***
-			fmt.Printf("[Client] DEBUG: Applying redaction to HTTP response (%d bytes)\n", len(actualHTTPResponse))
+			// *** NATURAL PLACE: Call response callback now that we have complete HTTP response ***
+			if c.responseCallback != nil && len(c.lastRedactionRanges) == 0 {
+				fmt.Printf("[Client] Calling response callback with complete HTTP response (%d bytes)\n", len(actualHTTPResponse))
+
+				// Parse the HTTP response and call the callback
+				httpResponse := c.parseHTTPResponse([]byte(actualHTTPResponse))
+				result, err := c.responseCallback.OnResponseReceived(httpResponse)
+
+				if err != nil {
+					fmt.Printf("[Client] Response callback error: %v\n", err)
+				} else if result != nil {
+					fmt.Printf("[Client] Response callback completed with %d redaction ranges and %d proof claims\n",
+						len(result.RedactionRanges), len(result.ProofClaims))
+
+					// Store results for use in redaction spec generation
+					c.lastProofClaims = result.ProofClaims
+					c.lastRedactionRanges = result.RedactionRanges
+					c.lastRedactedResponse = result.RedactedBody
+					c.lastResponseData = httpResponse
+
+					fmt.Printf("[Client] ✅ STORED callback results: %d ranges, %d claims, %d bytes redacted response\n",
+						len(result.RedactionRanges), len(result.ProofClaims), len(result.RedactedBody))
+
+					// Log redaction ranges for debugging
+					for i, r := range result.RedactionRanges {
+						fmt.Printf("[Client] Redaction range %d: start=%d, length=%d, type=%s\n",
+							i+1, r.Start, r.Length, r.Type)
+					}
+
+				}
+			} else if c.responseCallback != nil {
+				fmt.Printf("[Client] Response callback already executed (cached ranges: %d)\n", len(c.lastRedactionRanges))
+			}
+
+			// *** Display the raw HTTP response (redaction will be handled at TLS record level) ***
+			fmt.Printf("[Client] DEBUG: Raw HTTP response (%d bytes)\n", len(actualHTTPResponse))
 			previewLen := 200
 			if len(actualHTTPResponse) < previewLen {
 				previewLen = len(actualHTTPResponse)
 			}
-			fmt.Printf("[Client] DEBUG: HTTP response preview: %s\n", actualHTTPResponse[:previewLen])
-			redactedResponse := c.applyRedactionForDisplay(actualHTTPResponse)
-			redactedPreviewLen := 200
-			if len(redactedResponse) < redactedPreviewLen {
-				redactedPreviewLen = len(redactedResponse)
-			}
-			fmt.Printf("[Client] DEBUG: Redacted response (%d bytes), preview: %s\n", len(redactedResponse), redactedResponse[:redactedPreviewLen])
-			c.fullRedactedResponse = []byte(redactedResponse)
-			fmt.Printf("\n\n--- FINAL REDACTED RESPONSE ---\n%s\n--- END REDACTED RESPONSE ---\n\n", collapseAsterisks(redactedResponse))
+			fmt.Printf("[Client] DEBUG: Raw HTTP response preview: %s\n", actualHTTPResponse[:previewLen])
 
-			fmt.Printf("[Client] BATCHING: Response processing marked as successful (%d bytes, redacted display: %d bytes)\n", len(actualHTTPResponse), len(redactedResponse))
-
-			// *** NEW: Trigger response callback with the redacted response for display ***
-			c.triggerResponseCallback([]byte(redactedResponse))
+			// Set success flags
+			fmt.Printf("[Client] BATCHING: Response processing marked as successful (%d bytes)\n", len(actualHTTPResponse))
 		} else {
 			previewLen := 100
 			if len(responseStr) < previewLen {
@@ -1196,65 +1296,4 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			fmt.Printf("[Client] BATCHING: Warning - reconstructed response doesn't look like HTTP: %q\n", responseStr[:previewLen])
 		}
 	}
-}
-
-// applyRedactionForDisplay applies HTTP-level redaction for display purposes
-func (c *Client) applyRedactionForDisplay(httpResponse string) string {
-	// Find the end of headers (double CRLF)
-	headerEndIndex := strings.Index(httpResponse, "\r\n\r\n")
-	if headerEndIndex == -1 {
-		// Try with just LF
-		headerEndIndex = strings.Index(httpResponse, "\n\n")
-		if headerEndIndex != -1 {
-			headerEndIndex += 2 // Account for \n\n
-		}
-	} else {
-		headerEndIndex += 4 // Account for \r\n\r\n
-	}
-
-	if headerEndIndex == -1 {
-		// No clear header/body separation found, preserve everything (might be just headers)
-		return httpResponse
-	}
-
-	// Split into headers and body
-	headers := httpResponse[:headerEndIndex]
-	bodyContent := httpResponse[headerEndIndex:]
-
-	if len(bodyContent) == 0 {
-		// Only headers, nothing to redact
-		return httpResponse
-	}
-
-	// Find title content within the body to preserve
-	titleStartTag := "<title>"
-	titleEndTag := "</title>"
-	titleStartIndex := strings.Index(bodyContent, titleStartTag)
-
-	var redactedBody string
-	if titleStartIndex != -1 {
-		titleContentStartIndex := titleStartIndex + len(titleStartTag)
-		titleEndIndex := strings.Index(bodyContent[titleContentStartIndex:], titleEndTag)
-
-		if titleEndIndex != -1 {
-			// We found both opening and closing title tags
-			titleEndIndex = titleContentStartIndex + titleEndIndex
-
-			// Build redacted body: redact before title, preserve title, redact after title
-			beforeTitle := strings.Repeat("*", titleStartIndex)
-			titleContent := bodyContent[titleStartIndex : titleEndIndex+len(titleEndTag)]
-			afterTitleStart := titleEndIndex + len(titleEndTag)
-			afterTitle := strings.Repeat("*", len(bodyContent)-afterTitleStart)
-
-			redactedBody = beforeTitle + titleContent + afterTitle
-		} else {
-			// Found opening tag but no closing tag, redact entire body
-			redactedBody = strings.Repeat("*", len(bodyContent))
-		}
-	} else {
-		// No title tag found, redact entire body
-		redactedBody = strings.Repeat("*", len(bodyContent))
-	}
-
-	return headers + redactedBody
 }
