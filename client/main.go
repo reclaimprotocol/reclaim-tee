@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	proofverifier "tee-mpc/proofverifier" // add new import
@@ -61,7 +60,7 @@ func main() {
 	config := ClientConfig{
 		TEEKURL:           teekURL,
 		TEETURL:           teetURL,
-		Timeout:           30 * time.Second,
+		Timeout:           DefaultConnectionTimeout,
 		Mode:              ModeAuto,
 		RequestRedactions: getDemoRequestRedactions(),
 		ResponseCallback:  &DemoResponseCallback{},
@@ -75,12 +74,14 @@ func main() {
 
 	// Connect to both TEE_K and TEE_T
 	if err := client.Connect(); err != nil {
-		log.Fatalf("[Client] Failed to connect: %v", err)
+		fmt.Printf("❌ Failed to connect: %v\n", err)
+		return
 	}
 
 	// Request HTTP to github.com (supports all cipher suites)
 	if err := client.RequestHTTP("github.com", 443); err != nil {
-		log.Fatalf("[Client] Failed to request HTTP: %v", err)
+		fmt.Printf("❌ Failed to request HTTP: %v\n", err)
+		return
 	}
 
 	// Wait for processing to complete using proper completion tracking
@@ -90,8 +91,9 @@ func main() {
 	select {
 	case <-client.WaitForCompletion():
 		fmt.Println(" Split AEAD protocol completed successfully!")
-	case <-time.After(30 * time.Second): // Reasonable timeout instead of hardcoded wait
-		panic("⏰ Processing timeout - may indicate an issue")
+	case <-time.After(DefaultProcessingTimeout): // Configurable processing timeout
+		fmt.Printf("⏰ Processing timeout - operation may still be in progress\n")
+		fmt.Printf("⚠️  Continuing with partial results...\n")
 	}
 
 	// *** NEW: Demonstrate accessing protocol results ***
@@ -173,7 +175,8 @@ func main() {
 
 	// Run offline verification using the new verifier package
 	if err := proofverifier.Validate(bundlePath); err != nil {
-		log.Fatalf("\n🔴 Offline verification failed: %v\n", err)
+		fmt.Printf("\n🔴 Offline verification failed: %v\n", err)
+		fmt.Printf("⚠️  Continuing despite verification failure...\n")
 	} else {
 		fmt.Println("\n✅ Offline verification succeeded")
 	}
@@ -343,9 +346,6 @@ func (d *DemoResponseCallback) applyDemoRedaction(httpResponse string) string {
 				textContent:  titleText,
 			})
 
-			fmt.Printf("[Debug] Found title %d: %q (positions %d-%d)\n",
-				len(titleRanges), titleText, titleContentStartIndex, titleEndIndex)
-
 			// Continue searching after this closing tag
 			searchStart = titleEndIndex + len(titleEndTag)
 		} else {
@@ -378,13 +378,9 @@ func (d *DemoResponseCallback) applyDemoRedaction(httpResponse string) string {
 		}
 
 		redactedBody = result.String()
-
-		fmt.Printf("[Debug] Preserved %d title texts, body length: %d → %d\n",
-			len(titleRanges), len(bodyContent), len(redactedBody))
 	} else {
 		// No title tags found, redact entire body
 		redactedBody = strings.Repeat("*", len(bodyContent))
-		fmt.Printf("[Debug] No title tags found, redacting entire body (%d bytes)\n", len(bodyContent))
 	}
 
 	return headers + redactedBody

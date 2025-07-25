@@ -26,12 +26,12 @@ func collapseAsterisks(data string) string {
 		} else {
 			// We hit a non-asterisk character
 			if asteriskCount > 0 {
-				if asteriskCount <= 100 {
-					// 100 or fewer asterisks, show them all
+				if asteriskCount <= AsteriskCollapseThreshold {
+					// Threshold or fewer asterisks, show them all
 					result.WriteString(strings.Repeat("*", asteriskCount))
 				} else {
-					// More than 100 asterisks, show 9 + "..."
-					result.WriteString("*********...")
+					// More than threshold asterisks, show collapsed pattern
+					result.WriteString(CollapsedAsteriskPattern)
 				}
 				asteriskCount = 0
 			}
@@ -41,10 +41,10 @@ func collapseAsterisks(data string) string {
 
 	// Handle trailing asterisks
 	if asteriskCount > 0 {
-		if asteriskCount <= 100 {
+		if asteriskCount <= AsteriskCollapseThreshold {
 			result.WriteString(strings.Repeat("*", asteriskCount))
 		} else {
-			result.WriteString("*********...")
+			result.WriteString(CollapsedAsteriskPattern)
 		}
 	}
 
@@ -358,11 +358,8 @@ func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLe
 
 // processTLSRecord processes a single TLS ApplicationData record using split AEAD protocol
 func (c *Client) processTLSRecord(record []byte) {
-	fmt.Printf("[Client] ENTERING processTLSRecord with responseSeqNum=%d\n", c.responseSeqNum)
-
 	// Extract encrypted payload and tag (skip 5-byte header)
 	encryptedPayload := record[5:]
-	fmt.Printf("[Client] DEBUG: Total record=%d bytes, encrypted payload=%d bytes\n", len(record), len(encryptedPayload))
 
 	// For AES-GCM, tag is last 16 bytes of encrypted payload
 	if len(encryptedPayload) < 16 {
@@ -394,9 +391,6 @@ func (c *Client) processTLSRecord(record []byte) {
 		explicitIV = encryptedPayload[:8]
 		encryptedData = encryptedPayload[8 : len(encryptedPayload)-tagSize]
 
-		fmt.Printf("[Client] DEBUG: encryptedPayload first 16 bytes: %x\n", encryptedPayload[:min(16, len(encryptedPayload))])
-		fmt.Printf("[Client] DEBUG: extracted explicitIV: %x\n", explicitIV)
-		fmt.Printf("[Client] DEBUG: encryptedPayload[8:%d] = encryptedData length %d\n", len(encryptedPayload)-tagSize, len(encryptedData))
 		fmt.Printf("[Client] TLS 1.2 AES-GCM: extracted explicit IV (%d bytes) and encrypted data (%d bytes), tag (%d bytes)\n",
 			len(explicitIV), len(encryptedData), len(tag))
 		fmt.Printf("[Client] Explicit IV: %x\n", explicitIV)
@@ -444,26 +438,23 @@ func (c *Client) processTLSRecord(record []byte) {
 		ExplicitIV:    explicitIV,  // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
 	}
 
-	// *** NEW: Batch responses until EOF instead of sending immediately ***
+	// Batch responses until EOF instead of sending immediately
 	eofReached := atomic.LoadInt64(&c.eofReached) == 1
 
 	if !eofReached {
 		// EOF not reached yet - collect packet for batch processing
-		fmt.Printf("[Client] BATCHING: Collecting response packet (seq=%d) until EOF\n", c.responseSeqNum)
-
 		c.batchedResponsesMutex.Lock()
 		c.batchedResponses = append(c.batchedResponses, encryptedResponseData)
 		c.batchedResponsesMutex.Unlock()
 
-		// *** CRITICAL: Still increment sequence number and track records ***
+		// Still increment sequence number and track records
 		atomic.AddInt64(&c.recordsSent, 1)
-		fmt.Printf("[Client] BATCHING: Collected packet #%d, will send batch on EOF\n", atomic.LoadInt64(&c.recordsSent))
 		c.responseSeqNum++
 		return // Don't send yet - wait for EOF
 	}
 
-	// *** FALLBACK: If EOF already reached, send immediately (shouldn't happen) ***
-	fmt.Printf("[Client] EOF already reached, sending packet immediately\n")
+	// If EOF already reached, send packet immediately (shouldn't happen)
+	log.Printf("[Client] EOF already reached, sending packet immediately")
 
 	responseMsg, err := CreateMessage(MsgEncryptedResponse, encryptedResponseData)
 	if err != nil {
@@ -472,7 +463,6 @@ func (c *Client) processTLSRecord(record []byte) {
 	}
 
 	if err := c.sendMessageToTEET(responseMsg); err != nil {
-		fmt.Printf("[Client] DEBUG: sendMessageToTEET FAILED: %v\n", err)
 
 		// *** Don't treat this as fatal during shutdown ***
 		if c.isClosing {
@@ -495,11 +485,11 @@ func (c *Client) sendBatchedResponses() error {
 	defer c.batchedResponsesMutex.Unlock()
 
 	if len(c.batchedResponses) == 0 {
-		fmt.Printf("[Client] BATCHING: No response packets to send\n")
+		log.Printf("[Client] No response packets to send")
 		return nil
 	}
 
-	fmt.Printf("[Client] BATCHING: Sending batch of %d response packets to TEE_T\n", len(c.batchedResponses))
+	log.Printf("[Client] Sending batch of %d response packets to TEE_T", len(c.batchedResponses))
 
 	// Create batched message using new data structure
 	batchedData := BatchedEncryptedResponseData{
@@ -518,7 +508,7 @@ func (c *Client) sendBatchedResponses() error {
 		return fmt.Errorf("failed to send batched responses to TEE_T: %v", err)
 	}
 
-	fmt.Printf("[Client] BATCHING: Successfully sent batch of %d packets to TEE_T\n", len(c.batchedResponses))
+	log.Printf("[Client] Successfully sent batch of %d packets to TEE_T", len(c.batchedResponses))
 
 	// Clear the batch after successful send
 	c.batchedResponses = make([]EncryptedResponseData, 0)
@@ -534,16 +524,13 @@ func (c *Client) handleResponseTagVerification(msg *Message) {
 	}
 
 	if verificationData.Success {
-		fmt.Printf("[Client] Response tag verification successful (seq=%d)\n", verificationData.SeqNum)
-
-		// *** FIX: Increment the processed records counter ***
+		// Update completion tracking
 		atomic.AddInt64(&c.recordsProcessed, 1)
 
-		// Check for protocol completion now that a record has been fully processed by TEE_T
-		c.checkProtocolCompletion("response tag verified")
+		// Check if all processing is complete
+		c.checkProtocolCompletion("tag verification complete")
 	} else {
-		log.Printf("[Client] Response tag verification FAILED (seq=%d): %s",
-			verificationData.SeqNum, verificationData.Message)
+		log.Printf("[Client] Tag verification failed for seq %d: %s", verificationData.SeqNum, verificationData.Message)
 	}
 }
 

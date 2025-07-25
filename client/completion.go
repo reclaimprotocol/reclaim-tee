@@ -117,12 +117,11 @@ func (c *Client) sendFinishedCommand() error {
 // sendRedactionSpec sends redaction specification to TEE_K
 func (c *Client) sendRedactionSpec() error {
 	log.Printf("[Client] Generating and sending redaction specification to TEE_K...")
-	log.Printf("[Client] 🔍 DEBUG: About to call analyzeResponseRedaction() - cached ranges: %d", len(c.lastRedactionRanges))
 
 	// Analyze response content to identify redaction ranges
 	redactionSpec := c.analyzeResponseRedaction()
 
-	// *** NEW: IMMEDIATELY display redacted response using calculated ranges ***
+	// Display the redacted response immediately using the calculated ranges
 	c.displayRedactedResponseFromRanges(redactionSpec.Ranges)
 
 	// Count expected redacted streams based on records sent to TEE_T for processing
@@ -139,15 +138,12 @@ func (c *Client) sendRedactionSpec() error {
 
 	log.Printf("[Client] Sent redaction specification to TEE_K with %d ranges", len(redactionSpec.Ranges))
 
-	// *** DEBUG: Show detailed ranges sent to TEE_K ***
+	// Display ranges sent to TEE_K
 	for i, r := range redactionSpec.Ranges {
-		log.Printf("[Client] 🔧 SENT Range %d: [%d:%d] type=%s, redactionBytes=%d bytes",
-			i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
 		if r.Type == "session_ticket" {
-			log.Printf("[Client] 🔧   Session ticket range: seq offset %d, length %d", r.Start, r.Length)
-			if len(r.RedactionBytes) > 0 {
-				log.Printf("[Client] 🔧   First 16 redaction bytes: %x", r.RedactionBytes[:min(16, len(r.RedactionBytes))])
-			}
+			log.Printf("[Client] Range %d: [%d:%d] type=%s (session ticket)", i+1, r.Start, r.Start+r.Length-1, r.Type)
+		} else {
+			log.Printf("[Client] Range %d: [%d:%d] type=%s (%d bytes)", i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
 		}
 	}
 
@@ -182,7 +178,7 @@ func (c *Client) displayRedactedResponseFromRanges(ranges []shared.RedactionRang
 		seqNum := uint64(k)
 		content := c.responseContentBySeq[seqNum]
 
-		// *** CRITICAL FIX: Apply ranges to FULL content (like verifier does) ***
+		// Apply ranges to FULL content (like verifier does)
 		redactedContent := c.applyRedactionRangesToContent(content, totalOffset, ranges)
 
 		// But only display the actual HTTP content part (remove TLS padding)
@@ -200,7 +196,7 @@ func (c *Client) displayRedactedResponseFromRanges(ranges []shared.RedactionRang
 	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE (FROM RANGES) ---\n%s\n--- END REDACTED RESPONSE ---\n\n",
 		collapseAsterisks(string(c.fullRedactedResponse)))
 
-	log.Printf("[Client] ✅ Displayed redacted response immediately using calculated ranges (%d bytes)", len(redactedResponse))
+	log.Printf("[Client] Displayed redacted response from ranges (%d bytes)", len(redactedResponse))
 }
 
 // applyRedactionRangesToContent applies redaction ranges to a content segment
@@ -308,17 +304,8 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 		// 1. Separate actual content from its single-byte type identifier
 		actualContent, contentType := c.removeTLSPadding(content)
 
-		log.Printf("[Client] 🔍 Analyzing sequence %d: %d bytes, content type 0x%02x", seqNum, len(actualContent), contentType)
-		if seqNum <= 5 { // Debug first few sequences
-			log.Printf("[Client] 🔍 Seq %d first 16 bytes: %x", seqNum, actualContent[:min(16, len(actualContent))])
-		}
-
 		switch contentType {
 		case 0x16: // Handshake message - likely NewSessionTicket
-			log.Printf("[Client] 🔍 Found handshake message at offset %d (seq %d), content length=%d", totalOffset, seqNum, len(actualContent))
-			if len(actualContent) >= 4 {
-				log.Printf("[Client] 🔍 Handshake message type: 0x%02x (0x04=NewSessionTicket)", actualContent[0])
-			}
 			if len(actualContent) >= 4 && actualContent[0] == 0x04 { // NewSessionTicket
 				log.Printf("[Client] Redacting NewSessionTicket at offset %d-%d", totalOffset, totalOffset+len(actualContent)-1)
 
@@ -333,15 +320,6 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 				// Calculate redaction bytes using correct offset within ciphertext
 				redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, len(actualContent), seqNum)
 
-				// *** DEBUG: Show what we're calculating against ***
-				log.Printf("[Client] 🔧 Session ticket redaction bytes calc:")
-				log.Printf("[Client] 🔧   Ciphertext length: %d", len(ciphertext))
-				log.Printf("[Client] 🔧   Using offset: %d, length: %d", ciphertextOffset, len(actualContent))
-				if len(ciphertext) > ciphertextOffset+16 {
-					log.Printf("[Client] 🔧   Ciphertext[%d:%d]: %x",
-						ciphertextOffset, ciphertextOffset+16, ciphertext[ciphertextOffset:ciphertextOffset+16])
-				}
-				log.Printf("[Client] 🔧   Expected result: %d asterisks (full record: %d bytes)", len(actualContent), len(content))
 				// *** CRITICAL FIX: Cover full TLS record including padding ***
 				// Extend redaction bytes to cover the full record
 				fullRedactionBytes := make([]byte, len(content))
@@ -361,13 +339,9 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 				})
 
 				log.Printf("[Client] Session ticket redaction: ciphertext offset=%d, length=%d", ciphertextOffset, len(actualContent))
-				log.Printf("[Client] 🔧 Session ticket fix: ciphertext[%d:%d] → asterisks",
-					ciphertextOffset, ciphertextOffset+len(actualContent))
 			}
 
 		case 0x17: // ApplicationData - HTTP response
-			log.Printf("[Client] 🔍 Found HTTP response part at offset %d (seq %d) - collecting for combined analysis", totalOffset, seqNum)
-
 			// Collect this HTTP content for combined analysis
 			httpContentMappings = append(httpContentMappings, struct {
 				seqNum     uint64
@@ -377,24 +351,20 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 				ciphertext []byte
 			}{
 				seqNum:     seqNum,
-				httpPos:    len(allHTTPContent), // Position in HTTP stream
-				tlsOffset:  totalOffset,         // Position in TLS stream
+				httpPos:    len(allHTTPContent),
+				tlsOffset:  totalOffset,
 				length:     len(actualContent),
 				ciphertext: ciphertext,
 			})
 
-			// *** CRITICAL: Store the TLS offset for this HTTP record ***
-			log.Printf("[Client] 🔧 HTTP record seq=%d: TLS offset=%d, HTTP pos=%d, length=%d",
-				seqNum, totalOffset, len(allHTTPContent), len(actualContent))
-
+			// Append this HTTP content to the growing buffer
 			allHTTPContent = append(allHTTPContent, actualContent...)
 
-		case 0x15: // Alert - usually safe to keep
-			log.Printf("[Client] 🔍 Found TLS alert at offset %d (seq %d) - keeping visible", totalOffset, seqNum)
+		case 0x15: // TLS Alert - keep visible
+			log.Printf("[Client] Found TLS alert at offset %d (seq %d) - keeping visible", totalOffset, seqNum)
 
 		default:
-			log.Printf("[Client] ❓ Unknown content type 0x%02x at offset %d (seq %d), length=%d",
-				contentType, totalOffset, seqNum, len(actualContent))
+			// Unknown content type - no specific handling needed
 		}
 
 		// ***  Increment offset by the length of the ORIGINAL PADDED content ***
@@ -408,8 +378,8 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 		// *** Use cached redaction ranges from response callback if available ***
 		var combinedHTTPRanges []shared.RedactionRange
 
-		if c.responseCallback != nil && len(c.lastRedactionRanges) > 0 {
-			log.Printf("[Client] ✅ Using cached redaction ranges from response callback (%d ranges)", len(c.lastRedactionRanges))
+		if len(c.lastRedactionRanges) > 0 {
+			log.Printf("[Client] Using cached redaction ranges from response callback (%d ranges)", len(c.lastRedactionRanges))
 
 			// Convert cached RedactionRange to shared.RedactionRange format
 			for _, r := range c.lastRedactionRanges {
@@ -422,9 +392,8 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 				log.Printf("[Client] Using cached range: [%d:%d] type=%s", r.Start, r.Start+r.Length-1, r.Type)
 			}
 		} else {
-			log.Printf("[Client] ❌ No cached redaction ranges available, using automatic analysis")
-			log.Printf("[Client] ❌ Debug: responseCallback != nil: %v, len(lastRedactionRanges): %d",
-				c.responseCallback != nil, len(c.lastRedactionRanges))
+			log.Printf("[Client] No cached redaction ranges available, using automatic analysis")
+
 			combinedHTTPRanges = c.analyzeHTTPRedactionWithBytes(allHTTPContent, 0, nil)
 		}
 
@@ -501,13 +470,8 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 					if gap == 1 {
 						// Fill the 1-byte gap
 						overlapLength += 1
-						log.Printf("[Client] 🔧 Filling 1-byte gap to next record (seq %d → seq %d)",
-							m.mapping.seqNum, nextM.mapping.seqNum)
 					}
 				}
-
-				log.Printf("[Client] 🔧 Mapping: HTTP range [%d:%d] → TLS offset %d (seq %d, length %d)",
-					m.overlapStart, m.overlapEnd-1, m.actualTLSOffset, m.mapping.seqNum, overlapLength)
 
 				// Calculate redaction bytes for this specific TLS record portion
 				baseRedactionBytes := c.calculateRedactionBytes(m.mapping.ciphertext, m.localStart, m.overlapLength, m.mapping.seqNum)
@@ -521,7 +485,6 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 						gapCipherByte := ciphertext[m.localStart+m.overlapLength] // Gap byte at end of content
 						gapByte := gapCipherByte ^ byte('*')                      // Should produce asterisk
 						redactionBytes = append(redactionBytes, gapByte)
-						log.Printf("[Client] 🔧 Added gap redaction byte from current record padding")
 					}
 				}
 
@@ -531,9 +494,6 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 					Type:           httpRange.Type,
 					RedactionBytes: redactionBytes,
 				})
-
-				log.Printf("[Client] ✅ Mapped HTTP range [%d:%d] to TLS offset [%d:%d] (seq=%d)",
-					m.overlapStart, m.overlapEnd-1, m.actualTLSOffset, m.actualTLSOffset+overlapLength-1, m.mapping.seqNum)
 			}
 		}
 	}
@@ -551,142 +511,6 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 	}
 
 	return spec
-}
-
-// fillRedactionGaps fills gaps between redaction ranges to ensure continuous coverage
-func (c *Client) fillRedactionGaps(ranges []shared.RedactionRange, totalLength int) []shared.RedactionRange {
-	if len(ranges) == 0 {
-		return ranges
-	}
-
-	// Sort ranges by start position
-	sortedRanges := make([]shared.RedactionRange, len(ranges))
-	copy(sortedRanges, ranges)
-
-	// Simple bubble sort for RedactionRange
-	for i := 0; i < len(sortedRanges)-1; i++ {
-		for j := 0; j < len(sortedRanges)-i-1; j++ {
-			if sortedRanges[j].Start > sortedRanges[j+1].Start {
-				sortedRanges[j], sortedRanges[j+1] = sortedRanges[j+1], sortedRanges[j]
-			}
-		}
-	}
-
-	var filledRanges []shared.RedactionRange
-	currentPos := 0
-
-	for _, r := range sortedRanges {
-		// Fill gap before this range
-		if r.Start > currentPos {
-			gapLength := r.Start - currentPos
-
-			// *** SMART GAP FILLING: Only fill small TLS padding gaps, not content gaps ***
-			if gapLength <= 8 { // Only fill small gaps (TLS padding, record boundaries)
-				log.Printf("[Client] 🔧 Filling small gap [%d:%d] (%d bytes) - TLS padding", currentPos, r.Start-1, gapLength)
-
-				// Create dummy redaction bytes for the gap
-				gapRedactionBytes := make([]byte, gapLength)
-				for i := range gapRedactionBytes {
-					gapRedactionBytes[i] = 0x2A ^ 0x20 // Will produce '*' when XORed with space or other chars
-				}
-
-				filledRanges = append(filledRanges, shared.RedactionRange{
-					Start:          currentPos,
-					Length:         gapLength,
-					Type:           "gap_fill",
-					RedactionBytes: gapRedactionBytes,
-				})
-			} else {
-				// Large gap - probably intended to be preserved (HTTP headers, etc.)
-				log.Printf("[Client] 🔧 Skipping large gap [%d:%d] (%d bytes) - preserving content", currentPos, r.Start-1, gapLength)
-			}
-		}
-
-		// Add the original range
-		filledRanges = append(filledRanges, r)
-		currentPos = r.Start + r.Length
-	}
-
-	// Fill any remaining gap at the end
-	if currentPos < totalLength {
-		gapLength := totalLength - currentPos
-		log.Printf("[Client] 🔧 Filling final gap [%d:%d] (%d bytes)", currentPos, totalLength-1, gapLength)
-
-		gapRedactionBytes := make([]byte, gapLength)
-		for i := range gapRedactionBytes {
-			gapRedactionBytes[i] = 0x2A ^ 0x20
-		}
-
-		filledRanges = append(filledRanges, shared.RedactionRange{
-			Start:          currentPos,
-			Length:         gapLength,
-			Type:           "gap_fill",
-			RedactionBytes: gapRedactionBytes,
-		})
-	}
-
-	log.Printf("[Client] 🔧 Gap filling: %d ranges → %d ranges", len(ranges), len(filledRanges))
-	return filledRanges
-}
-
-// mergeAdjacentRanges merges ranges that are adjacent or overlapping to eliminate gaps
-func (c *Client) mergeAdjacentRanges(ranges []shared.RedactionRange) []shared.RedactionRange {
-	if len(ranges) <= 1 {
-		return ranges
-	}
-
-	// Sort ranges by start position
-	sortedRanges := make([]shared.RedactionRange, len(ranges))
-	copy(sortedRanges, ranges)
-
-	// Simple bubble sort
-	for i := 0; i < len(sortedRanges)-1; i++ {
-		for j := 0; j < len(sortedRanges)-i-1; j++ {
-			if sortedRanges[j].Start > sortedRanges[j+1].Start {
-				sortedRanges[j], sortedRanges[j+1] = sortedRanges[j+1], sortedRanges[j]
-			}
-		}
-	}
-
-	var mergedRanges []shared.RedactionRange
-	current := sortedRanges[0]
-
-	for i := 1; i < len(sortedRanges); i++ {
-		next := sortedRanges[i]
-
-		// Check if ranges are adjacent or overlapping (gap <= 1 byte)
-		currentEnd := current.Start + current.Length
-		gap := next.Start - currentEnd
-
-		if gap <= 1 { // Adjacent or 1-byte gap
-			// Merge ranges
-			log.Printf("[Client] 🔧 Merging ranges [%d:%d] + [%d:%d] (gap: %d)",
-				current.Start, currentEnd-1, next.Start, next.Start+next.Length-1, gap)
-
-			// Extend current range to cover the gap and next range
-			newLength := (next.Start + next.Length) - current.Start
-			current.Length = newLength
-
-			// For redaction bytes, we need to extend with gap-filling bytes
-			if gap == 1 {
-				// Add one gap byte (assume it should be asterisk)
-				current.RedactionBytes = append(current.RedactionBytes, byte('*')^byte(' '))
-			}
-			// Append next range's redaction bytes
-			current.RedactionBytes = append(current.RedactionBytes, next.RedactionBytes...)
-
-		} else {
-			// Gap too large, keep current and move to next
-			mergedRanges = append(mergedRanges, current)
-			current = next
-		}
-	}
-
-	// Add the last range
-	mergedRanges = append(mergedRanges, current)
-
-	log.Printf("[Client] 🔧 Range merging: %d ranges → %d ranges", len(ranges), len(mergedRanges))
-	return mergedRanges
 }
 
 // analyzeHTTPRedactionWithBytes identifies sensitive parts within HTTP response content and calculates redaction bytes

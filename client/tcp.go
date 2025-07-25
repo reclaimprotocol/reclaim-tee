@@ -98,30 +98,22 @@ func (c *Client) handleConnectionReady(msg *Message) {
 
 // sendTCPReady establishes TCP connection and sends ready message to TEE_K
 func (c *Client) sendTCPReady(success bool) {
-	fmt.Printf("[Client] DEBUG: sendTCPReady called with success=%v\n", success)
-
 	if success {
 		// Establish TCP connection to website to act as proxy for TEE_K
 		tcpAddr := fmt.Sprintf("%s:%d", c.targetHost, c.targetPort)
-		fmt.Printf("[Client] DEBUG: Attempting TCP connection to %s\n", tcpAddr)
 
 		tcpConn, err := net.Dial("tcp", tcpAddr)
 		if err != nil {
 			log.Printf("[Client] Failed to establish TCP connection to website: %v", err)
-			fmt.Printf("[Client] DEBUG: TCP connection failed: %v\n", err)
 			success = false
 		} else {
-			fmt.Printf("[Client] DEBUG: TCP connection established successfully to %s\n", tcpAddr)
 			c.tcpConn = tcpConn
-			fmt.Printf("[Client] DEBUG: c.tcpConn set to %p\n", c.tcpConn)
 
 			// Start proxying data from website back to TEE_K
-			fmt.Printf("[Client] DEBUG: Starting tcpToWebsocket goroutine\n")
 			go c.tcpToWebsocket()
 		}
 	}
 
-	fmt.Printf("[Client] DEBUG: Sending MsgTCPReady with success=%v\n", success)
 	tcpReadyMsg, err := CreateMessage(MsgTCPReady, TCPReadyData{Success: success})
 	if err != nil {
 		log.Printf("[Client] Failed to create TCP ready message: %v", err)
@@ -131,21 +123,15 @@ func (c *Client) sendTCPReady(success bool) {
 	if err := c.sendMessage(tcpReadyMsg); err != nil {
 		log.Printf("[Client] Failed to send TCP ready message: %v", err)
 	}
-	fmt.Printf("[Client] DEBUG: MsgTCPReady sent successfully\n")
 }
 
 // handleSendTCPData forwards TCP data from TEE_K to the website
 func (c *Client) handleSendTCPData(msg *Message) {
-	fmt.Printf("[Client] DEBUG: handleSendTCPData called\n")
-	fmt.Printf("[Client] DEBUG: c.tcpConn = %p\n", c.tcpConn)
-
 	var tcpData TCPData
 	if err := msg.UnmarshalData(&tcpData); err != nil {
 		log.Printf("[Client] Failed to unmarshal TCP data: %v", err)
 		return
 	}
-
-	fmt.Printf("[Client] DEBUG: Received TCP data with %d bytes\n", len(tcpData.Data))
 
 	// *** CAPTURE RAW TCP DATA EXACTLY AS TEE_K SEES IT ***
 	// Don't parse into individual TLS records - capture the raw TCP chunk
@@ -159,50 +145,37 @@ func (c *Client) handleSendTCPData(msg *Message) {
 	conn := c.tcpConn
 
 	if conn == nil {
-		fmt.Printf("[Client] DEBUG: TCP connection is nil!\n")
-		fmt.Printf("[Client] DEBUG: c.isClosing = %v\n", c.isClosing)
-		fmt.Printf("[Client] DEBUG: c.targetHost = %s, c.targetPort = %d\n", c.targetHost, c.targetPort)
 		log.Printf("[Client] No TCP connection to website available")
 		return
 	}
 
-	fmt.Printf("[Client] DEBUG: TCP connection available, forwarding %d bytes\n", len(tcpData.Data))
 	// Forward TLS data to website
 	_, err := conn.Write(tcpData.Data)
 	if err != nil {
 		log.Printf("[Client] Failed to forward TLS data to website: %v", err)
 		return
 	}
-	fmt.Printf("[Client] DEBUG: Successfully forwarded %d bytes to website\n", len(tcpData.Data))
 }
 
 // tcpToWebsocket reads from TCP connection and processes data
 func (c *Client) tcpToWebsocket() {
-	fmt.Printf("[Client] DEBUG: tcpToWebsocket goroutine started\n")
-	fmt.Printf("[Client] DEBUG: c.tcpConn = %p\n", c.tcpConn)
-
 	defer func() {
-		fmt.Printf("[Client] DEBUG: tcpToWebsocket defer called\n")
 		if c.isClosing && c.tcpConn != nil {
-			fmt.Printf("[Client] DEBUG: Closing TCP connection on shutdown\n")
 			c.tcpConn.Close()
 			c.tcpConn = nil
-		} else {
-			fmt.Printf("[Client] DEBUG: Not closing TCP connection (isClosing=%v, tcpConn=%p)\n", c.isClosing, c.tcpConn)
 		}
 	}()
 
-	buffer := make([]byte, 4096)
+	buffer := make([]byte, TCPBufferSize)
 	var pending []byte // Buffer for incomplete TLS packets
 
 	for {
 		if c.isClosing {
-			fmt.Printf("[Client] DEBUG: tcpToWebsocket exiting because c.isClosing=true\n")
 			break
 		}
 
 		if c.tcpConn != nil {
-			c.tcpConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			c.tcpConn.SetReadDeadline(time.Now().Add(DefaultTCPReadTimeout))
 		}
 
 		n, err := c.tcpConn.Read(buffer)
@@ -219,10 +192,10 @@ func (c *Client) tcpToWebsocket() {
 				continue
 			} else if !isClientNetworkShutdownError(err) {
 				fmt.Printf("[Client] TCP read error: %v\n", err)
-				fmt.Printf("[Client] DEBUG: Real TCP error, exiting tcpToWebsocket\n")
+
 				break
 			} else {
-				fmt.Printf("[Client] DEBUG: Network shutdown error, exiting tcpToWebsocket\n")
+
 				break
 			}
 		}

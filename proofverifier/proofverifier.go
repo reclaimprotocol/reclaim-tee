@@ -28,12 +28,12 @@ func collapseAsterisks(data string) string {
 		} else {
 			// We hit a non-asterisk character
 			if asteriskCount > 0 {
-				if asteriskCount <= 100 {
-					// 100 or fewer asterisks, show them all
+				if asteriskCount <= AsteriskCollapseThreshold {
+					// Threshold or fewer asterisks, show them all
 					result.WriteString(strings.Repeat("*", asteriskCount))
 				} else {
-					// More than 100 asterisks, show 9 + "..."
-					result.WriteString("*********...")
+					// More than threshold asterisks, show collapsed pattern
+					result.WriteString(CollapsedAsteriskPattern)
 				}
 				asteriskCount = 0
 			}
@@ -43,10 +43,10 @@ func collapseAsterisks(data string) string {
 
 	// Handle trailing asterisks
 	if asteriskCount > 0 {
-		if asteriskCount <= 100 {
+		if asteriskCount <= AsteriskCollapseThreshold {
 			result.WriteString(strings.Repeat("*", asteriskCount))
 		} else {
-			result.WriteString("*********...")
+			result.WriteString(CollapsedAsteriskPattern)
 		}
 	}
 

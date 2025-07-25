@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"tee-mpc/shared"
-	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -18,7 +17,7 @@ import (
 // createEnclaveWebSocketDialer creates a custom WebSocket dialer for enclave mode
 func createEnclaveWebSocketDialer() *websocket.Dialer {
 	return &websocket.Dialer{
-		HandshakeTimeout: 30 * time.Second,
+		HandshakeTimeout: DefaultWSHandshakeTimeout,
 	}
 }
 
@@ -249,7 +248,7 @@ func (c *Client) sendMessageToTEET(msg *Message) error {
 	conn := c.teetConn
 
 	if conn == nil {
-		fmt.Printf("[Client] DEBUG: No TEE_T connection available when trying to send %s\n", msg.Type)
+
 		return fmt.Errorf("no TEE_T websocket connection")
 	}
 
@@ -264,13 +263,12 @@ func (c *Client) sendMessageToTEET(msg *Message) error {
 	}
 
 	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-		fmt.Printf("[Client] DEBUG: WriteMessage failed for %s: %v\n", msg.Type, err)
 
 		// *** Try to detect connection state ***
 		if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-			fmt.Printf("[Client] DEBUG: WebSocket close error detected: %v\n", err)
+
 		} else if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "connection reset") {
-			fmt.Printf("[Client] DEBUG: Network connection error detected: %v\n", err)
+
 		}
 
 		return err
@@ -460,7 +458,7 @@ func (c *Client) handleTEETReady(msg *Message) {
 
 // handleRedactionVerification handles redaction verification from TEE_T
 func (c *Client) handleRedactionVerification(msg *Message) {
-	log.Printf("[Client] DEBUG: Received redaction verification message")
+	log.Printf("[Client] Received redaction verification message")
 
 	var verificationData RedactionVerificationData
 	if err := msg.UnmarshalData(&verificationData); err != nil {
@@ -527,16 +525,13 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 		sourceName = "TEE_K"
 	}
 
-	// Display signature for verification
+	// Display signature and public key info for verification
 	if len(signedTranscript.Signature) > 0 {
-		fmt.Printf("[Client] %s signature (first 16 bytes): %x\n",
-			sourceName, signedTranscript.Signature[:min(16, len(signedTranscript.Signature))])
+		fmt.Printf("[Client] %s signature: %d bytes\n", sourceName, len(signedTranscript.Signature))
 	}
 
-	// Display public key for verification
 	if len(signedTranscript.PublicKey) > 0 {
-		fmt.Printf("[Client] %s public key (first 16 bytes): %x\n",
-			sourceName, signedTranscript.PublicKey[:min(16, len(signedTranscript.PublicKey))])
+		fmt.Printf("[Client] %s public key: %d bytes\n", sourceName, len(signedTranscript.PublicKey))
 	}
 
 	// Verify signature
@@ -606,10 +601,19 @@ func (c *Client) handleSignedTranscript(msg *Message) {
 
 	// Show packet summary
 	fmt.Printf("[Client] %s transcript summary:\n", sourceName)
-	// for i, packet := range signedTranscript.Packets {
-	// 	if len(packet) > 0 {
-	// 	}
-	// }
+	if len(signedTranscript.Packets) > 0 {
+		// Display packet information
+		for i, packet := range signedTranscript.Packets {
+			fmt.Printf("[Client] TEE_K packet %d: %d bytes\n", i+1, len(packet))
+		}
+	}
+
+	if len(signedTranscript.Packets) > 0 {
+		// Display packet information
+		for i, packet := range signedTranscript.Packets {
+			fmt.Printf("[Client] TEE_T packet %d: %d bytes\n", i+1, len(packet))
+		}
+	}
 
 	// *** CRITICAL VALIDATION: Compare TEE transcripts with client's captured traffic ***
 	if transcriptsComplete && signaturesValid {
@@ -638,7 +642,6 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 
 	// Since we now capture raw TCP chunks exactly as TEE_K sees them,
 	// we should compare them directly without trying to categorize by TLS record type
-	fmt.Printf("[Client] DEBUG: Analyzing each captured TCP chunk:\n")
 
 	for i, chunk := range c.capturedTraffic {
 		if len(chunk) < 1 {
@@ -715,8 +718,6 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 
 		if !found {
 			fmt.Printf("[Client]     NOT found in client captures\n")
-			// Show first 32 bytes of TEE_K packet for debugging
-			fmt.Printf("[Client]       TEE_K packet: %x...\n", teekPacket[:min(32, len(teekPacket))])
 		}
 	}
 
@@ -755,8 +756,6 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 
 		if !found {
 			fmt.Printf("[Client]     NOT found in client captures\n")
-			// Show first 32 bytes of TEE_T packet for debugging
-			fmt.Printf("[Client]       TEE_T packet: %x...\n", teetPacket[:min(32, len(teetPacket))])
 		}
 	}
 
@@ -805,14 +804,6 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 			}
 		} else {
 			log.Printf("[Client] Received redacted stream %d/%d - waiting for remaining streams before verification", len(c.signedRedactedStreams), c.expectedRedactedStreams)
-			log.Printf("[Client] 🔧 REDACTED STREAM DEBUG: Received seq %d (%d bytes)", redactedStream.SeqNum, len(redactedStream.RedactedStream))
-
-			// Show which sequences have redacted streams so far
-			sequences := make([]uint64, 0, len(c.signedRedactedStreams))
-			for _, stream := range c.signedRedactedStreams {
-				sequences = append(sequences, stream.SeqNum)
-			}
-			log.Printf("[Client] 🔧   Sequences with redacted streams: %v", sequences)
 		}
 	}
 
@@ -840,24 +831,6 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 		redactedPlaintext[i] = ciphertext[i] ^ redactedStream.RedactedStream[i]
 	}
 
-	// *** DEBUG: For session tickets (seq 1-2), show XOR result ***
-	if redactedStream.SeqNum <= 2 {
-		log.Printf("[Client] 🔧 XOR DEBUG for seq %d:", redactedStream.SeqNum)
-		log.Printf("[Client] 🔧   Ciphertext[0:16]: %x", ciphertext[:min(16, len(ciphertext))])
-		log.Printf("[Client] 🔧   RedactedStream[0:16]: %x", redactedStream.RedactedStream[:min(16, len(redactedStream.RedactedStream))])
-		log.Printf("[Client] 🔧   Result[0:16]: %x", redactedPlaintext[:min(16, len(redactedPlaintext))])
-		log.Printf("[Client] 🔧   Result as string[0:16]: %q", string(redactedPlaintext[:min(16, len(redactedPlaintext))]))
-
-		// Count asterisks in result
-		asteriskCount := 0
-		for _, b := range redactedPlaintext {
-			if b == '*' {
-				asteriskCount++
-			}
-		}
-		log.Printf("[Client] 🔧   Asterisk count: %d/%d", asteriskCount, len(redactedPlaintext))
-	}
-
 	log.Printf("[Client] Generated redacted plaintext for seq %d (%d bytes)",
 		redactedStream.SeqNum, len(redactedPlaintext))
 
@@ -865,11 +838,6 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 	c.responseContentMutex.Lock()
 	c.redactedPlaintextBySeq[redactedStream.SeqNum] = redactedPlaintext
 	c.responseContentMutex.Unlock()
-
-	// *** NOTE: No longer printing from XOR streams - client displays immediately from ranges ***
-	log.Printf("[Client] 🔧 XOR STREAM CHECK: Have %d redacted streams, expecting %d",
-		len(c.redactedPlaintextBySeq), c.expectedRedactedStreams)
-	log.Printf("[Client] 🔧 XOR streams are for verifier use only - client displays from ranges")
 
 	// Check protocol completion after processing redacted stream
 	c.checkProtocolCompletion("redacted stream processed")
@@ -986,49 +954,40 @@ func (c *Client) handleBatchedTagVerifications(msg *Message) {
 		return
 	}
 
-	fmt.Printf("[Client] BATCHING: Received batch tag verification for %d responses (all successful: %v)\n",
-		batchedVerification.TotalCount, batchedVerification.AllSuccessful)
+	log.Printf("[Client] Received batch tag verification for %d responses", len(batchedVerification.Verifications))
 
 	// Process each verification result to update completion counters
+	successCount := 0
 	for _, verification := range batchedVerification.Verifications {
 		if verification.Success {
-			fmt.Printf("[Client] Response tag verification successful (seq=%d)\n", verification.SeqNum)
-			// *** CRITICAL: Increment completion counters to match existing logic ***
+			// Update the progress counter
 			atomic.AddInt64(&c.recordsProcessed, 1)
-			fmt.Printf("[Client] BATCHING: Incremented recordsProcessed to %d\n", atomic.LoadInt64(&c.recordsProcessed))
+			successCount++
 		} else {
 			log.Printf("[Client] Response tag verification failed (seq=%d): %s", verification.SeqNum, verification.Message)
 		}
 	}
 
-	fmt.Printf("[Client] BATCHING: Processed %d tag verifications\n", len(batchedVerification.Verifications))
+	log.Printf("[Client] Processed %d tag verifications (%d successful)", len(batchedVerification.Verifications), successCount)
 }
 
 // *** NEW: Handle batched decryption streams ***
 func (c *Client) handleBatchedDecryptionStreams(msg *Message) {
-	fmt.Printf("[Client] BATCHING: handleBatchedDecryptionStreams started\n")
-	defer fmt.Printf("[Client] BATCHING: handleBatchedDecryptionStreams FINISHED\n")
-
 	var batchedStreams BatchedDecryptionStreamData
 	if err := msg.UnmarshalData(&batchedStreams); err != nil {
 		log.Printf("[Client] Failed to unmarshal batched decryption streams: %v", err)
 		return
 	}
 
-	fmt.Printf("[Client] BATCHING: Received batch of %d decryption streams\n", batchedStreams.TotalCount)
-	fmt.Printf("[Client] BATCHING: About to process %d streams\n", len(batchedStreams.DecryptionStreams))
+	log.Printf("[Client] Processing batch of %d decryption streams", len(batchedStreams.DecryptionStreams))
 
 	if len(batchedStreams.DecryptionStreams) == 0 {
-		fmt.Printf("[Client] BATCHING: No streams to process, calling completion check\n")
 		c.checkProtocolCompletion("batched decryption streams processed (empty)")
 		return
 	}
 
 	// Process each decryption stream
-	for i, streamData := range batchedStreams.DecryptionStreams {
-		if i%100 == 0 { // Log every 100 streams to avoid spam
-			fmt.Printf("[Client] BATCHING: Processing stream %d/%d\n", i+1, len(batchedStreams.DecryptionStreams))
-		}
+	for _, streamData := range batchedStreams.DecryptionStreams {
 
 		// Store decryption stream by sequence number (preserve existing logic)
 		c.responseContentMutex.Lock()
@@ -1067,21 +1026,14 @@ func (c *Client) handleBatchedDecryptionStreams(msg *Message) {
 		}
 	}
 
-	fmt.Printf("[Client] BATCHING: Processed %d decryption streams\n", len(batchedStreams.DecryptionStreams))
-
-	// *** CRITICAL: Reconstruct HTTP response and call callback BEFORE protocol completion ***
+	// Reconstruct HTTP response if we haven't already
 	if !c.responseReconstructed {
 		c.reconstructHTTPResponseFromDecryptedData()
-		c.responseReconstructed = true
-
-		// Give a moment for callback results to be stored
-		fmt.Printf("[Client] BATCHING: HTTP response reconstruction completed, callback executed\n")
+		log.Printf("[Client] HTTP response reconstruction completed, callback executed")
 	}
 
-	// *** CRITICAL: Trigger completion check after callback execution ***
-	fmt.Printf("[Client] BATCHING: About to call checkProtocolCompletion...\n")
+	// Trigger completion check after callback execution
 	c.checkProtocolCompletion("batched decryption streams processed")
-	fmt.Printf("[Client] BATCHING: checkProtocolCompletion returned\n")
 }
 
 // *** NEW: Reconstruct HTTP response from all decrypted response data ***
@@ -1136,13 +1088,13 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 		}
 	}
 
-	fmt.Printf("[Client] BATCHING: Reconstructed HTTP response (%d bytes total)\n", len(fullResponse))
+	log.Printf("[Client] Reconstructed HTTP response (%d bytes total)", len(fullResponse))
 
 	// Parse HTTP response and set success flags
 	if len(fullResponse) > 0 {
 		responseStr := string(fullResponse)
 
-		// *** FIX: Search for HTTP status line anywhere in the response, not just at the beginning ***
+		// Search for HTTP status line anywhere in the response, not just at the beginning
 		// This handles cases where redacted session tickets prefix the response with asterisks
 		httpIndex := strings.Index(responseStr, "HTTP/1.1 ")
 		if httpIndex == -1 {
@@ -1153,7 +1105,7 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 		}
 
 		if httpIndex != -1 {
-			fmt.Printf("[Client] BATCHING: HTTP response reconstruction successful at offset %d\n", httpIndex)
+			log.Printf("[Client] HTTP response reconstruction successful at offset %d", httpIndex)
 
 			// Extract the actual HTTP response
 			actualHTTPResponse := responseStr[httpIndex:]
@@ -1162,19 +1114,19 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			if httpIndex > 0 {
 				prefixData := responseStr[:httpIndex]
 				previewData := prefixData[:min(100, len(prefixData))] // Show more data but collapse asterisks
-				fmt.Printf("[Client] BATCHING: Found %d bytes before HTTP response (likely redacted session tickets): %q\n",
+				log.Printf("[Client] Found %d bytes before HTTP response (likely redacted session tickets): %q",
 					httpIndex, collapseAsterisks(previewData))
 			}
 
-			// *** CRITICAL: Set success flags for results reporting ***
+			// Set success flags for results reporting
 			c.responseProcessingMutex.Lock()
 			c.responseProcessingSuccessful = true
 			c.reconstructedResponseSize = len(actualHTTPResponse)
 			c.responseProcessingMutex.Unlock()
 
-			// *** NATURAL PLACE: Call response callback now that we have complete HTTP response ***
+			// Call response callback now that we have complete HTTP response
 			if c.responseCallback != nil && len(c.lastRedactionRanges) == 0 {
-				fmt.Printf("[Client] Calling response callback with complete HTTP response (%d bytes)\n", len(actualHTTPResponse))
+				log.Printf("[Client] Calling response callback with complete HTTP response (%d bytes)", len(actualHTTPResponse))
 
 				// Parse the HTTP response and call the callback
 				httpResponse := c.parseHTTPResponse([]byte(actualHTTPResponse))
@@ -1192,10 +1144,10 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 					c.lastRedactedResponse = result.RedactedBody
 					c.lastResponseData = httpResponse
 
-					fmt.Printf("[Client] ✅ STORED callback results: %d ranges, %d claims, %d bytes redacted response\n",
+					fmt.Printf("[Client] Stored callback results: %d ranges, %d claims, %d bytes redacted response\n",
 						len(result.RedactionRanges), len(result.ProofClaims), len(result.RedactedBody))
 
-					// Log redaction ranges for debugging
+					// Log redaction ranges
 					for i, r := range result.RedactionRanges {
 						fmt.Printf("[Client] Redaction range %d: start=%d, length=%d, type=%s\n",
 							i+1, r.Start, r.Length, r.Type)
@@ -1206,22 +1158,21 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 				fmt.Printf("[Client] Response callback already executed (cached ranges: %d)\n", len(c.lastRedactionRanges))
 			}
 
-			// *** Display the raw HTTP response (redaction will be handled at TLS record level) ***
-			fmt.Printf("[Client] DEBUG: Raw HTTP response (%d bytes)\n", len(actualHTTPResponse))
-			previewLen := 200
+			// Display the raw HTTP response (redaction will be handled at TLS record level)
+			previewLen := HTTPResponsePreviewLength
 			if len(actualHTTPResponse) < previewLen {
 				previewLen = len(actualHTTPResponse)
 			}
-			fmt.Printf("[Client] DEBUG: Raw HTTP response preview: %s\n", actualHTTPResponse[:previewLen])
+			fmt.Printf("[Client] Raw HTTP response (%d bytes) preview: %s\n", len(actualHTTPResponse), actualHTTPResponse[:previewLen])
 
 			// Set success flags
-			fmt.Printf("[Client] BATCHING: Response processing marked as successful (%d bytes)\n", len(actualHTTPResponse))
+			log.Printf("[Client] Response processing successful (%d bytes)", len(actualHTTPResponse))
 		} else {
 			previewLen := 100
 			if len(responseStr) < previewLen {
 				previewLen = len(responseStr)
 			}
-			fmt.Printf("[Client] BATCHING: Warning - reconstructed response doesn't look like HTTP: %q\n", responseStr[:previewLen])
+			log.Printf("[Client] Warning - reconstructed response doesn't look like HTTP: %q", responseStr[:previewLen])
 		}
 	}
 }

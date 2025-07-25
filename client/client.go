@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -492,20 +493,22 @@ func (c *Client) triggerResponseCallback(responseData []byte) {
 		fmt.Printf("[Client] Response callback completed with %d redaction ranges and %d proof claims\n",
 			len(result.RedactionRanges), len(result.ProofClaims))
 
-		// Store redaction results for library access and actual redaction processing
+		// Store proof claims
 		c.lastProofClaims = result.ProofClaims
-		c.lastRedactionRanges = result.RedactionRanges
-		c.lastRedactedResponse = result.RedactedBody
+		log.Printf("[Client] Stored %d proof claims from callback", len(result.ProofClaims))
 
-		// Log proof claims for debugging
+		// Store redaction ranges
+		c.lastRedactionRanges = result.RedactionRanges
+		log.Printf("[Client] Stored %d redaction ranges from callback", len(result.RedactionRanges))
+
+		// Log proof claims
 		for i, claim := range result.ProofClaims {
-			fmt.Printf("[Client] Proof claim %d: %s - %s\n", i+1, claim.Type, claim.Description)
+			log.Printf("[Client] Proof claim %d: %s = %s (%s)", i+1, claim.Type, claim.Value, claim.Description)
 		}
 
-		// Log redaction ranges for debugging
-		for i, redactionRange := range result.RedactionRanges {
-			fmt.Printf("[Client] Redaction range %d: start=%d, length=%d, type=%s\n",
-				i+1, redactionRange.Start, redactionRange.Length, redactionRange.Type)
+		// Log redaction ranges
+		for i, r := range result.RedactionRanges {
+			log.Printf("[Client] Redaction range %d: [%d:%d] type=%s", i+1, r.Start, r.Start+r.Length-1, r.Type)
 		}
 	}
 }
