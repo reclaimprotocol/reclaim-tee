@@ -137,7 +137,7 @@ func (c *Client) handleMessages() {
 		case MsgAttestationResponse:
 			c.handleAttestationResponse(msg)
 
-		// *** NEW: Handle batched response messages ***
+		// Handle batched response messages
 		case MsgBatchedTagVerifications:
 			c.handleBatchedTagVerifications(msg)
 		case MsgBatchedDecryptionStreams:
@@ -198,7 +198,7 @@ func (c *Client) handleTEETMessages() {
 		case MsgError:
 			c.handleTEETError(msg)
 
-		// *** NEW: Handle batched response messages from TEE_T ***
+		// Handle batched response messages from TEE_T
 		case MsgBatchedTagVerifications:
 			c.handleBatchedTagVerifications(msg)
 

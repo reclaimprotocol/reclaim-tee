@@ -75,7 +75,7 @@ type Client struct {
 	// *** Track records sent vs processed instead of streams ***
 	recordsSent               int64 // TLS records sent for split AEAD processing (atomic)
 	recordsProcessed          int64 // TLS records that completed split AEAD processing (atomic)
-	decryptionStreamsReceived int64 // *** FIX: Track received decryption streams to prevent premature redaction *** (atomic)
+	decryptionStreamsReceived int64 // Track received decryption streams to prevent premature redaction (atomic)
 	eofReached                int64 // Whether we've reached EOF on TCP connection (atomic)
 
 	// *** Atomic completion flags (replaces multiple boolean fields) ***
@@ -90,13 +90,13 @@ type Client struct {
 	ciphertextBySeq        map[uint64][]byte // Store encrypted response data by sequence
 	decryptionStreamBySeq  map[uint64][]byte // Store decryption streams by sequence
 	redactedPlaintextBySeq map[uint64][]byte // *** ADDED: Store final redacted plaintext for ordered printing ***
-	recordTypeBySeq        map[uint64]byte   // *** NEW: Store TLS record type by sequence number ***
+	recordTypeBySeq        map[uint64]byte   // Store TLS record type by sequence number
 
-	// *** NEW: Response packet batching fields ***
+	// Response packet batching fields
 	batchedResponses      []EncryptedResponseData // Collect response packets until EOF
 	batchedResponsesMutex sync.Mutex              // Protect batched responses collection
 
-	// *** NEW: Response processing success tracking ***
+	// Response processing success tracking
 	responseProcessingSuccessful bool       // Track if response was successfully processed
 	reconstructedResponseSize    int        // Size of reconstructed response data
 	responseProcessingMutex      sync.Mutex // Protect response processing flags
@@ -166,7 +166,7 @@ func NewClient(teekURL string) *Client {
 		recordTypeBySeq:           make(map[uint64]byte),
 		requestRedactionRanges:    nil,
 
-		// *** NEW: Initialize batching fields ***
+		// Initialize batching fields
 		batchedResponses:             make([]EncryptedResponseData, 0),
 		batchedResponsesMutex:        sync.Mutex{},
 		responseProcessingSuccessful: false,
@@ -866,25 +866,14 @@ func (c *Client) buildResponseResults() (*ResponseResults, error) {
 		responseTimestamp = time.Now() // TODO: Track actual timestamp
 	}
 
-	// *** NEW: Use batched response processing success flags ***
+	// Use batched response processing success flags
 	c.responseProcessingMutex.Lock()
 	batchedSuccess := c.responseProcessingSuccessful
 	batchedDataSize := c.reconstructedResponseSize
 	c.responseProcessingMutex.Unlock()
 
-	// Calculate total decrypted data size (fallback if batched processing didn't run)
-	c.responseContentMutex.Lock()
-	totalDataSize := 0
-	for _, data := range c.responseContentBySeq {
-		totalDataSize += len(data)
-	}
-	c.responseContentMutex.Unlock()
-
-	// Use batched data size if available, otherwise fall back to individual processing
+	// Use batched response processing data size (batching always runs)
 	finalDataSize := batchedDataSize
-	if finalDataSize == 0 {
-		finalDataSize = totalDataSize
-	}
 
 	return &ResponseResults{
 		HTTPResponse:         c.lastResponseData,

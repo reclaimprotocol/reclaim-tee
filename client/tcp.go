@@ -180,7 +180,7 @@ func (c *Client) tcpToWebsocket() {
 
 		n, err := c.tcpConn.Read(buffer)
 
-		// *** CRITICAL FIX: Process any received data before handling EOF ***
+		// Process any received data before handling EOF
 		eofReceived := false
 		if err != nil {
 			if err == io.EOF {
@@ -262,7 +262,7 @@ func (c *Client) tcpToWebsocket() {
 		if eofReceived {
 			fmt.Printf("[Client] EOF reached, checking for protocol completion...\n")
 
-			// *** NEW: Send batched responses if any were collected ***
+			// Send batched responses if any were collected
 			if err := c.sendBatchedResponses(); err != nil {
 				log.Printf("[Client] Failed to send batched responses on EOF: %v", err)
 			}

@@ -31,7 +31,7 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	recordsCondition := recordsSent == 0 || recordsProcessed >= recordsSent
 	redactionCondition := !c.hasCompletionFlag(CompletionFlagRedactionExpected) || c.hasCompletionFlag(CompletionFlagRedactionReceived)
 
-	// *** FIX: Add condition to ensure all decryption streams are received ***
+	// Add condition to ensure all decryption streams are received
 	streamsCondition := recordsSent == 0 || streamsReceived >= recordsSent
 
 	// Check if split AEAD processing is complete (conditions 1-3 + new streams condition)
@@ -268,7 +268,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 	var redactionRanges []shared.RedactionRange
 	totalOffset := 0
 
-	// *** FIX: Iterate over map keys in sorted order to guarantee correctness ***
+	// Iterate over map keys in sorted order to guarantee correctness
 	// 1. Get all sequence numbers (keys) from the map.
 	keys := make([]int, 0, len(c.responseContentBySeq))
 	for k := range c.responseContentBySeq {
@@ -277,7 +277,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 	// 2. Sort the keys numerically.
 	sort.Ints(keys)
 
-	// *** NEW APPROACH: Collect all HTTP application data first, then analyze as a whole ***
+	// Collect all HTTP application data first, then analyze as a whole
 	var allHTTPContent []byte
 	var httpContentMappings []struct {
 		seqNum     uint64
@@ -300,7 +300,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 			continue
 		}
 
-		// *** FIX: Correctly handle content/type separation and offset calculation ***
+		// Correctly handle content/type separation and offset calculation
 		// 1. Separate actual content from its single-byte type identifier
 		actualContent, contentType := c.removeTLSPadding(content)
 
@@ -309,7 +309,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 			if len(actualContent) >= 4 && actualContent[0] == 0x04 { // NewSessionTicket
 				log.Printf("[Client] Redacting NewSessionTicket at offset %d-%d", totalOffset, totalOffset+len(actualContent)-1)
 
-				// *** FIX: Find where actualContent starts within the original ciphertext ***
+				// Find where actualContent starts within the original ciphertext
 				// For TLS 1.3, actualContent is at the beginning of the decrypted payload
 				// For TLS 1.2, we need to account for explicit IV and other headers
 				ciphertextOffset := 0
@@ -320,7 +320,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 				// Calculate redaction bytes using correct offset within ciphertext
 				redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, len(actualContent), seqNum)
 
-				// *** CRITICAL FIX: Cover full TLS record including padding ***
+				// Cover full TLS record including padding
 				// Extend redaction bytes to cover the full record
 				fullRedactionBytes := make([]byte, len(content))
 				copy(fullRedactionBytes, redactionBytes)
@@ -371,7 +371,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 		totalOffset += len(content)
 	}
 
-	// *** NEW: Analyze all HTTP content as a single unit if we collected any ***
+	// Analyze all HTTP content as a single unit if we collected any
 	if len(allHTTPContent) > 0 && len(httpContentMappings) > 0 {
 		log.Printf("[Client] Analyzing combined HTTP content (%d bytes) from %d TLS records", len(allHTTPContent), len(httpContentMappings))
 

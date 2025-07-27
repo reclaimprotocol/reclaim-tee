@@ -339,7 +339,7 @@ func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLe
 			c.analyzeAlertMessage(record[5 : 5+recordLength])
 		}
 
-		// *** FIX: Process alert records through split AEAD for complete decryption ***
+		// Process alert records through split AEAD for complete decryption
 		// Alert records need to be decrypted for offline validation, not just transcripted
 		fmt.Printf("[Client] → Processing alert record with split AEAD\n")
 		c.processTLSRecord(record)
@@ -415,10 +415,10 @@ func (c *Client) processTLSRecord(record []byte) {
 	}
 
 	// Store ciphertext by sequence number for later decryption
-	// *** FIX: Use the correct shared mutex to prevent race conditions ***
+	// Use the correct shared mutex to prevent race conditions
 	c.responseContentMutex.Lock()
 	c.ciphertextBySeq[c.responseSeqNum] = encryptedData
-	// *** NEW: Store TLS record type for reconstruction ***
+	// Store TLS record type for reconstruction
 	c.recordTypeBySeq[c.responseSeqNum] = record[0] // TLS record type from header
 	c.responseContentMutex.Unlock()
 
@@ -479,7 +479,7 @@ func (c *Client) processTLSRecord(record []byte) {
 	c.responseSeqNum++
 }
 
-// *** NEW: Send batched responses when EOF is detected ***
+// Send batched responses when EOF is detected
 func (c *Client) sendBatchedResponses() error {
 	c.batchedResponsesMutex.Lock()
 	defer c.batchedResponsesMutex.Unlock()

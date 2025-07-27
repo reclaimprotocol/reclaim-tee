@@ -96,7 +96,7 @@ func main() {
 		fmt.Printf("⚠️  Continuing with partial results...\n")
 	}
 
-	// *** NEW: Demonstrate accessing protocol results ***
+	// Demonstrate accessing protocol results
 	fmt.Println("\n===== PROTOCOL RESULTS =====")
 
 	// Get complete protocol results

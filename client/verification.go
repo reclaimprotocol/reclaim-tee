@@ -120,7 +120,7 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 		if seqNum > 0 { // Skip handshake sequences (seq 0)
 			plaintext := c.redactedPlaintextBySeq[seqNum]
 
-			// *** FIX: Use stored TLS record type instead of extracting from plaintext ***
+			// Use stored TLS record type instead of extracting from plaintext
 			if len(plaintext) > 0 {
 				// Get the TLS record type that was stored during processing
 				recordType, hasRecordType := c.recordTypeBySeq[seqNum]

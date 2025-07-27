@@ -37,7 +37,7 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
 	// Add to collection for verification bundle
 	c.signedRedactedStreams = append(c.signedRedactedStreams, redactedStream)
 
-	// *** FIXED: Only verify TEE_K signature when ALL expected redacted streams received ***
+	// Only verify TEE_K signature when ALL expected redacted streams received
 	if c.teekSignedTranscript != nil && !c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
 		if len(c.signedRedactedStreams) >= c.expectedRedactedStreams {
 			log.Printf("[Client] Received all %d expected redacted streams, attempting TEE_K comprehensive signature verification", c.expectedRedactedStreams)

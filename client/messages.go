@@ -40,7 +40,7 @@ const (
 	MsgResponseTagVerification  MessageType = "response_tag_verification"
 	MsgResponseDecryptionStream MessageType = "response_decryption_stream"
 
-	// *** NEW: Batched response handling messages ***
+	// Batched response handling messages
 	MsgBatchedEncryptedResponses MessageType = "batched_encrypted_responses"
 	MsgBatchedTagVerifications   MessageType = "batched_tag_verifications"
 	MsgBatchedDecryptionStreams  MessageType = "batched_decryption_streams"
@@ -239,7 +239,7 @@ type AttestationResponseData struct {
 	ErrorMessage   string `json:"error_message,omitempty"`
 }
 
-// *** NEW: Batched response data structures for optimization ***
+// Batched response data structures for optimization
 
 // BatchedEncryptedResponseData contains multiple encrypted response packets for batch processing
 type BatchedEncryptedResponseData struct {
