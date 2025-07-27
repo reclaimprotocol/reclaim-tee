@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"tee-mpc/shared"
 )
 
 // validateTranscriptsAgainstCapturedTraffic validates both TEE transcripts
@@ -137,4 +138,153 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 		packetsMatched, len(c.teetTranscriptPackets))
 
 	return packetsMatched == len(c.teetTranscriptPackets)
+}
+
+// handleSignedTranscript processes signed transcript messages from TEE_K and TEE_T
+func (c *Client) handleSignedTranscript(msg *Message) {
+	var signedTranscript shared.SignedTranscript
+	if err := msg.UnmarshalData(&signedTranscript); err != nil {
+		log.Printf("[Client] Failed to unmarshal signed transcript: %v", err)
+		return
+	}
+
+	log.Printf("[Client] Received signed transcript")
+	log.Printf("[Client] Transcript contains %d packets", len(signedTranscript.Packets))
+	log.Printf("[Client] Comprehensive signature: %d bytes", len(signedTranscript.Signature))
+	log.Printf("[Client] Public Key: %d bytes (DER format)", len(signedTranscript.PublicKey))
+
+	// Store the public key for attestation verification
+	// Determine source based on transcript structure: TEE_K has RequestMetadata, TEE_T doesn't
+	if signedTranscript.RequestMetadata != nil {
+		// This is from TEE_K
+		c.teekTranscriptPublicKey = signedTranscript.PublicKey
+		c.teekSignedTranscript = &signedTranscript
+		c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
+	} else {
+		// This is from TEE_T
+		c.teetTranscriptPublicKey = signedTranscript.PublicKey
+		c.teetSignedTranscript = &signedTranscript
+		c.teetTranscriptPackets = signedTranscript.Packets // Store packets for validation
+	}
+
+	// Calculate total size of all packets
+	totalSize := 0
+	for _, packet := range signedTranscript.Packets {
+		totalSize += len(packet)
+	}
+
+	log.Printf("[Client] Total transcript size: %d bytes", totalSize)
+
+	// Determine source name for logging
+	sourceName := "TEE_T"
+	if signedTranscript.RequestMetadata != nil {
+		sourceName = "TEE_K"
+	}
+
+	// Display signature and public key info for verification
+	if len(signedTranscript.Signature) > 0 {
+		fmt.Printf("[Client] %s signature: %d bytes\n", sourceName, len(signedTranscript.Signature))
+	}
+
+	if len(signedTranscript.PublicKey) > 0 {
+		fmt.Printf("[Client] %s public key: %d bytes\n", sourceName, len(signedTranscript.PublicKey))
+	}
+
+	// Verify signature
+	log.Printf("[Client] Verifying signature for %s transcript...", sourceName)
+	var verificationErr error
+	if signedTranscript.RequestMetadata != nil {
+		// This is TEE_K - check if we have all expected redacted streams before verification
+		log.Printf("[Client] TEE_K transcript received, checking if all expected redacted streams are available...")
+		if len(c.signedRedactedStreams) < c.expectedRedactedStreams {
+			log.Printf("[Client] TEE_K comprehensive verification deferred - waiting for redacted streams (%d/%d)", len(c.signedRedactedStreams), c.expectedRedactedStreams)
+			// Mark transcript as received but don't verify signature yet
+			c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
+			// Don't set signature valid flag yet - will be set after successful verification
+		} else {
+			log.Printf("[Client] TEE_K comprehensive verification: have all %d expected redacted streams", c.expectedRedactedStreams)
+			verificationErr = shared.VerifyComprehensiveSignature(&signedTranscript, c.signedRedactedStreams)
+			if verificationErr != nil {
+				log.Printf("[Client] Signature verification FAILED for %s: %v", sourceName, verificationErr)
+				fmt.Printf("[Client] %s signature verification FAILED: %v\n", sourceName, verificationErr)
+			} else {
+				log.Printf("[Client] Signature verification SUCCESS for %s", sourceName)
+				fmt.Printf("[Client] %s signature verification SUCCESS\n", sourceName)
+			}
+
+			// Mark transcript as received and set signature validity
+			c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
+			if verificationErr == nil {
+				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+			}
+		}
+	} else {
+		// This is TEE_T - use regular TLS packet verification
+		verificationErr = shared.VerifyTranscriptSignature(&signedTranscript)
+		if verificationErr != nil {
+			log.Printf("[Client] Signature verification FAILED for %s: %v", sourceName, verificationErr)
+			fmt.Printf("[Client] %s signature verification FAILED: %v\n", sourceName, verificationErr)
+		} else {
+			log.Printf("[Client] Signature verification SUCCESS for %s", sourceName)
+			fmt.Printf("[Client] %s signature verification SUCCESS\n", sourceName)
+		}
+
+		// Mark transcript as received and set signature validity
+		c.setCompletionFlag(CompletionFlagTEETTranscriptReceived)
+		if verificationErr == nil {
+			c.setCompletionFlag(CompletionFlagTEETSignatureValid)
+		}
+	}
+
+	log.Printf("[Client] Marked %s transcript as received (signature valid: %v)", sourceName, verificationErr == nil)
+
+	// Check if we now have both transcript public keys and can verify against attestations
+	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
+		log.Printf("[Client] Both transcript public keys received - verifying against attestations...")
+		if err := c.verifyAttestationPublicKeys(); err != nil {
+			log.Printf("[Client] Attestation public key verification failed: %v", err)
+			fmt.Printf("[Client] ATTESTATION VERIFICATION FAILED: %v\n", err)
+		} else {
+			log.Printf("[Client] Attestation public key verification successful")
+			fmt.Printf("[Client] ATTESTATION VERIFICATION SUCCESSFUL - transcripts are from verified enclaves\n")
+		}
+	}
+
+	transcriptsComplete := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
+	signaturesValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)
+
+	log.Printf("[Client] Signed transcript from %s processed successfully", sourceName)
+
+	// Show packet summary
+	fmt.Printf("[Client] %s transcript summary:\n", sourceName)
+	if len(signedTranscript.Packets) > 0 {
+		// Display packet information
+		for i, packet := range signedTranscript.Packets {
+			fmt.Printf("[Client] TEE_K packet %d: %d bytes\n", i+1, len(packet))
+		}
+	}
+
+	if len(signedTranscript.Packets) > 0 {
+		// Display packet information
+		for i, packet := range signedTranscript.Packets {
+			fmt.Printf("[Client] TEE_T packet %d: %d bytes\n", i+1, len(packet))
+		}
+	}
+
+	// *** CRITICAL VALIDATION: Compare TEE transcripts with client's captured traffic ***
+	if transcriptsComplete && signaturesValid {
+		log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")
+		c.validateTranscriptsAgainstCapturedTraffic()
+	}
+
+	if transcriptsComplete {
+		if signaturesValid {
+			log.Println("[Client] Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+		} else {
+			log.Println("[Client] Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
+		}
+	}
+
+	// Check protocol completion (function will only proceed if all conditions are met)
+	c.checkProtocolCompletion("signed transcript received from " + sourceName)
 }
