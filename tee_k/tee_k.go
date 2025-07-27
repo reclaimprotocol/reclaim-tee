@@ -376,14 +376,6 @@ func (t *TEEK) terminateSessionWithError(sessionID string, reason shared.Termina
 	}
 }
 
-// sendErrorToSession terminates a session with an error (fail-fast implementation)
-// DEPRECATED: Use terminateSessionWithError with specific termination reasons
-func (t *TEEK) sendErrorToSession(sessionID string, errMsg string) {
-	// All errors now result in session termination per fail-fast requirements
-	err := fmt.Errorf("%s", errMsg)
-	t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, errMsg)
-}
-
 // cleanupSession performs complete cleanup of session resources
 func (t *TEEK) cleanupSession(sessionID string) {
 	// Close the session in session manager (handles connections and state cleanup)
@@ -492,7 +484,7 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	reqData, ok := session.ConnectionData.(*shared.RequestConnectionData)
 	if !ok {
 		log.Printf("[TEE_K] Session %s: Missing connection data for TLS handshake", sessionID)
-		t.sendErrorToSession(sessionID, "Missing connection data")
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("missing connection data"), "Missing connection data")
 		return
 	}
 
@@ -542,7 +534,7 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	// Configure cipher suite restrictions if specified
 	if err := configureCipherSuites(config, effectiveCipherSuite, effectiveTLSVersion); err != nil {
 		log.Printf("[TEE_K] Session %s: Cipher suite configuration error: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Invalid cipher suite configuration: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Invalid cipher suite configuration: %v", err))
 		return
 	}
 
@@ -558,7 +550,7 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	tlsState, err := t.getSessionTLSState(sessionID)
 	if err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to get TLS state: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to get TLS state: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to get TLS state: %v", err))
 		return
 	}
 	tlsState.TLSClient = tlsClient
@@ -570,7 +562,7 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 
 	if err := tlsClient.Handshake(reqData.Hostname); err != nil {
 		log.Printf("[TEE_K] Session %s: TLS handshake failed: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("TLS handshake failed: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("TLS handshake failed: %v", err))
 		return
 	}
 
@@ -620,7 +612,7 @@ func (t *TEEK) handleTCPDataSession(sessionID string, msg *shared.Message) {
 	var tcpData shared.TCPData
 	if err := msg.UnmarshalData(&tcpData); err != nil {
 		log.Printf("[TEE_K] Failed to unmarshal TCP data: %v", err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to unmarshal TCP data: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to unmarshal TCP data: %v", err))
 		return
 	}
 
@@ -629,7 +621,7 @@ func (t *TEEK) handleTCPDataSession(sessionID string, msg *shared.Message) {
 	tlsState, err := t.getSessionTLSState(sessionID)
 	if err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to get TLS state: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to get TLS state: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to get TLS state: %v", err))
 		return
 	}
 
@@ -638,7 +630,7 @@ func (t *TEEK) handleTCPDataSession(sessionID string, msg *shared.Message) {
 		wsConn2TLS.pendingData <- tcpData.Data
 	} else {
 		log.Printf("[TEE_K] Session %s: No WebSocket-to-TLS adapter available", sessionID)
-		t.sendErrorToSession(sessionID, "No WebSocket-to-TLS adapter available")
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("no WebSocket-to-TLS adapter available"), "No WebSocket-to-TLS adapter available")
 	}
 }
 
@@ -646,7 +638,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	var redactedRequest shared.RedactedRequestData
 	if err := msg.UnmarshalData(&redactedRequest); err != nil {
 		log.Printf("[TEE_K] Failed to unmarshal redacted request: %v", err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to unmarshal redacted request: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to unmarshal redacted request: %v", err))
 		return
 	}
 
@@ -655,13 +647,13 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	// Validate redacted request format and positions
 	if err := t.validateHTTPRequestFormat(redactedRequest.RedactedRequest, redactedRequest.RedactionRanges); err != nil {
 		log.Printf("[TEE_K] Failed to validate redacted request format: %v", err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to validate redacted request format: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to validate redacted request format: %v", err))
 		return
 	}
 
 	if err := t.validateRedactionPositions(redactedRequest.RedactionRanges, len(redactedRequest.RedactedRequest)); err != nil {
 		log.Printf("[TEE_K] Failed to validate redaction positions: %v", err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to validate redaction positions: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to validate redaction positions: %v", err))
 		return
 	}
 
@@ -672,7 +664,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	redactionRangesBytes, err := json.Marshal(redactedRequest.RedactionRanges)
 	if err != nil {
 		log.Printf("[TEE_K] Failed to marshal redaction ranges: %v", err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to marshal redaction ranges: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to marshal redaction ranges: %v", err))
 		return
 	}
 	t.addToTranscriptForSessionWithType(sessionID, redactionRangesBytes, "redaction_ranges")
@@ -694,14 +686,14 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	tlsState, err := t.getSessionTLSState(sessionID)
 	if err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to get TLS state: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to get TLS state: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to get TLS state: %v", err))
 		return
 	}
 
 	tlsClient, ok := tlsState.TLSClient.(*minitls.Client)
 	if tlsClient == nil || !ok {
 		log.Printf("[TEE_K] Session %s: No TLS client available for encryption", sessionID)
-		t.sendErrorToSession(sessionID, "No TLS client available for encryption")
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("no tls client available for encryption"), "no tls client available for encryption")
 		return
 	}
 
@@ -724,7 +716,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		tls12AEAD := tlsClient.GetTLS12AEAD()
 		if tls12AEAD == nil {
 			log.Printf("[TEE_K] No TLS 1.2 AEAD available")
-			t.sendErrorToSession(sessionID, "No TLS 1.2 AEAD available")
+			t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("no tls 1.2 aead available"), "no tls 1.2 aead available")
 			return
 		}
 
@@ -748,7 +740,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		clientAEAD := tlsClient.GetClientApplicationAEAD()
 		if clientAEAD == nil {
 			log.Printf("[TEE_K] No client application AEAD available")
-			t.sendErrorToSession(sessionID, "No client application AEAD available")
+			t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("no client application aead available"), "no client application aead available")
 			return
 		}
 
@@ -758,7 +750,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		keySchedule := tlsClient.GetKeySchedule()
 		if keySchedule == nil {
 			log.Printf("[TEE_K] No key schedule available")
-			t.sendErrorToSession(sessionID, "No key schedule available")
+			t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("no key schedule available"), "no key schedule available")
 			return
 		}
 
@@ -767,7 +759,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 
 		if len(clientAppKey) == 0 || len(clientAppIV) == 0 {
 			log.Printf("[TEE_K] No application keys available")
-			t.sendErrorToSession(sessionID, "No application keys available")
+			t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("no application keys available"), "no application keys available")
 			return
 		}
 	}
@@ -807,7 +799,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	encryptedData, tagSecrets, err := splitAEAD.EncryptWithoutTag(dataToEncrypt, additionalData)
 	if err != nil {
 		log.Printf("[TEE_K] Failed to encrypt data: %v", err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to encrypt data: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to encrypt data: %v", err))
 		return
 	}
 
@@ -817,7 +809,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	// Send encrypted request and tag secrets to TEE_T with session ID
 	if err := t.sendEncryptedRequestToTEETWithSession(sessionID, encryptedData, tagSecrets, cipherSuite, actualSeqNum, redactedRequest.RedactionRanges); err != nil {
 		log.Printf("[TEE_K] Failed to send encrypted request to TEE_T: %v", err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to send encrypted request to TEE_T: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to send encrypted request to TEE_T: %v", err))
 		return
 	}
 
@@ -1538,7 +1530,7 @@ func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message)
 	var redactionSpec shared.RedactionSpec
 	if err := msg.UnmarshalData(&redactionSpec); err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to unmarshal redaction spec: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, "Failed to parse redaction specification")
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("failed to parse redaction specification"), "failed to parse redaction specification")
 		return
 	}
 
@@ -1547,14 +1539,14 @@ func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message)
 	// Validate redaction ranges
 	if err := t.validateRedactionSpec(redactionSpec); err != nil {
 		log.Printf("[TEE_K] Session %s: Invalid redaction spec: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Invalid redaction specification: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Invalid redaction specification: %v", err))
 		return
 	}
 
 	// Generate and send redacted decryption streams
 	if err := t.generateAndSendRedactedDecryptionStream(sessionID, redactionSpec); err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to generate redacted streams: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to generate redacted streams: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to generate redacted streams: %v", err))
 		return
 	}
 
@@ -1953,7 +1945,7 @@ func (t *TEEK) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 	var attestReq shared.AttestationRequestData
 	if err := msg.UnmarshalData(&attestReq); err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to unmarshal attestation request: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, "Failed to parse attestation request")
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("failed to parse attestation request"), "failed to parse attestation request")
 		return
 	}
 

@@ -1075,68 +1075,6 @@ func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.Encr
 	return verificationData
 }
 
-func (t *TEET) processEncryptedRequestWithStreams(encReq *shared.EncryptedRequestData, conn *websocket.Conn) {
-	t.logger.InfoIf("Processing encrypted request with available redaction streams")
-
-	// Apply redaction streams to reconstruct the full request for tag computation
-	reconstructedData, err := t.reconstructFullRequest(encReq.EncryptedData, encReq.RedactionRanges)
-	if err != nil {
-		t.logger.Error("Failed to reconstruct full request", zap.Error(err))
-		t.sendErrorToClient(conn, fmt.Sprintf("Failed to reconstruct full request: %v", err))
-		return
-	}
-
-	t.logger.InfoIf("Successfully reconstructed original request data")
-
-	// Create AAD for tag computation based on TLS version
-	var additionalData []byte
-	if encReq.CipherSuite == 0x1301 || encReq.CipherSuite == 0x1302 || encReq.CipherSuite == 0x1303 {
-		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
-		tagSize := 16                                    // GCM tag size
-		recordLength := len(reconstructedData) + tagSize // encrypted data + authentication tag
-		additionalData = []byte{
-			0x17,                      // ApplicationData
-			0x03,                      // TLS version major (compatibility)
-			0x03,                      // TLS version minor (compatibility)
-			byte(recordLength >> 8),   // Length high byte (includes tag)
-			byte(recordLength & 0xFF), // Length low byte (includes tag)
-		}
-	} else {
-		// TLS 1.2: AAD = seq_num + record header (13 bytes)
-		plaintextLength := len(reconstructedData) // For TLS 1.2 AAD, use plaintext length
-		additionalData = make([]byte, 13)         // 8 bytes seq_num + 5 bytes record header
-
-		// Sequence number (8 bytes, big-endian)
-		for i := 0; i < 8; i++ {
-			additionalData[i] = byte(encReq.SeqNum >> (8 * (7 - i)))
-		}
-
-		// Record header (5 bytes)
-		additionalData[8] = 0x17                          // Application data content type
-		additionalData[9] = 0x03                          // TLS version major
-		additionalData[10] = 0x03                         // TLS version minor
-		additionalData[11] = byte(plaintextLength >> 8)   // Plaintext length high byte
-		additionalData[12] = byte(plaintextLength & 0xFF) // Plaintext length low byte
-	}
-
-	// Use consolidated minitls function for tag computation
-	authTag, err := minitls.ComputeTagFromSecrets(reconstructedData, encReq.TagSecrets, encReq.CipherSuite, additionalData)
-	if err != nil {
-		t.logger.Error("Failed to compute authentication tag", zap.Error(err))
-		t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
-		return
-	}
-
-	t.logger.InfoIf("Computed split AEAD tag",
-		zap.Binary("tag", authTag),
-		zap.Int("data_length", len(reconstructedData)))
-
-	// Note: This function should be updated to use session-based routing
-	// For now, we'll use the session-aware version which requires a sessionID
-	t.logger.Error("processEncryptedRequestWithStreams should use session-based routing")
-	return
-}
-
 // processEncryptedRequestWithStreamsForSession is session-aware version
 func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, encReq *shared.EncryptedRequestData, conn *websocket.Conn) {
 	t.logger.InfoIf("Processing encrypted request with available redaction streams for session",
@@ -1405,12 +1343,6 @@ func (t *TEET) verifyCommitments(streams, keys [][]byte) error {
 	return nil
 }
 
-// reconstructFullRequest applies redaction streams to encrypted redacted data to get full plaintext
-// DEPRECATED: Use reconstructFullRequestWithStreams instead with session state
-func (t *TEET) reconstructFullRequest(encryptedRedacted []byte, ranges []shared.RedactionRange) ([]byte, error) {
-	return nil, fmt.Errorf("reconstructFullRequest is deprecated - use reconstructFullRequestWithStreams with session state")
-}
-
 // reconstructFullRequestWithStreams is session-aware version that accepts redaction streams as parameter
 func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, ranges []shared.RedactionRange, redactionStreams [][]byte) ([]byte, error) {
 	// Make a copy of the encrypted redacted data
@@ -1446,12 +1378,6 @@ func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, range
 		zap.Binary("reconstructed_preview", reconstructed[:min(64, len(reconstructed))]),
 		zap.Int("total_bytes", len(reconstructed)))
 	return reconstructed, nil
-}
-
-// This is where the full encrypted request would be reconstructed from the redacted version
-// DEPRECATED: Use reconstructFullRequestWithStreams instead with session state
-func (t *TEET) reconstructFullEncryptedRequest(encryptedRedacted []byte, ranges []shared.RedactionRange) ([]byte, error) {
-	return nil, fmt.Errorf("reconstructFullEncryptedRequest is deprecated - use reconstructFullRequestWithStreams with session state")
 }
 
 // Phase 4: Response handling methods (moved to session-aware versions)
