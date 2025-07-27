@@ -57,16 +57,20 @@ func (sm *SessionManager) CreateSession(clientConn Connection) (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	session := &Session{
-		ID:             sessionID.String(),
-		ClientConn:     clientConn,
-		CreatedAt:      time.Now(),
-		LastActiveAt:   time.Now(),
-		State:          SessionStateNew,
-		TLSState:       &TLSSessionState{},
+		ID:           sessionID.String(),
+		ClientConn:   clientConn,
+		CreatedAt:    time.Now(),
+		LastActiveAt: time.Now(),
+		State:        SessionStateNew,
+		TLSState: &TLSSessionState{
+			TCPReady: make(chan bool, 1),
+		},
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),
 			ResponseLengthBySeq:       make(map[uint64]uint32),
+			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ExplicitIVBySeq:           make(map[uint64][]byte),
 			PendingEncryptedResponses: make(map[uint64]*EncryptedResponseData),
 		},
 		Context: ctx,
@@ -91,14 +95,18 @@ func (sm *SessionManager) RegisterSession(sessionID string) error {
 
 	// Create placeholder session
 	session := &Session{
-		ID:             sessionID,
-		CreatedAt:      time.Now(),
-		State:          SessionStateNew,
-		TLSState:       &TLSSessionState{},
+		ID:        sessionID,
+		CreatedAt: time.Now(),
+		State:     SessionStateNew,
+		TLSState: &TLSSessionState{
+			TCPReady: make(chan bool, 1),
+		},
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),
 			ResponseLengthBySeq:       make(map[uint64]uint32),
+			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ExplicitIVBySeq:           make(map[uint64][]byte),
 			PendingEncryptedResponses: make(map[uint64]*EncryptedResponseData),
 		},
 		Context: ctx,

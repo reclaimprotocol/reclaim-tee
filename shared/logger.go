@@ -152,7 +152,7 @@ func (l *Logger) Close() error {
 	return l.Logger.Sync()
 }
 
-// Global logger instances for backward compatibility during migration
+// Global logger instances
 var (
 	DefaultTEETLogger *Logger
 	DefaultTEEKLogger *Logger

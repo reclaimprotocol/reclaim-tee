@@ -190,6 +190,9 @@ type Session struct {
 	IsClosed bool
 	Context  context.Context
 	Cancel   context.CancelFunc
+
+	// Additional connection state migrated from TEE_T global state
+	TEETClientConn interface{} // *websocket.Conn (using interface{} to avoid import cycle)
 }
 
 // TLSSessionState holds TLS-specific state for each session
@@ -201,6 +204,15 @@ type TLSSessionState struct {
 	KeyBlock          []byte
 	KeyShare          []byte
 	CipherSuite       uint16
+
+	// TLS client and connection state
+	TLSClient         interface{} // *minitls.Client (using interface{} to avoid import cycle)
+	WSConn2TLS        interface{} // *WebSocketConn (using interface{} to avoid import cycle)
+	CurrentConn       interface{} // *websocket.Conn (using interface{} to avoid import cycle)
+	CurrentRequest    *RequestConnectionData
+	TCPReady          chan bool
+	CombinedKey       []byte
+	ServerSequenceNum uint64
 }
 
 // RedactionSessionState holds redaction-specific state for each session
@@ -211,6 +223,12 @@ type RedactionSessionState struct {
 	EncryptedResponseData []EncryptedResponseData
 	RedactionStreams      [][]byte
 	CommitmentKeys        [][]byte
+
+	// Additional redaction state migrated from TEE_T global state
+	KeyShare                []byte
+	CipherSuite             uint16
+	PendingEncryptedRequest *EncryptedRequestData
+	TEETConnForPending      interface{} // *websocket.Conn (using interface{} to avoid import cycle)
 }
 
 // ResponseSessionState holds response handling state for each session
@@ -224,6 +242,11 @@ type ResponseSessionState struct {
 	// Per-session pending encrypted responses
 	PendingEncryptedResponses map[uint64]*EncryptedResponseData // Responses awaiting tag secrets by seq num
 	ResponsesMutex            sync.Mutex                        // Protects PendingEncryptedResponses map access
+
+	// Additional response state migrated from global state
+	ResponseLengthBySeqInt map[uint64]int // Keep both for compatibility
+	ExplicitIVBySeq        map[uint64][]byte
+	TEETConnForPending     interface{} // *websocket.Conn (using interface{} to avoid import cycle)
 }
 
 // Protocol data structures
@@ -348,7 +371,7 @@ type RedactionVerificationData struct {
 	Message string `json:"message"`
 }
 
-// Legacy individual response data structures removed - now using batched approach only
+// Individual response data structures removed - now using batched approach only
 
 // DecryptedResponseData contains decrypted response data
 type DecryptedResponseData struct {
@@ -533,7 +556,7 @@ func VerifySignature(data []byte, signature []byte, publicKey *ecdsa.PublicKey) 
 	return nil
 }
 
-// VerifySignature method on SigningKeyPair for backward compatibility
+// VerifySignature method on SigningKeyPair
 func (kp *SigningKeyPair) VerifySignature(data []byte, signature []byte) bool {
 	err := VerifySignature(data, signature, kp.PublicKey)
 	return err == nil
@@ -658,7 +681,7 @@ func CreateMessage(msgType MessageType, data interface{}, sessionID ...string) *
 	return msg
 }
 
-// CreateSessionMessage is kept for backward compatibility but now calls CreateMessage
+// CreateSessionMessage calls CreateMessage
 func CreateSessionMessage(msgType MessageType, sessionID string, data interface{}) *Message {
 	return CreateMessage(msgType, data, sessionID)
 }

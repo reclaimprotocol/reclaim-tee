@@ -40,21 +40,7 @@ type TEEK struct {
 	forceTLSVersion  string // Force specific TLS version: "1.2", "1.3", or "" for auto
 	forceCipherSuite string // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
 
-	// Legacy global state - TODO: migrate to session-aware architecture
-	tlsClient      *minitls.Client
-	wsConn2TLS     *WebSocketConn
-	currentConn    *websocket.Conn
-	currentRequest *shared.RequestConnectionData
-	tcpReady       chan bool
-
-	// Phase 2: Split AEAD - TODO: migrate to session-aware
-	keyShare    []byte
-	combinedKey []byte
-
-	// Response handling - TODO: migrate to session-aware
-	responseLengthBySeq map[uint64]int    // Store response lengths by sequence number
-	explicitIVBySeq     map[uint64][]byte // Store explicit IVs for TLS 1.2 AES-GCM by sequence number
-	serverSequenceNum   uint64            // Track server's actual sequence number manually
+	// Session state only - global state removed
 
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
@@ -97,14 +83,11 @@ func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 	}
 
 	return &TEEK{
-		port:                port,
-		sessionManager:      shared.NewSessionManager(),
-		teetURL:             "ws://localhost:8081/teek", // Default TEE_T URL
-		tcpReady:            make(chan bool, 1),
-		responseLengthBySeq: make(map[uint64]int),
-		explicitIVBySeq:     make(map[uint64][]byte),
-		signingKeyPair:      signingKeyPair,
-		enclaveManager:      enclaveManager,
+		port:           port,
+		sessionManager: shared.NewSessionManager(),
+		teetURL:        "ws://localhost:8081/teek", // Default TEE_T URL
+		signingKeyPair: signingKeyPair,
+		enclaveManager: enclaveManager,
 	}
 }
 
@@ -396,7 +379,38 @@ func (t *TEEK) sendErrorToSession(sessionID string, errMsg string) {
 	}
 }
 
-// Session-aware handler methods (wrappers for legacy handlers during migration)
+// Session-aware handler methods
+
+// Helper functions to access session state
+func (t *TEEK) getSessionTLSState(sessionID string) (*shared.TLSSessionState, error) {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if session.TLSState == nil {
+		session.TLSState = &shared.TLSSessionState{
+			TCPReady: make(chan bool, 1),
+		}
+	}
+	return session.TLSState, nil
+}
+
+func (t *TEEK) getSessionResponseState(sessionID string) (*shared.ResponseSessionState, error) {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if session.ResponseState == nil {
+		session.ResponseState = &shared.ResponseSessionState{
+			PendingResponses:          make(map[string][]byte),
+			ResponseLengthBySeq:       make(map[uint64]uint32),
+			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ExplicitIVBySeq:           make(map[uint64][]byte),
+			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
+		}
+	}
+	return session.ResponseState, nil
+}
 
 func (t *TEEK) handleRequestConnectionSession(sessionID string, msg *shared.Message) {
 	log.Printf("[TEE_K] Session %s: Handling connection request", sessionID)
@@ -525,12 +539,19 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 
 	tlsClient = minitls.NewClientWithConfig(tlsConn, config)
 
-	// Store in global fields for backward compatibility
-	// TODO: Migrate to session-aware architecture
-	t.tlsClient = tlsClient
-	t.wsConn2TLS = tlsConn
-	t.currentConn = wsConn.GetWebSocketConn()
-	t.currentRequest = reqData
+	// Store in session state instead of global fields
+	tlsState, err := t.getSessionTLSState(sessionID)
+	if err != nil {
+		log.Printf("[TEE_K] Session %s: Failed to get TLS state: %v", sessionID, err)
+		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to get TLS state: %v", err))
+		return
+	}
+	tlsState.TLSClient = tlsClient
+	tlsState.WSConn2TLS = tlsConn
+	tlsState.CurrentConn = wsConn.GetWebSocketConn()
+	tlsState.CurrentRequest = reqData
+
+	// Global state removed - using session state only
 
 	if err := tlsClient.Handshake(reqData.Hostname); err != nil {
 		log.Printf("[TEE_K] Session %s: TLS handshake failed: %v", sessionID, err)
@@ -544,14 +565,14 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	}
 	session.TLSState.HandshakeComplete = true
 
-	// Get crypto material for certificate verification (matching legacy handler)
+	// Get crypto material for certificate verification
 	hsKey := tlsClient.GetHandshakeKey()
 	hsIV := tlsClient.GetHandshakeIV()
 	certPacket := tlsClient.GetCertificatePacket()
 	cipherSuite := tlsClient.GetCipherSuite()
 	algorithm := getCipherSuiteAlgorithm(cipherSuite)
 
-	// Send handshake key disclosure to Client (matching legacy behavior)
+	// Send handshake key disclosure to Client
 	disclosureMsg := shared.CreateSessionMessage(shared.MsgHandshakeKeyDisclosure, sessionID, shared.HandshakeKeyDisclosureData{
 		HandshakeKey:      hsKey,
 		HandshakeIV:       hsIV,
@@ -589,10 +610,17 @@ func (t *TEEK) handleTCPDataSession(sessionID string, msg *shared.Message) {
 	}
 
 	// Handle incoming data from Client (TLS handshake data or encrypted application data)
-	// TODO: Migrate to session-aware architecture - currently uses global wsConn2TLS
-	if t.wsConn2TLS != nil {
+	// Use session state for TCP data handling
+	tlsState, err := t.getSessionTLSState(sessionID)
+	if err != nil {
+		log.Printf("[TEE_K] Session %s: Failed to get TLS state: %v", sessionID, err)
+		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to get TLS state: %v", err))
+		return
+	}
+
+	if wsConn2TLS, ok := tlsState.WSConn2TLS.(*WebSocketConn); ok && wsConn2TLS != nil {
 		// Forward data to TLS client for processing
-		t.wsConn2TLS.pendingData <- tcpData.Data
+		wsConn2TLS.pendingData <- tcpData.Data
 	} else {
 		log.Printf("[TEE_K] Session %s: No WebSocket-to-TLS adapter available", sessionID)
 		t.sendErrorToSession(sessionID, "No WebSocket-to-TLS adapter available")
@@ -647,21 +675,30 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 
 	fmt.Printf("[TEE_K] Session %s: Split AEAD: encrypting redacted request %d bytes\n", sessionID, len(redactedRequest.RedactedRequest))
 
-	if t.tlsClient == nil {
-		log.Printf("[TEE_K] No TLS client available for encryption")
+	// Get TLS state from session
+	tlsState, err := t.getSessionTLSState(sessionID)
+	if err != nil {
+		log.Printf("[TEE_K] Session %s: Failed to get TLS state: %v", sessionID, err)
+		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to get TLS state: %v", err))
+		return
+	}
+
+	tlsClient, ok := tlsState.TLSClient.(*minitls.Client)
+	if tlsClient == nil || !ok {
+		log.Printf("[TEE_K] Session %s: No TLS client available for encryption", sessionID)
 		t.sendErrorToSession(sessionID, "No TLS client available for encryption")
 		return
 	}
 
 	// Get cipher suite and encryption parameters
-	cipherSuite := t.tlsClient.GetCipherSuite()
+	cipherSuite := tlsClient.GetCipherSuite()
 
 	// Prepare data for encryption based on TLS version
 	var dataToEncrypt []byte
 	var clientAppKey, clientAppIV []byte
 	var actualSeqNum uint64
 
-	tlsVersion := t.tlsClient.GetNegotiatedVersion()
+	tlsVersion := tlsClient.GetNegotiatedVersion()
 	fmt.Printf("🔍 TEE_K Session %s: TLS version 0x%04x, cipher 0x%04x\n", sessionID, tlsVersion, cipherSuite)
 
 	if tlsVersion == 0x0303 { // TLS 1.2
@@ -669,7 +706,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		dataToEncrypt = redactedRequest.RedactedRequest
 		fmt.Printf("[TEE_K] Session %s: TLS 1.2 - Encrypting raw HTTP data (%d bytes)\n", sessionID, len(dataToEncrypt))
 
-		tls12AEAD := t.tlsClient.GetTLS12AEAD()
+		tls12AEAD := tlsClient.GetTLS12AEAD()
 		if tls12AEAD == nil {
 			log.Printf("[TEE_K] No TLS 1.2 AEAD available")
 			t.sendErrorToSession(sessionID, "No TLS 1.2 AEAD available")
@@ -693,7 +730,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		dataToEncrypt[len(redactedRequest.RedactedRequest)+1] = 0x00 // Required TLS 1.3 padding byte
 		fmt.Printf("[TEE_K] Session %s: TLS 1.3 - Added inner content type + padding (%d bytes)\n", sessionID, len(dataToEncrypt))
 
-		clientAEAD := t.tlsClient.GetClientApplicationAEAD()
+		clientAEAD := tlsClient.GetClientApplicationAEAD()
 		if clientAEAD == nil {
 			log.Printf("[TEE_K] No client application AEAD available")
 			t.sendErrorToSession(sessionID, "No client application AEAD available")
@@ -703,7 +740,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		actualSeqNum = clientAEAD.GetSequence()
 
 		// Get encryption keys
-		keySchedule := t.tlsClient.GetKeySchedule()
+		keySchedule := tlsClient.GetKeySchedule()
 		if keySchedule == nil {
 			log.Printf("[TEE_K] No key schedule available")
 			t.sendErrorToSession(sessionID, "No key schedule available")
@@ -979,6 +1016,11 @@ func getCipherSuiteAlgorithm(cipherSuite uint16) string {
 // Phase 2: Split AEAD handlers for TEE_T communication
 
 func (t *TEEK) handleKeyShareResponse(msg *shared.Message) {
+	// Use global state for backward compatibility during migration
+	t.handleKeyShareResponseWithSession("", msg)
+}
+
+func (t *TEEK) handleKeyShareResponseWithSession(sessionID string, msg *shared.Message) {
 	var keyShareResp shared.KeyShareResponseData
 	if err := msg.UnmarshalData(&keyShareResp); err != nil {
 		log.Printf("[TEE_K] Failed to unmarshal key share response: %v", err)
@@ -986,8 +1028,19 @@ func (t *TEEK) handleKeyShareResponse(msg *shared.Message) {
 	}
 
 	if keyShareResp.Success {
-		t.keyShare = keyShareResp.KeyShare
-		fmt.Printf(" TEE_K received key share from TEE_T (%d bytes): %x\n", len(t.keyShare), t.keyShare)
+		if sessionID != "" {
+			// Store in session state
+			tlsState, err := t.getSessionTLSState(sessionID)
+			if err != nil {
+				log.Printf("[TEE_K] Session %s: Failed to get TLS state: %v", sessionID, err)
+				return
+			}
+			tlsState.KeyShare = keyShareResp.KeyShare
+			fmt.Printf("[TEE_K] Session %s: Received key share from TEE_T (%d bytes): %x\n", sessionID, len(tlsState.KeyShare), tlsState.KeyShare)
+		}
+
+		// Global state removed - using session state only
+		fmt.Printf("[TEE_K] Received key share from TEE_T (%d bytes): %x\n", len(keyShareResp.KeyShare), keyShareResp.KeyShare)
 	} else {
 		log.Printf("[TEE_K] TEE_T key share generation failed")
 	}
@@ -1003,7 +1056,6 @@ func (t *TEEK) handleTEETError(msg *shared.Message) {
 	log.Printf("[TEE_K] TEE_T error: %s", errorData.Message)
 }
 
-// requestKeyShareFromTEET requests a key share from TEE_T for split AEAD
 func (t *TEEK) requestKeyShareFromTEET(cipherSuite uint16) error {
 	keyLen, ivLen, err := shared.GetKeyAndIVLengths(cipherSuite)
 	if err != nil {
@@ -1041,7 +1093,6 @@ func (t *TEEK) requestKeyShareFromTEETWithSession(sessionID string, cipherSuite 
 	return t.sendMessageToTEETForSession(sessionID, msg)
 }
 
-// sendEncryptedRequestToTEET sends encrypted request data and tag secrets to TEE_T
 func (t *TEEK) sendEncryptedRequestToTEET(encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64, redactionRanges []shared.RedactionRange) error {
 	fmt.Printf(" TEE_K sending encrypted request to TEE_T (%d bytes, %d ranges)\n", len(encryptedData), len(redactionRanges))
 
@@ -1074,23 +1125,35 @@ func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encrypted
 }
 
 // Session-aware response handling methods
-// Legacy response handler functions removed - now using batched approach
+// Response handler functions - using batched approach
 
-// generateDecryptionStream generates cipher-agnostic keystream for decryption (legacy)
+// generateDecryptionStream generates cipher-agnostic keystream for decryption
 // Note: generateDecryptionStream functions have been consolidated into minitls.GenerateDecryptionStream
 
-func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cipherSuite uint16, recordHeader []byte, explicitIV []byte) ([]byte, error) {
-	if t.tlsClient == nil {
+func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseLength int, seqNum uint64, cipherSuite uint16, recordHeader []byte, explicitIV []byte) ([]byte, error) {
+	// Get TLS client from session state
+	var tlsClient *minitls.Client
+	if sessionID != "" {
+		tlsState, err := t.getSessionTLSState(sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get TLS state: %v", err)
+		}
+		if tlsClientInterface, ok := tlsState.TLSClient.(*minitls.Client); ok {
+			tlsClient = tlsClientInterface
+		}
+	}
+
+	if tlsClient == nil {
 		return nil, fmt.Errorf("no TLS client available")
 	}
 
 	// Get server application keys based on TLS version
 	var serverAppKey, serverAppIV []byte
 
-	tlsVersion := t.tlsClient.GetNegotiatedVersion()
+	tlsVersion := tlsClient.GetNegotiatedVersion()
 	if tlsVersion == 0x0303 { // TLS 1.2
 		// Get server keys from TLS 1.2 AEAD context
-		tls12AEAD := t.tlsClient.GetTLS12AEAD()
+		tls12AEAD := tlsClient.GetTLS12AEAD()
 		if tls12AEAD == nil {
 			return nil, fmt.Errorf("no TLS 1.2 AEAD available for response tag secrets")
 		}
@@ -1103,13 +1166,13 @@ func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cip
 		fmt.Printf("[TEE_K] 🔑 Server Read IV:  %x\n", serverAppIV)
 	} else { // TLS 1.3
 		// Get server application AEAD for tag secret generation
-		serverAEAD := t.tlsClient.GetServerApplicationAEAD()
+		serverAEAD := tlsClient.GetServerApplicationAEAD()
 		if serverAEAD == nil {
 			return nil, fmt.Errorf("no server application AEAD available")
 		}
 
 		// Get key schedule to access server application keys
-		keySchedule := t.tlsClient.GetKeySchedule()
+		keySchedule := tlsClient.GetKeySchedule()
 		if keySchedule == nil {
 			return nil, fmt.Errorf("no key schedule available")
 		}
@@ -1272,7 +1335,7 @@ func (t *TEEK) generateResponseTagSecrets(responseLength int, seqNum uint64, cip
 	}
 }
 
-// All legacy response handler functions removed - now using batched approach only
+// All response handler functions use batched approach
 
 // Single Session Mode: Transcript collection methods
 
@@ -1553,17 +1616,23 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		length := int(session.ResponseState.ResponseLengthBySeq[seqNum])
 
 		// Get server application key and IV for response decryption
-		if t.tlsClient == nil {
+		tlsState, err := t.getSessionTLSState(sessionID)
+		if err != nil {
+			return fmt.Errorf("failed to get TLS state: %v", err)
+		}
+
+		tlsClient, ok := tlsState.TLSClient.(*minitls.Client)
+		if tlsClient == nil || !ok {
 			return fmt.Errorf("no TLS client available for decryption key")
 		}
 
 		// Get server application keys based on TLS version
 		var serverAppKey, serverAppIV []byte
 
-		tlsVersion := t.tlsClient.GetNegotiatedVersion()
+		tlsVersion := tlsClient.GetNegotiatedVersion()
 		if tlsVersion == 0x0303 { // TLS 1.2
 			// Get server keys from TLS 1.2 AEAD context
-			tls12AEAD := t.tlsClient.GetTLS12AEAD()
+			tls12AEAD := tlsClient.GetTLS12AEAD()
 			if tls12AEAD == nil {
 				return fmt.Errorf("no TLS 1.2 AEAD available for redacted decryption")
 			}
@@ -1573,7 +1642,7 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 
 			fmt.Printf("[TEE_K] Session %s: Using TLS 1.2 server keys for redacted decryption stream\n", sessionID)
 		} else { // TLS 1.3
-			keySchedule := t.tlsClient.GetKeySchedule()
+			keySchedule := tlsClient.GetKeySchedule()
 			if keySchedule == nil {
 				return fmt.Errorf("no key schedule available")
 			}
@@ -1589,13 +1658,14 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		}
 
 		// Get cipher suite from TLS client
-		cipherSuite := t.tlsClient.GetCipherSuite()
+		cipherSuite := tlsClient.GetCipherSuite()
 
 		// Generate original decryption stream for this sequence using server application key
 		// For TLS 1.2 AES-GCM, retrieve the stored explicit IV for this sequence
 		var explicitIV []byte
-		if t.explicitIVBySeq != nil {
-			explicitIV = t.explicitIVBySeq[seqNum]
+		responseState, err := t.getSessionResponseState(sessionID)
+		if err == nil && responseState.ExplicitIVBySeq != nil {
+			explicitIV = responseState.ExplicitIVBySeq[seqNum]
 		}
 
 		// Use same sequence logic as tag generation for consistency
@@ -1993,6 +2063,8 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 		session.ResponseState = &shared.ResponseSessionState{
 			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
 			ResponseLengthBySeq:       make(map[uint64]uint32),
+			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ExplicitIVBySeq:           make(map[uint64][]byte),
 		}
 	}
 
@@ -2005,25 +2077,22 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 
 	session.ResponseState.ResponsesMutex.Lock()
 	for _, lengthData := range batchedLengths.Lengths {
-		// *** CRITICAL: Store response lengths for later decryption stream generation ***
-		if t.responseLengthBySeq == nil {
-			t.responseLengthBySeq = make(map[uint64]int)
-		}
-		t.responseLengthBySeq[lengthData.SeqNum] = lengthData.Length
-
-		// *** CRITICAL: Also store in session state for redaction processing ***
+		// Store response lengths in session state for later decryption stream generation
+		session.ResponseState.ResponseLengthBySeqInt[lengthData.SeqNum] = lengthData.Length
 		session.ResponseState.ResponseLengthBySeq[lengthData.SeqNum] = uint32(lengthData.Length)
 
 		// Store explicit IV for TLS 1.2 AES-GCM decryption stream generation
-		if t.explicitIVBySeq == nil {
-			t.explicitIVBySeq = make(map[uint64][]byte)
-		}
 		if lengthData.ExplicitIV != nil {
-			t.explicitIVBySeq[lengthData.SeqNum] = lengthData.ExplicitIV
+			session.ResponseState.ExplicitIVBySeq[lengthData.SeqNum] = lengthData.ExplicitIV
 		}
 
+		// Global state removed - using session state only
+
+		// Global state removed - using session state only
+
 		// Generate tag secrets for this response
-		tagSecretsBytes, err := t.generateResponseTagSecrets(
+		tagSecretsBytes, err := t.generateResponseTagSecretsWithSession(
+			sessionID,
 			lengthData.Length,
 			lengthData.SeqNum,
 			lengthData.CipherSuite,
@@ -2066,7 +2135,7 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 	fmt.Printf("[TEE_K] BATCHING: Successfully sent batch of %d tag secrets to TEE_T\n", len(tagSecrets))
 }
 
-// Legacy helper function removed - logic inlined in batched handler
+// Helper function logic inlined in batched handler
 
 // *** NEW: Handle batched tag verification results for optimization ***
 func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *shared.Message) {
@@ -2097,14 +2166,19 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 		}
 
 		// Get the stored response length for this sequence number
-		responseLength, exists := t.responseLengthBySeq[verification.SeqNum]
+		responseState, err := t.getSessionResponseState(sessionID)
+		if err != nil {
+			log.Printf("[TEE_K] Session %s: Failed to get response state: %v", sessionID, err)
+			continue
+		}
+		responseLength, exists := responseState.ResponseLengthBySeqInt[verification.SeqNum]
 		if !exists {
 			log.Printf("[TEE_K] No response length found for seq %d", verification.SeqNum)
 			continue
 		}
 
-		// Generate decryption stream using existing working logic
-		decryptionStream, err := t.generateSingleDecryptionStream(responseLength, verification.SeqNum)
+		// Generate decryption stream using session-aware logic
+		decryptionStream, err := t.generateSingleDecryptionStreamWithSession(sessionID, responseLength, verification.SeqNum)
 		if err != nil {
 			log.Printf("[TEE_K] Failed to generate decryption stream for seq %d: %v", verification.SeqNum, err)
 			continue
@@ -2144,25 +2218,34 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 	fmt.Printf("[TEE_K] BATCHING: Successfully sent batch of %d decryption streams to client\n", len(decryptionStreams))
 }
 
-// *** NEW: Helper to generate decryption stream for a single response ***
-func (t *TEEK) generateSingleDecryptionStream(responseLength int, seqNum uint64) ([]byte, error) {
-	if t.tlsClient == nil {
+// *** NEW: Session-aware helper to generate decryption stream for a single response ***
+func (t *TEEK) generateSingleDecryptionStreamWithSession(sessionID string, responseLength int, seqNum uint64) ([]byte, error) {
+	// Get TLS client from session state
+	var tlsClient *minitls.Client
+	if sessionID != "" {
+		tlsState, err := t.getSessionTLSState(sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get TLS state: %v", err)
+		}
+		if tlsClientInterface, ok := tlsState.TLSClient.(*minitls.Client); ok {
+			tlsClient = tlsClientInterface
+		}
+	}
+
+	if tlsClient == nil {
 		return nil, fmt.Errorf("no TLS client available")
 	}
 
-	// Get the actual response length from stored data
-	streamLength, exists := t.responseLengthBySeq[seqNum]
-	if !exists {
-		return nil, fmt.Errorf("no response length found for seq=%d", seqNum)
-	}
+	// Use the provided responseLength parameter
+	streamLength := responseLength
 
 	// Get server application keys based on TLS version (same as existing working code)
 	var serverAppKey, serverAppIV []byte
 
-	tlsVersion := t.tlsClient.GetNegotiatedVersion()
+	tlsVersion := tlsClient.GetNegotiatedVersion()
 	if tlsVersion == 0x0303 { // TLS 1.2
 		// Get server keys from TLS 1.2 AEAD context
-		tls12AEAD := t.tlsClient.GetTLS12AEAD()
+		tls12AEAD := tlsClient.GetTLS12AEAD()
 		if tls12AEAD == nil {
 			return nil, fmt.Errorf("no TLS 1.2 AEAD available for decryption")
 		}
@@ -2173,7 +2256,7 @@ func (t *TEEK) generateSingleDecryptionStream(responseLength int, seqNum uint64)
 		fmt.Printf("[TEE_K] Using TLS 1.2 server keys for batched decryption stream\n")
 	} else { // TLS 1.3
 		// Get key schedule to access server application keys
-		keySchedule := t.tlsClient.GetKeySchedule()
+		keySchedule := tlsClient.GetKeySchedule()
 		if keySchedule == nil {
 			return nil, fmt.Errorf("no key schedule available")
 		}
@@ -2189,12 +2272,17 @@ func (t *TEEK) generateSingleDecryptionStream(responseLength int, seqNum uint64)
 	}
 
 	// Get cipher suite from TLS client
-	cipherSuite := t.tlsClient.GetCipherSuite()
+	cipherSuite := tlsClient.GetCipherSuite()
 
 	// Get stored explicit IV for TLS 1.2 AES-GCM
 	var explicitIV []byte
-	if t.explicitIVBySeq != nil {
-		explicitIV = t.explicitIVBySeq[seqNum]
+	if sessionID != "" {
+		// Use session state
+		responseState, err := t.getSessionResponseState(sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get session response state: %v", err)
+		}
+		explicitIV = responseState.ExplicitIVBySeq[seqNum]
 	}
 
 	// Generate cipher-agnostic decryption stream

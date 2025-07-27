@@ -36,19 +36,6 @@ type TEET struct {
 
 	ready bool
 
-	// Legacy fields for backward compatibility during migration
-	// TODO: Remove these after full migration to session-aware handlers
-	clientConn              *websocket.Conn
-	keyShare                []byte
-	cipherSuite             uint16
-	redactionStreams        [][]byte                     // [Str_S, Str_SP]
-	commitmentKeys          [][]byte                     // [K_S, K_SP]
-	redactionRanges         []shared.RedactionRange      // Stored when encrypted request comes from TEE_K
-	pendingEncryptedRequest *shared.EncryptedRequestData // Store encrypted request until streams arrive
-	teekConn_for_pending    *websocket.Conn              // Store TEE_K connection for pending request
-
-	// Legacy global response storage has been migrated to session-aware storage
-
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
 
@@ -72,13 +59,12 @@ func NewTEETWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 	}
 
 	return &TEET{
-		port:                    port,
-		sessionManager:          shared.NewSessionManager(),
-		logger:                  shared.GetTEETLogger(), // Use global logger for backward compatibility
-		sessionTerminator:       shared.NewSessionTerminator(shared.GetTEETLogger()),
-		pendingEncryptedRequest: nil,
-		signingKeyPair:          signingKeyPair,
-		enclaveManager:          enclaveManager,
+		port:              port,
+		sessionManager:    shared.NewSessionManager(),
+		logger:            shared.GetTEETLogger(),
+		sessionTerminator: shared.NewSessionTerminator(shared.GetTEETLogger()),
+		signingKeyPair:    signingKeyPair,
+		enclaveManager:    enclaveManager,
 	}
 }
 
@@ -112,13 +98,12 @@ func NewTEETWithEnclaveManagerAndLogger(port int, enclaveManager *shared.Enclave
 	}
 
 	return &TEET{
-		port:                    port,
-		sessionManager:          shared.NewSessionManager(),
-		logger:                  logger,
-		sessionTerminator:       sessionTerminator,
-		pendingEncryptedRequest: nil,
-		signingKeyPair:          signingKeyPair,
-		enclaveManager:          enclaveManager,
+		port:              port,
+		sessionManager:    shared.NewSessionManager(),
+		logger:            logger,
+		sessionTerminator: sessionTerminator,
+		signingKeyPair:    signingKeyPair,
+		enclaveManager:    enclaveManager,
 	}
 }
 
@@ -141,14 +126,25 @@ func NewTEETWithSessionManagerAndEnclaveManager(port int, sessionManager shared.
 	logger := shared.GetTEETLogger()
 
 	return &TEET{
-		port:                    port,
-		sessionManager:          sessionManager,
-		logger:                  logger,
-		sessionTerminator:       shared.NewSessionTerminator(logger),
-		pendingEncryptedRequest: nil,
-		signingKeyPair:          signingKeyPair,
-		enclaveManager:          enclaveManager,
+		port:              port,
+		sessionManager:    sessionManager,
+		logger:            logger,
+		sessionTerminator: shared.NewSessionTerminator(logger),
+		signingKeyPair:    signingKeyPair,
+		enclaveManager:    enclaveManager,
 	}
+}
+
+// Helper functions to access session state
+func (t *TEET) getSessionRedactionState(sessionID string) (*shared.RedactionSessionState, error) {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if session.RedactionState == nil {
+		session.RedactionState = &shared.RedactionSessionState{}
+	}
+	return session.RedactionState, nil
 }
 
 // Start method removed - now handled by main.go with proper graceful shutdown
@@ -413,7 +409,7 @@ func (t *TEET) handleTEETReadySession(sessionID string, msg *shared.Message) {
 
 	t.logger.InfoIf("Handling TEE_T ready for session", zap.String("session_id", sessionID))
 
-	// For now, delegate to legacy handler with the client connection
+	// Delegate to handler with the client connection
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
@@ -485,11 +481,16 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 	// Process pending encrypted request if available
 	if session.ResponseState != nil && session.ResponseState.PendingEncryptedRequest != nil {
 		t.logger.InfoIf("Processing pending encrypted request with newly received streams", zap.String("session_id", sessionID))
-		t.processEncryptedRequestWithStreamsForSession(sessionID, session.ResponseState.PendingEncryptedRequest, t.teekConn_for_pending)
+		// Get the stored TEE_K connection from session state
+		if session.ResponseState.TEETConnForPending != nil {
+			if teekConn, ok := session.ResponseState.TEETConnForPending.(*websocket.Conn); ok {
+				t.processEncryptedRequestWithStreamsForSession(sessionID, session.ResponseState.PendingEncryptedRequest, teekConn)
+			}
+		}
 
 		// Clear pending request
 		session.ResponseState.PendingEncryptedRequest = nil
-		t.teekConn_for_pending = nil
+		session.ResponseState.TEETConnForPending = nil
 	}
 
 	// Send verification response to client using session routing
@@ -509,7 +510,7 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 		zap.String("session_id", sessionID))
 }
 
-// Legacy handleEncryptedResponseSession function removed - now using batched approach
+// handleEncryptedResponseSession function removed - now using batched approach
 
 // *** NEW: Handle batched encrypted responses for optimization ***
 func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *shared.Message) {
@@ -733,10 +734,18 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 		return
 	}
 
-	// TODO: Store in session state instead of global fields
-	// For now, store in global fields (requires Session struct enhancement)
-	t.keyShare = keyShare
-	t.cipherSuite = keyReq.CipherSuite
+	// Store in session state
+	redactionState, err := t.getSessionRedactionState(sessionID)
+	if err != nil {
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionManagerFailure, err) {
+			return
+		}
+		return
+	}
+	redactionState.KeyShare = keyShare
+	redactionState.CipherSuite = keyReq.CipherSuite
+
+	// Global state removed - using session state only
 
 	t.logger.InfoIf("Generated key share for session",
 		zap.String("session_id", sessionID),
@@ -820,9 +829,9 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 		// No redaction streams available yet - store request and wait
 		session.ResponseState.PendingEncryptedRequest = &encReq
 
-		// Store TEE_K connection for pending request
+		// Store TEE_K connection for pending request in session state
 		wsConn := session.TEEKConn.(*shared.WSConnection)
-		t.teekConn_for_pending = wsConn.GetWebSocketConn()
+		session.ResponseState.TEETConnForPending = wsConn.GetWebSocketConn()
 		t.logger.InfoIf("Storing encrypted request for session, waiting for redaction streams...",
 			zap.String("session_id", sessionID))
 		return
@@ -834,7 +843,7 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 	t.processEncryptedRequestWithStreamsForSession(sessionID, &encReq, wsConn.GetWebSocketConn())
 }
 
-// Legacy handleResponseTagSecretsSession function removed - now using batched approach
+// handleResponseTagSecretsSession function removed - now using batched approach
 
 // *** NEW: Handle batched tag secrets for optimization ***
 func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
@@ -1079,7 +1088,6 @@ func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.Encr
 	return verificationData
 }
 
-// processEncryptedRequestWithStreams handles the actual processing once streams are available
 func (t *TEET) processEncryptedRequestWithStreams(encReq *shared.EncryptedRequestData, conn *websocket.Conn) {
 	t.logger.InfoIf("Processing encrypted request with available redaction streams")
 
@@ -1136,22 +1144,10 @@ func (t *TEET) processEncryptedRequestWithStreams(encReq *shared.EncryptedReques
 		zap.Binary("tag", authTag),
 		zap.Int("data_length", len(reconstructedData)))
 
-	// Send the RECONSTRUCTED encrypted data with tag to client (not the redacted version!)
-	response := shared.EncryptedDataResponse{
-		EncryptedData: reconstructedData, // Send the full reconstructed encrypted request
-		AuthTag:       authTag,           // Tag computed on full reconstructed request
-		Success:       true,
-	}
-
-	t.logger.InfoIf("Sending reconstructed encrypted data to client",
-		zap.Int("data_length", len(reconstructedData)),
-		zap.Binary("first_32_bytes", reconstructedData[:min(32, len(reconstructedData))]))
-
-	responseMsg := shared.CreateMessage(shared.MsgEncryptedData, response)
-	if err := t.sendMessageToClient(responseMsg); err != nil {
-		t.logger.Error("Failed to send encrypted data to client", zap.Error(err))
-		return
-	}
+	// Note: This function should be updated to use session-based routing
+	// For now, we'll use the session-aware version which requires a sessionID
+	t.logger.Error("processEncryptedRequestWithStreams should use session-based routing")
+	return
 }
 
 // processEncryptedRequestWithStreamsForSession is session-aware version
@@ -1318,20 +1314,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 
 // Note: computeAuthenticationTag function has been consolidated into minitls.ComputeTagFromSecrets
 
-func (t *TEET) sendMessageToClient(msg *shared.Message) error {
-	conn := t.clientConn
-
-	if conn == nil {
-		return fmt.Errorf("no client connection available")
-	}
-
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %v", err)
-	}
-
-	return conn.WriteMessage(websocket.TextMessage, msgBytes)
-}
+// sendMessageToClient removed - use sendMessageToClientSession instead
 
 // sendMessageToClientSession sends a message to a specific client by session ID
 func (t *TEET) sendMessageToClientSession(sessionID string, msg *shared.Message) error {
@@ -1383,8 +1366,16 @@ func (t *TEET) sendErrorToTEEKForSession(sessionID string, conn *websocket.Conn,
 }
 
 func (t *TEET) sendErrorToClient(conn *websocket.Conn, errMsg string) {
+	// This function should be updated to use session-based routing
+	// For now, we'll use the direct websocket connection
 	errorMsg := shared.CreateMessage(shared.MsgError, shared.ErrorData{Message: errMsg})
-	if err := t.sendMessageToClient(errorMsg); err != nil {
+	msgBytes, err := json.Marshal(errorMsg)
+	if err != nil {
+		t.logger.Error("Failed to marshal error message", zap.Error(err))
+		return
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
 		t.logger.Error("Failed to send error message to client", zap.Error(err))
 	}
 }
@@ -1428,38 +1419,9 @@ func (t *TEET) verifyCommitments(streams, keys [][]byte) error {
 }
 
 // reconstructFullRequest applies redaction streams to encrypted redacted data to get full plaintext
+// DEPRECATED: Use reconstructFullRequestWithStreams instead with session state
 func (t *TEET) reconstructFullRequest(encryptedRedacted []byte, ranges []shared.RedactionRange) ([]byte, error) {
-	// Make a copy of the encrypted redacted data
-	reconstructed := make([]byte, len(encryptedRedacted))
-	copy(reconstructed, encryptedRedacted)
-
-	t.logger.DebugIf("Starting stream application to reconstruct full request",
-		zap.Binary("redacted_data_preview", encryptedRedacted[:min(64, len(encryptedRedacted))]))
-
-	// Apply streams to redacted ranges (this reverses the XOR redaction)
-	for i, r := range ranges {
-		if i >= len(t.redactionStreams) {
-			continue
-		}
-
-		stream := t.redactionStreams[i]
-
-		t.logger.DebugIf("Applying redaction stream to range",
-			zap.Int("stream_index", i),
-			zap.Int("range_start", r.Start),
-			zap.Int("range_end", r.Start+r.Length),
-			zap.Binary("stream_preview", stream[:min(16, len(stream))]))
-
-		// Apply XOR stream to undo redaction (this gives us back the original sensitive data)
-		for j := 0; j < r.Length && r.Start+j < len(reconstructed) && j < len(stream); j++ {
-			reconstructed[r.Start+j] ^= stream[j]
-		}
-	}
-
-	t.logger.DebugIf("Applied redaction streams in legacy function",
-		zap.Binary("reconstructed_preview", reconstructed[:min(64, len(reconstructed))]),
-		zap.Int("total_bytes", len(reconstructed)))
-	return reconstructed, nil
+	return nil, fmt.Errorf("reconstructFullRequest is deprecated - use reconstructFullRequestWithStreams with session state")
 }
 
 // reconstructFullRequestWithStreams is session-aware version that accepts redaction streams as parameter
@@ -1500,39 +1462,9 @@ func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, range
 }
 
 // This is where the full encrypted request would be reconstructed from the redacted version
+// DEPRECATED: Use reconstructFullRequestWithStreams instead with session state
 func (t *TEET) reconstructFullEncryptedRequest(encryptedRedacted []byte, ranges []shared.RedactionRange) ([]byte, error) {
-	// Make a copy of the encrypted redacted data
-	reconstructed := make([]byte, len(encryptedRedacted))
-	copy(reconstructed, encryptedRedacted)
-
-	t.logger.DebugIf("Starting legacy stream application to reconstruct full encrypted request",
-		zap.Binary("redacted_preview", encryptedRedacted[:min(64, len(encryptedRedacted))]),
-		zap.Int("redaction_ranges", len(ranges)))
-
-	// Apply streams to redacted ranges (this reverses the XOR redaction)
-	for i, r := range ranges {
-		if i >= len(t.redactionStreams) {
-			continue
-		}
-
-		stream := t.redactionStreams[i]
-
-		t.logger.DebugIf("Applying legacy redaction stream to range",
-			zap.Int("stream_index", i),
-			zap.Int("range_start", r.Start),
-			zap.Int("range_end", r.Start+r.Length),
-			zap.Binary("stream_preview", stream[:min(16, len(stream))]))
-
-		// Apply XOR stream to undo redaction (this gives us back the original sensitive data)
-		for j := 0; j < r.Length && r.Start+j < len(reconstructed) && j < len(stream); j++ {
-			reconstructed[r.Start+j] ^= stream[j]
-		}
-	}
-
-	t.logger.DebugIf("Completed legacy stream application",
-		zap.Binary("reconstructed_preview", reconstructed[:min(64, len(reconstructed))]),
-		zap.Int("total_bytes", len(reconstructed)))
-	return reconstructed, nil
+	return nil, fmt.Errorf("reconstructFullEncryptedRequest is deprecated - use reconstructFullRequestWithStreams with session state")
 }
 
 // Phase 4: Response handling methods (moved to session-aware versions)
@@ -1551,7 +1483,14 @@ func (t *TEET) handleTEETReady(conn *websocket.Conn, msg *shared.Message) {
 	response := shared.TEETReadyData{Success: true}
 	responseMsg := shared.CreateMessage(shared.MsgTEETReady, response)
 
-	if err := t.sendMessageToClient(responseMsg); err != nil {
+	// Use direct websocket connection since this is not session-based
+	msgBytes, err := json.Marshal(responseMsg)
+	if err != nil {
+		t.logger.Error("Failed to marshal TEE_T ready response", zap.Error(err))
+		return
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
 		t.logger.Error("Failed to send TEE_T ready response", zap.Error(err))
 	}
 }
@@ -1893,4 +1832,4 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 	}
 }
 
-// Legacy handler methods (still needed for backward compatibility)
+// Handler methods
