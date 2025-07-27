@@ -31,7 +31,8 @@ type TEEK struct {
 	port int
 
 	// Session management
-	sessionManager shared.SessionManagerInterface
+	sessionManager    shared.SessionManagerInterface
+	sessionTerminator *shared.SessionTerminator
 
 	// TEE_T connection settings
 	teetURL string
@@ -75,19 +76,18 @@ func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
-		log.Printf("[TEE_K] Failed to generate signing key pair: %v", err)
-		// Continue without signing capability rather than failing
-		signingKeyPair = nil
-	} else {
-		fmt.Printf("[TEE_K] Generated ECDSA signing key pair (P-256 curve)\n")
+		// Critical failure - cannot operate without signing capability
+		log.Fatalf("[TEE_K] CRITICAL: Failed to generate signing key pair: %v", err)
 	}
+	fmt.Printf("[TEE_K] Generated ECDSA signing key pair (P-256 curve)\n")
 
 	return &TEEK{
-		port:           port,
-		sessionManager: shared.NewSessionManager(),
-		teetURL:        "ws://localhost:8081/teek", // Default TEE_T URL
-		signingKeyPair: signingKeyPair,
-		enclaveManager: enclaveManager,
+		port:              port,
+		sessionManager:    shared.NewSessionManager(),
+		sessionTerminator: shared.NewSessionTerminator(shared.GetTEEKLogger()),
+		teetURL:           "ws://localhost:8081/teek", // Default TEE_T URL
+		signingKeyPair:    signingKeyPair,
+		enclaveManager:    enclaveManager,
 	}
 }
 
@@ -291,16 +291,15 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
-			log.Printf("[TEE_K] Failed to parse client message: %v", err)
-			t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to parse message: %v", err))
-			continue
+			t.terminateSessionWithError(sessionID, shared.ReasonMessageParsingFailed, err, "Failed to parse client message")
+			return
 		}
 
 		// Verify session ID matches
 		if msg.SessionID != sessionID {
-			log.Printf("[TEE_K] Session ID mismatch: expected %s, got %s", sessionID, msg.SessionID)
-			t.sendErrorToSession(sessionID, "Session ID mismatch")
-			continue
+			sessionErr := fmt.Errorf("session ID mismatch: expected %s, got %s", sessionID, msg.SessionID)
+			t.terminateSessionWithError(sessionID, shared.ReasonSessionIDMismatch, sessionErr, "Session ID mismatch")
+			return
 		}
 
 		// Handle message based on type
@@ -320,8 +319,8 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgAttestationRequest:
 			t.handleAttestationRequestSession(sessionID, msg)
 		default:
-			log.Printf("[TEE_K] Unknown message type for session %s: %s", sessionID, msg.Type)
-			t.sendErrorToSession(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
+			unknownMsgErr := fmt.Errorf("unknown message type: %s", msg.Type)
+			t.terminateSessionWithError(sessionID, shared.ReasonUnknownMessageType, unknownMsgErr, "Unknown message type")
 		}
 	}
 
@@ -368,15 +367,35 @@ func (t *TEEK) notifyTEETNewSession(sessionID string) error {
 	return nil
 }
 
-// sendErrorToSession sends an error message to a specific session
-func (t *TEEK) sendErrorToSession(sessionID string, errMsg string) {
-	errorMsg := shared.CreateSessionMessage(shared.MsgError, sessionID, shared.ErrorData{
-		Message: errMsg,
-	})
-
-	if err := t.sessionManager.RouteToClient(sessionID, errorMsg); err != nil {
-		log.Printf("[TEE_K] Failed to send error to session %s: %v", sessionID, err)
+// terminateSessionWithError terminates a session due to a critical error
+func (t *TEEK) terminateSessionWithError(sessionID string, reason shared.TerminationReason, err error, message string) {
+	// Log the critical error and determine if session should terminate
+	if t.sessionTerminator.CriticalError(sessionID, reason, err) {
+		// Cleanup session resources
+		t.cleanupSession(sessionID)
 	}
+}
+
+// sendErrorToSession terminates a session with an error (fail-fast implementation)
+// DEPRECATED: Use terminateSessionWithError with specific termination reasons
+func (t *TEEK) sendErrorToSession(sessionID string, errMsg string) {
+	// All errors now result in session termination per fail-fast requirements
+	err := fmt.Errorf("%s", errMsg)
+	t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, errMsg)
+}
+
+// cleanupSession performs complete cleanup of session resources
+func (t *TEEK) cleanupSession(sessionID string) {
+	// Close the session in session manager (handles connections and state cleanup)
+	if err := t.sessionManager.CloseSession(sessionID); err != nil {
+		// Log cleanup failure but don't continue with broken session
+		log.Printf("[TEE_K] Failed to cleanup session %s: %v", sessionID, err)
+	}
+
+	// Cleanup session terminator tracking
+	t.sessionTerminator.CleanupSession(sessionID)
+
+	log.Printf("[TEE_K] Session %s terminated and cleaned up", sessionID)
 }
 
 // Session-aware handler methods
@@ -417,8 +436,7 @@ func (t *TEEK) handleRequestConnectionSession(sessionID string, msg *shared.Mess
 
 	var reqData shared.RequestConnectionData
 	if err := msg.UnmarshalData(&reqData); err != nil {
-		log.Printf("[TEE_K] Session %s: Failed to unmarshal connection request: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, "Failed to parse connection request")
+		t.terminateSessionWithError(sessionID, shared.ReasonMessageParsingFailed, err, "Failed to parse connection request")
 		return
 	}
 
@@ -427,8 +445,7 @@ func (t *TEEK) handleRequestConnectionSession(sessionID string, msg *shared.Mess
 	// Store connection data in session
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("[TEE_K] Session %s not found: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, "Session not found")
+		t.terminateSessionWithError(sessionID, shared.ReasonSessionNotFound, err, "Session not found")
 		return
 	}
 	session.ConnectionData = &reqData
@@ -436,8 +453,7 @@ func (t *TEEK) handleRequestConnectionSession(sessionID string, msg *shared.Mess
 	// Send connection ready message to client (was missing!)
 	readyMsg := shared.CreateSessionMessage(shared.MsgConnectionReady, sessionID, shared.ConnectionReadyData{Success: true})
 	if err := t.sessionManager.RouteToClient(sessionID, readyMsg); err != nil {
-		log.Printf("[TEE_K] Failed to send connection ready to session %s: %v", sessionID, err)
-		t.sendErrorToSession(sessionID, "Failed to send connection ready message")
+		t.terminateSessionWithError(sessionID, shared.ReasonNetworkFailure, err, "Failed to send connection ready message")
 		return
 	}
 
@@ -448,14 +464,13 @@ func (t *TEEK) handleRequestConnectionSession(sessionID string, msg *shared.Mess
 func (t *TEEK) handleTCPReadySession(sessionID string, msg *shared.Message) {
 	var tcpData shared.TCPReadyData
 	if err := msg.UnmarshalData(&tcpData); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal TCP ready data: %v", err)
-		t.sendErrorToSession(sessionID, fmt.Sprintf("Failed to unmarshal TCP ready data: %v", err))
+		t.terminateSessionWithError(sessionID, shared.ReasonMessageParsingFailed, err, "Failed to unmarshal TCP ready data")
 		return
 	}
 
 	if !tcpData.Success {
-		log.Printf("[TEE_K] Session %s: TCP connection failed", sessionID)
-		t.sendErrorToSession(sessionID, "TCP connection failed")
+		tcpErr := fmt.Errorf("TCP connection failed")
+		t.terminateSessionWithError(sessionID, shared.ReasonNetworkFailure, tcpErr, "TCP connection failed")
 		return
 	}
 
@@ -1032,7 +1047,7 @@ func (t *TEEK) handleKeyShareResponseWithSession(sessionID string, msg *shared.M
 			// Store in session state
 			tlsState, err := t.getSessionTLSState(sessionID)
 			if err != nil {
-				log.Printf("[TEE_K] Session %s: Failed to get TLS state: %v", sessionID, err)
+				t.terminateSessionWithError(sessionID, shared.ReasonSessionStateCorrupted, err, "Failed to get TLS state")
 				return
 			}
 			tlsState.KeyShare = keyShareResp.KeyShare
@@ -1042,18 +1057,27 @@ func (t *TEEK) handleKeyShareResponseWithSession(sessionID string, msg *shared.M
 		// Global state removed - using session state only
 		fmt.Printf("[TEE_K] Received key share from TEE_T (%d bytes): %x\n", len(keyShareResp.KeyShare), keyShareResp.KeyShare)
 	} else {
-		log.Printf("[TEE_K] TEE_T key share generation failed")
+		// Key share generation failure is critical - terminate session
+		keyShareErr := fmt.Errorf("TEE_T key share generation failed")
+		if sessionID != "" {
+			t.terminateSessionWithError(sessionID, shared.ReasonCryptoKeyGenerationFailed, keyShareErr, "TEE_T key share generation failed")
+		} else {
+			log.Fatalf("[TEE_K] CRITICAL: TEE_T key share generation failed without session context")
+		}
 	}
 }
 
 func (t *TEEK) handleTEETError(msg *shared.Message) {
 	var errorData shared.ErrorData
 	if err := msg.UnmarshalData(&errorData); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal TEE_T error: %v", err)
+		// Cannot parse TEE_T error - critical failure
+		log.Fatalf("[TEE_K] CRITICAL: Failed to unmarshal TEE_T error: %v", err)
 		return
 	}
 
-	log.Printf("[TEE_K] TEE_T error: %s", errorData.Message)
+	// Any TEE_T error is critical and should terminate all sessions
+	teetErr := fmt.Errorf("TEE_T error: %s", errorData.Message)
+	log.Fatalf("[TEE_K] CRITICAL: %v", teetErr)
 }
 
 func (t *TEEK) requestKeyShareFromTEET(cipherSuite uint16) error {

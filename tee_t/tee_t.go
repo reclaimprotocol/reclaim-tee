@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -51,12 +52,11 @@ func NewTEETWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
-		shared.GetTEETLogger().Error("Failed to generate signing key pair, continuing without signing capability", zap.Error(err))
-		// Continue without signing capability rather than failing
-		signingKeyPair = nil
-	} else {
-		shared.GetTEETLogger().InfoIf("Generated ECDSA signing key pair (P-256 curve)")
+		// Critical failure - cannot operate without signing capability
+		shared.GetTEETLogger().Critical("CRITICAL: Failed to generate signing key pair", zap.Error(err))
+		log.Fatalf("[TEE_T] CRITICAL: Failed to generate signing key pair: %v", err)
 	}
+	shared.GetTEETLogger().InfoIf("Generated ECDSA signing key pair (P-256 curve)")
 
 	return &TEET{
 		port:              port,
@@ -80,21 +80,14 @@ func NewTEETWithEnclaveManagerAndLogger(port int, enclaveManager *shared.Enclave
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
-		if sessionTerminator != nil {
-			if sessionTerminator.CriticalError("", shared.ReasonCryptoKeyGenerationFailed, err) {
-				// In enclave mode, this is critical - should terminate
-				return nil
-			}
-		}
+		// Critical failure - cannot operate without signing capability
 		if logger != nil {
-			logger.Error("Failed to generate signing key pair, continuing without signing capability", zap.Error(err))
+			logger.Critical("CRITICAL: Failed to generate signing key pair", zap.Error(err))
 		}
-		// Continue without signing capability rather than failing
-		signingKeyPair = nil
-	} else {
-		if logger != nil {
-			logger.InfoIf("Generated ECDSA signing key pair", zap.String("curve", "P-256"))
-		}
+		log.Fatalf("[TEE_T] CRITICAL: Failed to generate signing key pair: %v", err)
+	}
+	if logger != nil {
+		logger.InfoIf("Generated ECDSA signing key pair", zap.String("curve", "P-256"))
 	}
 
 	return &TEET{
@@ -116,12 +109,11 @@ func NewTEETWithSessionManagerAndEnclaveManager(port int, sessionManager shared.
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
-		shared.GetTEETLogger().Error("Failed to generate signing key pair, continuing without signing capability", zap.Error(err))
-		// Continue without signing capability rather than failing
-		signingKeyPair = nil
-	} else {
-		shared.GetTEETLogger().InfoIf("Generated ECDSA signing key pair (P-256 curve)")
+		// Critical failure - cannot operate without signing capability
+		shared.GetTEETLogger().Critical("CRITICAL: Failed to generate signing key pair", zap.Error(err))
+		log.Fatalf("[TEE_T] CRITICAL: Failed to generate signing key pair: %v", err)
 	}
+	shared.GetTEETLogger().InfoIf("Generated ECDSA signing key pair (P-256 curve)")
 
 	logger := shared.GetTEETLogger()
 
@@ -196,8 +188,9 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 				t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
 				break // Terminate session
 			}
+			// Protocol errors now always terminate - no more continue
 			t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
-			continue
+			break
 		}
 
 		t.logger.DebugIf("Received message from client",
@@ -211,28 +204,25 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 				sessionID = msg.SessionID
 				wsConn := shared.NewWSConnection(conn)
 				if err := t.sessionManager.ActivateSession(sessionID, wsConn); err != nil {
-					// Session activation failure is critical
-					if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionManagerFailure, err,
-						zap.String("remote_addr", r.RemoteAddr)) {
-						t.sendErrorToClient(conn, "Failed to activate session")
-						break // Terminate session
-					}
-					continue
+					// Session activation failure is critical - always terminate
+					t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionManagerFailure, err,
+						zap.String("remote_addr", r.RemoteAddr))
+					t.sendErrorToClient(conn, "Failed to activate session")
+					break // Terminate session
 				}
 				t.logger.InfoIf("Activated session for client",
 					zap.String("session_id", sessionID),
 					zap.String("remote_addr", conn.RemoteAddr().String()))
 			} else if msg.SessionID != sessionID {
 				// Session ID mismatch is a security violation
-				if t.sessionTerminator.SecurityViolation(sessionID, shared.ReasonSessionIDMismatch,
+				// Session ID mismatch is always a security violation - terminate immediately
+				t.sessionTerminator.SecurityViolation(sessionID, shared.ReasonSessionIDMismatch,
 					fmt.Errorf("expected %s, got %s", sessionID, msg.SessionID),
 					zap.String("expected_session", sessionID),
 					zap.String("received_session", msg.SessionID),
-					zap.String("remote_addr", r.RemoteAddr)) {
-					t.sendErrorToClient(conn, "Session ID mismatch")
-					break // Terminate session
-				}
-				continue
+					zap.String("remote_addr", r.RemoteAddr))
+				t.sendErrorToClient(conn, "Session ID mismatch")
+				break // Terminate session
 			}
 		}
 
@@ -307,16 +297,13 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
-			// Message parsing failure from TEE_K is critical
-			if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
+			// Message parsing failure from TEE_K is critical - always terminate
+			t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
 				zap.String("remote_addr", r.RemoteAddr),
 				zap.String("connection_type", "teek"),
-				zap.Int("message_size", len(msgBytes))) {
-				t.sendErrorToTEEKForSession("", conn, fmt.Sprintf("Failed to parse message: %v", err))
-				break // Terminate session
-			}
+				zap.Int("message_size", len(msgBytes)))
 			t.sendErrorToTEEKForSession("", conn, fmt.Sprintf("Failed to parse message: %v", err))
-			continue
+			break // Terminate session
 		}
 
 		// For the first message (session creation), store the session ID

@@ -1346,16 +1346,19 @@ func (c *Client) parseResponseRecords(serverAEAD *AEAD) (appData []byte, consume
 							}
 							fmt.Printf("TLS Alert: %s - %s\n", levelStr, alertDescriptionString(alertDescription))
 
+							// In strict fail-fast mode, ANY alert should terminate connection
 							if alertLevel == 2 { // Fatal alert
 								return nil, 0, fmt.Errorf("received fatal alert: %s", alertDescriptionString(alertDescription))
+							} else { // Warning alert - also terminate in fail-fast mode
+								return nil, 0, fmt.Errorf("received warning alert (fail-fast mode): %s", alertDescriptionString(alertDescription))
 							}
 						}
 					}
 				}
 
-				// Update the offset to point to the start of the next record and continue
-				offset += 5 + recordLength
-				continue
+				// Alert processing now always terminates connection - this should not be reached
+				// offset += 5 + recordLength
+				// continue
 			}
 
 			return nil, 0, fmt.Errorf("unexpected record type in application data phase: %d", recordType)

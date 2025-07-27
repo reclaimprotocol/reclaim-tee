@@ -239,8 +239,8 @@ func (c *Client) tcpToWebsocket() {
 					// During handshake: Forward to TEE_K
 					tcpDataMsg, err := CreateMessage(MsgTCPData, TCPData{Data: packet})
 					if err != nil {
-						log.Printf("[Client] Failed to create TCP data message: %v", err)
-						continue
+						c.terminateConnectionWithError("Failed to create TCP data message", err)
+						return
 					}
 
 					if err := c.sendMessage(tcpDataMsg); err != nil {

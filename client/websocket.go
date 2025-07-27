@@ -119,9 +119,11 @@ func (c *Client) handleMessages() {
 		msg, err := ParseMessage(msgBytes)
 		if err != nil {
 			if !closing {
-				log.Printf("[Client] Failed to parse message: %v", err)
+				c.terminateConnectionWithError("Failed to parse message from TEE_K", err)
+				return
 			}
-			continue
+			// Allow graceful shutdown during close
+			break
 		}
 
 		switch msg.Type {
@@ -184,9 +186,11 @@ func (c *Client) handleTEETMessages() {
 		msg, err := ParseMessage(msgBytes)
 		if err != nil {
 			if !closing {
-				log.Printf("[Client] Failed to parse TEE_T message: %v", err)
+				c.terminateConnectionWithError("Failed to parse message from TEE_T", err)
+				return
 			}
-			continue
+			// Allow graceful shutdown during close
+			break
 		}
 
 		switch msg.Type {
@@ -276,16 +280,17 @@ func (c *Client) sendMessageToTEET(msg *Message) error {
 	return nil
 }
 
-// sendError sends an error message to TEE_K
+// sendError sends an error message to TEE_K (fail-fast implementation)
 func (c *Client) sendError(errMsg string) {
 	errorMsg, err := CreateMessage(MsgError, ErrorData{Message: errMsg})
 	if err != nil {
-		log.Printf("[Client] Failed to create error message: %v", err)
+		c.terminateConnectionWithError("Failed to create error message", err)
 		return
 	}
 
 	if err := c.sendMessage(errorMsg); err != nil {
-		log.Printf("[Client] Failed to send error message: %v", err)
+		c.terminateConnectionWithError("Failed to send error message", err)
+		return
 	}
 }
 
@@ -328,15 +333,16 @@ func (c *Client) handleSessionReady(msg *Message) {
 	}
 }
 
-// handleError handles error messages from TEE_K
+// handleError handles error messages from TEE_K (fail-fast implementation)
 func (c *Client) handleError(msg *Message) {
 	var errorData ErrorData
 	if err := msg.UnmarshalData(&errorData); err != nil {
-		log.Printf("[Client] Failed to unmarshal error data: %v", err)
+		c.terminateConnectionWithError("Failed to unmarshal error data from TEE_K", err)
 		return
 	}
 
-	log.Printf("[Client] Error from TEE_K: %s", errorData.Message)
+	// Any error from TEE_K should terminate the session immediately
+	c.terminateConnectionWithError("Received error from TEE_K", fmt.Errorf("TEE_K error: %s", errorData.Message))
 }
 
 // handleHTTPResponse handles HTTP response messages from TEE_K
@@ -473,15 +479,16 @@ func (c *Client) handleRedactionVerification(msg *Message) {
 	}
 }
 
-// handleTEETError handles error messages from TEE_T
+// handleTEETError handles error messages from TEE_T (fail-fast implementation)
 func (c *Client) handleTEETError(msg *Message) {
 	var errorData ErrorData
 	if err := msg.UnmarshalData(&errorData); err != nil {
-		log.Printf("[Client] Failed to unmarshal TEE_T error: %v", err)
+		c.terminateConnectionWithError("Failed to unmarshal TEE_T error", err)
 		return
 	}
 
-	log.Printf("[Client] TEE_T error: %s", errorData.Message)
+	// Any error from TEE_T should terminate the session immediately
+	c.terminateConnectionWithError("Received error from TEE_T", fmt.Errorf("TEE_T error: %s", errorData.Message))
 }
 
 // handleSignedTranscript processes signed transcript messages from TEE_K and TEE_T
@@ -645,8 +652,9 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 
 	for i, chunk := range c.capturedTraffic {
 		if len(chunk) < 1 {
-			fmt.Printf("[Client] Chunk %d: EMPTY (length: 0)\n", i)
-			continue
+			// Empty chunks in captured traffic indicate protocol corruption
+			c.terminateConnectionWithError("Empty chunk in captured traffic", fmt.Errorf("chunk %d is empty", i))
+			return
 		}
 
 	}
@@ -869,6 +877,21 @@ func (c *Client) Close() {
 	}
 }
 
+// terminateConnectionWithError performs immediate connection termination due to critical error
+// This implements strict fail-fast behavior - no error continuation is allowed
+func (c *Client) terminateConnectionWithError(reason string, err error) {
+	// Log the critical error
+	log.Printf("[Client] CRITICAL ERROR - terminating connection: %s: %v", reason, err)
+
+	// Perform immediate cleanup and termination
+	c.Close()
+
+	// Signal completion to prevent hanging
+	c.completionOnce.Do(func() {
+		close(c.completionChan)
+	})
+}
+
 // handleAttestationResponse handles attestation responses from both TEE_K and TEE_T
 func (c *Client) handleAttestationResponse(msg *Message) {
 	var attestResp AttestationResponseData
@@ -1063,8 +1086,9 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 				// Get the TLS record type that was stored during processing
 				recordType, hasRecordType := c.recordTypeBySeq[seqNum]
 				if !hasRecordType {
-					log.Printf("[Client] No record type found for seq %d, skipping", seqNum)
-					continue
+					// Missing record type is a critical error in protocol state
+					c.terminateConnectionWithError("Missing record type for sequence", fmt.Errorf("no record type found for seq %d", seqNum))
+					return
 				}
 
 				// For TLS 1.3, we need to remove padding and extract content type
