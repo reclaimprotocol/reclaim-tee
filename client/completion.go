@@ -5,7 +5,6 @@ import (
 	"log"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"tee-mpc/shared"
 )
 
@@ -16,33 +15,27 @@ func (c *Client) WaitForCompletion() <-chan struct{} {
 
 // checkProtocolCompletion checks if all conditions are met and signals completion if so
 func (c *Client) checkProtocolCompletion(reason string) {
-	// Use atomic operations to read state values
-	eofCondition := atomic.LoadInt64(&c.eofReached) == 1
-	recordsSent := atomic.LoadInt64(&c.recordsSent)
-	recordsProcessed := atomic.LoadInt64(&c.recordsProcessed)
-	streamsReceived := atomic.LoadInt64(&c.decryptionStreamsReceived)
+	// *** BATCH-BASED COMPLETION LOGIC (Phase 3: Clean and Simple) ***
+	collectionComplete, batchSent, decryptionReceived := c.getBatchState()
+	batchSplitAEADComplete := collectionComplete && batchSent && decryptionReceived
+
+	log.Printf("[Client] Checking completion: %s", reason)
+	log.Printf("[Client] Batch state: collection=%v, sent=%v, decryption=%v → splitAEAD=%v",
+		collectionComplete, batchSent, decryptionReceived, batchSplitAEADComplete)
 
 	// Completion conditions:
-	// 1. EOF reached (TCP connection closed)
-	// 2. All split AEAD records processed (or no records sent)
-	// 3. Redaction result received (if expected)
-	// 4. Signed transcripts received from both TEE_K and TEE_T (if expected)
+	// 1. All responses collected (EOF reached)
+	// 2. Batch sent to TEE_T for processing
+	// 3. Batched decryption streams received
+	// 4. Redaction result received (if expected)
+	// 5. Signed transcripts received from both TEE_K and TEE_T (if expected)
 
-	recordsCondition := recordsSent == 0 || recordsProcessed >= recordsSent
 	redactionCondition := !c.hasCompletionFlag(CompletionFlagRedactionExpected) || c.hasCompletionFlag(CompletionFlagRedactionReceived)
+	splitAEADComplete := batchSplitAEADComplete && redactionCondition
 
-	// Add condition to ensure all decryption streams are received
-	streamsCondition := recordsSent == 0 || streamsReceived >= recordsSent
-
-	// Check if split AEAD processing is complete (conditions 1-3 + new streams condition)
-	splitAEADComplete := eofCondition && recordsCondition && redactionCondition && streamsCondition
-
-	// IMPORTANT: Only proceed with redaction and completion if EOF has been reached
-	// This ensures all TLS records (including alerts) have been received and processed
-	// before we send redaction specs to TEE_K
-	if !eofCondition {
-		log.Printf("[Client] Waiting for EOF before proceeding with redaction (records: %d/%d, streams: %d/%d, EOF: %v)",
-			recordsProcessed, recordsSent, streamsReceived, recordsSent, eofCondition)
+	// Only proceed with redaction if all responses have been collected
+	if !collectionComplete {
+		log.Printf("[Client] Waiting for response collection to complete")
 		return
 	}
 
@@ -124,11 +117,13 @@ func (c *Client) sendRedactionSpec() error {
 	// Display the redacted response immediately using the calculated ranges
 	c.displayRedactedResponseFromRanges(redactionSpec.Ranges)
 
-	// Count expected redacted streams based on records sent to TEE_T for processing
-	// Use recordsSent instead of responseContentBySeq length to avoid race conditions
-	c.expectedRedactedStreams = int(atomic.LoadInt64(&c.recordsSent))
+	// Count expected redacted streams based on batched responses
+	c.batchedResponsesMutex.Lock()
+	c.expectedRedactedStreams = len(c.batchedResponses)
+	batchSize := len(c.batchedResponses)
+	c.batchedResponsesMutex.Unlock()
 
-	log.Printf("[Client] Expecting %d redacted streams based on records sent to TEE_T", c.expectedRedactedStreams)
+	log.Printf("[Client] Expecting %d redacted streams based on batch size", batchSize)
 
 	// Send redaction spec to TEE_K
 	msg := shared.CreateSessionMessage(shared.MsgRedactionSpec, c.sessionID, redactionSpec)

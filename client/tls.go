@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync/atomic"
 	"tee-mpc/shared"
 )
 
@@ -245,18 +244,17 @@ func (c *Client) processTLSRecord(record []byte) {
 	}
 
 	// Batch responses until EOF instead of sending immediately
-	eofReached := atomic.LoadInt64(&c.eofReached) == 1
+	collectionComplete, _, _ := c.getBatchState()
 
-	if !eofReached {
-		// EOF not reached yet - collect packet for batch processing
+	if !collectionComplete {
+		// Collection not complete yet - collect packet for batch processing
 		c.batchedResponsesMutex.Lock()
 		c.batchedResponses = append(c.batchedResponses, encryptedResponseData)
 		c.batchedResponsesMutex.Unlock()
 
-		// Still increment sequence number and track records
-		atomic.AddInt64(&c.recordsSent, 1)
+		// Still increment sequence number
 		c.responseSeqNum++
-		return // Don't send yet - wait for EOF
+		return // Don't send yet - wait for collection complete
 	}
 
 	// If EOF already reached, send packet immediately (shouldn't happen)
@@ -275,9 +273,7 @@ func (c *Client) processTLSRecord(record []byte) {
 		return
 	}
 
-	// Track expected decryption stream ONLY if we successfully sent to TEE_T
-	atomic.AddInt64(&c.recordsSent, 1)
-	fmt.Printf("[Client] EXPECTING decryption stream #%d\n", atomic.LoadInt64(&c.recordsSent))
+	// Increment sequence number for next response
 	c.responseSeqNum++
 }
 
@@ -309,6 +305,9 @@ func (c *Client) sendBatchedResponses() error {
 
 	log.Printf("[Client] Successfully sent batch of %d packets to TEE_T", len(c.batchedResponses))
 
+	// *** NEW: Track batch sent alongside existing logic ***
+	c.setBatchSentToTEET()
+
 	// Clear the batch after successful send
 	c.batchedResponses = make([]shared.EncryptedResponseData, 0)
 	return nil
@@ -323,9 +322,6 @@ func (c *Client) handleResponseTagVerification(msg *shared.Message) {
 	}
 
 	if verificationData.Success {
-		// Update completion tracking
-		atomic.AddInt64(&c.recordsProcessed, 1)
-
 		// Check if all processing is complete
 		c.checkProtocolCompletion("tag verification complete")
 	} else {

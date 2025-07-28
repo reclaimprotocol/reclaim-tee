@@ -69,14 +69,8 @@ type Client struct {
 	// *** Add sync.Once to prevent double-close panic ***
 	completionOnce sync.Once // Ensures completion channel is only closed once
 
-	// *** Atomic state machine for lock-free protocol management ***
-	state int64 // Atomic state field using ClientState constants
-
-	// *** Track records sent vs processed instead of streams ***
-	recordsSent               int64 // TLS records sent for split AEAD processing (atomic)
-	recordsProcessed          int64 // TLS records that completed split AEAD processing (atomic)
-	decryptionStreamsReceived int64 // Track received decryption streams to prevent premature redaction (atomic)
-	eofReached                int64 // Whether we've reached EOF on TCP connection (atomic)
+	// *** Simple state tracking ***
+	state int64 // Basic state field
 
 	// *** Atomic completion flags (replaces multiple boolean fields) ***
 	completionFlags int64 // Atomic bit flags for completion state tracking
@@ -95,6 +89,12 @@ type Client struct {
 	// Response packet batching fields
 	batchedResponses      []shared.EncryptedResponseData // Collect response packets until EOF
 	batchedResponsesMutex sync.Mutex                     // Protect batched responses collection
+
+	// *** NEW: Batch-based state tracking (parallel to counters) ***
+	batchCollectionComplete bool         // All responses collected (EOF reached)
+	batchSentToTEET         bool         // Batch sent to TEE_T
+	batchDecryptionReceived bool         // Batched decryption streams received
+	batchStateMutex         sync.RWMutex // Protect batch state flags
 
 	// Response processing success tracking
 	responseProcessingSuccessful bool       // Track if response was successfully processed
@@ -146,29 +146,32 @@ type Client struct {
 
 func NewClient(teekURL string) *Client {
 	return &Client{
-		teekURL:                   teekURL,
-		teetURL:                   "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
-		pendingResponsesData:      make(map[uint64][]byte),
-		completionChan:            make(chan struct{}),
-		state:                     ClientStateInitial,
-		recordsSent:               0,
-		recordsProcessed:          0,
-		decryptionStreamsReceived: 0,
-		eofReached:                0,
-		completionFlags:           0,
-		httpRequestSent:           false,
-		httpResponseExpected:      false,
-		httpResponseReceived:      false,
-		responseContentMutex:      sync.Mutex{},
-		ciphertextBySeq:           make(map[uint64][]byte),
-		decryptionStreamBySeq:     make(map[uint64][]byte),
-		redactedPlaintextBySeq:    make(map[uint64][]byte),
-		recordTypeBySeq:           make(map[uint64]byte),
-		requestRedactionRanges:    nil,
+		teekURL:                teekURL,
+		teetURL:                "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
+		pendingResponsesData:   make(map[uint64][]byte),
+		completionChan:         make(chan struct{}),
+		state:                  ClientStateInitial,
+		completionFlags:        0,
+		httpRequestSent:        false,
+		httpResponseExpected:   false,
+		httpResponseReceived:   false,
+		responseContentMutex:   sync.Mutex{},
+		ciphertextBySeq:        make(map[uint64][]byte),
+		decryptionStreamBySeq:  make(map[uint64][]byte),
+		redactedPlaintextBySeq: make(map[uint64][]byte),
+		recordTypeBySeq:        make(map[uint64]byte),
+		requestRedactionRanges: nil,
 
 		// Initialize batching fields
-		batchedResponses:             make([]shared.EncryptedResponseData, 0),
-		batchedResponsesMutex:        sync.Mutex{},
+		batchedResponses:      make([]shared.EncryptedResponseData, 0),
+		batchedResponsesMutex: sync.Mutex{},
+
+		// *** NEW: Initialize batch state tracking ***
+		batchCollectionComplete: false,
+		batchSentToTEET:         false,
+		batchDecryptionReceived: false,
+		batchStateMutex:         sync.RWMutex{},
+
 		responseProcessingSuccessful: false,
 		reconstructedResponseSize:    0,
 		responseProcessingMutex:      sync.Mutex{},
@@ -600,6 +603,42 @@ func (c *Client) setCompletionFlags(flags int64) {
 // hasAllCompletionFlags atomically checks if all specified completion flags are set
 func (c *Client) hasAllCompletionFlags(flags int64) bool {
 	return atomic.LoadInt64(&c.completionFlags)&flags == flags
+}
+
+// *** NEW: Batch state management helpers ***
+
+// setBatchCollectionComplete marks that all responses have been collected (EOF reached)
+func (c *Client) setBatchCollectionComplete() {
+	c.batchStateMutex.Lock()
+	c.batchCollectionComplete = true
+	c.batchStateMutex.Unlock()
+}
+
+// setBatchSentToTEET marks that the batch has been sent to TEE_T
+func (c *Client) setBatchSentToTEET() {
+	c.batchStateMutex.Lock()
+	c.batchSentToTEET = true
+	c.batchStateMutex.Unlock()
+}
+
+// setBatchDecryptionReceived marks that batched decryption streams have been received
+func (c *Client) setBatchDecryptionReceived() {
+	c.batchStateMutex.Lock()
+	c.batchDecryptionReceived = true
+	c.batchStateMutex.Unlock()
+}
+
+// getBatchState returns current batch state (thread-safe)
+func (c *Client) getBatchState() (collectionComplete, sentToTEET, decryptionReceived bool) {
+	c.batchStateMutex.RLock()
+	defer c.batchStateMutex.RUnlock()
+	return c.batchCollectionComplete, c.batchSentToTEET, c.batchDecryptionReceived
+}
+
+// isBatchProcessingComplete checks if all batch operations are complete
+func (c *Client) isBatchProcessingComplete() bool {
+	collection, sent, decryption := c.getBatchState()
+	return collection && sent && decryption
 }
 
 // Phase 4: Response handling methods

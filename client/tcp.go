@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"strings"
-	"sync/atomic"
 	"tee-mpc/shared"
 	"time"
 )
@@ -114,7 +113,7 @@ func (c *Client) tcpToWebsocket() {
 		if err != nil {
 			if err == io.EOF {
 				fmt.Printf("[Client] TCP connection closed by server (EOF)\n")
-				atomic.StoreInt64(&c.eofReached, 1)
+				c.setBatchCollectionComplete()
 				fmt.Printf("[Client] EOF reached, but checking for final data first...\n")
 				eofReceived = true // Mark EOF but continue to process any final data
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {

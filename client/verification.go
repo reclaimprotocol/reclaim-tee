@@ -5,7 +5,6 @@ import (
 	"log"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"tee-mpc/shared"
 )
 
@@ -19,12 +18,10 @@ func (c *Client) handleBatchedTagVerifications(msg *shared.Message) {
 
 	log.Printf("[Client] Received batch tag verification for %d responses", len(batchedVerification.Verifications))
 
-	// Process each verification result to update completion counters
+	// Process each verification result
 	successCount := 0
 	for _, verification := range batchedVerification.Verifications {
 		if verification.Success {
-			// Update the progress counter
-			atomic.AddInt64(&c.recordsProcessed, 1)
 			successCount++
 		} else {
 			log.Printf("[Client] Response tag verification failed (seq=%d): %s", verification.SeqNum, verification.Message)
@@ -82,8 +79,7 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 			c.responseContentBySeq[streamData.SeqNum] = redactedPlaintext
 			c.responseContentMutex.Unlock()
 
-			// *** CRITICAL: Increment completion counters to match existing logic ***
-			atomic.AddInt64(&c.decryptionStreamsReceived, 1)
+			// Processing complete for this stream
 		} else {
 			log.Printf("[Client] No ciphertext found for seq=%d", streamData.SeqNum)
 		}
@@ -94,6 +90,9 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 		c.reconstructHTTPResponseFromDecryptedData()
 		log.Printf("[Client] HTTP response reconstruction completed, callback executed")
 	}
+
+	// *** NEW: Track batch decryption received alongside existing logic ***
+	c.setBatchDecryptionReceived()
 
 	// Trigger completion check after callback execution
 	c.checkProtocolCompletion("batched decryption streams processed")
