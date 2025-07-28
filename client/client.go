@@ -587,11 +587,6 @@ func (c *Client) setCompletionFlag(flag int64) {
 	atomic.StoreInt64(&c.completionFlags, atomic.LoadInt64(&c.completionFlags)|flag)
 }
 
-// clearCompletionFlag atomically clears a completion flag
-func (c *Client) clearCompletionFlag(flag int64) {
-	atomic.StoreInt64(&c.completionFlags, atomic.LoadInt64(&c.completionFlags)&^flag)
-}
-
 // hasCompletionFlag atomically checks if a completion flag is set
 func (c *Client) hasCompletionFlag(flag int64) bool {
 	return atomic.LoadInt64(&c.completionFlags)&flag != 0
@@ -1032,57 +1027,5 @@ func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) Tran
 		PacketsMatched:   packetsMatched,
 		ValidationPassed: packetsMatched == requiredMatches,
 		PacketDetails:    details,
-	}
-}
-
-// RequestAttestation requests attestation from both TEE_K and TEE_T
-// Note: This method has synchronous waiting - consider using fetchAndVerifyAttestations() instead
-func (c *Client) RequestAttestation() (*shared.AttestationResponseData, *shared.AttestationResponseData, error) {
-	// Wait for session ID from TEE_K (indicates successful session coordination)
-	if c.sessionID == "" {
-		return nil, nil, fmt.Errorf("session not established - cannot request attestation")
-	}
-
-	fmt.Printf("[Client] Requesting attestation for session: %s\n", c.sessionID)
-
-	// Reset attestation state
-	c.teekAttestationPublicKey = nil
-	c.teetAttestationPublicKey = nil
-
-	// Create attestation request (no request ID needed)
-	attestReq := shared.AttestationRequestData{}
-
-	// Send to TEE_K
-	teekMsg := shared.CreateMessage(shared.MsgAttestationRequest, attestReq)
-	if err := c.sendMessage(teekMsg); err != nil {
-		return nil, nil, fmt.Errorf("failed to send TEE_K attestation request: %v", err)
-	}
-
-	// Send to TEE_T
-	teetMsg := shared.CreateMessage(shared.MsgAttestationRequest, attestReq)
-	if err := c.sendMessageToTEET(teetMsg); err != nil {
-		return nil, nil, fmt.Errorf("failed to send TEE_T attestation request: %v", err)
-	}
-
-	// Wait for both responses using the existing tracking mechanism
-	timeout := time.After(30 * time.Second)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeout:
-			return nil, nil, fmt.Errorf("timeout waiting for attestation responses")
-		case <-c.completionChan:
-			return nil, nil, fmt.Errorf("client closed while waiting for attestation")
-		case <-ticker.C:
-			// Check if both attestations have been received and verified
-			if c.teekAttestationPublicKey != nil && c.teetAttestationPublicKey != nil {
-				// Both responses received - return success
-				// Note: Actual response data is not returned as it's processed internally
-				fmt.Printf("[Client] Both attestation responses received and verified\n")
-				return nil, nil, nil // Success but no raw response data
-			}
-		}
 	}
 }
