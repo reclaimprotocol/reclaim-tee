@@ -387,8 +387,8 @@ func (d *DemoResponseCallback) applyDemoRedaction(httpResponse string) string {
 }
 
 // calculateRedactionRanges calculates redaction ranges based on differences between original and redacted responses
-func (d *DemoResponseCallback) calculateRedactionRanges(original, redacted string) []RedactionRange {
-	var ranges []RedactionRange
+func (d *DemoResponseCallback) calculateRedactionRanges(original, redacted string) []shared.RedactionRange {
+	var ranges []shared.RedactionRange
 
 	// Simple implementation: find ranges where characters were replaced with asterisks
 	i := 0
@@ -400,7 +400,7 @@ func (d *DemoResponseCallback) calculateRedactionRanges(original, redacted strin
 			for i < len(original) && i < len(redacted) && redacted[i] == '*' {
 				i++
 			}
-			ranges = append(ranges, RedactionRange{
+			ranges = append(ranges, shared.RedactionRange{
 				Start:  start,
 				Length: i - start,
 				Type:   "sensitive",

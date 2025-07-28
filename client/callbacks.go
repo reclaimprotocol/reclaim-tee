@@ -1,5 +1,7 @@
 package main
 
+import "tee-mpc/shared"
+
 // ResponseCallback defines the interface for handling response redactions
 type ResponseCallback interface {
 	OnResponseReceived(response *HTTPResponse) (*RedactionResult, error)
@@ -27,9 +29,9 @@ type ResponseMetadata struct {
 
 // RedactionResult contains the result of response redaction
 type RedactionResult struct {
-	RedactedBody    []byte           `json:"redacted_body"`
-	RedactionRanges []RedactionRange `json:"redaction_ranges"`
-	ProofClaims     []ProofClaim     `json:"proof_claims"`
+	RedactedBody    []byte                  `json:"redacted_body"`
+	RedactionRanges []shared.RedactionRange `json:"redaction_ranges"`
+	ProofClaims     []ProofClaim            `json:"proof_claims"`
 }
 
 // ProofClaim defines a claim to be proven about the response
@@ -47,7 +49,7 @@ type DefaultResponseCallback struct{}
 func (d *DefaultResponseCallback) OnResponseReceived(response *HTTPResponse) (*RedactionResult, error) {
 	return &RedactionResult{
 		RedactedBody:    response.Body,
-		RedactionRanges: []RedactionRange{},
+		RedactionRanges: []shared.RedactionRange{},
 		ProofClaims:     []ProofClaim{},
 	}, nil
 }

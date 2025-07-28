@@ -2170,11 +2170,7 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 	}
 
 	// Generate decryption streams for all successful verifications
-	var decryptionStreams []struct {
-		DecryptionStream []byte `json:"decryption_stream"`
-		SeqNum           uint64 `json:"seq_num"`
-		Length           int    `json:"length"`
-	}
+	var decryptionStreams []shared.ResponseDecryptionStreamData
 
 	for _, verification := range batchedVerification.Verifications {
 		if !verification.Success {
@@ -2201,11 +2197,7 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 		}
 
 		// Create decryption stream data
-		streamData := struct {
-			DecryptionStream []byte `json:"decryption_stream"`
-			SeqNum           uint64 `json:"seq_num"`
-			Length           int    `json:"length"`
-		}{
+		streamData := shared.ResponseDecryptionStreamData{
 			DecryptionStream: decryptionStream,
 			SeqNum:           verification.SeqNum,
 			Length:           responseLength,

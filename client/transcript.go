@@ -141,7 +141,7 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 }
 
 // handleSignedTranscript processes signed transcript messages from TEE_K and TEE_T
-func (c *Client) handleSignedTranscript(msg *Message) {
+func (c *Client) handleSignedTranscript(msg *shared.Message) {
 	var signedTranscript shared.SignedTranscript
 	if err := msg.UnmarshalData(&signedTranscript); err != nil {
 		log.Printf("[Client] Failed to unmarshal signed transcript: %v", err)

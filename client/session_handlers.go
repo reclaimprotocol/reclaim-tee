@@ -3,11 +3,12 @@ package main
 import (
 	"fmt"
 	"log"
+	"tee-mpc/shared"
 )
 
 // handleSessionReady processes session ready messages from TEE_K
-func (c *Client) handleSessionReady(msg *Message) {
-	var sessionData SessionReadyData
+func (c *Client) handleSessionReady(msg *shared.Message) {
+	var sessionData shared.SessionReadyData
 	if err := msg.UnmarshalData(&sessionData); err != nil {
 		log.Printf("[Client] Failed to unmarshal session ready data: %v", err)
 		return
@@ -25,8 +26,8 @@ func (c *Client) handleSessionReady(msg *Message) {
 }
 
 // handleError handles error messages from TEE_K (fail-fast implementation)
-func (c *Client) handleError(msg *Message) {
-	var errorData ErrorData
+func (c *Client) handleError(msg *shared.Message) {
+	var errorData shared.ErrorData
 	if err := msg.UnmarshalData(&errorData); err != nil {
 		c.terminateConnectionWithError("Failed to unmarshal error data from TEE_K", err)
 		return
@@ -37,8 +38,8 @@ func (c *Client) handleError(msg *Message) {
 }
 
 // handleHTTPResponse handles HTTP response messages from TEE_K
-func (c *Client) handleHTTPResponse(msg *Message) {
-	var responseData HTTPResponseData
+func (c *Client) handleHTTPResponse(msg *shared.Message) {
+	var responseData shared.HTTPResponseData
 	if err := msg.UnmarshalData(&responseData); err != nil {
 		log.Printf("[Client] Failed to unmarshal HTTP response data: %v", err)
 		return
@@ -51,8 +52,8 @@ func (c *Client) handleHTTPResponse(msg *Message) {
 }
 
 // handleTEETReady handles TEE_T ready confirmation
-func (c *Client) handleTEETReady(msg *Message) {
-	var readyData TEETReadyData
+func (c *Client) handleTEETReady(msg *shared.Message) {
+	var readyData shared.TEETReadyData
 	if err := msg.UnmarshalData(&readyData); err != nil {
 		log.Printf("[Client] Failed to unmarshal TEE_T ready data: %v", err)
 		return
@@ -61,8 +62,8 @@ func (c *Client) handleTEETReady(msg *Message) {
 }
 
 // handleTEETError handles error messages from TEE_T (fail-fast implementation)
-func (c *Client) handleTEETError(msg *Message) {
-	var errorData ErrorData
+func (c *Client) handleTEETError(msg *shared.Message) {
+	var errorData shared.ErrorData
 	if err := msg.UnmarshalData(&errorData); err != nil {
 		c.terminateConnectionWithError("Failed to unmarshal TEE_T error", err)
 		return

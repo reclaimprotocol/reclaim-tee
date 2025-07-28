@@ -9,6 +9,7 @@ import (
 	"log"
 	"strings"
 	"sync/atomic"
+	"tee-mpc/shared"
 )
 
 // collapseAsterisks reduces consecutive asterisks to a maximum of 100 followed by "..." if more exist
@@ -52,8 +53,8 @@ func collapseAsterisks(data string) string {
 }
 
 // handleHandshakeComplete processes handshake completion messages from TEE_K
-func (c *Client) handleHandshakeComplete(msg *Message) {
-	var completeData HandshakeCompleteData
+func (c *Client) handleHandshakeComplete(msg *shared.Message) {
+	var completeData shared.HandshakeCompleteData
 	if err := msg.UnmarshalData(&completeData); err != nil {
 		log.Printf("[Client] Failed to unmarshal handshake complete data: %v", err)
 		return
@@ -67,8 +68,8 @@ func (c *Client) handleHandshakeComplete(msg *Message) {
 }
 
 // handleHandshakeKeyDisclosure handles key disclosure for certificate verification
-func (c *Client) handleHandshakeKeyDisclosure(msg *Message) {
-	var disclosureData HandshakeKeyDisclosureData
+func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
+	var disclosureData shared.HandshakeKeyDisclosureData
 	if err := msg.UnmarshalData(&disclosureData); err != nil {
 		log.Printf("[Client] Failed to unmarshal handshake key disclosure data: %v", err)
 		return
@@ -97,11 +98,7 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *Message) {
 	fmt.Printf("[Client] Sending redacted HTTP request to TEE_K\n")
 
 	// Send redacted request to TEE_K for validation and encryption
-	redactedMsg, err := CreateMessage(MsgRedactedRequest, redactedData)
-	if err != nil {
-		log.Printf("[Client] Failed to create redacted request message: %v", err)
-		return
-	}
+	redactedMsg := shared.CreateMessage(shared.MsgRedactedRequest, redactedData)
 
 	if err := c.sendMessage(redactedMsg); err != nil {
 		log.Printf("[Client] Failed to send redacted request to TEE_K: %v", err)
@@ -115,11 +112,7 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *Message) {
 	c.setCompletionFlag(CompletionFlagRedactionExpected)
 	fmt.Printf("[Client] EXPECTING redaction verification result from TEE_T\n")
 
-	streamsMsg, err := CreateMessage(MsgRedactionStreams, streamsData)
-	if err != nil {
-		log.Printf("[Client] Failed to create redaction streams message: %v", err)
-		return
-	}
+	streamsMsg := shared.CreateMessage(shared.MsgRedactionStreams, streamsData)
 
 	if err := c.sendMessageToTEET(streamsMsg); err != nil {
 		log.Printf("[Client] Failed to send redaction streams to TEE_T: %v", err)
@@ -139,7 +132,7 @@ func (c *Client) verifyCertificateInTraffic(certPacket []byte) bool {
 }
 
 // decryptAndVerifyCertificate decrypts and verifies certificate using disclosed keys
-func (c *Client) decryptAndVerifyCertificate(disclosure *HandshakeKeyDisclosureData) bool {
+func (c *Client) decryptAndVerifyCertificate(disclosure *shared.HandshakeKeyDisclosureData) bool {
 	// Extract the encrypted payload from the certificate packet
 	// TLS record format: [type(1)] [version(2)] [length(2)] [payload(length)]
 	if len(disclosure.CertificatePacket) < 5 {
@@ -429,7 +422,7 @@ func (c *Client) processTLSRecord(record []byte) {
 		cipherSuite = c.handshakeDisclosure.CipherSuite
 	}
 
-	encryptedResponseData := EncryptedResponseData{
+	encryptedResponseData := shared.EncryptedResponseData{
 		EncryptedData: encryptedData,
 		Tag:           tag,
 		RecordHeader:  record[:5], // Include actual TLS record header from server
@@ -456,11 +449,7 @@ func (c *Client) processTLSRecord(record []byte) {
 	// If EOF already reached, send packet immediately (shouldn't happen)
 	log.Printf("[Client] EOF already reached, sending packet immediately")
 
-	responseMsg, err := CreateMessage(MsgEncryptedResponse, encryptedResponseData)
-	if err != nil {
-		log.Printf("[Client] Failed to create encrypted response message: %v", err)
-		return
-	}
+	responseMsg := shared.CreateMessage(shared.MsgEncryptedResponse, encryptedResponseData)
 
 	if err := c.sendMessageToTEET(responseMsg); err != nil {
 
@@ -492,17 +481,14 @@ func (c *Client) sendBatchedResponses() error {
 	log.Printf("[Client] Sending batch of %d response packets to TEE_T", len(c.batchedResponses))
 
 	// Create batched message using new data structure
-	batchedData := BatchedEncryptedResponseData{
+	batchedData := shared.BatchedEncryptedResponseData{
 		Responses:  c.batchedResponses,
 		SessionID:  c.sessionID,
 		TotalCount: len(c.batchedResponses),
 	}
 
 	// Send batch to TEE_T using new message type
-	batchMsg, err := CreateMessage(MsgBatchedEncryptedResponses, batchedData)
-	if err != nil {
-		return fmt.Errorf("failed to create batched encrypted responses message: %v", err)
-	}
+	batchMsg := shared.CreateMessage(shared.MsgBatchedEncryptedResponses, batchedData)
 
 	if err := c.sendMessageToTEET(batchMsg); err != nil {
 		return fmt.Errorf("failed to send batched responses to TEE_T: %v", err)
@@ -511,13 +497,13 @@ func (c *Client) sendBatchedResponses() error {
 	log.Printf("[Client] Successfully sent batch of %d packets to TEE_T", len(c.batchedResponses))
 
 	// Clear the batch after successful send
-	c.batchedResponses = make([]EncryptedResponseData, 0)
+	c.batchedResponses = make([]shared.EncryptedResponseData, 0)
 	return nil
 }
 
 // handleResponseTagVerification handles tag verification result from TEE_T
-func (c *Client) handleResponseTagVerification(msg *Message) {
-	var verificationData ResponseTagVerificationData
+func (c *Client) handleResponseTagVerification(msg *shared.Message) {
+	var verificationData shared.ResponseTagVerificationData
 	if err := msg.UnmarshalData(&verificationData); err != nil {
 		log.Printf("[Client] Failed to unmarshal response tag verification: %v", err)
 		return

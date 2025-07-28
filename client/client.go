@@ -12,12 +12,12 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"tee-mpc/shared"
 	"time"
 
-	"tee-mpc/shared"
+	"github.com/gorilla/websocket"
 
 	"github.com/anjuna-security/go-nitro-attestation/verifier"
-	"github.com/gorilla/websocket"
 )
 
 const (
@@ -93,8 +93,8 @@ type Client struct {
 	recordTypeBySeq        map[uint64]byte   // Store TLS record type by sequence number
 
 	// Response packet batching fields
-	batchedResponses      []EncryptedResponseData // Collect response packets until EOF
-	batchedResponsesMutex sync.Mutex              // Protect batched responses collection
+	batchedResponses      []shared.EncryptedResponseData // Collect response packets until EOF
+	batchedResponsesMutex sync.Mutex                     // Protect batched responses collection
 
 	// Response processing success tracking
 	responseProcessingSuccessful bool       // Track if response was successfully processed
@@ -102,7 +102,7 @@ type Client struct {
 	responseProcessingMutex      sync.Mutex // Protect response processing flags
 
 	// Track redaction ranges so we can prettify later and include in bundle
-	requestRedactionRanges []RedactionRange
+	requestRedactionRanges []shared.RedactionRange
 	// Attestation verification fields
 	teekAttestationPublicKey []byte // Public key extracted from TEE_K attestation
 	teetAttestationPublicKey []byte // Public key extracted from TEE_T attestation
@@ -124,14 +124,14 @@ type Client struct {
 	protocolStartTime            time.Time                     // When protocol started
 	lastResponseData             *HTTPResponse                 // Last received HTTP response
 	lastProofClaims              []ProofClaim                  // Last generated proof claims
-	lastRedactionRanges          []RedactionRange              // Last redaction ranges from callback
+	lastRedactionRanges          []shared.RedactionRange       // Last redaction ranges from callback
 	lastRedactedResponse         []byte                        // Last redacted response from callback
 	responseReconstructed        bool                          // Flag to prevent multiple response reconstruction
 	transcriptValidationResults  *TranscriptValidationResults  // Cached validation results
 	attestationValidationResults *AttestationValidationResults // Cached attestation results
 
 	// Verification bundle tracking fields
-	handshakeDisclosure     *HandshakeKeyDisclosureData             // store handshake keys
+	handshakeDisclosure     *shared.HandshakeKeyDisclosureData      // store handshake keys
 	teekSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_K
 	teetSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_T
 	signedRedactedStreams   []shared.SignedRedactedDecryptionStream // ordered collection of redacted streams
@@ -167,7 +167,7 @@ func NewClient(teekURL string) *Client {
 		requestRedactionRanges:    nil,
 
 		// Initialize batching fields
-		batchedResponses:             make([]EncryptedResponseData, 0),
+		batchedResponses:             make([]shared.EncryptedResponseData, 0),
 		batchedResponsesMutex:        sync.Mutex{},
 		responseProcessingSuccessful: false,
 		reconstructedResponseSize:    0,
@@ -234,7 +234,7 @@ func (c *Client) RequestHTTP(hostname string, port int) error {
 // Phase 3: Redaction system implementation
 
 // createRedactedRequest creates a redacted HTTP request with XOR streams and commitments
-func (c *Client) createRedactedRequest(httpRequest []byte) (RedactedRequestData, RedactionStreamsData, error) {
+func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedRequestData, shared.RedactionStreamsData, error) {
 	// Create HTTP request with test sensitive data
 	testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", c.targetHost)
 	httpRequest = []byte(testRequest)
@@ -250,7 +250,7 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (RedactedRequestData,
 	// Apply redaction specifications from config
 	ranges, err := c.applyRedactionSpecs(httpRequest)
 	if err != nil {
-		return RedactedRequestData{}, RedactionStreamsData{}, fmt.Errorf("failed to apply redaction specs: %v", err)
+		return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("failed to apply redaction specs: %v", err)
 	}
 
 	fmt.Printf("[Client] REDACTION CONFIGURATION:\n")
@@ -261,13 +261,13 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (RedactedRequestData,
 
 	// Validate redaction ranges
 	if err := c.validateRedactionRanges(ranges, len(httpRequest)); err != nil {
-		return RedactedRequestData{}, RedactionStreamsData{}, fmt.Errorf("invalid redaction ranges: %v", err)
+		return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("invalid redaction ranges: %v", err)
 	}
 
 	// Generate redaction streams and commitment keys
 	streams, keys, err := c.generateRedactionStreams(ranges)
 	if err != nil {
-		return RedactedRequestData{}, RedactionStreamsData{}, fmt.Errorf("failed to generate redaction streams: %v", err)
+		return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("failed to generate redaction streams: %v", err)
 	}
 
 	// Apply redaction using XOR streams
@@ -316,18 +316,18 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (RedactedRequestData,
 	c.redactedRequestPlain = redactedRequest
 	c.requestRedactionRanges = ranges // Save redaction ranges
 
-	return RedactedRequestData{
+	return shared.RedactedRequestData{
 			RedactedRequest: redactedRequest,
 			Commitments:     commitments,
 			RedactionRanges: ranges,
-		}, RedactionStreamsData{
+		}, shared.RedactionStreamsData{
 			Streams:        streams,
 			CommitmentKeys: keys,
 		}, nil
 }
 
 // generateRedactionStreams generates random XOR streams and commitment keys for each redaction range
-func (c *Client) generateRedactionStreams(ranges []RedactionRange) ([][]byte, [][]byte, error) {
+func (c *Client) generateRedactionStreams(ranges []shared.RedactionRange) ([][]byte, [][]byte, error) {
 	streams := make([][]byte, len(ranges))
 	keys := make([][]byte, len(ranges))
 
@@ -351,7 +351,7 @@ func (c *Client) generateRedactionStreams(ranges []RedactionRange) ([][]byte, []
 }
 
 // applyRedaction applies XOR streams to sensitive data ranges in the HTTP request
-func (c *Client) applyRedaction(request []byte, ranges []RedactionRange, streams [][]byte) []byte {
+func (c *Client) applyRedaction(request []byte, ranges []shared.RedactionRange, streams [][]byte) []byte {
 	redacted := make([]byte, len(request))
 	copy(redacted, request)
 
@@ -384,7 +384,7 @@ func (c *Client) computeCommitments(streams, keys [][]byte) [][]byte {
 }
 
 // validateRedactionRanges ensures redaction ranges don't overlap and are within bounds
-func (c *Client) validateRedactionRanges(ranges []RedactionRange, requestLen int) error {
+func (c *Client) validateRedactionRanges(ranges []shared.RedactionRange, requestLen int) error {
 	for _, r := range ranges {
 		if r.Start < 0 || r.Length < 0 || r.Start+r.Length > requestLen {
 			return fmt.Errorf("invalid redaction range: start=%d, length=%d, requestLen=%d", r.Start, r.Length, requestLen)
@@ -394,8 +394,8 @@ func (c *Client) validateRedactionRanges(ranges []RedactionRange, requestLen int
 }
 
 // applyRedactionSpecs applies redaction specifications from config to find redaction ranges
-func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]RedactionRange, error) {
-	var ranges []RedactionRange
+func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]shared.RedactionRange, error) {
+	var ranges []shared.RedactionRange
 	requestStr := string(httpRequest)
 
 	// If no redaction specs configured, return empty ranges
@@ -407,7 +407,7 @@ func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]RedactionRange, erro
 	for _, spec := range c.requestRedactions {
 		matches := findPatternMatches(requestStr, spec.Pattern)
 		for _, match := range matches {
-			ranges = append(ranges, RedactionRange{
+			ranges = append(ranges, shared.RedactionRange{
 				Start:  match.Start,
 				Length: match.Length,
 				Type:   spec.Type,
@@ -642,10 +642,7 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	attestReq := shared.AttestationRequestData{}
 
 	// Send to TEE_K
-	teekMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
-	if err != nil {
-		return fmt.Errorf("failed to create TEE_K attestation request: %v", err)
-	}
+	teekMsg := shared.CreateMessage(shared.MsgAttestationRequest, attestReq)
 
 	if err := c.sendMessage(teekMsg); err != nil {
 		return fmt.Errorf("failed to send TEE_K attestation request: %v", err)
@@ -653,10 +650,7 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	fmt.Printf("[Client] Sent attestation request to TEE_K\n")
 
 	// Send to TEE_T
-	teetMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
-	if err != nil {
-		return fmt.Errorf("failed to create TEE_T attestation request: %v", err)
-	}
+	teetMsg := shared.CreateMessage(shared.MsgAttestationRequest, attestReq)
 
 	if err := c.sendMessageToTEET(teetMsg); err != nil {
 		return fmt.Errorf("failed to send TEE_T attestation request: %v", err)
@@ -1042,8 +1036,8 @@ func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) Tran
 }
 
 // RequestAttestation requests attestation from both TEE_K and TEE_T
-// Now waits for session coordination before sending requests
-func (c *Client) RequestAttestation() (*AttestationResponseData, *AttestationResponseData, error) {
+// Note: This method has synchronous waiting - consider using fetchAndVerifyAttestations() instead
+func (c *Client) RequestAttestation() (*shared.AttestationResponseData, *shared.AttestationResponseData, error) {
 	// Wait for session ID from TEE_K (indicates successful session coordination)
 	if c.sessionID == "" {
 		return nil, nil, fmt.Errorf("session not established - cannot request attestation")
@@ -1051,45 +1045,44 @@ func (c *Client) RequestAttestation() (*AttestationResponseData, *AttestationRes
 
 	fmt.Printf("[Client] Requesting attestation for session: %s\n", c.sessionID)
 
+	// Reset attestation state
+	c.teekAttestationPublicKey = nil
+	c.teetAttestationPublicKey = nil
+
 	// Create attestation request (no request ID needed)
 	attestReq := shared.AttestationRequestData{}
 
 	// Send to TEE_K
-	teekMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create TEE_K attestation request: %v", err)
-	}
-
+	teekMsg := shared.CreateMessage(shared.MsgAttestationRequest, attestReq)
 	if err := c.sendMessage(teekMsg); err != nil {
 		return nil, nil, fmt.Errorf("failed to send TEE_K attestation request: %v", err)
 	}
 
 	// Send to TEE_T
-	teetMsg, err := CreateMessage(MsgAttestationRequest, attestReq)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create TEE_T attestation request: %v", err)
-	}
-
+	teetMsg := shared.CreateMessage(shared.MsgAttestationRequest, attestReq)
 	if err := c.sendMessageToTEET(teetMsg); err != nil {
 		return nil, nil, fmt.Errorf("failed to send TEE_T attestation request: %v", err)
 	}
 
-	// Wait for both responses
-	var teekResponse, teetResponse *AttestationResponseData
-	responsesReceived := 0
+	// Wait for both responses using the existing tracking mechanism
+	timeout := time.After(30 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
-	for responsesReceived < 2 {
+	for {
 		select {
-		case <-time.After(30 * time.Second):
+		case <-timeout:
 			return nil, nil, fmt.Errorf("timeout waiting for attestation responses")
 		case <-c.completionChan:
 			return nil, nil, fmt.Errorf("client closed while waiting for attestation")
-		default:
-			// Check for responses (simplified without request ID matching)
-			time.Sleep(100 * time.Millisecond)
-			// Response handling is done in message handlers
+		case <-ticker.C:
+			// Check if both attestations have been received and verified
+			if c.teekAttestationPublicKey != nil && c.teetAttestationPublicKey != nil {
+				// Both responses received - return success
+				// Note: Actual response data is not returned as it's processed internally
+				fmt.Printf("[Client] Both attestation responses received and verified\n")
+				return nil, nil, nil // Success but no raw response data
+			}
 		}
 	}
-
-	return teekResponse, teetResponse, nil
 }

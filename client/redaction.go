@@ -6,11 +6,11 @@ import (
 	"tee-mpc/shared"
 )
 
-// handleRedactionVerification handles redaction verification from TEE_T
-func (c *Client) handleRedactionVerification(msg *Message) {
+// handleRedactionVerification handles redaction verification responses from TEE_T
+func (c *Client) handleRedactionVerification(msg *shared.Message) {
 	log.Printf("[Client] Received redaction verification message")
 
-	var verificationData RedactionVerificationData
+	var verificationData shared.RedactionVerificationData
 	if err := msg.UnmarshalData(&verificationData); err != nil {
 		log.Printf("[Client] Failed to unmarshal redaction verification data: %v", err)
 		return
@@ -23,8 +23,8 @@ func (c *Client) handleRedactionVerification(msg *Message) {
 	}
 }
 
-// handleSignedRedactedDecryptionStream handles redacted decryption streams from TEE_K
-func (c *Client) handleSignedRedactedDecryptionStream(msg *Message) {
+// handleSignedRedactedDecryptionStream handles signed redacted decryption streams from TEE_K
+func (c *Client) handleSignedRedactedDecryptionStream(msg *shared.Message) {
 	var redactedStream shared.SignedRedactedDecryptionStream
 	if err := msg.UnmarshalData(&redactedStream); err != nil {
 		log.Printf("[Client] Failed to unmarshal redacted decryption stream: %v", err)

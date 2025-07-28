@@ -3,11 +3,12 @@ package main
 import (
 	"fmt"
 	"log"
+	"tee-mpc/shared"
 )
 
-// handleAttestationResponse handles attestation responses from both TEE_K and TEE_T
-func (c *Client) handleAttestationResponse(msg *Message) {
-	var attestResp AttestationResponseData
+// handleAttestationResponse handles attestation response messages from TEE_K or TEE_T
+func (c *Client) handleAttestationResponse(msg *shared.Message) {
+	var attestResp shared.AttestationResponseData
 	if err := msg.UnmarshalData(&attestResp); err != nil {
 		log.Printf("[Client] Failed to unmarshal attestation response: %v", err)
 		return

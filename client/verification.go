@@ -6,11 +6,12 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"tee-mpc/shared"
 )
 
 // handleBatchedTagVerifications handles batched tag verification results
-func (c *Client) handleBatchedTagVerifications(msg *Message) {
-	var batchedVerification BatchedTagVerificationData
+func (c *Client) handleBatchedTagVerifications(msg *shared.Message) {
+	var batchedVerification shared.BatchedTagVerificationData
 	if err := msg.UnmarshalData(&batchedVerification); err != nil {
 		log.Printf("[Client] Failed to unmarshal batched tag verification: %v", err)
 		return
@@ -34,8 +35,8 @@ func (c *Client) handleBatchedTagVerifications(msg *Message) {
 }
 
 // handleBatchedDecryptionStreams handles batched decryption streams
-func (c *Client) handleBatchedDecryptionStreams(msg *Message) {
-	var batchedStreams BatchedDecryptionStreamData
+func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
+	var batchedStreams shared.BatchedDecryptionStreamData
 	if err := msg.UnmarshalData(&batchedStreams); err != nil {
 		log.Printf("[Client] Failed to unmarshal batched decryption streams: %v", err)
 		return

@@ -877,11 +877,7 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 	}
 
 	// Process tag verification for each response in the batch
-	var verifications []struct {
-		Success bool   `json:"success"`
-		SeqNum  uint64 `json:"seq_num"`
-		Message string `json:"message"`
-	}
+	var verifications []shared.ResponseTagVerificationData
 	allSuccessful := true
 
 	session.ResponseState.ResponsesMutex.Lock()
@@ -959,11 +955,7 @@ func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.Encr
 	TagSecrets  []byte `json:"tag_secrets"`
 	SeqNum      uint64 `json:"seq_num"`
 	CipherSuite uint16 `json:"cipher_suite"`
-}) struct {
-	Success bool   `json:"success"`
-	SeqNum  uint64 `json:"seq_num"`
-	Message string `json:"message"`
-} {
+}) shared.ResponseTagVerificationData {
 	var additionalData []byte
 	cipherSuite := tagSecretsData.CipherSuite
 
@@ -1059,11 +1051,7 @@ func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.Encr
 	}
 
 	// Create verification result
-	verificationData := struct {
-		Success bool   `json:"success"`
-		SeqNum  uint64 `json:"seq_num"`
-		Message string `json:"message"`
-	}{
+	verificationData := shared.ResponseTagVerificationData{
 		Success: success,
 		SeqNum:  tagSecretsData.SeqNum,
 	}

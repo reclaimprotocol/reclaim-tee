@@ -72,6 +72,12 @@ const (
 	MsgSendTCPData            MessageType = "send_tcp_data"
 	MsgHandshakeComplete      MessageType = "handshake_complete"
 	MsgHandshakeKeyDisclosure MessageType = "handshake_key_disclosure"
+	MsgHTTPResponse           MessageType = "http_response"
+
+	// Client-specific response handling messages
+	MsgEncryptedResponse        MessageType = "encrypted_response"
+	MsgResponseTagVerification  MessageType = "response_tag_verification"
+	MsgResponseDecryptionStream MessageType = "response_decryption_stream"
 
 	// Phase 2: Split AEAD messages
 	// TEE_K to TEE_T messages
@@ -403,6 +409,20 @@ type EncryptedResponseData struct {
 	ExplicitIV    []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
 }
 
+// ResponseTagVerificationData contains result of tag verification by TEE_T
+type ResponseTagVerificationData struct {
+	Success bool   `json:"success"` // Whether tag verification passed
+	SeqNum  uint64 `json:"seq_num"` // TLS sequence number for AEAD
+	Message string `json:"message"` // Optional error message
+}
+
+// ResponseDecryptionStreamData contains AES-CTR decryption stream from TEE_K
+type ResponseDecryptionStreamData struct {
+	DecryptionStream []byte `json:"decryption_stream"` // AES-CTR keystream for XOR decryption
+	SeqNum           uint64 `json:"seq_num"`           // TLS sequence number for AEAD
+	Length           int    `json:"length"`            // Length of encrypted data to decrypt
+}
+
 // Single Session Mode data structures
 
 // FinishedMessage represents a finished message from any party
@@ -474,25 +494,17 @@ type BatchedTagSecretsData struct {
 
 // BatchedTagVerificationData contains multiple tag verification results for batch processing
 type BatchedTagVerificationData struct {
-	Verifications []struct {
-		Success bool   `json:"success"` // Whether tag verification passed
-		SeqNum  uint64 `json:"seq_num"` // TLS sequence number for AEAD
-		Message string `json:"message"` // Optional error message
-	} `json:"verifications"` // Array of individual verifications
-	SessionID     string `json:"session_id"`     // Session identifier
-	TotalCount    int    `json:"total_count"`    // Total number of verifications in batch
-	AllSuccessful bool   `json:"all_successful"` // True if all verifications passed
+	Verifications []ResponseTagVerificationData `json:"verifications"`  // Array of verification results
+	SessionID     string                        `json:"session_id"`     // Session identifier
+	TotalCount    int                           `json:"total_count"`    // Total number of verifications in batch
+	AllSuccessful bool                          `json:"all_successful"` // True if all verifications passed
 }
 
 // BatchedDecryptionStreamData contains multiple decryption streams for batch processing
 type BatchedDecryptionStreamData struct {
-	DecryptionStreams []struct {
-		DecryptionStream []byte `json:"decryption_stream"` // AES-CTR keystream for XOR decryption
-		SeqNum           uint64 `json:"seq_num"`           // TLS sequence number for AEAD
-		Length           int    `json:"length"`            // Length of encrypted data to decrypt
-	} `json:"decryption_streams"` // Array of individual streams
-	SessionID  string `json:"session_id"`  // Session identifier
-	TotalCount int    `json:"total_count"` // Total number of streams in batch
+	DecryptionStreams []ResponseDecryptionStreamData `json:"decryption_streams"` // Array of decryption streams
+	SessionID         string                         `json:"session_id"`         // Session identifier
+	TotalCount        int                            `json:"total_count"`        // Total number of streams in batch
 }
 
 // Single Session Mode: Cryptographic signing infrastructure

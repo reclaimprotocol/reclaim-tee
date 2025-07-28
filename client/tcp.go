@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync/atomic"
+	"tee-mpc/shared"
 	"time"
 )
 
@@ -79,8 +80,8 @@ func (c *Client) parseAndCaptureOutgoingRecords(data []byte) {
 }
 
 // handleConnectionReady processes connection ready messages from TEE_K
-func (c *Client) handleConnectionReady(msg *Message) {
-	var readyData ConnectionReadyData
+func (c *Client) handleConnectionReady(msg *shared.Message) {
+	var readyData shared.ConnectionReadyData
 	if err := msg.UnmarshalData(&readyData); err != nil {
 		log.Printf("[Client] Failed to unmarshal connection ready data: %v", err)
 		return
@@ -114,20 +115,16 @@ func (c *Client) sendTCPReady(success bool) {
 		}
 	}
 
-	tcpReadyMsg, err := CreateMessage(MsgTCPReady, TCPReadyData{Success: success})
-	if err != nil {
-		log.Printf("[Client] Failed to create TCP ready message: %v", err)
-		return
-	}
+	tcpReadyMsg := shared.CreateMessage(shared.MsgTCPReady, shared.TCPReadyData{Success: success})
 
 	if err := c.sendMessage(tcpReadyMsg); err != nil {
 		log.Printf("[Client] Failed to send TCP ready message: %v", err)
 	}
 }
 
-// handleSendTCPData forwards TCP data from TEE_K to the website
-func (c *Client) handleSendTCPData(msg *Message) {
-	var tcpData TCPData
+// handleSendTCPData processes send TCP data messages from TEE_K
+func (c *Client) handleSendTCPData(msg *shared.Message) {
+	var tcpData shared.TCPData
 	if err := msg.UnmarshalData(&tcpData); err != nil {
 		log.Printf("[Client] Failed to unmarshal TCP data: %v", err)
 		return
@@ -237,11 +234,7 @@ func (c *Client) tcpToWebsocket() {
 
 				if !c.handshakeComplete {
 					// During handshake: Forward to TEE_K
-					tcpDataMsg, err := CreateMessage(MsgTCPData, TCPData{Data: packet})
-					if err != nil {
-						c.terminateConnectionWithError("Failed to create TCP data message", err)
-						return
-					}
+					tcpDataMsg := shared.CreateMessage(shared.MsgTCPData, shared.TCPData{Data: packet})
 
 					if err := c.sendMessage(tcpDataMsg); err != nil {
 						if !isClientNetworkShutdownError(err) {

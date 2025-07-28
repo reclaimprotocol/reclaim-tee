@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"tee-mpc/shared"
 
 	"github.com/gorilla/websocket"
 )
@@ -105,7 +106,7 @@ func (c *Client) handleMessages() {
 			break
 		}
 
-		msg, err := ParseMessage(msgBytes)
+		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
 			if !closing {
 				c.terminateConnectionWithError("Failed to parse message from TEE_K", err)
@@ -116,31 +117,31 @@ func (c *Client) handleMessages() {
 		}
 
 		switch msg.Type {
-		case MsgConnectionReady:
+		case shared.MsgConnectionReady:
 			c.handleConnectionReady(msg)
-		case MsgSendTCPData:
+		case shared.MsgSendTCPData:
 			c.handleSendTCPData(msg)
-		case MsgHandshakeComplete:
+		case shared.MsgHandshakeComplete:
 			c.handleHandshakeComplete(msg)
-		case MsgHandshakeKeyDisclosure:
+		case shared.MsgHandshakeKeyDisclosure:
 			c.handleHandshakeKeyDisclosure(msg)
-		case MsgHTTPResponse:
+		case shared.MsgHTTPResponse:
 			c.handleHTTPResponse(msg)
-		case MsgSessionReady:
+		case shared.MsgSessionReady:
 			c.handleSessionReady(msg)
-		case MsgError:
+		case shared.MsgError:
 			c.handleError(msg)
-		case MsgSignedRedactedDecryptionStream:
+		case shared.MsgSignedRedactedDecryptionStream:
 			c.handleSignedRedactedDecryptionStream(msg)
-		case MsgSignedTranscript:
+		case shared.MsgSignedTranscript:
 			c.handleSignedTranscript(msg)
-		case MsgAttestationResponse:
+		case shared.MsgAttestationResponse:
 			c.handleAttestationResponse(msg)
 
 		// Handle batched response messages
-		case MsgBatchedTagVerifications:
+		case shared.MsgBatchedTagVerifications:
 			c.handleBatchedTagVerifications(msg)
-		case MsgBatchedDecryptionStreams:
+		case shared.MsgBatchedDecryptionStreams:
 			c.handleBatchedDecryptionStreams(msg)
 
 		default:
@@ -172,7 +173,7 @@ func (c *Client) handleTEETMessages() {
 			break
 		}
 
-		msg, err := ParseMessage(msgBytes)
+		msg, err := shared.ParseMessage(msgBytes)
 		if err != nil {
 			if !closing {
 				c.terminateConnectionWithError("Failed to parse message from TEE_T", err)
@@ -183,23 +184,23 @@ func (c *Client) handleTEETMessages() {
 		}
 
 		switch msg.Type {
-		case MsgEncryptedData:
+		case shared.MsgEncryptedData:
 			c.handleEncryptedData(msg)
-		case MsgTEETReady:
+		case shared.MsgTEETReady:
 			c.handleTEETReady(msg)
-		case MsgRedactionVerification:
+		case shared.MsgRedactionVerification:
 			c.handleRedactionVerification(msg)
-		case MsgResponseTagVerification:
+		case shared.MsgResponseTagVerification:
 			c.handleResponseTagVerification(msg)
 		case "signed_transcript":
 			c.handleSignedTranscript(msg)
-		case MsgAttestationResponse:
+		case shared.MsgAttestationResponse:
 			c.handleAttestationResponse(msg)
-		case MsgError:
+		case shared.MsgError:
 			c.handleTEETError(msg)
 
 		// Handle batched response messages from TEE_T
-		case MsgBatchedTagVerifications:
+		case shared.MsgBatchedTagVerifications:
 			c.handleBatchedTagVerifications(msg)
 
 		default:
@@ -211,7 +212,7 @@ func (c *Client) handleTEETMessages() {
 }
 
 // sendMessage sends a message to TEE_K
-func (c *Client) sendMessage(msg *Message) error {
+func (c *Client) sendMessage(msg *shared.Message) error {
 	conn := c.wsConn
 
 	if conn == nil {
@@ -237,7 +238,7 @@ func (c *Client) isEnclaveMode() bool {
 }
 
 // sendMessageToTEET sends a message to TEE_T
-func (c *Client) sendMessageToTEET(msg *Message) error {
+func (c *Client) sendMessageToTEET(msg *shared.Message) error {
 	conn := c.teetConn
 
 	if conn == nil {
@@ -271,11 +272,7 @@ func (c *Client) sendMessageToTEET(msg *Message) error {
 
 // sendError sends an error message to TEE_K (fail-fast implementation)
 func (c *Client) sendError(errMsg string) {
-	errorMsg, err := CreateMessage(MsgError, ErrorData{Message: errMsg})
-	if err != nil {
-		c.terminateConnectionWithError("Failed to create error message", err)
-		return
-	}
+	errorMsg := shared.CreateMessage(shared.MsgError, shared.ErrorData{Message: errMsg})
 
 	if err := c.sendMessage(errorMsg); err != nil {
 		c.terminateConnectionWithError("Failed to send error message", err)
@@ -289,10 +286,7 @@ func (c *Client) sendPendingConnectionRequest() error {
 		return nil
 	}
 
-	msg, err := CreateMessage(MsgRequestConnection, *c.pendingConnectionRequest)
-	if err != nil {
-		return fmt.Errorf("failed to create connection request: %v", err)
-	}
+	msg := shared.CreateMessage(shared.MsgRequestConnection, *c.pendingConnectionRequest)
 
 	if err := c.sendMessage(msg); err != nil {
 		return fmt.Errorf("failed to send connection request: %v", err)
@@ -304,8 +298,8 @@ func (c *Client) sendPendingConnectionRequest() error {
 }
 
 // handleEncryptedData handles encrypted data from TEE_T
-func (c *Client) handleEncryptedData(msg *Message) {
-	var encData EncryptedDataResponse
+func (c *Client) handleEncryptedData(msg *shared.Message) {
+	var encData shared.EncryptedDataResponse
 	if err := msg.UnmarshalData(&encData); err != nil {
 		log.Printf("[Client] Failed to unmarshal encrypted data: %v", err)
 		return
