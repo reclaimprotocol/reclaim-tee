@@ -94,6 +94,15 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 	// *** NEW: Track batch decryption received alongside existing logic ***
 	c.setBatchDecryptionReceived()
 
+	// *** NEW: Advance to redaction sending phase (parallel to existing logic) ***
+	c.advanceToPhase(PhaseSendingRedaction)
+
+	// *** NEW: Automatically send redaction spec when entering redaction phase ***
+	log.Printf("[Client] Entering redaction phase - automatically sending redaction specification")
+	if err := c.sendRedactionSpec(); err != nil {
+		log.Printf("[Client] Failed to send redaction spec: %v", err)
+	}
+
 	// Trigger completion check after callback execution
 	c.checkProtocolCompletion("batched decryption streams processed")
 }

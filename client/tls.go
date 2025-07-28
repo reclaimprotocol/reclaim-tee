@@ -75,6 +75,9 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 	// Mark handshake as complete for response handling
 	c.handshakeComplete = true
 
+	// *** NEW: Advance to response collection phase (parallel to existing logic) ***
+	c.advanceToPhase(PhaseCollectingResponses)
+
 	// Initialize response sequence number to 1 (first application data after handshake)
 	c.responseSeqNum = 1
 
@@ -307,6 +310,13 @@ func (c *Client) sendBatchedResponses() error {
 
 	// *** NEW: Track batch sent alongside existing logic ***
 	c.setBatchSentToTEET()
+
+	// *** NEW: Set expected redacted streams count before clearing batch ***
+	c.expectedRedactedStreams = len(c.batchedResponses)
+	log.Printf("[Client] Expecting %d redacted streams based on batch size", c.expectedRedactedStreams)
+
+	// *** NEW: Advance to decryption receiving phase (parallel to existing logic) ***
+	c.advanceToPhase(PhaseReceivingDecryption)
 
 	// Clear the batch after successful send
 	c.batchedResponses = make([]shared.EncryptedResponseData, 0)

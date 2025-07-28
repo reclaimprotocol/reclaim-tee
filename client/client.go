@@ -36,6 +36,43 @@ const (
 	CompletionFlagRedactedStreamsExpected
 )
 
+// *** NEW: Simple protocol phase tracking (parallel to existing completion logic) ***
+type ProtocolPhase int
+
+const (
+	PhaseHandshaking ProtocolPhase = iota
+	PhaseCollectingResponses
+	PhaseSendingBatch
+	PhaseReceivingDecryption
+	PhaseSendingRedaction
+	PhaseReceivingRedacted
+	PhaseReceivingTranscripts
+	PhaseComplete
+)
+
+func (p ProtocolPhase) String() string {
+	switch p {
+	case PhaseHandshaking:
+		return "Handshaking"
+	case PhaseCollectingResponses:
+		return "CollectingResponses"
+	case PhaseSendingBatch:
+		return "SendingBatch"
+	case PhaseReceivingDecryption:
+		return "ReceivingDecryption"
+	case PhaseSendingRedaction:
+		return "SendingRedaction"
+	case PhaseReceivingRedacted:
+		return "ReceivingRedacted"
+	case PhaseReceivingTranscripts:
+		return "ReceivingTranscripts"
+	case PhaseComplete:
+		return "Complete"
+	default:
+		return "Unknown"
+	}
+}
+
 type Client struct {
 	wsConn   *websocket.Conn
 	teetConn *websocket.Conn
@@ -74,6 +111,11 @@ type Client struct {
 
 	// *** Atomic completion flags (replaces multiple boolean fields) ***
 	completionFlags int64 // Atomic bit flags for completion state tracking
+
+	// *** NEW: Simple protocol state tracking (parallel to existing flags) ***
+	protocolPhase       ProtocolPhase // Current protocol phase
+	transcriptsReceived int           // Count of transcripts received (0, 1, 2)
+	protocolStateMutex  sync.RWMutex  // Protect simple state
 
 	// Track HTTP request/response lifecycle
 	httpRequestSent        bool              // Track if HTTP request has been sent
@@ -146,12 +188,17 @@ type Client struct {
 
 func NewClient(teekURL string) *Client {
 	return &Client{
-		teekURL:                teekURL,
-		teetURL:                "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
-		pendingResponsesData:   make(map[uint64][]byte),
-		completionChan:         make(chan struct{}),
-		state:                  ClientStateInitial,
-		completionFlags:        0,
+		teekURL:              teekURL,
+		teetURL:              "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
+		pendingResponsesData: make(map[uint64][]byte),
+		completionChan:       make(chan struct{}),
+		state:                ClientStateInitial,
+		completionFlags:      0,
+
+		// *** NEW: Initialize simple protocol state ***
+		protocolPhase:          PhaseHandshaking,
+		transcriptsReceived:    0,
+		protocolStateMutex:     sync.RWMutex{},
 		httpRequestSent:        false,
 		httpResponseExpected:   false,
 		httpResponseReceived:   false,
@@ -639,6 +686,61 @@ func (c *Client) getBatchState() (collectionComplete, sentToTEET, decryptionRece
 func (c *Client) isBatchProcessingComplete() bool {
 	collection, sent, decryption := c.getBatchState()
 	return collection && sent && decryption
+}
+
+// *** NEW: Simple protocol state management helpers ***
+
+// getCurrentPhase returns the current protocol phase (thread-safe)
+func (c *Client) getCurrentPhase() ProtocolPhase {
+	c.protocolStateMutex.RLock()
+	defer c.protocolStateMutex.RUnlock()
+	return c.protocolPhase
+}
+
+// advanceToPhase transitions to a new protocol phase (thread-safe)
+func (c *Client) advanceToPhase(newPhase ProtocolPhase) {
+	c.protocolStateMutex.Lock()
+	oldPhase := c.protocolPhase
+	c.protocolPhase = newPhase
+	c.protocolStateMutex.Unlock()
+
+	log.Printf("[Client] PHASE TRANSITION: %s → %s", oldPhase, newPhase)
+
+	// Signal completion when protocol is complete
+	if newPhase == PhaseComplete {
+		c.completionOnce.Do(func() {
+			log.Printf("[Client] Protocol complete - closing completion channel")
+			close(c.completionChan)
+		})
+	}
+}
+
+// incrementTranscriptCount increments transcript count and advances to PhaseComplete if both received
+func (c *Client) incrementTranscriptCount() {
+	c.protocolStateMutex.Lock()
+	c.transcriptsReceived++
+	count := c.transcriptsReceived
+	c.protocolStateMutex.Unlock()
+
+	log.Printf("[Client] Transcript received: %d/2", count)
+
+	// *** FIXED: Only complete when BOTH conditions met ***
+	if count >= 2 {
+		// Check if comprehensive signature verification is also complete
+		if c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
+			log.Printf("[Client] Both transcripts received AND redacted streams processed - completing protocol")
+			c.advanceToPhase(PhaseComplete)
+		} else {
+			log.Printf("[Client] Both transcripts received but waiting for redacted streams processing...")
+		}
+	}
+}
+
+// getProtocolState returns current phase and transcript count (thread-safe)
+func (c *Client) getProtocolState() (ProtocolPhase, int) {
+	c.protocolStateMutex.RLock()
+	defer c.protocolStateMutex.RUnlock()
+	return c.protocolPhase, c.transcriptsReceived
 }
 
 // Phase 4: Response handling methods

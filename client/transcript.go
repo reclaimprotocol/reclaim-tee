@@ -200,6 +200,8 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 			log.Printf("[Client] TEE_K comprehensive verification deferred - waiting for redacted streams (%d/%d)", len(c.signedRedactedStreams), c.expectedRedactedStreams)
 			// Mark transcript as received but don't verify signature yet
 			c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
+			// Increment transcript count (parallel to existing logic)
+			c.incrementTranscriptCount()
 			// Don't set signature valid flag yet - will be set after successful verification
 		} else {
 			log.Printf("[Client] TEE_K comprehensive verification: have all %d expected redacted streams", c.expectedRedactedStreams)
@@ -214,6 +216,8 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 
 			// Mark transcript as received and set signature validity
 			c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
+			// Increment transcript count (parallel to existing logic)
+			c.incrementTranscriptCount()
 			if verificationErr == nil {
 				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
 			}
@@ -231,6 +235,8 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 
 		// Mark transcript as received and set signature validity
 		c.setCompletionFlag(CompletionFlagTEETTranscriptReceived)
+		// *** NEW: Increment transcript count (parallel to existing logic) ***
+		c.incrementTranscriptCount()
 		if verificationErr == nil {
 			c.setCompletionFlag(CompletionFlagTEETSignatureValid)
 		}

@@ -50,6 +50,20 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *shared.Message) {
 				fmt.Printf("[Client] TEE_K signature verification SUCCESS\n")
 				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
 
+				// *** NEW: Check if we can complete protocol (both transcripts + redacted streams ready) ***
+				_, transcriptCount := c.getProtocolState()
+				if transcriptCount >= 2 {
+					log.Printf("[Client] Redacted streams processed AND both transcripts received - completing protocol")
+					c.advanceToPhase(PhaseComplete)
+				} else {
+					log.Printf("[Client] Redacted streams processed but waiting for remaining transcripts...")
+				}
+
+				// *** NEW: Display redacted response now that all streams are processed ***
+				log.Printf("[Client] All redacted streams received - displaying final redacted response")
+				redactionSpec := c.analyzeResponseRedaction()
+				c.displayRedactedResponseFromRanges(redactionSpec.Ranges)
+
 				// Check if we can now proceed with full protocol completion
 				transcriptsComplete := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
 				signaturesValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)

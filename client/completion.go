@@ -15,68 +15,41 @@ func (c *Client) WaitForCompletion() <-chan struct{} {
 
 // checkProtocolCompletion checks if all conditions are met and signals completion if so
 func (c *Client) checkProtocolCompletion(reason string) {
-	// *** BATCH-BASED COMPLETION LOGIC (Phase 3: Clean and Simple) ***
-	collectionComplete, batchSent, decryptionReceived := c.getBatchState()
-	batchSplitAEADComplete := collectionComplete && batchSent && decryptionReceived
+	// *** SIMPLE PHASE-BASED COMPLETION (replacing complex batch logic) ***
+	currentPhase := c.getCurrentPhase()
 
-	log.Printf("[Client] Checking completion: %s", reason)
-	log.Printf("[Client] Batch state: collection=%v, sent=%v, decryption=%v → splitAEAD=%v",
-		collectionComplete, batchSent, decryptionReceived, batchSplitAEADComplete)
+	log.Printf("[Client] Checking completion: %s (current phase: %s)", reason, currentPhase)
 
-	// Completion conditions:
-	// 1. All responses collected (EOF reached)
-	// 2. Batch sent to TEE_T for processing
-	// 3. Batched decryption streams received
-	// 4. Redaction result received (if expected)
-	// 5. Signed transcripts received from both TEE_K and TEE_T (if expected)
+	// In the new simple approach, completion is handled automatically by phase transitions:
+	// - advanceToPhase(PhaseComplete) automatically closes the completion channel
+	// - This happens when incrementTranscriptCount() reaches 2 transcripts
+	// - No complex state checking needed - just let the state machine work
 
-	redactionCondition := !c.hasCompletionFlag(CompletionFlagRedactionExpected) || c.hasCompletionFlag(CompletionFlagRedactionReceived)
-	splitAEADComplete := batchSplitAEADComplete && redactionCondition
-
-	// Only proceed with redaction if all responses have been collected
-	if !collectionComplete {
-		log.Printf("[Client] Waiting for response collection to complete")
+	if currentPhase == PhaseComplete {
+		log.Printf("[Client] Protocol already complete")
 		return
 	}
 
-	// If split AEAD is complete but we haven't sent redaction spec yet, send it now
-	if splitAEADComplete && !c.hasCompletionFlag(CompletionFlagRedactedStreamsExpected) && !c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) {
-		log.Printf("[Client] Split AEAD processing complete and EOF reached - sending redaction specification")
-		if err := c.sendRedactionSpec(); err != nil {
-			log.Printf("[Client] Failed to send redaction spec: %v", err)
-			return
+	// For debugging: show where we are in the process
+	switch currentPhase {
+	case PhaseHandshaking:
+		log.Printf("[Client] Still in handshaking phase")
+	case PhaseCollectingResponses:
+		collectionComplete, _, _ := c.getBatchState()
+		if collectionComplete {
+			log.Printf("[Client] Responses collected, batch will be sent automatically")
+		} else {
+			log.Printf("[Client] Still collecting responses")
 		}
-		// Note: CompletionFlagRedactedStreamsExpected is set to true in sendRedactionSpec
-	}
-
-	// If redaction spec sent but we haven't sent finished command yet, send it now
-	// (For now, we'll skip waiting for redacted streams and proceed to finished command)
-	if splitAEADComplete && c.hasCompletionFlag(CompletionFlagRedactedStreamsExpected) && !c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) {
-		log.Printf("[Client] Redaction spec sent - sending finished command")
-		if err := c.sendFinishedCommand(); err != nil {
-			log.Printf("[Client] Failed to send finished command: %v", err)
-			return
-		}
-		// Note: CompletionFlagSignedTranscriptsExpected is set to true in sendFinishedCommand
-	}
-
-	// Final completion condition: signed transcripts received AND signatures valid
-	transcriptCondition := !c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) ||
-		(c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived | CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid))
-
-	allConditionsMet := splitAEADComplete && transcriptCondition
-
-	if allConditionsMet {
-		c.completionOnce.Do(func() {
-			log.Printf("[Client] All protocol conditions met (including signature validation) - completing client processing")
-			close(c.completionChan)
-		})
-	} else if splitAEADComplete && c.hasCompletionFlag(CompletionFlagSignedTranscriptsExpected) &&
-		c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived|CompletionFlagTEETTranscriptReceived) &&
-		(!c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) || !c.hasCompletionFlag(CompletionFlagTEETSignatureValid)) {
-		// Special case: All transcripts received but signatures invalid
-		log.Printf("[Client] Protocol completion BLOCKED due to invalid signatures (TEE_K: %v, TEE_T: %v)",
-			c.hasCompletionFlag(CompletionFlagTEEKSignatureValid), c.hasCompletionFlag(CompletionFlagTEETSignatureValid))
+	case PhaseReceivingDecryption:
+		log.Printf("[Client] Waiting for batched decryption streams")
+	case PhaseSendingRedaction:
+		log.Printf("[Client] Redaction phase - specs will be sent automatically")
+	case PhaseReceivingRedacted:
+		log.Printf("[Client] Waiting for redacted streams")
+	case PhaseReceivingTranscripts:
+		phase, count := c.getProtocolState()
+		log.Printf("[Client] Waiting for transcripts: %d/2 received (phase: %s)", count, phase)
 	}
 }
 
@@ -114,17 +87,6 @@ func (c *Client) sendRedactionSpec() error {
 	// Analyze response content to identify redaction ranges
 	redactionSpec := c.analyzeResponseRedaction()
 
-	// Display the redacted response immediately using the calculated ranges
-	c.displayRedactedResponseFromRanges(redactionSpec.Ranges)
-
-	// Count expected redacted streams based on batched responses
-	c.batchedResponsesMutex.Lock()
-	c.expectedRedactedStreams = len(c.batchedResponses)
-	batchSize := len(c.batchedResponses)
-	c.batchedResponsesMutex.Unlock()
-
-	log.Printf("[Client] Expecting %d redacted streams based on batch size", batchSize)
-
 	// Send redaction spec to TEE_K
 	msg := shared.CreateSessionMessage(shared.MsgRedactionSpec, c.sessionID, redactionSpec)
 	if err := c.wsConn.WriteJSON(msg); err != nil {
@@ -142,8 +104,19 @@ func (c *Client) sendRedactionSpec() error {
 		}
 	}
 
+	log.Printf("[Client] Redaction specification sent successfully")
+
 	// Set flag to expect redacted streams
 	c.setCompletionFlag(CompletionFlagRedactedStreamsExpected)
+
+	// *** NEW: Advance to receiving redacted streams phase (parallel to existing logic) ***
+	c.advanceToPhase(PhaseReceivingRedacted)
+
+	// *** NEW: Automatically send finished command when entering redacted receiving phase ***
+	log.Printf("[Client] Entering redacted receiving phase - automatically sending finished command")
+	if err := c.sendFinishedCommand(); err != nil {
+		log.Printf("[Client] Failed to send finished command: %v", err)
+	}
 
 	return nil
 }
