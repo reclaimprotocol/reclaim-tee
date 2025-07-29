@@ -104,7 +104,6 @@ const (
 	MsgSignedRedactedDecryptionStream MessageType = "signed_redacted_decryption_stream"
 )
 
-// *** NEW: Batched message types for response optimization ***
 const (
 	MsgBatchedEncryptedResponses MessageType = "batched_encrypted_responses"
 	MsgBatchedResponseLengths    MessageType = "batched_response_lengths"
@@ -450,8 +449,6 @@ type SignedRedactedDecryptionStream struct {
 	RedactedStream []byte `json:"redacted_stream"` // Decryption stream with "*" for redacted parts
 	SeqNum         uint64 `json:"seq_num"`         // TLS sequence number
 }
-
-// *** NEW: Batched response data structures (built from existing individual types) ***
 
 // BatchedEncryptedResponseData contains multiple encrypted response packets for batch processing
 type BatchedEncryptedResponseData struct {

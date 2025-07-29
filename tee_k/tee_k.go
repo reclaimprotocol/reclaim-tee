@@ -201,11 +201,9 @@ func (t *TEEK) handleTEETMessagesForSession(sessionID string, conn *websocket.Co
 		case shared.MsgFinished:
 			t.handleFinishedFromTEETSession(msg.SessionID, msg)
 
-		// *** NEW: Handle batched messages ***
 		case shared.MsgBatchedResponseLengths:
 			t.handleBatchedResponseLengthsSession(msg.SessionID, msg)
 
-		// *** NEW: Handle batched verification results ***
 		case shared.MsgBatchedTagVerifications:
 			t.handleBatchedTagVerificationsSession(msg.SessionID, msg)
 
@@ -1249,7 +1247,6 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 		fmt.Printf("[TEE_K] TLS 1.3 tag secret AAD: %x (ciphertext+tag length: %d)\n", additionalData, ciphertextLength)
 	}
 
-	// *** SEQUENCE NUMBER FIX ***
 	// For TLS 1.2, server sequence matches client sequence (both start at 1 after handshake)
 	// For TLS 1.3, server sequence = client sequence - 1 (server starts at 0)
 	var actualSeqToUse uint64
@@ -1483,7 +1480,6 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	// *** CRITICAL CHANGE: Don't send signature immediately ***
 	// Just log that transcript is ready, but wait for redaction processing to complete
 	log.Printf("[TEE_K] Session %s: Transcript prepared with %d TLS packets, waiting for redaction processing to complete before sending signature", sessionID, len(tlsPackets))
 
@@ -1609,7 +1605,6 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		seqNumbers = append(seqNumbers, seqNum)
 	}
 
-	// *** CRITICAL FIX: Sort sequence numbers to ensure correct order ***
 	sort.Slice(seqNumbers, func(i, j int) bool {
 		return seqNumbers[i] < seqNumbers[j]
 	})
@@ -1707,7 +1702,6 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 			rangeStart := redactionRange.Start
 			rangeEnd := redactionRange.Start + redactionRange.Length
 
-			// *** CRITICAL FIX: Remove incorrect TLS 1.2 offset adjustment ***
 			// The explicit IV is part of the TLS record but NOT part of the encrypted data
 			// The keystream only decrypts the actual encrypted data, not the explicit IV
 			// So redaction ranges should NOT be offset for TLS 1.2
@@ -1756,7 +1750,6 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		currentOffset += length
 	}
 
-	// *** CRITICAL CHANGE: Mark processing as complete and check if we can send signature ***
 	// Instead of immediately sending signature, mark redaction processing as complete
 	session.StreamsMutex.Lock()
 	session.RedactionProcessingComplete = true
@@ -2056,7 +2049,6 @@ func (t *TEEK) constructNonce(iv []byte, seqNum uint64, cipherSuite uint16) []by
 // Note: All crypto functions have been consolidated into minitls package
 // This eliminates code duplication and ensures consistent behavior
 
-// *** NEW: Handle batched response lengths for optimization ***
 func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared.Message) {
 	var batchedLengths shared.BatchedResponseLengthData
 	if err := msg.UnmarshalData(&batchedLengths); err != nil {
@@ -2153,7 +2145,6 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 
 // Helper function logic inlined in batched handler
 
-// *** NEW: Handle batched tag verification results for optimization ***
 func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *shared.Message) {
 	var batchedVerification shared.BatchedTagVerificationData
 	if err := msg.UnmarshalData(&batchedVerification); err != nil {
@@ -2226,7 +2217,6 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 	fmt.Printf("[TEE_K] BATCHING: Successfully sent batch of %d decryption streams to client\n", len(decryptionStreams))
 }
 
-// *** NEW: Session-aware helper to generate decryption stream for a single response ***
 func (t *TEEK) generateSingleDecryptionStreamWithSession(sessionID string, responseLength int, seqNum uint64) ([]byte, error) {
 	// Get TLS client from session state
 	var tlsClient *minitls.Client

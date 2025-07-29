@@ -258,7 +258,6 @@ func (c *Client) sendMessageToTEET(msg *shared.Message) error {
 
 	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
 
-		// *** Try to detect connection state ***
 		if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 
 		} else if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "connection reset") {
@@ -361,7 +360,6 @@ func (c *Client) handleEncryptedData(msg *shared.Message) {
 
 	fmt.Printf("[Client] Sending TLS record (%d bytes)\n", len(tlsRecord))
 
-	// *** CAPTURE OUTGOING APPLICATION DATA RECORD FOR TRANSCRIPT VALIDATION ***
 	// TEE_T expects individual TLS records for application data, not raw TCP chunks
 	c.capturedTraffic = append(c.capturedTraffic, tlsRecord)
 	fmt.Printf("[Client] Captured outgoing application data record: type 0x%02x, %d bytes\n", tlsRecord[0], len(tlsRecord))
@@ -392,7 +390,6 @@ func (c *Client) handleEncryptedData(msg *shared.Message) {
 func (c *Client) Close() {
 	c.isClosing = true
 
-	// *** Close TCP connection FIRST to allow tcpToWebsocket() to exit gracefully ***
 	// This mimics standard HTTP client behavior - close the underlying connection first
 	if c.tcpConn != nil {
 		c.tcpConn.Close()

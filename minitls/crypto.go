@@ -697,7 +697,6 @@ func ComputeTagFromSecrets(ciphertext, tagSecrets []byte, cipherSuite uint16, ad
 		binary.BigEndian.PutUint64(lengthBlock[0:8], aadBitLen)
 		binary.BigEndian.PutUint64(lengthBlock[8:16], ciphertextBitLen)
 
-		// *** CRITICAL FIX: Call GHASH with separate slices like Go's standard implementation ***
 		ghashResult := ghash(&ghashKey, additionalData, ciphertext, lengthBlock)
 
 		// Step 3: Final GCM tag = GHASH ⊕ E_K(IV || 0^31 || 1)

@@ -29,7 +29,6 @@ const (
 	CompletionFlagTEEKSignatureValid = 1 << iota
 )
 
-// *** NEW: Simple protocol phase tracking (parallel to existing completion logic) ***
 type ProtocolPhase int
 
 const (
@@ -96,16 +95,12 @@ type Client struct {
 	// Protocol completion signaling
 	completionChan chan struct{} // Signals when protocol is complete
 
-	// *** Add sync.Once to prevent double-close panic ***
 	completionOnce sync.Once // Ensures completion channel is only closed once
 
-	// *** Simple state tracking ***
 	state int64 // Basic state field
 
-	// *** Atomic completion flags (replaces multiple boolean fields) ***
 	completionFlags int64 // Atomic bit flags for completion state tracking
 
-	// *** NEW: Simple protocol state tracking (parallel to existing flags) ***
 	protocolPhase       ProtocolPhase // Current protocol phase
 	transcriptsReceived int           // Count of transcripts received (0, 1, 2)
 	protocolStateMutex  sync.RWMutex  // Protect simple state
@@ -180,7 +175,6 @@ func NewClient(teekURL string) *Client {
 		state:                ClientStateInitial,
 		completionFlags:      0,
 
-		// *** NEW: Initialize simple protocol state ***
 		protocolPhase:          PhaseHandshaking,
 		transcriptsReceived:    0,
 		protocolStateMutex:     sync.RWMutex{},
@@ -608,8 +602,6 @@ func (c *Client) parseHTTPResponse(data []byte) *HTTPResponse {
 	return response
 }
 
-// *** Atomic completion flag helper functions ***
-
 // setCompletionFlag atomically sets a completion flag
 func (c *Client) setCompletionFlag(flag int64) {
 	atomic.StoreInt64(&c.completionFlags, atomic.LoadInt64(&c.completionFlags)|flag)
@@ -629,8 +621,6 @@ func (c *Client) setCompletionFlags(flags int64) {
 func (c *Client) hasAllCompletionFlags(flags int64) bool {
 	return atomic.LoadInt64(&c.completionFlags)&flags == flags
 }
-
-// *** NEW: Batch state management helpers ***
 
 // setBatchCollectionComplete is now handled by phase transition to PhaseSendingBatch
 func (c *Client) setBatchCollectionComplete() {
@@ -661,8 +651,6 @@ func (c *Client) isBatchProcessingComplete() bool {
 	collection, sent, decryption := c.getBatchState()
 	return collection && sent && decryption
 }
-
-// *** NEW: Simple protocol state management helpers ***
 
 // getCurrentPhase returns the current protocol phase (thread-safe)
 func (c *Client) getCurrentPhase() ProtocolPhase {
@@ -698,7 +686,6 @@ func (c *Client) incrementTranscriptCount() {
 
 	log.Printf("[Client] Transcript received: %d/2", count)
 
-	// *** FIXED: Only complete when BOTH conditions met ***
 	if count >= 2 {
 		// Check if comprehensive signature verification is also complete
 		if c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
@@ -844,8 +831,6 @@ func (c *Client) verifyAttestationPublicKeys() error {
 	c.publicKeyComparisonDone = true
 	return nil
 }
-
-// *** RESULT BUILDING METHODS FOR LIBRARY INTERFACE ***
 
 // buildProtocolResult constructs the complete protocol execution results
 func (c *Client) buildProtocolResult() (*ProtocolResult, error) {

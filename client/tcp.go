@@ -61,7 +61,6 @@ func (c *Client) handleSendTCPData(msg *shared.Message) {
 		return
 	}
 
-	// *** CAPTURE RAW TCP DATA EXACTLY AS TEE_K SEES IT ***
 	// Don't parse into individual TLS records - capture the raw TCP chunk
 	rawTCPData := make([]byte, len(tcpData.Data))
 	copy(rawTCPData, tcpData.Data)

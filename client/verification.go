@@ -62,10 +62,8 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 				redactedPlaintext[j] = ciphertext[j] ^ streamData.DecryptionStream[j]
 			}
 
-			// *** SIMPLIFIED: Minimize mutex usage ***
 			c.responseContentMutex.Lock()
 
-			// *** CRITICAL: Initialize maps if they're nil to prevent panic ***
 			if c.redactedPlaintextBySeq == nil {
 				c.redactedPlaintextBySeq = make(map[uint64][]byte)
 			}
@@ -92,13 +90,10 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 		log.Printf("[Client] HTTP response reconstruction completed, callback executed")
 	}
 
-	// *** NEW: Track batch decryption received alongside existing logic ***
 	c.setBatchDecryptionReceived()
 
-	// *** NEW: Advance to redaction sending phase (parallel to existing logic) ***
 	c.advanceToPhase(PhaseSendingRedaction)
 
-	// *** NEW: Automatically send redaction spec when entering redaction phase ***
 	log.Printf("[Client] Entering redaction phase - automatically sending redaction specification")
 	if err := c.sendRedactionSpec(); err != nil {
 		log.Printf("[Client] Failed to send redaction spec: %v", err)

@@ -240,7 +240,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			t.logger.DebugIf("Handling MsgFinished from client", zap.String("session_id", sessionID))
 			t.handleFinishedFromClientSession(sessionID, msg)
 
-		// *** NEW: Handle batched messages ***
 		case shared.MsgBatchedEncryptedResponses:
 			t.logger.DebugIf("Handling MsgBatchedEncryptedResponses", zap.String("session_id", sessionID))
 			t.handleBatchedEncryptedResponsesSession(sessionID, msg)
@@ -356,7 +355,6 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgFinished:
 			t.handleFinishedFromTEEKSession(msg)
 
-		// *** NEW: Handle batched messages ***
 		case shared.MsgBatchedTagSecrets:
 			t.handleBatchedTagSecretsSession(msg)
 
@@ -499,7 +497,6 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 
 // handleEncryptedResponseSession function removed - now using batched approach
 
-// *** NEW: Handle batched encrypted responses for optimization ***
 func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *shared.Message) {
 	t.logger.InfoIf("BATCHING: Handling batched encrypted responses for session", zap.String("session_id", sessionID))
 
@@ -592,7 +589,6 @@ func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *sha
 		zap.Int("total_count", len(responseLengths)))
 }
 
-// *** NEW: Helper to add single response to transcript (extracted from existing logic) ***
 func (t *TEET) addSingleResponseToTranscript(sessionID string, encryptedResp *shared.EncryptedResponseData) {
 	// Session-aware transcript collection
 	// For TLS 1.2 AES-GCM, we need to include the explicit IV in the response record too
@@ -832,7 +828,6 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 
 // handleResponseTagSecretsSession function removed - now using batched approach
 
-// *** NEW: Handle batched tag secrets for optimization ***
 func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 	sessionID := msg.SessionID
 	if sessionID == "" {
@@ -950,7 +945,6 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 		zap.String("session_id", sessionID))
 }
 
-// *** NEW: Helper to verify tag for a single response (extracted from existing logic) ***
 func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.EncryptedResponseData, tagSecretsData *struct {
 	TagSecrets  []byte `json:"tag_secrets"`
 	SeqNum      uint64 `json:"seq_num"`
@@ -1147,7 +1141,6 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 		zap.Binary("tag", authTag),
 		zap.Int("data_length", len(reconstructedData)))
 
-	// *** CRITICAL FIX: Add complete TLS record to transcript ***
 	// Construct the complete TLS record that will be sent to the server
 	// For TLS 1.2 AES-GCM, we need to include the explicit IV
 
@@ -1279,8 +1272,6 @@ func (t *TEET) sendErrorToTEEKForSession(sessionID string, conn *websocket.Conn,
 }
 
 func (t *TEET) sendErrorToClient(conn *websocket.Conn, errMsg string) {
-	// This function should be updated to use session-based routing
-	// For now, we'll use the direct websocket connection
 	errorMsg := shared.CreateMessage(shared.MsgError, shared.ErrorData{Message: errMsg})
 	msgBytes, err := json.Marshal(errorMsg)
 	if err != nil {

@@ -13,7 +13,6 @@ func (c *Client) WaitForCompletion() <-chan struct{} {
 
 // checkProtocolCompletion checks if all conditions are met and signals completion if so
 func (c *Client) checkProtocolCompletion(reason string) {
-	// *** SIMPLE PHASE-BASED COMPLETION (replacing complex batch logic) ***
 	currentPhase := c.getCurrentPhase()
 
 	log.Printf("[Client] Checking completion: %s (current phase: %s)", reason, currentPhase)

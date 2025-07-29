@@ -75,7 +75,6 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 	// Mark handshake as complete for response handling
 	c.handshakeComplete = true
 
-	// *** NEW: Advance to response collection phase (parallel to existing logic) ***
 	c.advanceToPhase(PhaseCollectingResponses)
 
 	// Initialize response sequence number to 1 (first application data after handshake)
@@ -208,7 +207,6 @@ func (c *Client) processTLSRecord(record []byte) {
 			len(encryptedData), len(tag))
 	}
 
-	// *** Check if system is shutting down or TEE_T connection is closed ***
 	if c.isClosing {
 		fmt.Printf("[Client] System is shutting down, storing record but skipping split AEAD processing\n")
 		return
@@ -263,7 +261,6 @@ func (c *Client) processTLSRecord(record []byte) {
 
 	if err := c.sendMessageToTEET(responseMsg); err != nil {
 
-		// *** Don't treat this as fatal during shutdown ***
 		if c.isClosing {
 			fmt.Printf("[Client] Send failed during shutdown - this is expected, continuing\n")
 		} else {
@@ -302,14 +299,11 @@ func (c *Client) sendBatchedResponses() error {
 
 	log.Printf("[Client] Successfully sent batch of %d packets to TEE_T", len(c.batchedResponses))
 
-	// *** NEW: Track batch sent alongside existing logic ***
 	c.setBatchSentToTEET()
 
-	// *** NEW: Set expected redacted streams count before clearing batch ***
 	c.expectedRedactedStreams = len(c.batchedResponses)
 	log.Printf("[Client] Expecting %d redacted streams based on batch size", c.expectedRedactedStreams)
 
-	// *** NEW: Advance to decryption receiving phase (parallel to existing logic) ***
 	c.advanceToPhase(PhaseReceivingDecryption)
 
 	// Clear the batch after successful send

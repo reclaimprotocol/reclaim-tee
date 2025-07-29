@@ -268,7 +268,6 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		}
 	}
 
-	// *** CRITICAL VALIDATION: Compare TEE transcripts with client's captured traffic ***
 	if transcriptsComplete && signaturesValid {
 		log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")
 		c.validateTranscriptsAgainstCapturedTraffic()

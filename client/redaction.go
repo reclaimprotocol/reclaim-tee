@@ -52,7 +52,6 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *shared.Message) {
 				fmt.Printf("[Client] TEE_K signature verification SUCCESS\n")
 				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
 
-				// *** NEW: Check if we can complete protocol (both transcripts + redacted streams ready) ***
 				_, transcriptCount := c.getProtocolState()
 				if transcriptCount >= 2 {
 					log.Printf("[Client] Redacted streams processed AND both transcripts received - completing protocol")
@@ -61,7 +60,6 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *shared.Message) {
 					log.Printf("[Client] Redacted streams processed but waiting for remaining transcripts...")
 				}
 
-				// *** NEW: Display redacted response now that all streams are processed ***
 				log.Printf("[Client] All redacted streams received - displaying final redacted response")
 				redactionSpec := c.analyzeResponseRedaction()
 				c.displayRedactedResponseFromRanges(redactionSpec.Ranges)
@@ -81,8 +79,6 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *shared.Message) {
 			log.Printf("[Client] Received redacted stream %d/%d - waiting for remaining streams before verification", len(c.signedRedactedStreams), c.expectedRedactedStreams)
 		}
 	}
-
-	// Note: Individual stream signatures removed - using master signature verification
 
 	// Apply redacted stream to ciphertext to get redacted plaintext
 	c.responseContentMutex.Lock()
@@ -380,7 +376,6 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 			// Unknown content type - no specific handling needed
 		}
 
-		// ***  Increment offset by the length of the ORIGINAL PADDED content ***
 		totalOffset += len(content)
 	}
 
@@ -388,7 +383,6 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 	if len(allHTTPContent) > 0 && len(httpContentMappings) > 0 {
 		log.Printf("[Client] Analyzing combined HTTP content (%d bytes) from %d TLS records", len(allHTTPContent), len(httpContentMappings))
 
-		// *** Use cached redaction ranges from response callback if available ***
 		var combinedHTTPRanges []shared.RedactionRange
 
 		if len(c.lastRedactionRanges) > 0 {
@@ -596,7 +590,6 @@ func (c *Client) sendRedactionSpec() error {
 
 	log.Printf("[Client] Redaction specification sent successfully")
 
-	// *** NEW: Advance to receiving redacted streams phase (parallel to existing logic) ***
 	c.advanceToPhase(PhaseReceivingRedacted)
 
 	//  send finished command when entering redacted receiving phase ***
