@@ -42,7 +42,10 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 	log.Printf("[Client] Processing batch of %d decryption streams", len(batchedStreams.DecryptionStreams))
 
 	if len(batchedStreams.DecryptionStreams) == 0 {
-		c.checkProtocolCompletion("batched decryption streams processed (empty)")
+		log.Printf("[Client] No batched decryption streams to process")
+
+		// *** CLEANUP: Removed redundant checkProtocolCompletion - phase transitions handle completion automatically ***
+		// Phase will advance automatically based on batch state and transcript count
 		return
 	}
 
@@ -103,8 +106,8 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 		log.Printf("[Client] Failed to send redaction spec: %v", err)
 	}
 
-	// Trigger completion check after callback execution
-	c.checkProtocolCompletion("batched decryption streams processed")
+	// *** CLEANUP: Removed redundant checkProtocolCompletion - phase transitions handle completion automatically ***
+	// Protocol advances to PhaseSendingRedaction automatically, and completion triggers when transcripts received
 }
 
 // reconstructHTTPResponseFromDecryptedData reconstructs HTTP response from all decrypted response data
@@ -191,10 +194,9 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			}
 
 			// Set success flags for results reporting
-			c.responseProcessingMutex.Lock()
+			// *** CLEANUP: Removed responseProcessingMutex - sequential protocol doesn't need concurrency protection ***
 			c.responseProcessingSuccessful = true
 			c.reconstructedResponseSize = len(actualHTTPResponse)
-			c.responseProcessingMutex.Unlock()
 
 			// Call response callback now that we have complete HTTP response
 			if c.responseCallback != nil && len(c.lastRedactionRanges) == 0 {

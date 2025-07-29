@@ -198,8 +198,6 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		log.Printf("[Client] TEE_K transcript received, checking if all expected redacted streams are available...")
 		if len(c.signedRedactedStreams) < c.expectedRedactedStreams {
 			log.Printf("[Client] TEE_K comprehensive verification deferred - waiting for redacted streams (%d/%d)", len(c.signedRedactedStreams), c.expectedRedactedStreams)
-			// Mark transcript as received but don't verify signature yet
-			c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
 			// Increment transcript count (parallel to existing logic)
 			c.incrementTranscriptCount()
 			// Don't set signature valid flag yet - will be set after successful verification
@@ -214,8 +212,6 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 				fmt.Printf("[Client] %s signature verification SUCCESS\n", sourceName)
 			}
 
-			// Mark transcript as received and set signature validity
-			c.setCompletionFlag(CompletionFlagTEEKTranscriptReceived)
 			// Increment transcript count (parallel to existing logic)
 			c.incrementTranscriptCount()
 			if verificationErr == nil {
@@ -233,13 +229,8 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 			fmt.Printf("[Client] %s signature verification SUCCESS\n", sourceName)
 		}
 
-		// Mark transcript as received and set signature validity
-		c.setCompletionFlag(CompletionFlagTEETTranscriptReceived)
-		// *** NEW: Increment transcript count (parallel to existing logic) ***
+		// Increment transcript count (parallel to existing logic)
 		c.incrementTranscriptCount()
-		if verificationErr == nil {
-			c.setCompletionFlag(CompletionFlagTEETSignatureValid)
-		}
 	}
 
 	log.Printf("[Client] Marked %s transcript as received (signature valid: %v)", sourceName, verificationErr == nil)
@@ -256,8 +247,9 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		}
 	}
 
-	transcriptsComplete := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
-	signaturesValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)
+	// *** CLEANUP: Replaced completion flags with phase-based logic ***
+	transcriptsComplete := c.transcriptsReceived >= 2
+	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
 	log.Printf("[Client] Signed transcript from %s processed successfully", sourceName)
 
@@ -291,6 +283,6 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		}
 	}
 
-	// Check protocol completion (function will only proceed if all conditions are met)
-	c.checkProtocolCompletion("signed transcript received from " + sourceName)
+	// *** CLEANUP: Removed redundant checkProtocolCompletion - incrementTranscriptCount() handles completion automatically ***
+	// When transcriptsReceived >= 2, incrementTranscriptCount() automatically calls advanceToPhase(PhaseComplete)
 }

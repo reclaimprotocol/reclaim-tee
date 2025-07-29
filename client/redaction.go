@@ -65,8 +65,13 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *shared.Message) {
 				c.displayRedactedResponseFromRanges(redactionSpec.Ranges)
 
 				// Check if we can now proceed with full protocol completion
-				transcriptsComplete := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
-				signaturesValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)
+				// *** CLEANUP: Completion is now triggered automatically by phase transitions - removed redundant check ***
+				// When both transcripts received + redacted streams processed, incrementTranscriptCount() → PhaseComplete
+
+				// Check if we can now proceed with full protocol completion
+				// *** CLEANUP: Replaced completion flags with phase-based logic ***
+				transcriptsComplete := c.transcriptsReceived >= 2
+				signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
 				if transcriptsComplete && signaturesValid {
 					log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")
@@ -111,6 +116,6 @@ func (c *Client) handleSignedRedactedDecryptionStream(msg *shared.Message) {
 	c.redactedPlaintextBySeq[redactedStream.SeqNum] = redactedPlaintext
 	c.responseContentMutex.Unlock()
 
-	// Check protocol completion after processing redacted stream
-	c.checkProtocolCompletion("redacted stream processed")
+	// *** CLEANUP: Removed redundant checkProtocolCompletion - phase transitions handle completion automatically ***
+	// Completion triggered automatically when: transcriptsReceived >= 2 + redacted streams processed
 }

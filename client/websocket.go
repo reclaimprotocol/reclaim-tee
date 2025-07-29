@@ -312,11 +312,8 @@ func (c *Client) handleEncryptedData(msg *shared.Message) {
 
 	fmt.Printf("[Client] Received encrypted data (%d bytes) + tag (%d bytes)\n", len(encData.EncryptedData), len(encData.AuthTag))
 
-	// Track received redaction verification result but don't complete yet - wait for HTTP response
-	if c.hasCompletionFlag(CompletionFlagRedactionExpected) && !c.hasCompletionFlag(CompletionFlagRedactionReceived) {
-		c.setCompletionFlag(CompletionFlagRedactionReceived)
-		fmt.Printf("[Client] RECEIVED redaction verification result from TEE_T\n")
-	}
+	// *** CLEANUP: Simplified redaction tracking - phase system handles state ***
+	fmt.Printf("[Client] RECEIVED redaction verification result from TEE_T\n")
 
 	// Create TLS record with encrypted data and authentication tag
 	// Format depends on TLS version and cipher suite

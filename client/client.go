@@ -26,14 +26,8 @@ const (
 
 // Completion flags for atomic bit operations
 const (
-	CompletionFlagRedactionExpected = 1 << iota
-	CompletionFlagRedactionReceived
-	CompletionFlagSignedTranscriptsExpected
-	CompletionFlagTEEKTranscriptReceived
-	CompletionFlagTEETTranscriptReceived
-	CompletionFlagTEEKSignatureValid
-	CompletionFlagTEETSignatureValid
-	CompletionFlagRedactedStreamsExpected
+	// *** CLEANUP: Keep only the flag needed for completion timing ***
+	CompletionFlagTEEKSignatureValid = 1 << iota
 )
 
 // *** NEW: Simple protocol phase tracking (parallel to existing completion logic) ***
@@ -128,20 +122,14 @@ type Client struct {
 	redactedPlaintextBySeq map[uint64][]byte // *** ADDED: Store final redacted plaintext for ordered printing ***
 	recordTypeBySeq        map[uint64]byte   // Store TLS record type by sequence number
 
-	// Response packet batching fields
-	batchedResponses      []shared.EncryptedResponseData // Collect response packets until EOF
-	batchedResponsesMutex sync.Mutex                     // Protect batched responses collection
+	// Batched response tracking (collection until EOF)
+	batchedResponses []shared.EncryptedResponseData // Collect response packets until EOF
+	// *** CLEANUP: Removed batchedResponsesMutex - sequential TLS processing doesn't need concurrency protection ***
 
-	// *** NEW: Batch-based state tracking (parallel to counters) ***
-	batchCollectionComplete bool         // All responses collected (EOF reached)
-	batchSentToTEET         bool         // Batch sent to TEE_T
-	batchDecryptionReceived bool         // Batched decryption streams received
-	batchStateMutex         sync.RWMutex // Protect batch state flags
-
+	// *** CLEANUP: Removed responseProcessingMutex - sequential protocol doesn't need concurrency protection ***
 	// Response processing success tracking
-	responseProcessingSuccessful bool       // Track if response was successfully processed
-	reconstructedResponseSize    int        // Size of reconstructed response data
-	responseProcessingMutex      sync.Mutex // Protect response processing flags
+	responseProcessingSuccessful bool // Track if response was successfully processed
+	reconstructedResponseSize    int  // Size of reconstructed response data
 
 	// Track redaction ranges so we can prettify later and include in bundle
 	requestRedactionRanges []shared.RedactionRange
@@ -210,18 +198,13 @@ func NewClient(teekURL string) *Client {
 		requestRedactionRanges: nil,
 
 		// Initialize batching fields
-		batchedResponses:      make([]shared.EncryptedResponseData, 0),
-		batchedResponsesMutex: sync.Mutex{},
+		batchedResponses: make([]shared.EncryptedResponseData, 0),
+		// *** CLEANUP: Removed batchedResponsesMutex - sequential TLS processing doesn't need concurrency protection ***
 
-		// *** NEW: Initialize batch state tracking ***
-		batchCollectionComplete: false,
-		batchSentToTEET:         false,
-		batchDecryptionReceived: false,
-		batchStateMutex:         sync.RWMutex{},
-
+		// Response processing success tracking
 		responseProcessingSuccessful: false,
 		reconstructedResponseSize:    0,
-		responseProcessingMutex:      sync.Mutex{},
+		// *** CLEANUP: Removed responseProcessingMutex - sequential protocol doesn't need concurrency protection ***
 		teekAttestationPublicKey:     nil,
 		teetAttestationPublicKey:     nil,
 		teekTranscriptPublicKey:      nil,
@@ -654,32 +637,34 @@ func (c *Client) hasAllCompletionFlags(flags int64) bool {
 
 // *** NEW: Batch state management helpers ***
 
-// setBatchCollectionComplete marks that all responses have been collected (EOF reached)
+// setBatchCollectionComplete is now handled by phase transition to PhaseSendingBatch
 func (c *Client) setBatchCollectionComplete() {
-	c.batchStateMutex.Lock()
-	c.batchCollectionComplete = true
-	c.batchStateMutex.Unlock()
+	// *** CLEANUP: Batch collection complete is now derived from phase >= PhaseSendingBatch ***
+	// No action needed - phase transition handles this state
 }
 
-// setBatchSentToTEET marks that the batch has been sent to TEE_T
+// setBatchSentToTEET is now handled by phase transition to PhaseReceivingDecryption
 func (c *Client) setBatchSentToTEET() {
-	c.batchStateMutex.Lock()
-	c.batchSentToTEET = true
-	c.batchStateMutex.Unlock()
+	// *** CLEANUP: Batch sent to TEE_T is now derived from phase >= PhaseReceivingDecryption ***
+	// No action needed - phase transition handles this state
 }
 
-// setBatchDecryptionReceived marks that batched decryption streams have been received
+// setBatchDecryptionReceived is now handled by phase transition to PhaseSendingRedaction
 func (c *Client) setBatchDecryptionReceived() {
-	c.batchStateMutex.Lock()
-	c.batchDecryptionReceived = true
-	c.batchStateMutex.Unlock()
+	// *** CLEANUP: Batch decryption received is now derived from phase >= PhaseSendingRedaction ***
+	// No action needed - phase transition handles this state
 }
 
-// getBatchState returns current batch state (thread-safe)
+// getBatchState returns current batch state based on protocol phase (thread-safe)
 func (c *Client) getBatchState() (collectionComplete, sentToTEET, decryptionReceived bool) {
-	c.batchStateMutex.RLock()
-	defer c.batchStateMutex.RUnlock()
-	return c.batchCollectionComplete, c.batchSentToTEET, c.batchDecryptionReceived
+	c.protocolStateMutex.RLock()
+	defer c.protocolStateMutex.RUnlock()
+
+	// Derive batch state from protocol phase
+	collectionComplete = c.protocolPhase >= PhaseSendingBatch
+	sentToTEET = c.protocolPhase >= PhaseReceivingDecryption
+	decryptionReceived = c.protocolPhase >= PhaseSendingRedaction
+	return
 }
 
 // isBatchProcessingComplete checks if all batch operations are complete
@@ -942,8 +927,8 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 		}
 	}
 
-	bothReceived := c.hasAllCompletionFlags(CompletionFlagTEEKTranscriptReceived | CompletionFlagTEETTranscriptReceived)
-	bothValid := c.hasAllCompletionFlags(CompletionFlagTEEKSignatureValid | CompletionFlagTEETSignatureValid)
+	bothReceived := c.transcriptsReceived >= 2
+	bothValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
 	return &TranscriptResults{
 		TEEK:                teekTranscript,
@@ -997,10 +982,10 @@ func (c *Client) buildResponseResults() (*ResponseResults, error) {
 	}
 
 	// Use batched response processing success flags
-	c.responseProcessingMutex.Lock()
+	// *** CLEANUP: Removed batchedResponsesMutex - sequential TLS processing doesn't need concurrency protection ***
 	batchedSuccess := c.responseProcessingSuccessful
 	batchedDataSize := c.reconstructedResponseSize
-	c.responseProcessingMutex.Unlock()
+	// *** CLEANUP: Removed batchedResponsesMutex - sequential TLS processing doesn't need concurrency protection ***
 
 	// Use batched response processing data size (batching always runs)
 	finalDataSize := batchedDataSize

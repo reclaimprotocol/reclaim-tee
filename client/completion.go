@@ -50,6 +50,8 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	case PhaseReceivingTranscripts:
 		phase, count := c.getProtocolState()
 		log.Printf("[Client] Waiting for transcripts: %d/2 received (phase: %s)", count, phase)
+	default:
+		panic("unhandled default case")
 	}
 }
 
@@ -57,8 +59,7 @@ func (c *Client) checkProtocolCompletion(reason string) {
 func (c *Client) sendFinishedCommand() error {
 	log.Printf("[Client] Sending finished command to both TEE_K and TEE_T")
 
-	// Set flag to expect signed transcripts
-	c.setCompletionFlag(CompletionFlagSignedTranscriptsExpected)
+	// *** CLEANUP: Removed redundant CompletionFlagSignedTranscriptsExpected - phase system handles this ***
 
 	finishedMsg := shared.FinishedMessage{}
 
@@ -106,8 +107,7 @@ func (c *Client) sendRedactionSpec() error {
 
 	log.Printf("[Client] Redaction specification sent successfully")
 
-	// Set flag to expect redacted streams
-	c.setCompletionFlag(CompletionFlagRedactedStreamsExpected)
+	// *** CLEANUP: Removed redundant CompletionFlagRedactedStreamsExpected - phase transition handles this ***
 
 	// *** NEW: Advance to receiving redacted streams phase (parallel to existing logic) ***
 	c.advanceToPhase(PhaseReceivingRedacted)
