@@ -67,7 +67,7 @@ func (c *Client) BuildVerificationBundle(path string) error {
 	}
 
 	// Attestations (if any; nil slices marshal as null, omit empty)
-	bundle.AttestationTEEK = c.teekAttestationPublicKey // TODO: replace with full doc when available
+	bundle.AttestationTEEK = c.teekAttestationPublicKey
 	bundle.AttestationTEET = c.teetAttestationPublicKey
 
 	// Write to file

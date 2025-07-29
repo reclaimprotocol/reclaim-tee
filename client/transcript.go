@@ -247,7 +247,6 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		}
 	}
 
-	// *** CLEANUP: Replaced completion flags with phase-based logic ***
 	transcriptsComplete := c.transcriptsReceived >= 2
 	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
@@ -283,6 +282,4 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		}
 	}
 
-	// *** CLEANUP: Removed redundant checkProtocolCompletion - incrementTranscriptCount() handles completion automatically ***
-	// When transcriptsReceived >= 2, incrementTranscriptCount() automatically calls advanceToPhase(PhaseComplete)
 }

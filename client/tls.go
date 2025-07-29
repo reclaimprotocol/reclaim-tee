@@ -106,7 +106,6 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 	// Send redaction streams to TEE_T for stream application
 	fmt.Printf("[Client] Sending redaction streams to TEE_T\n")
 
-	// *** CLEANUP: Removed redundant CompletionFlagRedactionExpected - phase system handles this ***
 	fmt.Printf("[Client] EXPECTING redaction verification result from TEE_T\n")
 
 	streamsMsg := shared.CreateMessage(shared.MsgRedactionStreams, streamsData)
@@ -250,7 +249,6 @@ func (c *Client) processTLSRecord(record []byte) {
 
 	if !collectionComplete {
 		// Collection not complete yet - collect packet for batch processing
-		// *** CLEANUP: Removed batchedResponsesMutex - sequential TLS processing doesn't need concurrency protection ***
 		c.batchedResponses = append(c.batchedResponses, encryptedResponseData)
 
 		// Still increment sequence number
@@ -280,7 +278,6 @@ func (c *Client) processTLSRecord(record []byte) {
 
 // Send batched responses when EOF is detected
 func (c *Client) sendBatchedResponses() error {
-	// *** CLEANUP: Removed batchedResponsesMutex - sequential TLS processing doesn't need concurrency protection ***
 
 	if len(c.batchedResponses) == 0 {
 		log.Printf("[Client] No response packets to send")
@@ -329,7 +326,6 @@ func (c *Client) handleResponseTagVerification(msg *shared.Message) {
 	}
 
 	if verificationData.Success {
-		// *** CLEANUP: Removed redundant checkProtocolCompletion - phase transitions handle completion automatically ***
 		// Phase advances to PhaseSendingRedaction automatically after batch processing
 	} else {
 		log.Printf("[Client] Tag verification failed for seq %d: %s", verificationData.SeqNum, verificationData.Message)
