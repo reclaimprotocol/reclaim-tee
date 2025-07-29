@@ -895,11 +895,15 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 		// Get the corresponding encrypted response
 		encryptedResp := session.ResponseState.PendingEncryptedResponses[tagSecretsData.SeqNum]
 		if encryptedResp == nil {
-			t.logger.Error("No pending encrypted response for sequence number",
-				zap.String("session_id", sessionID),
-				zap.Uint64("seq_num", tagSecretsData.SeqNum))
-			allSuccessful = false
-			continue
+			// CRITICAL SECURITY: Missing encrypted response compromises protocol integrity
+			if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted,
+				fmt.Errorf("critical security failure: missing encrypted response for seq %d", tagSecretsData.SeqNum),
+				zap.Uint64("seq_num", tagSecretsData.SeqNum)) {
+				session.ResponseState.ResponsesMutex.Unlock()
+				return // Terminate session on missing critical data
+			}
+			session.ResponseState.ResponsesMutex.Unlock()
+			return
 		}
 
 		// Verify tag for this response - THIS IS CRITICAL
@@ -1323,8 +1327,8 @@ func (t *TEET) verifyCommitmentsIfReady(sessionID string) error {
 	}
 
 	if session.RedactionState == nil {
-		t.logger.InfoIf("No redaction state available - skipping commitment verification", zap.String("session_id", sessionID))
-		return nil
+		// SECURITY: Redaction state is required for commitment verification
+		return fmt.Errorf("critical security failure: no redaction state available for commitment verification in session %s", sessionID)
 	}
 
 	// Check if both streams and expected commitments are available
@@ -1332,15 +1336,13 @@ func (t *TEET) verifyCommitmentsIfReady(sessionID string) error {
 	hasCommitments := len(session.RedactionState.ExpectedCommitments) > 0
 
 	if !hasStreams {
-		t.logger.InfoIf("Redaction streams not yet available - deferring commitment verification",
-			zap.String("session_id", sessionID))
-		return nil
+		// SECURITY: Missing redaction streams prevents proper commitment verification
+		return fmt.Errorf("critical security failure: redaction streams not available for commitment verification in session %s", sessionID)
 	}
 
 	if !hasCommitments {
-		t.logger.InfoIf("Expected commitments from TEE_K not yet available - deferring commitment verification",
-			zap.String("session_id", sessionID))
-		return nil
+		// SECURITY: Missing expected commitments prevents proper verification
+		return fmt.Errorf("critical security failure: expected commitments from TEE_K not available for verification in session %s", sessionID)
 	}
 
 	// Both collections available - perform verification

@@ -119,13 +119,14 @@ func Validate(bundlePath string) error {
 			return fmt.Errorf("failed to apply proof stream: %v", err)
 		}
 	} else {
-		fmt.Println("[Verifier] Proof stream/key or TEE_K transcript missing – skipping commitment verification")
+		// SECURITY: Missing proof components compromise verification integrity
+		return fmt.Errorf("critical security failure: proof stream/key or TEE_K transcript missing - cannot perform commitment verification")
 	}
 
 	// --- Redacted response reconstruction check ---
 	if bundle.Transcripts.TEET == nil {
-		fmt.Println("[Verifier] No TEET transcript present – skipping stream check")
-		return nil
+		// SECURITY: TEET transcript is required for proper verification
+		return fmt.Errorf("critical security failure: TEET transcript missing - cannot perform stream verification")
 	}
 	// Build ordered slice of ciphertexts (application data) from TEET transcript
 	var ciphertexts [][]byte

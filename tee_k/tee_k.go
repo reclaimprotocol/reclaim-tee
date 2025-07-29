@@ -19,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/mdlayher/vsock"
+	"go.uber.org/zap"
 )
 
 var teekUpgrader = websocket.Upgrader{
@@ -2199,10 +2200,18 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 			decryptionStreams = append(decryptionStreams, streamData)
 		}
 	} else {
-		// Some failures - only generate streams for successful verifications
+		// Some failures - CRITICAL SECURITY: Any verification failure must terminate protocol
 		for _, verification := range batchedVerification.Verifications {
 			if !verification.Success {
-				continue // Skip failed verifications
+				// Use proper structured error handling with session termination and cleanup
+				if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagVerificationFailed,
+					fmt.Errorf("critical security failure: tag verification failed for seq %d", verification.SeqNum),
+					zap.Uint64("seq_num", verification.SeqNum),
+					zap.String("verification_message", verification.Message)) {
+					// Clean up session resources on critical crypto failure
+					t.cleanupSession(sessionID)
+				}
+				return // Terminate session immediately on any crypto failure
 			}
 
 			// Get the stored response length for this sequence number
