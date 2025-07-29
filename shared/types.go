@@ -216,6 +216,7 @@ type TLSSessionState struct {
 type RedactionSessionState struct {
 	Ranges                []RedactionRange
 	CommitmentOpenings    [][]byte
+	ExpectedCommitments   [][]byte // [comm_s, comm_sp] received from TEE_K
 	EncryptedRequestData  []EncryptedRequestData
 	EncryptedResponseData []EncryptedResponseData
 	RedactionStreams      [][]byte
@@ -386,6 +387,7 @@ type SessionReadyData struct {
 type EncryptedRequestData struct {
 	EncryptedData   []byte           `json:"encrypted_data"` // R_red_Enc
 	TagSecrets      []byte           `json:"tag_secrets"`    // Data needed for tag computation
+	Commitments     [][]byte         `json:"commitments"`    // [comm_s, comm_sp] from TEE_K
 	CipherSuite     uint16           `json:"cipher_suite"`
 	SeqNum          uint64           `json:"seq_num"`          // Sequence number for AEAD
 	RedactionRanges []RedactionRange `json:"redaction_ranges"` // Redaction position metadata for stream application

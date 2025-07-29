@@ -432,18 +432,7 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 		zap.Int("streams_count", len(streamsData.Streams)),
 		zap.Int("keys_count", len(streamsData.CommitmentKeys)))
 
-	// Verify commitments to ensure stream integrity
-	if err := t.verifyCommitments(streamsData.Streams, streamsData.CommitmentKeys); err != nil {
-		// Commitment verification failure is a critical cryptographic error
-		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoCommitmentFailed, err,
-			zap.Int("streams_count", len(streamsData.Streams)),
-			zap.Int("keys_count", len(streamsData.CommitmentKeys))) {
-			return
-		}
-		return
-	}
-
-	// Get session to store streams and keys
+	// Get session to store streams and keys (defer commitment verification)
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
@@ -461,7 +450,17 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 	session.RedactionState.RedactionStreams = streamsData.Streams
 	session.RedactionState.CommitmentKeys = streamsData.CommitmentKeys
 
-	t.logger.InfoIf("Redaction streams stored and verified for session", zap.String("session_id", sessionID))
+	t.logger.InfoIf("Redaction streams stored for session", zap.String("session_id", sessionID))
+
+	// Verify commitments if expected commitments are already available from TEE_K
+	if err := t.verifyCommitmentsIfReady(sessionID); err != nil {
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoCommitmentFailed, err,
+			zap.Int("streams_count", len(streamsData.Streams)),
+			zap.Int("keys_count", len(streamsData.CommitmentKeys))) {
+			return
+		}
+		return
+	}
 
 	// Process pending encrypted request if available
 	if session.ResponseState != nil && session.ResponseState.PendingEncryptedRequest != nil {
@@ -806,6 +805,21 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 
 	// Store redaction ranges for stream application
 	session.RedactionState.Ranges = encReq.RedactionRanges
+
+	// Store expected commitments from TEE_K for verification
+	session.RedactionState.ExpectedCommitments = encReq.Commitments
+	t.logger.InfoIf("Stored expected commitments from TEE_K",
+		zap.String("session_id", sessionID),
+		zap.Int("commitment_count", len(encReq.Commitments)))
+
+	// Verify commitments if redaction streams are already available from Client
+	if err := t.verifyCommitmentsIfReady(sessionID); err != nil {
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoCommitmentFailed, err,
+			zap.Int("commitment_count", len(encReq.Commitments))) {
+			return
+		}
+		return
+	}
 
 	// Check if redaction streams are available
 	if len(session.RedactionState.RedactionStreams) == 0 {
@@ -1299,10 +1313,56 @@ func (t *TEET) sendErrorToTEEK(conn *websocket.Conn, errMsg string) {
 
 // Phase 3: Redaction system implementation
 
+// verifyCommitmentsIfReady checks if both stream collections (from Client) and expected commitments (from TEE_K) are available, then verifies them
+func (t *TEET) verifyCommitmentsIfReady(sessionID string) error {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to get session: %v", err)
+	}
+
+	if session.RedactionState == nil {
+		t.logger.InfoIf("No redaction state available - skipping commitment verification", zap.String("session_id", sessionID))
+		return nil
+	}
+
+	// Check if both streams and expected commitments are available
+	hasStreams := len(session.RedactionState.RedactionStreams) > 0 && len(session.RedactionState.CommitmentKeys) > 0
+	hasCommitments := len(session.RedactionState.ExpectedCommitments) > 0
+
+	if !hasStreams {
+		t.logger.InfoIf("Redaction streams not yet available - deferring commitment verification",
+			zap.String("session_id", sessionID))
+		return nil
+	}
+
+	if !hasCommitments {
+		t.logger.InfoIf("Expected commitments from TEE_K not yet available - deferring commitment verification",
+			zap.String("session_id", sessionID))
+		return nil
+	}
+
+	// Both collections available - perform verification
+	t.logger.InfoIf("Stream collections and expected commitments both available - verifying commitments",
+		zap.String("session_id", sessionID),
+		zap.Int("streams_count", len(session.RedactionState.RedactionStreams)),
+		zap.Int("expected_commitments_count", len(session.RedactionState.ExpectedCommitments)))
+
+	if err := t.verifyCommitments(session.RedactionState.RedactionStreams, session.RedactionState.CommitmentKeys, session.RedactionState.ExpectedCommitments); err != nil {
+		return fmt.Errorf("commitment verification failed: %v", err)
+	}
+
+	t.logger.InfoIf("Commitment verification completed successfully", zap.String("session_id", sessionID))
+	return nil
+}
+
 // verifyCommitments verifies that HMAC(stream, key) matches the expected commitments
-func (t *TEET) verifyCommitments(streams, keys [][]byte) error {
+func (t *TEET) verifyCommitments(streams, keys, expectedCommitments [][]byte) error {
 	if len(streams) != len(keys) {
 		return fmt.Errorf("streams and keys length mismatch: %d vs %d", len(streams), len(keys))
+	}
+
+	if len(expectedCommitments) != len(streams) {
+		return fmt.Errorf("expected commitments length mismatch: expected %d, got %d", len(streams), len(expectedCommitments))
 	}
 
 	for i := 0; i < len(streams); i++ {
@@ -1313,12 +1373,27 @@ func (t *TEET) verifyCommitments(streams, keys [][]byte) error {
 
 		t.logger.DebugIf("Computed stream commitment",
 			zap.Int("stream_index", i),
-			zap.Binary("commitment", computedCommitment))
+			zap.Binary("computed_commitment", computedCommitment),
+			zap.Binary("expected_commitment", expectedCommitments[i]))
+
+		// Compare computed commitment with expected commitment from TEE_K
+		if len(computedCommitment) != len(expectedCommitments[i]) {
+			return fmt.Errorf("commitment %d length mismatch: computed %d bytes, expected %d bytes",
+				i, len(computedCommitment), len(expectedCommitments[i]))
+		}
+
+		// Use constant time comparison to prevent timing attacks
+		if !hmac.Equal(computedCommitment, expectedCommitments[i]) {
+			return fmt.Errorf("commitment %d verification failed: HMAC(stream_%d, key_%d) does not match expected commitment from TEE_K", i, i, i)
+		}
+
+		t.logger.InfoIf("Stream commitment verified successfully",
+			zap.Int("stream_index", i),
+			zap.Int("commitment_length", len(computedCommitment)))
 	}
 
-	// Note: In a real implementation, we would compare against commitments received from TEE_K
-	// For now, we just verify the streams are properly formatted
-	t.logger.InfoIf("All redaction commitments verified")
+	t.logger.InfoIf("All redaction commitments verified successfully",
+		zap.Int("total_commitments", len(streams)))
 	return nil
 }
 

@@ -805,7 +805,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	fmt.Printf("[TEE_K] Session %s: Encrypted %d bytes using split AEAD\n", sessionID, len(encryptedData))
 
 	// Send encrypted request and tag secrets to TEE_T with session ID
-	if err := t.sendEncryptedRequestToTEETWithSession(sessionID, encryptedData, tagSecrets, cipherSuite, actualSeqNum, redactedRequest.RedactionRanges); err != nil {
+	if err := t.sendEncryptedRequestToTEETWithSession(sessionID, encryptedData, tagSecrets, cipherSuite, actualSeqNum, redactedRequest.RedactionRanges, redactedRequest.Commitments); err != nil {
 		log.Printf("[TEE_K] Failed to send encrypted request to TEE_T: %v", err)
 		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to send encrypted request to TEE_T: %v", err))
 		return
@@ -1123,12 +1123,13 @@ func (t *TEEK) sendEncryptedRequestToTEET(encryptedData, tagSecrets []byte, ciph
 }
 
 // sendEncryptedRequestToTEETWithSession sends encrypted request data and tag secrets to TEE_T with session ID
-func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64, redactionRanges []shared.RedactionRange) error {
-	fmt.Printf(" TEE_K sending encrypted request to TEE_T for session %s (%d bytes, %d ranges)\n", sessionID, len(encryptedData), len(redactionRanges))
+func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64, redactionRanges []shared.RedactionRange, commitments [][]byte) error {
+	fmt.Printf(" TEE_K sending encrypted request to TEE_T for session %s (%d bytes, %d ranges, %d commitments)\n", sessionID, len(encryptedData), len(redactionRanges), len(commitments))
 
 	encReq := shared.EncryptedRequestData{
 		EncryptedData:   encryptedData,
 		TagSecrets:      tagSecrets,
+		Commitments:     commitments,
 		CipherSuite:     cipherSuite,
 		SeqNum:          seqNum,
 		RedactionRanges: redactionRanges,
