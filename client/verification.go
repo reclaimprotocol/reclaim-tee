@@ -220,10 +220,10 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 						len(result.RedactionRanges), len(result.ProofClaims), len(result.RedactedBody))
 
 					// Log redaction ranges
-					for i, r := range result.RedactionRanges {
-						fmt.Printf("[Client] Redaction range %d: start=%d, length=%d, type=%s\n",
-							i+1, r.Start, r.Length, r.Type)
-					}
+					// for i, r := range result.RedactionRanges {
+					// 	fmt.Printf("[Client] Redaction range %d: start=%d, length=%d, type=%s\n",
+					// 		i+1, r.Start, r.Length, r.Type)
+					// }
 
 				}
 			} else if c.responseCallback != nil {

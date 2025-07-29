@@ -123,16 +123,13 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLength int) {
 	switch recordType {
 	case 0x17: // ApplicationData
-		fmt.Printf("[Client] → ApplicationData record, processing with split AEAD\n")
+		// fmt.Printf("[Client] → ApplicationData record, processing with split AEAD\n")
 		c.processTLSRecord(record)
 
 	case 0x14: // ChangeCipherSpec
 		fmt.Printf("[Client] → ChangeCipherSpec record (maintenance)\n")
 
 	case 0x15: // Alert
-		fmt.Printf("[Client] → Alert record\n")
-		// Note: Alert parsing moved to after decryption in processTLSRecord
-		// Process alert records through split AEAD for decryption (needed for validation)
 		fmt.Printf("[Client] → Processing alert record with split AEAD\n")
 		c.processTLSRecord(record)
 
@@ -183,15 +180,15 @@ func (c *Client) processTLSRecord(record []byte) {
 		explicitIV = encryptedPayload[:8]
 		encryptedData = encryptedPayload[8 : len(encryptedPayload)-tagSize]
 
-		fmt.Printf("[Client] TLS 1.2 AES-GCM: extracted explicit IV (%d bytes) and encrypted data (%d bytes), tag (%d bytes)\n",
-			len(explicitIV), len(encryptedData), len(tag))
-		fmt.Printf("[Client] Explicit IV: %x\n", explicitIV)
+		// fmt.Printf("[Client] TLS 1.2 AES-GCM: extracted explicit IV (%d bytes) and encrypted data (%d bytes), tag (%d bytes)\n",
+		// 	len(explicitIV), len(encryptedData), len(tag))
+		// fmt.Printf("[Client] Explicit IV: %x\n", explicitIV)
 	} else {
 		// TLS 1.3 or other: no explicit IV
 		encryptedData = encryptedPayload[:len(encryptedPayload)-tagSize]
 
-		fmt.Printf("[Client] Processing TLS record: %d bytes encrypted data, %d bytes tag\n",
-			len(encryptedData), len(tag))
+		// fmt.Printf("[Client] Processing TLS record: %d bytes encrypted data, %d bytes tag\n",
+		// 	len(encryptedData), len(tag))
 	}
 
 	if c.isClosing {

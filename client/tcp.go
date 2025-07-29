@@ -160,7 +160,7 @@ func (c *Client) tcpToWebsocket() {
 				packet := make([]byte, fullLength)
 				copy(packet, data[offset:offset+fullLength])
 				c.capturedTraffic = append(c.capturedTraffic, packet)
-				fmt.Printf("[Client] Captured TLS packet: type=0x%02x, length=%d\n", packet[0], length)
+				// fmt.Printf("[Client] Captured TLS packet: type=0x%02x, length=%d\n", packet[0], length)
 
 				if !c.handshakeComplete {
 					// During handshake: Forward to TEE_K

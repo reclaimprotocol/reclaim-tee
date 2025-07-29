@@ -115,9 +115,9 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 	fmt.Printf("[Client] TEE_T transcript analysis:\n")
 
 	packetsMatched := 0
-	for i, teetPacket := range c.teetTranscriptPackets {
-		fmt.Printf("[Client]   TEE_T packet %d: %d bytes (type: 0x%02x)\n",
-			i+1, len(teetPacket), teetPacket[0])
+	for _, teetPacket := range c.teetTranscriptPackets {
+		// fmt.Printf("[Client]   TEE_T packet %d: %d bytes (type: 0x%02x)\n",
+		// 	i+1, len(teetPacket), teetPacket[0])
 
 		// Check if this packet matches any of our captured packets
 		found := false
@@ -254,19 +254,19 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 
 	// Show packet summary
 	fmt.Printf("[Client] %s transcript summary:\n", sourceName)
-	if len(signedTranscript.Packets) > 0 {
-		// Display packet information
-		for i, packet := range signedTranscript.Packets {
-			fmt.Printf("[Client] TEE_K packet %d: %d bytes\n", i+1, len(packet))
-		}
-	}
+	// if len(signedTranscript.Packets) > 0 {
+	// 	// Display packet information
+	// 	for i, packet := range signedTranscript.Packets {
+	// 		fmt.Printf("[Client] TEE_K packet %d: %d bytes\n", i+1, len(packet))
+	// 	}
+	// }
 
-	if len(signedTranscript.Packets) > 0 {
-		// Display packet information
-		for i, packet := range signedTranscript.Packets {
-			fmt.Printf("[Client] TEE_T packet %d: %d bytes\n", i+1, len(packet))
-		}
-	}
+	// if len(signedTranscript.Packets) > 0 {
+	// 	// Display packet information
+	// 	for i, packet := range signedTranscript.Packets {
+	// 		fmt.Printf("[Client] TEE_T packet %d: %d bytes\n", i+1, len(packet))
+	// 	}[Client]   TEE_T packet 1
+	// }
 
 	if transcriptsComplete && signaturesValid {
 		log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")

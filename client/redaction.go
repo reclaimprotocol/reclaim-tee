@@ -493,13 +493,13 @@ func (c *Client) sendRedactionSpec() error {
 	log.Printf("[Client] Sent redaction specification to TEE_K with %d ranges", len(redactionSpec.Ranges))
 
 	// Display ranges sent to TEE_K
-	for i, r := range redactionSpec.Ranges {
-		if r.Type == "session_ticket" {
-			log.Printf("[Client] Range %d: [%d:%d] type=%s (session ticket)", i+1, r.Start, r.Start+r.Length-1, r.Type)
-		} else {
-			log.Printf("[Client] Range %d: [%d:%d] type=%s (%d bytes)", i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
-		}
-	}
+	// for i, r := range redactionSpec.Ranges {
+	// 	if r.Type == "session_ticket" {
+	// 		log.Printf("[Client] Range %d: [%d:%d] type=%s (session ticket)", i+1, r.Start, r.Start+r.Length-1, r.Type)
+	// 	} else {
+	// 		log.Printf("[Client] Range %d: [%d:%d] type=%s (%d bytes)", i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
+	// 	}
+	// }
 
 	log.Printf("[Client] Redaction specification sent successfully")
 
@@ -573,8 +573,8 @@ func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Messag
 
 	// Process ALL streams from batch at once
 	for _, redactedStream := range batchedStreams.SignedRedactedStreams {
-		log.Printf("[Client] Processing redacted decryption stream for seq %d (%d bytes)",
-			redactedStream.SeqNum, len(redactedStream.RedactedStream))
+		// log.Printf("[Client] Processing redacted decryption stream for seq %d (%d bytes)",
+		// 	redactedStream.SeqNum, len(redactedStream.RedactedStream))
 
 		// Add to collection for verification bundle
 		c.signedRedactedStreams = append(c.signedRedactedStreams, redactedStream)
@@ -585,14 +585,13 @@ func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Messag
 		c.responseContentMutex.Unlock()
 
 		if !exists {
-			log.Printf("[Client] No ciphertext found for seq %d", redactedStream.SeqNum)
-			continue
+			log.Fatalf("[Client] No ciphertext found for seq %d", redactedStream.SeqNum)
+
 		}
 
 		if len(redactedStream.RedactedStream) != len(ciphertext) {
-			log.Printf("[Client] Stream length mismatch for seq %d: stream=%d, ciphertext=%d",
+			log.Fatalf("[Client] Stream length mismatch for seq %d: stream=%d, ciphertext=%d",
 				redactedStream.SeqNum, len(redactedStream.RedactedStream), len(ciphertext))
-			continue
 		}
 
 		// XOR to get redacted plaintext
@@ -609,7 +608,7 @@ func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Messag
 		c.redactedPlaintextBySeq[redactedStream.SeqNum] = redactedPlaintext
 		c.responseContentMutex.Unlock()
 
-		log.Printf("[Client] Applied redacted stream to seq %d successfully", redactedStream.SeqNum)
+		// log.Printf("[Client] Applied redacted stream to seq %d successfully", redactedStream.SeqNum)
 	}
 
 	// Check completion condition - triggers immediately since all streams received at once
