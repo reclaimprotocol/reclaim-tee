@@ -16,19 +16,19 @@ func (c *Client) handleBatchedTagVerifications(msg *shared.Message) {
 		return
 	}
 
-	log.Printf("[Client] Received batch tag verification for %d responses", len(batchedVerification.Verifications))
+	if batchedVerification.AllSuccessful {
+		// All verifications passed - simple success message
+		log.Printf("[Client] All %d tag verifications successful", batchedVerification.TotalCount)
+	} else {
+		// Some failures - process detailed results
+		log.Printf("[Client] Tag verification batch: %d total, %d failed",
+			batchedVerification.TotalCount, len(batchedVerification.Verifications))
 
-	// Process each verification result
-	successCount := 0
-	for _, verification := range batchedVerification.Verifications {
-		if verification.Success {
-			successCount++
-		} else {
-			log.Printf("[Client] Response tag verification failed (seq=%d): %s", verification.SeqNum, verification.Message)
+		for _, verification := range batchedVerification.Verifications {
+			log.Printf("[Client] Response tag verification failed (seq=%d): %s",
+				verification.SeqNum, verification.Message)
 		}
 	}
-
-	log.Printf("[Client] Processed %d tag verifications (%d successful)", len(batchedVerification.Verifications), successCount)
 }
 
 // handleBatchedDecryptionStreams handles batched decryption streams
@@ -76,6 +76,14 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 
 			c.redactedPlaintextBySeq[streamData.SeqNum] = redactedPlaintext
 			c.responseContentBySeq[streamData.SeqNum] = redactedPlaintext
+
+			// Check if this is an Alert record and parse the decrypted alert
+			if recordType, exists := c.recordTypeBySeq[streamData.SeqNum]; exists && recordType == 0x15 {
+				c.responseContentMutex.Unlock()
+				c.parseDecryptedAlert(streamData.SeqNum, redactedPlaintext)
+				c.responseContentMutex.Lock()
+			}
+
 			c.responseContentMutex.Unlock()
 
 			// Processing complete for this stream

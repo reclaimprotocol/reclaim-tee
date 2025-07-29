@@ -888,6 +888,7 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 	// Process tag verification for each response in the batch
 	var verifications []shared.ResponseTagVerificationData
 	allSuccessful := true
+	totalCount := len(batchedTagSecrets.TagSecrets)
 
 	session.ResponseState.ResponsesMutex.Lock()
 	for _, tagSecretsData := range batchedTagSecrets.TagSecrets {
@@ -903,7 +904,6 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 
 		// Verify tag for this response - THIS IS CRITICAL
 		verificationResult := t.verifyTagForResponse(sessionID, encryptedResp, &tagSecretsData)
-		verifications = append(verifications, verificationResult)
 
 		if !verificationResult.Success {
 			// Tag verification failure is CRITICAL - compromises protocol integrity
@@ -914,6 +914,8 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 				return // Terminate session on crypto failure
 			}
 			allSuccessful = false
+			// Only collect failed verifications for detailed reporting
+			verifications = append(verifications, verificationResult)
 		}
 
 		t.logger.DebugIf("Tag verification completed",
@@ -925,14 +927,14 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 
 	t.logger.InfoIf("Completed batch tag verification",
 		zap.String("session_id", sessionID),
-		zap.Int("total_count", len(verifications)),
+		zap.Int("total_count", totalCount),
 		zap.Bool("all_successful", allSuccessful))
 
-	// Send batched verification results to client
+	// Only include detailed verification results if there are failures
 	batchedVerification := shared.BatchedTagVerificationData{
-		Verifications: verifications,
+		Verifications: verifications, // Empty if all successful, contains only failures otherwise
 		SessionID:     sessionID,
-		TotalCount:    len(verifications),
+		TotalCount:    totalCount,
 		AllSuccessful: allSuccessful,
 	}
 

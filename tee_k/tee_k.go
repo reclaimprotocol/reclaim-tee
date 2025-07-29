@@ -1922,15 +1922,23 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		return fmt.Errorf("failed to send signed transcript: %v", err)
 	}
 
-	// Send redacted streams to client
-	for _, stream := range session.RedactedStreams {
-		streamMsg := shared.CreateSessionMessage(shared.MsgSignedRedactedDecryptionStream, sessionID, stream)
-		if err := session.ClientConn.WriteJSON(streamMsg); err != nil {
-			return fmt.Errorf("failed to send redacted stream seq %d: %v", stream.SeqNum, err)
+	// Send batched redacted streams to client (constant message count, not data-dependent)
+	if len(session.RedactedStreams) > 0 {
+		batchedRedactedStreams := shared.BatchedSignedRedactedDecryptionStreamData{
+			SignedRedactedStreams: session.RedactedStreams,
+			SessionID:             sessionID,
+			TotalCount:            len(session.RedactedStreams),
 		}
-	}
 
-	log.Printf("[TEE_K] Session %s: Sent signed transcript and %d redacted streams to client", sessionID, len(session.RedactedStreams))
+		batchedStreamMsg := shared.CreateSessionMessage(shared.MsgBatchedSignedRedactedDecryptionStreams, sessionID, batchedRedactedStreams)
+		if err := session.ClientConn.WriteJSON(batchedStreamMsg); err != nil {
+			return fmt.Errorf("failed to send batched redacted streams: %v", err)
+		}
+
+		log.Printf("[TEE_K] Session %s: Sent signed transcript and batched %d redacted streams to client", sessionID, len(session.RedactedStreams))
+	} else {
+		log.Printf("[TEE_K] Session %s: Sent signed transcript (no redacted streams to send)", sessionID)
+	}
 	return nil
 }
 
@@ -2161,41 +2169,70 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 		return
 	}
 
-	// Generate decryption streams for all successful verifications
+	// Generate decryption streams based on verification results
 	var decryptionStreams []shared.ResponseDecryptionStreamData
 
-	for _, verification := range batchedVerification.Verifications {
-		if !verification.Success {
-			continue // Skip failed verifications
-		}
-
-		// Get the stored response length for this sequence number
+	if batchedVerification.AllSuccessful {
+		// All verifications passed - generate streams for all responses
 		responseState, err := t.getSessionResponseState(sessionID)
 		if err != nil {
 			log.Printf("[TEE_K] Session %s: Failed to get response state: %v", sessionID, err)
-			continue
-		}
-		responseLength, exists := responseState.ResponseLengthBySeqInt[verification.SeqNum]
-		if !exists {
-			log.Printf("[TEE_K] No response length found for seq %d", verification.SeqNum)
-			continue
+			return
 		}
 
-		// Generate decryption stream using session-aware logic
-		decryptionStream, err := t.generateSingleDecryptionStreamWithSession(sessionID, responseLength, verification.SeqNum)
-		if err != nil {
-			log.Printf("[TEE_K] Failed to generate decryption stream for seq %d: %v", verification.SeqNum, err)
-			continue
-		}
+		// Generate decryption streams for all response sequences
+		for seqNum, responseLength := range responseState.ResponseLengthBySeqInt {
+			// Generate decryption stream using session-aware logic
+			decryptionStream, err := t.generateSingleDecryptionStreamWithSession(sessionID, responseLength, seqNum)
+			if err != nil {
+				log.Printf("[TEE_K] Failed to generate decryption stream for seq %d: %v", seqNum, err)
+				continue
+			}
 
-		// Create decryption stream data
-		streamData := shared.ResponseDecryptionStreamData{
-			DecryptionStream: decryptionStream,
-			SeqNum:           verification.SeqNum,
-			Length:           responseLength,
-		}
+			// Create decryption stream data
+			streamData := shared.ResponseDecryptionStreamData{
+				DecryptionStream: decryptionStream,
+				SeqNum:           seqNum,
+				Length:           responseLength,
+			}
 
-		decryptionStreams = append(decryptionStreams, streamData)
+			decryptionStreams = append(decryptionStreams, streamData)
+		}
+	} else {
+		// Some failures - only generate streams for successful verifications
+		for _, verification := range batchedVerification.Verifications {
+			if !verification.Success {
+				continue // Skip failed verifications
+			}
+
+			// Get the stored response length for this sequence number
+			responseState, err := t.getSessionResponseState(sessionID)
+			if err != nil {
+				log.Printf("[TEE_K] Session %s: Failed to get response state: %v", sessionID, err)
+				continue
+			}
+			responseLength, exists := responseState.ResponseLengthBySeqInt[verification.SeqNum]
+			if !exists {
+				log.Printf("[TEE_K] No response length found for seq %d", verification.SeqNum)
+				continue
+			}
+
+			// Generate decryption stream using session-aware logic
+			decryptionStream, err := t.generateSingleDecryptionStreamWithSession(sessionID, responseLength, verification.SeqNum)
+			if err != nil {
+				log.Printf("[TEE_K] Failed to generate decryption stream for seq %d: %v", verification.SeqNum, err)
+				continue
+			}
+
+			// Create decryption stream data
+			streamData := shared.ResponseDecryptionStreamData{
+				DecryptionStream: decryptionStream,
+				SeqNum:           verification.SeqNum,
+				Length:           responseLength,
+			}
+
+			decryptionStreams = append(decryptionStreams, streamData)
+		}
 	}
 
 	fmt.Printf("[TEE_K] BATCHING: Generated %d decryption streams for session %s\n", len(decryptionStreams), sessionID)

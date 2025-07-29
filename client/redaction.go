@@ -25,93 +25,6 @@ func (c *Client) handleRedactionVerification(msg *shared.Message) {
 	}
 }
 
-// handleSignedRedactedDecryptionStream handles signed redacted decryption streams from TEE_K
-func (c *Client) handleSignedRedactedDecryptionStream(msg *shared.Message) {
-	var redactedStream shared.SignedRedactedDecryptionStream
-	if err := msg.UnmarshalData(&redactedStream); err != nil {
-		log.Printf("[Client] Failed to unmarshal redacted decryption stream: %v", err)
-		return
-	}
-
-	log.Printf("[Client] Received redacted decryption stream for seq %d (%d bytes)",
-		redactedStream.SeqNum, len(redactedStream.RedactedStream))
-
-	// Add to collection for verification bundle
-	c.signedRedactedStreams = append(c.signedRedactedStreams, redactedStream)
-
-	// Only verify TEE_K signature when ALL expected redacted streams received
-	if c.teekSignedTranscript != nil && !c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
-		if len(c.signedRedactedStreams) >= c.expectedRedactedStreams {
-			log.Printf("[Client] Received all %d expected redacted streams, attempting TEE_K comprehensive signature verification", c.expectedRedactedStreams)
-			verificationErr := shared.VerifyComprehensiveSignature(c.teekSignedTranscript, c.signedRedactedStreams)
-			if verificationErr != nil {
-				log.Printf("[Client] TEE_K signature verification FAILED: %v", verificationErr)
-				fmt.Printf("[Client] TEE_K signature verification FAILED: %v\n", verificationErr)
-			} else {
-				log.Printf("[Client] TEE_K signature verification SUCCESS")
-				fmt.Printf("[Client] TEE_K signature verification SUCCESS\n")
-				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
-
-				_, transcriptCount := c.getProtocolState()
-				if transcriptCount >= 2 {
-					log.Printf("[Client] Redacted streams processed AND both transcripts received - completing protocol")
-					c.advanceToPhase(PhaseComplete)
-				} else {
-					log.Printf("[Client] Redacted streams processed but waiting for remaining transcripts...")
-				}
-
-				log.Printf("[Client] All redacted streams received - displaying final redacted response")
-				redactionSpec := c.analyzeResponseRedaction()
-				c.displayRedactedResponseFromRanges(redactionSpec.Ranges)
-
-				// Check if we can now proceed with full protocol completion
-
-				transcriptsComplete := c.transcriptsReceived >= 2
-				signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
-
-				if transcriptsComplete && signaturesValid {
-					log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")
-					c.validateTranscriptsAgainstCapturedTraffic()
-					fmt.Printf("[Client] Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
-				}
-			}
-		} else {
-			log.Printf("[Client] Received redacted stream %d/%d - waiting for remaining streams before verification", len(c.signedRedactedStreams), c.expectedRedactedStreams)
-		}
-	}
-
-	// Apply redacted stream to ciphertext to get redacted plaintext
-	c.responseContentMutex.Lock()
-	ciphertext, exists := c.ciphertextBySeq[redactedStream.SeqNum]
-	c.responseContentMutex.Unlock()
-
-	if !exists {
-		log.Printf("[Client] No ciphertext found for seq %d", redactedStream.SeqNum)
-		return
-	}
-
-	if len(redactedStream.RedactedStream) != len(ciphertext) {
-		log.Printf("[Client] Stream length mismatch for seq %d: stream=%d, ciphertext=%d",
-			redactedStream.SeqNum, len(redactedStream.RedactedStream), len(ciphertext))
-		return
-	}
-
-	// XOR ciphertext with redacted stream to get redacted plaintext
-	redactedPlaintext := make([]byte, len(ciphertext))
-	for i := 0; i < len(ciphertext); i++ {
-		redactedPlaintext[i] = ciphertext[i] ^ redactedStream.RedactedStream[i]
-	}
-
-	log.Printf("[Client] Generated redacted plaintext for seq %d (%d bytes)",
-		redactedStream.SeqNum, len(redactedPlaintext))
-
-	// Store the redacted plaintext and check if we are ready to print
-	c.responseContentMutex.Lock()
-	c.redactedPlaintextBySeq[redactedStream.SeqNum] = redactedPlaintext
-	c.responseContentMutex.Unlock()
-
-}
-
 // analyzeHTTPRedactionWithBytes identifies sensitive parts within HTTP response content and calculates redaction bytes
 func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, ciphertext []byte) []shared.RedactionRange {
 	var ranges []shared.RedactionRange
@@ -396,7 +309,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 					Type:   r.Type,
 					// RedactionBytes will be calculated below during mapping
 				})
-				log.Printf("[Client] Using cached range: [%d:%d] type=%s", r.Start, r.Start+r.Length-1, r.Type)
+				// log.Printf("[Client] Using cached range: [%d:%d] type=%s", r.Start, r.Start+r.Length-1, r.Type)
 			}
 		} else {
 			log.Printf("[Client] No cached redaction ranges available, using automatic analysis")
@@ -511,9 +424,9 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 	}
 
 	log.Printf("[Client] Generated redaction spec with %d ranges (after gap filling)", len(redactionRanges))
-	for i, r := range redactionRanges {
-		log.Printf("[Client] Range %d: [%d:%d] type=%s (%d redaction bytes)", i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
-	}
+	// for i, r := range redactionRanges {
+	// 	log.Printf("[Client] Range %d: [%d:%d] type=%s (%d redaction bytes)", i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
+	// }
 
 	return spec
 }
@@ -645,4 +558,97 @@ func (c *Client) displayRedactedResponseFromRanges(ranges []shared.RedactionRang
 		collapseAsterisks(string(c.fullRedactedResponse)))
 
 	log.Printf("[Client] Displayed redacted response from ranges (%d bytes)", len(redactedResponse))
+}
+
+// handleBatchedSignedRedactedDecryptionStreams handles batched signed redacted decryption streams
+// while preserving exact same state machine behavior as individual messages
+func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Message) {
+	var batchedStreams shared.BatchedSignedRedactedDecryptionStreamData
+	if err := msg.UnmarshalData(&batchedStreams); err != nil {
+		log.Printf("[Client] Failed to unmarshal batched signed redacted decryption streams: %v", err)
+		return
+	}
+
+	log.Printf("[Client] Received batch of %d signed redacted decryption streams", len(batchedStreams.SignedRedactedStreams))
+
+	// Process ALL streams from batch at once
+	for _, redactedStream := range batchedStreams.SignedRedactedStreams {
+		log.Printf("[Client] Processing redacted decryption stream for seq %d (%d bytes)",
+			redactedStream.SeqNum, len(redactedStream.RedactedStream))
+
+		// Add to collection for verification bundle
+		c.signedRedactedStreams = append(c.signedRedactedStreams, redactedStream)
+
+		// Apply redacted stream to ciphertext to get redacted plaintext
+		c.responseContentMutex.Lock()
+		ciphertext, exists := c.ciphertextBySeq[redactedStream.SeqNum]
+		c.responseContentMutex.Unlock()
+
+		if !exists {
+			log.Printf("[Client] No ciphertext found for seq %d", redactedStream.SeqNum)
+			continue
+		}
+
+		if len(redactedStream.RedactedStream) != len(ciphertext) {
+			log.Printf("[Client] Stream length mismatch for seq %d: stream=%d, ciphertext=%d",
+				redactedStream.SeqNum, len(redactedStream.RedactedStream), len(ciphertext))
+			continue
+		}
+
+		// XOR to get redacted plaintext
+		redactedPlaintext := make([]byte, len(ciphertext))
+		for i := 0; i < len(ciphertext); i++ {
+			redactedPlaintext[i] = ciphertext[i] ^ redactedStream.RedactedStream[i]
+		}
+
+		// Store redacted plaintext
+		c.responseContentMutex.Lock()
+		if c.redactedPlaintextBySeq == nil {
+			c.redactedPlaintextBySeq = make(map[uint64][]byte)
+		}
+		c.redactedPlaintextBySeq[redactedStream.SeqNum] = redactedPlaintext
+		c.responseContentMutex.Unlock()
+
+		log.Printf("[Client] Applied redacted stream to seq %d successfully", redactedStream.SeqNum)
+	}
+
+	// Check completion condition - triggers immediately since all streams received at once
+	if c.teekSignedTranscript != nil && !c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
+		if len(c.signedRedactedStreams) >= c.expectedRedactedStreams {
+			log.Printf("[Client] Received all %d expected redacted streams from batch, attempting TEE_K comprehensive signature verification", c.expectedRedactedStreams)
+			verificationErr := shared.VerifyComprehensiveSignature(c.teekSignedTranscript, c.signedRedactedStreams)
+			if verificationErr != nil {
+				log.Printf("[Client] TEE_K signature verification FAILED: %v", verificationErr)
+				fmt.Printf("[Client] TEE_K signature verification FAILED: %v\n", verificationErr)
+			} else {
+				log.Printf("[Client] TEE_K signature verification SUCCESS")
+				fmt.Printf("[Client] TEE_K signature verification SUCCESS\n")
+				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+
+				_, transcriptCount := c.getProtocolState()
+				if transcriptCount >= 2 {
+					log.Printf("[Client] Redacted streams processed AND both transcripts received - completing protocol")
+					c.advanceToPhase(PhaseComplete)
+				} else {
+					log.Printf("[Client] Redacted streams processed but waiting for remaining transcripts...")
+				}
+
+				log.Printf("[Client] All redacted streams received - displaying final redacted response")
+				redactionSpec := c.analyzeResponseRedaction()
+				c.displayRedactedResponseFromRanges(redactionSpec.Ranges)
+
+				// Check if we can now proceed with full protocol completion
+				transcriptsComplete := c.transcriptsReceived >= 2
+				signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
+
+				if transcriptsComplete && signaturesValid {
+					log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")
+					c.validateTranscriptsAgainstCapturedTraffic()
+					fmt.Printf("[Client] Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+				}
+			}
+		}
+	}
+
+	log.Printf("[Client] Completed processing batch of %d signed redacted decryption streams", len(batchedStreams.SignedRedactedStreams))
 }

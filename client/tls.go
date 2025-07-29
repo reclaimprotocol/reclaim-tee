@@ -131,21 +131,8 @@ func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLe
 
 	case 0x15: // Alert
 		fmt.Printf("[Client] → Alert record\n")
-		if recordLength >= 2 {
-			alertLevel := record[5]
-			alertDescription := record[6]
-			fmt.Printf("[Client] Alert: level=%d, description=%d (%s)\n",
-				alertLevel, alertDescription, getClientAlertDescription(alertDescription))
-
-			if alertDescription == 0 {
-				fmt.Printf("[Client] *** CLOSE_NOTIFY ALERT DETECTED ***\n")
-			}
-
-			c.analyzeAlertMessage(record[5 : 5+recordLength])
-		}
-
-		// Process alert records through split AEAD for complete decryption
-		// Alert records need to be decrypted for offline validation, not just transcripted
+		// Note: Alert parsing moved to after decryption in processTLSRecord
+		// Process alert records through split AEAD for decryption (needed for validation)
 		fmt.Printf("[Client] → Processing alert record with split AEAD\n")
 		c.processTLSRecord(record)
 
@@ -371,6 +358,24 @@ func (c *Client) analyzeAlertMessage(data []byte) {
 	fmt.Printf("[Client] Alert: %s (%d) - %s (%d)\n", levelStr, alertLevel, descStr, alertDescription)
 
 	// Note: We don't signal completion on CLOSE_NOTIFY since TEEs may still be processing
+}
+
+// parseDecryptedAlert parses alert level and description from decrypted alert data
+func (c *Client) parseDecryptedAlert(seqNum uint64, decryptedData []byte) {
+	if len(decryptedData) >= 2 {
+		alertLevel := decryptedData[0]
+		alertDescription := decryptedData[1]
+		fmt.Printf("[Client] Alert (seq %d): level=%d, description=%d (%s)\n",
+			seqNum, alertLevel, alertDescription, getClientAlertDescription(alertDescription))
+
+		if alertDescription == 0 {
+			fmt.Printf("[Client] *** CLOSE_NOTIFY ALERT DETECTED (seq %d) ***\n", seqNum)
+		}
+
+		c.analyzeAlertMessage(decryptedData)
+	} else {
+		log.Printf("[Client] Alert record (seq %d) too short for parsing: %d bytes", seqNum, len(decryptedData))
+	}
 }
 
 // getClientAlertDescription returns alert description strings
