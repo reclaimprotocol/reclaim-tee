@@ -37,7 +37,7 @@ import (
 	"os"
 	"strings"
 
-	"tee-mpc/proof
+	"tee-mpc/proofverifier"
 )
 
 func main() {
@@ -172,6 +172,14 @@ func main() {
 		log.Printf("Failed to write verification bundle: %v", err)
 	} else {
 		fmt.Printf("Verification bundle saved to: %s\n", bundlePath)
+	}
+
+	// Run offline verification to display the final redacted response
+	fmt.Println("\n🔍 Running offline verification to display final redacted response...")
+	if err := proofverifier.Validate(bundlePath); err != nil {
+		log.Printf("🔴 Offline verification failed: %v", err)
+	} else {
+		fmt.Println("✅ Offline verification succeeded")
 	}
 
 	fmt.Println("Sample application completed successfully!")

@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +51,7 @@ type ProtocolSession struct {
 	Completed    bool
 	CleanupTime  time.Time
 	Mutex        sync.Mutex
+	CleanedUp    bool
 }
 
 // RequestData represents the JSON structure for request data
@@ -116,9 +116,17 @@ func cleanupExpiredSessions() {
 
 	for _, handle := range expiredSessions {
 		if session := sessions[handle]; session != nil {
-			// Cleanup the session
-			if session.Client != nil {
-				session.Client.Close()
+			// Prevent double cleanup
+			if !session.CleanedUp && session.Client != nil {
+				// Use a goroutine to avoid blocking on WebSocket close
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							// Ignore panics from WebSocket close
+						}
+					}()
+					session.Client.Close()
+				}()
 			}
 		}
 		delete(sessions, handle)
@@ -189,6 +197,9 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 	// Create client
 	session.Client = clientlib.NewReclaimClient(*config)
 
+	// Enable 2-phase mode to allow manual control
+	session.Client.EnableTwoPhaseMode()
+
 	// Connect to TEEs
 	if err := session.Client.Connect(); err != nil {
 		sessionMutex.Lock()
@@ -222,7 +233,7 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 		return C.RECLAIM_ERROR_PROTOCOL_FAILED
 	}
 
-	// Wait for phase 1 completion
+	// Wait for phase 1 completion (response decryption)
 	select {
 	case <-session.Client.WaitForPhase1Completion():
 		// Phase 1 completed, get response data
@@ -249,7 +260,7 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 			return C.RECLAIM_ERROR_PROTOCOL_FAILED
 		}
 
-	case <-time.After(30 * time.Second):
+	case <-time.After(60 * time.Second):
 		sessionMutex.Lock()
 		delete(sessions, handle)
 		sessionMutex.Unlock()
@@ -332,72 +343,63 @@ func reclaim_finish_protocol(protocol_handle C.reclaim_protocol_t, response_reda
 		return C.RECLAIM_ERROR_INVALID_ARGS
 	}
 
-	// Set the redaction ranges directly on the client (no callback needed)
-	// Access the underlying client to set the ranges using reflection
-	if clientImpl, ok := session.Client.(*clientlib.ReclaimClientImpl); ok {
-		// Use reflection to access the unexported lastRedactionRanges field
-		clientValue := reflect.ValueOf(clientImpl.Client).Elem()
-		lastRedactionRangesField := clientValue.FieldByName("lastRedactionRanges")
-		if lastRedactionRangesField.IsValid() && lastRedactionRangesField.CanSet() {
-			lastRedactionRangesField.Set(reflect.ValueOf(redactionData.ResponseRedactionRanges))
-		} else {
-			return C.RECLAIM_ERROR_PROTOCOL_FAILED
-		}
-	} else {
-		// Fallback: try to set via reflection
+	// Set up response callback with the provided redaction ranges
+	callback := &ResponseCallbackImpl{
+		Ranges: redactionData.ResponseRedactionRanges,
+	}
+	session.Client.SetResponseCallback(callback)
+
+	// Continue to phase 2 (this will resume the protocol from PhaseWaitingForRedactionRanges)
+	if err := session.Client.ContinueToPhase2(); err != nil {
 		return C.RECLAIM_ERROR_PROTOCOL_FAILED
 	}
 
-	// Continue to phase 2
-	if err := session.Client.ContinueToPhase2(); err != nil {
-		return convertGoError(err)
-	}
-
-	// Wait for final completion
+	// Wait for protocol completion before building verification bundle
 	select {
 	case <-session.Client.WaitForCompletion():
-		// Build verification bundle
-		tempPath := fmt.Sprintf("/tmp/verification_bundle_%s.json", session.ID)
-		if err := session.Client.BuildVerificationBundle(tempPath); err != nil {
-			return C.RECLAIM_ERROR_PROTOCOL_FAILED
-		}
-
-		// Read the bundle file
-		bundleData, err := os.ReadFile(tempPath)
-		if err != nil {
-			os.Remove(tempPath)
-			return C.RECLAIM_ERROR_PROTOCOL_FAILED
-		}
-
-		// Clean up the temporary file
-		os.Remove(tempPath)
-
-		// Create verification bundle data
-		bundleResponse := VerificationBundleData{
-			VerificationBundle: string(bundleData),
-			BundleSize:         len(bundleData),
-			Success:            true,
-		}
-
-		// Serialize to JSON
-		jsonData, err := json.Marshal(bundleResponse)
-		if err != nil {
-			return C.RECLAIM_ERROR_MEMORY
-		}
-
-		// Allocate C string
-		cString := C.CString(string(jsonData))
-		*verification_bundle_json = cString
-		*bundle_length = C.int(len(jsonData))
-
-		session.Completed = true
-		session.CleanupTime = time.Now()
-
-		return C.RECLAIM_SUCCESS
-
+		// Protocol completed, now build verification bundle
 	case <-time.After(30 * time.Second):
 		return C.RECLAIM_ERROR_TIMEOUT
 	}
+
+	// Build verification bundle after protocol completion
+	tempPath := fmt.Sprintf("/tmp/verification_bundle_%s.json", session.ID)
+	if err := session.Client.BuildVerificationBundle(tempPath); err != nil {
+		return C.RECLAIM_ERROR_PROTOCOL_FAILED
+	}
+
+	// Read the bundle file
+	bundleData, err := os.ReadFile(tempPath)
+	if err != nil {
+		os.Remove(tempPath)
+		return C.RECLAIM_ERROR_PROTOCOL_FAILED
+	}
+
+	// Clean up the temporary file
+	os.Remove(tempPath)
+
+	// Create verification bundle data
+	bundleResponse := VerificationBundleData{
+		VerificationBundle: string(bundleData),
+		BundleSize:         len(bundleData),
+		Success:            true,
+	}
+
+	// Serialize to JSON
+	jsonData, err := json.Marshal(bundleResponse)
+	if err != nil {
+		return C.RECLAIM_ERROR_MEMORY
+	}
+
+	// Allocate C string
+	cString := C.CString(string(jsonData))
+	*verification_bundle_json = cString
+	*bundle_length = C.int(len(jsonData))
+
+	session.Completed = true
+	session.CleanupTime = time.Now()
+
+	return C.RECLAIM_SUCCESS
 }
 
 //export reclaim_cleanup
@@ -410,11 +412,26 @@ func reclaim_cleanup(protocol_handle C.reclaim_protocol_t) C.reclaim_error_t {
 		return C.RECLAIM_ERROR_SESSION_NOT_FOUND
 	}
 
-	// Cleanup the session
-	if session.Client != nil {
-		session.Client.Close()
+	// Prevent double cleanup
+	if session.CleanedUp {
+		delete(sessions, protocol_handle)
+		return C.RECLAIM_SUCCESS
 	}
 
+	// Cleanup the session
+	if session.Client != nil {
+		// Use a goroutine to avoid blocking on WebSocket close
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Ignore panics from WebSocket close
+				}
+			}()
+			session.Client.Close()
+		}()
+	}
+
+	session.CleanedUp = true
 	delete(sessions, protocol_handle)
 	return C.RECLAIM_SUCCESS
 }
@@ -477,6 +494,9 @@ func convertRangesToSpecs(ranges []shared.RedactionRange) []clientlib.RedactionS
 			} else {
 				pattern = "X-Account-ID:"
 			}
+		case "sensitive_proof":
+			// For sensitive_proof data, we'll use a pattern that matches the X-Account-ID field
+			pattern = "X-Account-ID:"
 		default:
 			pattern = fmt.Sprintf("range_%d_%d", r.Start, r.Length)
 		}
@@ -506,6 +526,17 @@ func parseHost(host string) (string, string) {
 }
 
 // ResponseCallbackImpl implements the response callback interface
+type ResponseCallbackImpl struct {
+	Ranges []shared.RedactionRange
+}
+
+func (r *ResponseCallbackImpl) OnResponseReceived(response *clientlib.HTTPResponse) (*clientlib.RedactionResult, error) {
+	return &clientlib.RedactionResult{
+		RedactedBody:    response.FullResponse,
+		RedactionRanges: r.Ranges,
+		ProofClaims:     []clientlib.ProofClaim{},
+	}, nil
+}
 
 func main() {
 	// Required for CGO shared library
