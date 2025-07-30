@@ -1264,6 +1264,22 @@ func (c *Client) ContinueToPhase2() error {
 
 	log.Printf("[Client] Continuing to phase 2 (redaction and completion)")
 
+	// If we have a response callback and response data, call it to get redaction ranges
+	if c.responseCallback != nil && c.lastResponseData != nil {
+		log.Printf("[Client] Calling response callback to get redaction ranges")
+		result, err := c.responseCallback.OnResponseReceived(c.lastResponseData)
+		if err != nil {
+			log.Printf("[Client] Response callback error: %v", err)
+		} else if result != nil {
+			log.Printf("[Client] Response callback returned %d redaction ranges", len(result.RedactionRanges))
+			c.lastRedactionRanges = result.RedactionRanges
+			c.lastProofClaims = result.ProofClaims
+			if result.RedactedBody != nil {
+				c.lastRedactedResponse = result.RedactedBody
+			}
+		}
+	}
+
 	// Advance to the redaction phase
 	c.advanceToPhase(PhaseSendingRedaction)
 

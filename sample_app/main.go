@@ -123,26 +123,62 @@ func calculateResponseRedactionRanges(responseData []byte) []shared.RedactionRan
 		return ranges
 	}
 
-	// Find title tags within the body
+	// Find ALL title content within the body to preserve (only text between tags)
 	titleStartTag := "<title>"
 	titleEndTag := "</title>"
-	titleStartIndex := strings.Index(bodyContent, titleStartTag)
 
-	if titleStartIndex != -1 {
+	// Find all title tag pairs
+	type titleRange struct {
+		contentStart int
+		contentEnd   int
+		textContent  string
+	}
+
+	var titleRanges []titleRange
+	searchStart := 0
+
+	for {
+		titleStartIndex := strings.Index(bodyContent[searchStart:], titleStartTag)
+		if titleStartIndex == -1 {
+			break // No more title tags
+		}
+
+		titleStartIndex += searchStart // Adjust for search offset
 		titleContentStartIndex := titleStartIndex + len(titleStartTag)
-		titleEndIndex := strings.Index(bodyContent[titleContentStartIndex:], titleEndTag)
 
+		titleEndIndex := strings.Index(bodyContent[titleContentStartIndex:], titleEndTag)
 		if titleEndIndex != -1 {
-			// Adjust titleEndIndex to be absolute within bodyContent
 			titleEndIndex = titleContentStartIndex + titleEndIndex
 
-			// Calculate absolute positions in the full HTTP response
-			bodyStartInFull := headerEndIndex
+			// Extract the text content only
+			titleText := bodyContent[titleContentStartIndex:titleEndIndex]
 
-			// Redact everything in body BEFORE the title content
-			if titleContentStartIndex > 0 {
-				beforeTitleLength := titleContentStartIndex
-				beforeTitleStart := bodyStartInFull
+			titleRanges = append(titleRanges, titleRange{
+				contentStart: titleContentStartIndex,
+				contentEnd:   titleEndIndex,
+				textContent:  titleText,
+			})
+
+			// Continue searching after this closing tag
+			searchStart = titleEndIndex + len(titleEndTag)
+		} else {
+			// Found opening tag but no closing tag, skip it
+			searchStart = titleContentStartIndex
+		}
+	}
+
+	// Calculate absolute positions in the full HTTP response
+	bodyStartInFull := headerEndIndex
+
+	if len(titleRanges) > 0 {
+		// Build redaction ranges for all content except title texts
+		lastEnd := 0
+
+		for _, tr := range titleRanges {
+			// Redact from lastEnd to start of this title content
+			if tr.contentStart > lastEnd {
+				beforeTitleStart := bodyStartInFull + lastEnd
+				beforeTitleLength := tr.contentStart - lastEnd
 
 				ranges = append(ranges, shared.RedactionRange{
 					Start:  beforeTitleStart,
@@ -151,18 +187,19 @@ func calculateResponseRedactionRanges(responseData []byte) []shared.RedactionRan
 				})
 			}
 
-			// Redact everything AFTER the title content
-			titleEndInFull := bodyStartInFull + titleEndIndex
-			afterTitleStart := titleEndInFull
-			afterTitleLength := len(bodyContent) - titleEndIndex
+			lastEnd = tr.contentEnd
+		}
 
-			if afterTitleLength > 0 {
-				ranges = append(ranges, shared.RedactionRange{
-					Start:  afterTitleStart,
-					Length: afterTitleLength,
-					Type:   "body_after_title",
-				})
-			}
+		// Redact everything after the last title
+		if lastEnd < len(bodyContent) {
+			afterTitleStart := bodyStartInFull + lastEnd
+			afterTitleLength := len(bodyContent) - lastEnd
+
+			ranges = append(ranges, shared.RedactionRange{
+				Start:  afterTitleStart,
+				Length: afterTitleLength,
+				Type:   "body_after_title",
+			})
 		}
 	} else {
 		// No title tags found, redact entire body
