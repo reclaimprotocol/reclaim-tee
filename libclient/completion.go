@@ -1,4 +1,4 @@
-package main
+package clientlib
 
 import (
 	"fmt"
@@ -35,6 +35,8 @@ func (c *Client) checkProtocolCompletion(reason string) {
 		}
 	case PhaseReceivingDecryption:
 		log.Printf("[Client] Waiting for batched decryption streams")
+	case PhaseWaitingForRedactionRanges:
+		log.Printf("[Client] Waiting for response redaction ranges from application")
 	case PhaseSendingRedaction:
 		log.Printf("[Client] Redaction phase - specs will be sent automatically")
 	case PhaseReceivingRedacted:

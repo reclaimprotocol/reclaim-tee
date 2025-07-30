@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"tee-mpc/libclient"
 	proofverifier "tee-mpc/proofverifier" // add new import
 	"tee-mpc/shared"
 	"time"
@@ -57,11 +58,11 @@ func main() {
 	fmt.Printf(" Auto-detected TEE_T URL: %s\n", teetURL)
 
 	// Create client configuration
-	config := ClientConfig{
+	config := clientlib.ClientConfig{
 		TEEKURL:           teekURL,
 		TEETURL:           teetURL,
-		Timeout:           DefaultConnectionTimeout,
-		Mode:              ModeAuto,
+		Timeout:           clientlib.DefaultConnectionTimeout,
+		Mode:              clientlib.ModeAuto,
 		RequestRedactions: getDemoRequestRedactions(),
 		ResponseCallback:  &DemoResponseCallback{},
 		ForceTLSVersion:   forceTLSVersion,
@@ -69,7 +70,7 @@ func main() {
 	}
 
 	// Create client using library interface
-	client := NewReclaimClient(config)
+	client := clientlib.NewReclaimClient(config)
 	defer client.Close()
 
 	// Connect to both TEE_K and TEE_T
@@ -91,7 +92,7 @@ func main() {
 	select {
 	case <-client.WaitForCompletion():
 		fmt.Println(" Split AEAD protocol completed successfully!")
-	case <-time.After(DefaultProcessingTimeout): // Configurable processing timeout
+	case <-time.After(clientlib.DefaultProcessingTimeout): // Configurable processing timeout
 		fmt.Printf("⏰ Processing timeout - operation may still be in progress\n")
 		fmt.Printf("⚠️  Continuing with partial results...\n")
 	}
@@ -167,7 +168,7 @@ func main() {
 
 	// Build verification bundle and save to file
 	bundlePath := "verification_bundle.json"
-	if err := client.(*reclaimClientImpl).client.BuildVerificationBundle(bundlePath); err != nil {
+	if err := client.(*clientlib.ReclaimClientImpl).Client.BuildVerificationBundle(bundlePath); err != nil {
 		fmt.Printf("\n🔴 Failed to build verification bundle: %v\n", err)
 	} else {
 		fmt.Printf("\n💾 Verification bundle written to %s\n", bundlePath)
@@ -209,8 +210,8 @@ func autoDetectTEETURL(teekURL string) string {
 }
 
 // getDemoRequestRedactions returns demo request redaction specifications
-func getDemoRequestRedactions() []RedactionSpec {
-	return []RedactionSpec{
+func getDemoRequestRedactions() []clientlib.RedactionSpec {
+	return []clientlib.RedactionSpec{
 		{
 			Pattern: "Authorization: Bearer [^\\r\\n]+",
 			Type:    "sensitive",
@@ -226,7 +227,7 @@ func getDemoRequestRedactions() []RedactionSpec {
 type DemoResponseCallback struct{}
 
 // OnResponseReceived implements the ResponseCallback interface with demo redactions
-func (d *DemoResponseCallback) OnResponseReceived(response *HTTPResponse) (*RedactionResult, error) {
+func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPResponse) (*clientlib.RedactionResult, error) {
 	// Work with the full HTTP response for redaction calculations
 	fullHTTPResponse := string(response.FullResponse)
 
@@ -238,11 +239,11 @@ func (d *DemoResponseCallback) OnResponseReceived(response *HTTPResponse) (*Reda
 	// Calculate redaction ranges based on differences between original and redacted
 	redactionRanges := d.calculateRedactionRanges(fullHTTPResponse, redactedResponse)
 
-	var proofClaims []ProofClaim
+	var proofClaims []clientlib.ProofClaim
 
 	// Example: If this is an HTTP response, create some demo proof claims
 	if response.StatusCode == 200 {
-		proofClaims = append(proofClaims, ProofClaim{
+		proofClaims = append(proofClaims, clientlib.ProofClaim{
 			Type:        "status_code",
 			Field:       "status_code",
 			Value:       "200",
@@ -252,7 +253,7 @@ func (d *DemoResponseCallback) OnResponseReceived(response *HTTPResponse) (*Reda
 
 	// Example: Create a claim about the server name
 	if response.Metadata.ServerName != "" {
-		proofClaims = append(proofClaims, ProofClaim{
+		proofClaims = append(proofClaims, clientlib.ProofClaim{
 			Type:        "server_name",
 			Field:       "server_name",
 			Value:       response.Metadata.ServerName,
@@ -266,7 +267,7 @@ func (d *DemoResponseCallback) OnResponseReceived(response *HTTPResponse) (*Reda
 		titleStartTag := "<title>"
 		titleCount := strings.Count(string(response.FullResponse), titleStartTag)
 		if titleCount > 0 {
-			proofClaims = append(proofClaims, ProofClaim{
+			proofClaims = append(proofClaims, clientlib.ProofClaim{
 				Type:        "content_preservation",
 				Field:       "html_title_texts",
 				Value:       fmt.Sprintf("%d", titleCount),
@@ -275,7 +276,7 @@ func (d *DemoResponseCallback) OnResponseReceived(response *HTTPResponse) (*Reda
 		}
 	}
 
-	return &RedactionResult{
+	return &clientlib.RedactionResult{
 		RedactedBody:    []byte(redactedResponse),
 		RedactionRanges: redactionRanges,
 		ProofClaims:     proofClaims,

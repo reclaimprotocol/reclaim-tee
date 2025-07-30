@@ -1,4 +1,4 @@
-package main
+package clientlib
 
 import (
 	"bytes"
@@ -36,6 +36,7 @@ const (
 	PhaseCollectingResponses
 	PhaseSendingBatch
 	PhaseReceivingDecryption
+	PhaseWaitingForRedactionRanges // NEW: Phase for waiting for response redaction ranges
 	PhaseSendingRedaction
 	PhaseReceivingRedacted
 	PhaseReceivingTranscripts
@@ -52,6 +53,8 @@ func (p ProtocolPhase) String() string {
 		return "SendingBatch"
 	case PhaseReceivingDecryption:
 		return "ReceivingDecryption"
+	case PhaseWaitingForRedactionRanges:
+		return "WaitingForRedactionRanges"
 	case PhaseSendingRedaction:
 		return "SendingRedaction"
 	case PhaseReceivingRedacted:
@@ -142,6 +145,11 @@ type Client struct {
 	responseCallback  ResponseCallback // Response callback for redactions
 	clientMode        ClientMode       // Client operational mode (enclave vs standalone)
 
+	// 2-phase operation support
+	twoPhaseMode     bool          // Whether to operate in 2-phase mode
+	phase1Completed  bool          // Whether phase 1 (response decryption) is complete
+	phase1Completion chan struct{} // Channel to signal phase 1 completion
+
 	// Result tracking fields
 	protocolStartTime            time.Time                     // When protocol started
 	lastResponseData             *HTTPResponse                 // Last received HTTP response
@@ -164,6 +172,9 @@ type Client struct {
 	// commitment opening for proof
 	proofStream []byte
 	proofKey    []byte
+
+	// Request data from libreclaim library
+	requestData []byte
 }
 
 func NewClient(teekURL string) *Client {
@@ -198,6 +209,11 @@ func NewClient(teekURL string) *Client {
 		teetAttestationPublicKey:     nil,
 		teekTranscriptPublicKey:      nil,
 		teetTranscriptPublicKey:      nil,
+
+		// 2-phase operation support
+		twoPhaseMode:                 false,
+		phase1Completed:              false,
+		phase1Completion:             make(chan struct{}),
 		attestationVerified:          false,
 		publicKeyComparisonDone:      false,
 		teekTranscriptPackets:        nil,
@@ -257,9 +273,20 @@ func (c *Client) RequestHTTP(hostname string, port int) error {
 
 // createRedactedRequest creates a redacted HTTP request with XOR streams and commitments
 func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedRequestData, shared.RedactionStreamsData, error) {
-	// Create HTTP request with test sensitive data
-	testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", c.targetHost)
-	httpRequest = []byte(testRequest)
+	fmt.Printf("[Client] createRedactedRequest: requestData length=%d, httpRequest length=%d\n", len(c.requestData), len(httpRequest))
+
+	// Use the stored request data if available, otherwise use provided request or test request
+	if len(c.requestData) > 0 {
+		fmt.Printf("[Client] createRedactedRequest: using stored requestData\n")
+		httpRequest = c.requestData
+	} else if len(httpRequest) == 0 {
+		fmt.Printf("[Client] createRedactedRequest: using test request\n")
+		// Create HTTP request with test sensitive data
+		testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", c.targetHost)
+		httpRequest = []byte(testRequest)
+	} else {
+		fmt.Printf("[Client] createRedactedRequest: using provided httpRequest\n")
+	}
 
 	fmt.Printf("[Client] ORIGINAL REQUEST (length=%d):\n%s\n", len(httpRequest), string(httpRequest))
 	fmt.Printf("[Client] TARGET HOST: '%s' (length=%d)\n", c.targetHost, len(c.targetHost))
@@ -420,14 +447,19 @@ func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]shared.RedactionRang
 	var ranges []shared.RedactionRange
 	requestStr := string(httpRequest)
 
+	fmt.Printf("[Client] applyRedactionSpecs: checking %d redaction specs\n", len(c.requestRedactions))
+
 	// If no redaction specs configured, return empty ranges
 	if len(c.requestRedactions) == 0 {
+		fmt.Printf("[Client] applyRedactionSpecs: no redaction specs configured\n")
 		return ranges, nil
 	}
 
 	// Apply configured redaction specs
-	for _, spec := range c.requestRedactions {
+	for i, spec := range c.requestRedactions {
+		fmt.Printf("[Client] applyRedactionSpecs: checking spec %d: pattern='%s', type='%s'\n", i, spec.Pattern, spec.Type)
 		matches := findPatternMatches(requestStr, spec.Pattern)
+		fmt.Printf("[Client] applyRedactionSpecs: found %d matches for pattern '%s'\n", len(matches), spec.Pattern)
 		for _, match := range matches {
 			ranges = append(ranges, shared.RedactionRange{
 				Start:  match.Start,
@@ -450,18 +482,27 @@ type PatternMatch struct {
 // findPatternMatches finds all matches for a pattern in the request string
 func findPatternMatches(request, pattern string) []PatternMatch {
 	var matches []PatternMatch
+	fmt.Printf("[Client] findPatternMatches: searching for pattern '%s' in request\n", pattern)
 
 	// For now, implement simple literal matching
 	// In a full implementation, this would use regex
+	fmt.Printf("[Client] findPatternMatches: pattern contains check for 'Authorization: Bearer': %v\n", strings.Contains(pattern, "Authorization: Bearer"))
 	if strings.Contains(pattern, "Authorization: Bearer") {
 		// Handle Authorization header pattern
+		fmt.Printf("[Client] findPatternMatches: handling Authorization pattern\n")
 		start := strings.Index(request, "Authorization: Bearer ")
+		fmt.Printf("[Client] findPatternMatches: Authorization start index: %d\n", start)
 		if start != -1 {
 			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			fmt.Printf("[Client] findPatternMatches: Authorization line end index: %d\n", lineEnd)
 			if lineEnd != -1 {
 				// Extract just the token part
 				tokenStart := start + len("Authorization: Bearer ")
 				tokenEnd := start + lineEnd
+				fmt.Printf("[Client] findPatternMatches: Authorization match found: start=%d, length=%d, value='%s'\n", tokenStart, tokenEnd-tokenStart, request[tokenStart:tokenEnd])
 				matches = append(matches, PatternMatch{
 					Start:  tokenStart,
 					Length: tokenEnd - tokenStart,
@@ -471,17 +512,90 @@ func findPatternMatches(request, pattern string) []PatternMatch {
 		}
 	} else if strings.Contains(pattern, "X-Account-ID:") {
 		// Handle X-Account-ID header pattern
+		fmt.Printf("[Client] findPatternMatches: handling X-Account-ID pattern\n")
 		start := strings.Index(request, "X-Account-ID: ")
+		fmt.Printf("[Client] findPatternMatches: X-Account-ID start index: %d\n", start)
 		if start != -1 {
 			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			fmt.Printf("[Client] findPatternMatches: X-Account-ID line end index: %d\n", lineEnd)
 			if lineEnd != -1 {
 				// Extract just the account ID part
 				idStart := start + len("X-Account-ID: ")
 				idEnd := start + lineEnd
+				fmt.Printf("[Client] findPatternMatches: X-Account-ID match found: start=%d, length=%d, value='%s'\n", idStart, idEnd-idStart, request[idStart:idEnd])
 				matches = append(matches, PatternMatch{
 					Start:  idStart,
 					Length: idEnd - idStart,
 					Value:  request[idStart:idEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "User-Agent") {
+		// Handle User-Agent header pattern
+		fmt.Printf("[Client] findPatternMatches: handling User-Agent pattern\n")
+		start := strings.Index(request, "User-Agent: ")
+		fmt.Printf("[Client] findPatternMatches: User-Agent start index: %d\n", start)
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			fmt.Printf("[Client] findPatternMatches: User-Agent line end index: %d\n", lineEnd)
+			if lineEnd != -1 {
+				// Extract just the user agent part
+				uaStart := start + len("User-Agent: ")
+				uaEnd := start + lineEnd
+				fmt.Printf("[Client] findPatternMatches: User-Agent match found: start=%d, length=%d, value='%s'\n", uaStart, uaEnd-uaStart, request[uaStart:uaEnd])
+				matches = append(matches, PatternMatch{
+					Start:  uaStart,
+					Length: uaEnd - uaStart,
+					Value:  request[uaStart:uaEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "Accept:") {
+		// Handle Accept header pattern
+		fmt.Printf("[Client] findPatternMatches: handling Accept pattern\n")
+		start := strings.Index(request, "Accept: ")
+		fmt.Printf("[Client] findPatternMatches: Accept start index: %d\n", start)
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			fmt.Printf("[Client] findPatternMatches: Accept line end index: %d\n", lineEnd)
+			if lineEnd != -1 {
+				// Extract just the accept part
+				acceptStart := start + len("Accept: ")
+				acceptEnd := start + lineEnd
+				fmt.Printf("[Client] findPatternMatches: Accept match found: start=%d, length=%d, value='%s'\n", acceptStart, acceptEnd-acceptStart, request[acceptStart:acceptEnd])
+				matches = append(matches, PatternMatch{
+					Start:  acceptStart,
+					Length: acceptEnd - acceptStart,
+					Value:  request[acceptStart:acceptEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "Accept:") {
+		// Handle Accept header pattern
+		start := strings.Index(request, "Accept: ")
+		if start != -1 {
+			// Try both \r\n and \n for line endings
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the accept part
+				acceptStart := start + len("Accept: ")
+				acceptEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  acceptStart,
+					Length: acceptEnd - acceptStart,
+					Value:  request[acceptStart:acceptEnd],
 				})
 			}
 		}
@@ -1126,4 +1240,38 @@ func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) Tran
 		ValidationPassed: packetsMatched == requiredMatches,
 		PacketDetails:    details,
 	}
+}
+
+// EnableTwoPhaseMode enables 2-phase operation mode
+func (c *Client) EnableTwoPhaseMode() {
+	c.twoPhaseMode = true
+	log.Printf("[Client] 2-phase mode enabled")
+}
+
+// WaitForPhase1Completion returns a channel that closes when phase 1 (response decryption) is complete
+func (c *Client) WaitForPhase1Completion() <-chan struct{} {
+	return c.phase1Completion
+}
+
+// ContinueToPhase2 continues the protocol to phase 2 (redaction and completion)
+func (c *Client) ContinueToPhase2() error {
+	if !c.twoPhaseMode {
+		return fmt.Errorf("not in 2-phase mode")
+	}
+	if !c.phase1Completed {
+		return fmt.Errorf("phase 1 not completed yet")
+	}
+
+	log.Printf("[Client] Continuing to phase 2 (redaction and completion)")
+
+	// Advance to the redaction phase
+	c.advanceToPhase(PhaseSendingRedaction)
+
+	// Send redaction specification
+	log.Printf("[Client] Sending redaction specification")
+	if err := c.sendRedactionSpec(); err != nil {
+		return fmt.Errorf("failed to send redaction spec: %v", err)
+	}
+
+	return nil
 }

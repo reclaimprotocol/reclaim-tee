@@ -1,4 +1,4 @@
-package main
+package clientlib
 
 import (
 	"fmt"
@@ -9,9 +9,15 @@ import (
 type ReclaimClient interface {
 	Connect() error
 	RequestHTTP(hostname string, port int) error
+	SetRequestData(requestData []byte) error
 	WaitForCompletion() <-chan struct{}
 	Close() error
 	SetResponseCallback(callback ResponseCallback)
+
+	// 2-phase operation methods
+	EnableTwoPhaseMode()
+	WaitForPhase1Completion() <-chan struct{}
+	ContinueToPhase2() error
 
 	// Results access methods
 	GetProtocolResult() (*ProtocolResult, error)
@@ -19,6 +25,7 @@ type ReclaimClient interface {
 	GetValidationResults() (*ValidationResults, error)
 	GetAttestationResults() (*AttestationResults, error)
 	GetResponseResults() (*ResponseResults, error)
+	BuildVerificationBundle(path string) error
 }
 
 // ClientMode represents the operational mode of the client
@@ -30,9 +37,9 @@ const (
 	ModeStandalone
 )
 
-// reclaimClientImpl is the internal implementation of ReclaimClient
-type reclaimClientImpl struct {
-	client *Client
+// ReclaimClientImpl is the internal implementation of ReclaimClient
+type ReclaimClientImpl struct {
+	Client *Client
 	config ClientConfig
 }
 
@@ -59,27 +66,27 @@ func NewReclaimClient(config ClientConfig) ReclaimClient {
 	client.forceCipherSuite = config.ForceCipherSuite
 	client.SetMode(config.Mode)
 
-	return &reclaimClientImpl{
-		client: client,
+	return &ReclaimClientImpl{
+		Client: client,
 		config: config,
 	}
 }
 
 // Connect establishes connections to both TEE_K and TEE_T
-func (r *reclaimClientImpl) Connect() error {
+func (r *ReclaimClientImpl) Connect() error {
 	// Connect to TEE_K
-	if err := r.client.ConnectToTEEK(); err != nil {
+	if err := r.Client.ConnectToTEEK(); err != nil {
 		return NewConnectionError("TEE_K", err)
 	}
 
 	// Connect to TEE_T
-	if err := r.client.ConnectToTEET(); err != nil {
+	if err := r.Client.ConnectToTEET(); err != nil {
 		return NewConnectionError("TEE_T", err)
 	}
 
 	// Fetch and verify attestations (only in enclave mode)
 	if r.config.Mode == ModeEnclave {
-		if err := r.client.fetchAndVerifyAttestations(); err != nil {
+		if err := r.Client.fetchAndVerifyAttestations(); err != nil {
 			return NewAttestationError(err)
 		}
 	} else {
@@ -90,62 +97,104 @@ func (r *reclaimClientImpl) Connect() error {
 }
 
 // RequestHTTP initiates an HTTP request through the TEE+MPC protocol
-func (r *reclaimClientImpl) RequestHTTP(hostname string, port int) error {
+func (r *ReclaimClientImpl) RequestHTTP(hostname string, port int) error {
 	// Apply request redactions from config to the client
 	if len(r.config.RequestRedactions) > 0 {
-		r.client.requestRedactions = r.config.RequestRedactions
+		r.Client.requestRedactions = r.config.RequestRedactions
+		fmt.Printf("[Client] Applied %d redaction specs from config\n", len(r.config.RequestRedactions))
+		for i, spec := range r.config.RequestRedactions {
+			fmt.Printf("[Client] Redaction spec %d: pattern='%s', type='%s'\n", i, spec.Pattern, spec.Type)
+		}
+	} else {
+		fmt.Printf("[Client] No redaction specs in config\n")
 	}
 
 	// Set response callback if provided
 	if r.config.ResponseCallback != nil {
-		r.client.responseCallback = r.config.ResponseCallback
+		r.Client.responseCallback = r.config.ResponseCallback
 	}
 
-	return r.client.RequestHTTP(hostname, port)
+	return r.Client.RequestHTTP(hostname, port)
 }
 
 // WaitForCompletion returns a channel that closes when the protocol is complete
-func (r *reclaimClientImpl) WaitForCompletion() <-chan struct{} {
-	return r.client.WaitForCompletion()
+func (r *ReclaimClientImpl) WaitForCompletion() <-chan struct{} {
+	return r.Client.WaitForCompletion()
 }
 
 // Close closes the client connections
-func (r *reclaimClientImpl) Close() error {
-	r.client.Close()
+func (r *ReclaimClientImpl) Close() error {
+	r.Client.Close()
 	return nil
 }
 
 // SetResponseCallback sets the callback for handling response redactions
-func (r *reclaimClientImpl) SetResponseCallback(callback ResponseCallback) {
+func (r *ReclaimClientImpl) SetResponseCallback(callback ResponseCallback) {
 	r.config.ResponseCallback = callback
-	if r.client != nil {
-		r.client.responseCallback = callback
+	if r.Client != nil {
+		r.Client.responseCallback = callback
 	}
 }
 
+// EnableTwoPhaseMode enables 2-phase operation mode
+func (r *ReclaimClientImpl) EnableTwoPhaseMode() {
+	if r.Client != nil {
+		r.Client.EnableTwoPhaseMode()
+	}
+}
+
+// WaitForPhase1Completion returns a channel that closes when phase 1 is complete
+func (r *ReclaimClientImpl) WaitForPhase1Completion() <-chan struct{} {
+	if r.Client != nil {
+		return r.Client.WaitForPhase1Completion()
+	}
+	// Return a closed channel if client is nil
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+// ContinueToPhase2 continues the protocol to phase 2
+func (r *ReclaimClientImpl) ContinueToPhase2() error {
+	if r.Client != nil {
+		return r.Client.ContinueToPhase2()
+	}
+	return fmt.Errorf("client not initialized")
+}
+
 // GetProtocolResult returns the complete protocol execution results
-func (r *reclaimClientImpl) GetProtocolResult() (*ProtocolResult, error) {
-	return r.client.buildProtocolResult()
+func (r *ReclaimClientImpl) GetProtocolResult() (*ProtocolResult, error) {
+	return r.Client.buildProtocolResult()
 }
 
 // GetTranscripts returns the signed transcripts from both TEE_K and TEE_T
-func (r *reclaimClientImpl) GetTranscripts() (*TranscriptResults, error) {
-	return r.client.buildTranscriptResults()
+func (r *ReclaimClientImpl) GetTranscripts() (*TranscriptResults, error) {
+	return r.Client.buildTranscriptResults()
 }
 
 // GetValidationResults returns the validation results for transcripts and attestations
-func (r *reclaimClientImpl) GetValidationResults() (*ValidationResults, error) {
-	return r.client.buildValidationResults()
+func (r *ReclaimClientImpl) GetValidationResults() (*ValidationResults, error) {
+	return r.Client.buildValidationResults()
 }
 
 // GetAttestationResults returns the attestation verification results
-func (r *reclaimClientImpl) GetAttestationResults() (*AttestationResults, error) {
-	return r.client.buildAttestationResults()
+func (r *ReclaimClientImpl) GetAttestationResults() (*AttestationResults, error) {
+	return r.Client.buildAttestationResults()
 }
 
 // GetResponseResults returns the HTTP response data and proof claims
-func (r *reclaimClientImpl) GetResponseResults() (*ResponseResults, error) {
-	return r.client.buildResponseResults()
+func (r *ReclaimClientImpl) GetResponseResults() (*ResponseResults, error) {
+	return r.Client.buildResponseResults()
+}
+
+func (r *ReclaimClientImpl) BuildVerificationBundle(path string) error {
+	return r.Client.BuildVerificationBundle(path)
+}
+
+func (r *ReclaimClientImpl) SetRequestData(requestData []byte) error {
+	// Store the request data in the client for later use
+	r.Client.requestData = requestData
+	return nil
 }
 
 // detectMode automatically detects the client mode based on URLs

@@ -1,4 +1,4 @@
-package main
+package clientlib
 
 import (
 	"fmt"
@@ -100,6 +100,16 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 
 	c.setBatchDecryptionReceived()
 
+	// Check if we're in 2-phase mode
+	if c.twoPhaseMode {
+		log.Printf("[Client] 2-phase mode: Pausing after response decryption, waiting for redaction ranges")
+		c.advanceToPhase(PhaseWaitingForRedactionRanges)
+		c.phase1Completed = true
+		close(c.phase1Completion)
+		return
+	}
+
+	// Normal single-phase mode: continue to redaction
 	c.advanceToPhase(PhaseSendingRedaction)
 
 	log.Printf("[Client] Entering redaction phase - automatically sending redaction specification")
@@ -196,12 +206,14 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			c.responseProcessingSuccessful = true
 			c.reconstructedResponseSize = len(actualHTTPResponse)
 
+			// Parse the HTTP response and store it for later use
+			httpResponse := c.parseHTTPResponse([]byte(actualHTTPResponse))
+			c.lastResponseData = httpResponse
+
 			// Call response callback now that we have complete HTTP response
 			if c.responseCallback != nil && len(c.lastRedactionRanges) == 0 {
 				log.Printf("[Client] Calling response callback with complete HTTP response (%d bytes)", len(actualHTTPResponse))
 
-				// Parse the HTTP response and call the callback
-				httpResponse := c.parseHTTPResponse([]byte(actualHTTPResponse))
 				result, err := c.responseCallback.OnResponseReceived(httpResponse)
 
 				if err != nil {
@@ -214,7 +226,6 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 					c.lastProofClaims = result.ProofClaims
 					c.lastRedactionRanges = result.RedactionRanges
 					c.lastRedactedResponse = result.RedactedBody
-					c.lastResponseData = httpResponse
 
 					fmt.Printf("[Client] Stored callback results: %d ranges, %d claims, %d bytes redacted response\n",
 						len(result.RedactionRanges), len(result.ProofClaims), len(result.RedactedBody))
@@ -228,6 +239,9 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 				}
 			} else if c.responseCallback != nil {
 				fmt.Printf("[Client] Response callback already executed (cached ranges: %d)\n", len(c.lastRedactionRanges))
+			} else {
+				// In 2-phase mode, store the response data for later retrieval
+				fmt.Printf("[Client] 2-phase mode: Response data stored for later retrieval (%d bytes)", len(actualHTTPResponse))
 			}
 
 			// Display the raw HTTP response (redaction will be handled at TLS record level)
