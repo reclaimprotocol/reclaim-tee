@@ -1713,8 +1713,8 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 	teekFinished := session.TEEKFinished
 	session.FinishedStateMutex.Unlock()
 
-	if clientFinished && teekFinished {
-		t.logger.InfoIf("Both client and TEE_K have sent finished - starting transcript signing",
+	if teekFinished {
+		t.logger.InfoIf("TEE_K has sent finished - starting transcript signing",
 			zap.String("session_id", sessionID))
 
 		// Generate and sign transcript from session

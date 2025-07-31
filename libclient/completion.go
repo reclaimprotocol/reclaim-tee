@@ -1,9 +1,7 @@
 package clientlib
 
 import (
-	"fmt"
 	"log"
-	"tee-mpc/shared"
 )
 
 // WaitForCompletion returns a channel that closes when the protocol is complete
@@ -51,23 +49,8 @@ func (c *Client) checkProtocolCompletion(reason string) {
 
 // sendFinishedCommand sends "finished" message to both TEE_K and TEE_T
 func (c *Client) sendFinishedCommand() error {
-	log.Printf("[Client] Sending finished command to both TEE_K and TEE_T")
-
-	finishedMsg := shared.FinishedMessage{}
-
-	// Send to TEE_K
-	msg := shared.CreateSessionMessage(shared.MsgFinished, c.sessionID, finishedMsg)
-	if err := c.wsConn.WriteJSON(msg); err != nil {
-		return fmt.Errorf("failed to send finished to TEE_K: %v", err)
-	}
-	log.Printf("[Client] Sent finished command to TEE_K")
-
-	// Send to TEE_T
-	if err := c.teetConn.WriteJSON(msg); err != nil {
-		return fmt.Errorf("failed to send finished to TEE_T: %v", err)
-	}
-	log.Printf("[Client] Sent finished command to TEE_T")
-
+	log.Printf("[Client] Protocol specification requires no client 'finished' messages")
+	log.Printf("[Client] TEE_K will send 'finished' to TEE_T after processing redaction specification")
 	log.Printf("[Client] Now waiting for signed transcripts from both TEE_K and TEE_T...")
 
 	return nil

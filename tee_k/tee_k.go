@@ -1484,11 +1484,8 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 	// Just log that transcript is ready, but wait for redaction processing to complete
 	log.Printf("[TEE_K] Session %s: Transcript prepared with %d TLS packets, waiting for redaction processing to complete before sending signature", sessionID, len(tlsPackets))
 
-	// Check if all processing is complete and we can send signature
-	if err := t.checkAndSendSignatureIfReady(sessionID); err != nil {
-		log.Printf("[TEE_K] Failed to check signature readiness: %v", err)
-		return
-	}
+	// Don't check for signature readiness here - it will be checked when redaction processing completes
+	// The signature should only be sent once when all processing is complete
 }
 
 // handleFinishedFromClientSession handles finished messages from clients
@@ -1503,21 +1500,11 @@ func (t *TEEK) handleFinishedFromClientSession(sessionID string, msg *shared.Mes
 
 	// Note: Source field removed - message context determines source
 
-	log.Printf("[TEE_K] Received finished command from client, forwarding to TEE_T")
+	log.Printf("[TEE_K] Received finished command from client")
 
-	// Forward finished message to TEE_T
-	teekFinishedMsg := shared.FinishedMessage{}
-
-	forwardMsg := shared.CreateSessionMessage(shared.MsgFinished, sessionID, teekFinishedMsg)
-	if err := t.sendMessageToTEETForSession(sessionID, forwardMsg); err != nil {
-		log.Printf("[TEE_K] Failed to forward finished message to TEE_T: %v", err)
-		return
-	}
-
-	log.Printf("[TEE_K] Forwarded finished message to TEE_T, waiting for response")
-
-	// The response from TEE_T will come through handleTEETMessages
-	// and will trigger transcript generation and signing
+	// According to protocol specification, TEE_K should send 'finished' to TEE_T
+	// after processing redaction specification, not when client sends 'finished'
+	// The redaction specification processing will trigger the 'finished' message
 }
 
 // handleRedactionSpecSession handles redaction specification from client
@@ -1548,6 +1535,17 @@ func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message)
 	}
 
 	log.Printf("[TEE_K] Session %s: Successfully processed redaction specification", sessionID)
+
+	// Send "finished" to TEE_T as per protocol specification
+	finishedMsg := shared.FinishedMessage{}
+	finishedMessage := shared.CreateSessionMessage(shared.MsgFinished, sessionID, finishedMsg)
+	if err := t.sendMessageToTEETForSession(sessionID, finishedMessage); err != nil {
+		log.Printf("[TEE_K] Session %s: Failed to send finished message to TEE_T: %v", sessionID, err)
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to send finished message to TEE_T: %v", err))
+		return
+	}
+
+	log.Printf("[TEE_K] Session %s: Sent finished message to TEE_T", sessionID)
 }
 
 // validateResponseRedactionSpec validates the response redaction specification from client
