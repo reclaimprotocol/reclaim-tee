@@ -2,8 +2,6 @@ package proofverifier
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -89,30 +87,11 @@ func Validate(bundlePath string) error {
 
 	fmt.Println("[Verifier] Comprehensive signature verification successful")
 
-	// --- Commitment verification for proof stream ---
+	// --- Proof stream application (commitment verification handled by TEE_T) ---
 	if bundle.Opening != nil && bundle.Opening.ProofStream != nil && bundle.Opening.ProofKey != nil && bundle.Transcripts.TEEK != nil {
-		mac := hmac.New(sha256.New, bundle.Opening.ProofKey)
-		mac.Write(bundle.Opening.ProofStream)
-		expectedCommitment := mac.Sum(nil)
-
-		// Verify commitment directly from request metadata
-		if bundle.Transcripts.TEEK.RequestMetadata == nil {
-			return fmt.Errorf("TEE_K request metadata missing")
-		}
-
-		actualCommitment := bundle.Transcripts.TEEK.RequestMetadata.CommSP
-		if len(actualCommitment) != len(expectedCommitment) {
-			return fmt.Errorf("commitment length mismatch: expected %d bytes, got %d bytes",
-				len(expectedCommitment), len(actualCommitment))
-		}
-
-		if !bytes.Equal(expectedCommitment, actualCommitment) {
-			return fmt.Errorf("commitment verification failed: values do not match")
-		}
-
-		fmt.Printf("[Verifier] Commitment verified ✅ (len=%d, first16=%x)\n",
-			len(expectedCommitment), expectedCommitment[:min(16, len(expectedCommitment))])
-		fmt.Printf("[Verifier]   ProofStream len=%d, ProofKey len=%d\n", len(bundle.Opening.ProofStream), len(bundle.Opening.ProofKey))
+		fmt.Printf("[Verifier] Proof stream available ✅ (len=%d, key_len=%d)\n",
+			len(bundle.Opening.ProofStream), len(bundle.Opening.ProofKey))
+		fmt.Printf("[Verifier] Note: Commitment verification performed by TEE_T during protocol execution\n")
 
 		// Apply proof stream to reveal original sensitive_proof data
 		if err := verifyAndRevealProofData(bundle); err != nil {
@@ -120,7 +99,7 @@ func Validate(bundlePath string) error {
 		}
 	} else {
 		// SECURITY: Missing proof components compromise verification integrity
-		return fmt.Errorf("critical security failure: proof stream/key or TEE_K transcript missing - cannot perform commitment verification")
+		return fmt.Errorf("critical security failure: proof stream/key or TEE_K transcript missing - cannot perform proof stream application")
 	}
 
 	// --- Redacted response reconstruction check ---
@@ -219,7 +198,8 @@ func verifyTEEKTranscript(transcript *shared.TEEKTranscript) error {
 	// Add request metadata
 	if transcript.RequestMetadata != nil {
 		buffer.Write(transcript.RequestMetadata.RedactedRequest)
-		buffer.Write(transcript.RequestMetadata.CommSP)
+		// Note: Commitments are no longer included in signature verification
+		// TEE_T verifies commitments and signs the proof stream
 
 		// Include redaction ranges in signature verification (same as signing)
 		if len(transcript.RequestMetadata.RedactionRanges) > 0 {

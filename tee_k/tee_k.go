@@ -669,13 +669,8 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	t.addToTranscriptForSessionWithType(sessionID, redactionRangesBytes, "redaction_ranges")
 	log.Printf("[TEE_K] Session %s: Stored %d redaction ranges in transcript (%d bytes)", sessionID, len(redactedRequest.RedactionRanges), len(redactionRangesBytes))
 
-	for idx, r := range redactedRequest.RedactionRanges {
-		if strings.Contains(r.Type, "proof") && idx < len(redactedRequest.Commitments) {
-			t.addToTranscriptForSessionWithType(sessionID, redactedRequest.Commitments[idx], shared.TranscriptPacketTypeCommitment)
-			fmt.Printf("[TEE_K] Added comm_sp to transcript (len=%d)\n", len(redactedRequest.Commitments[idx]))
-			break
-		}
-	}
+	// Note: Commitments are verified by TEE_T and not included in TEE_K transcript
+	// TEE_T signs the proof stream, providing sufficient cryptographic proof
 
 	fmt.Printf("[TEE_K] Session %s: Added redaction ranges to transcript for signing\n", sessionID)
 
@@ -1453,11 +1448,8 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 				requestMetadata = &shared.RequestMetadata{}
 			}
 			requestMetadata.RedactedRequest = packet
-		case shared.TranscriptPacketTypeCommitment:
-			if requestMetadata == nil {
-				requestMetadata = &shared.RequestMetadata{}
-			}
-			requestMetadata.CommSP = packet
+		// Note: Commitments are no longer included in TEE_K transcript
+		// TEE_T verifies commitments and signs the proof stream
 		case "redaction_ranges":
 			if requestMetadata == nil {
 				requestMetadata = &shared.RequestMetadata{}
@@ -1841,11 +1833,8 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 				requestMetadata = &shared.RequestMetadata{}
 			}
 			requestMetadata.RedactedRequest = packet
-		case shared.TranscriptPacketTypeCommitment:
-			if requestMetadata == nil {
-				requestMetadata = &shared.RequestMetadata{}
-			}
-			requestMetadata.CommSP = packet
+		// Note: Commitments are no longer included in TEE_K transcript
+		// TEE_T verifies commitments and signs the proof stream
 		case "redaction_ranges":
 			if requestMetadata == nil {
 				requestMetadata = &shared.RequestMetadata{}
@@ -1870,7 +1859,8 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	// Add request metadata
 	if requestMetadata != nil {
 		masterBuffer.Write(requestMetadata.RedactedRequest)
-		masterBuffer.Write(requestMetadata.CommSP)
+		// Note: Commitments are no longer included in signature
+		// TEE_T verifies commitments and signs the proof stream
 		// Include redaction ranges in signature to prevent manipulation
 		if len(requestMetadata.RedactionRanges) > 0 {
 			redactionRangesBytes, err := json.Marshal(requestMetadata.RedactionRanges)

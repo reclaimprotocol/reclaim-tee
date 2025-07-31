@@ -1,10 +1,9 @@
 package shared
 
-// RequestMetadata contains the redacted request and commitment data
+// RequestMetadata contains the redacted request data
 // that was previously included in the SignedTranscript packets
 type RequestMetadata struct {
 	RedactedRequest []byte           `json:"redacted_request"` // The redacted HTTP request (R_red)
-	CommSP          []byte           `json:"comm_sp"`          // Commitment to proof stream (comm_sp)
 	RedactionRanges []RedactionRange `json:"redaction_ranges"` // Ranges used for request redaction (signed by TEE_K)
 }
 

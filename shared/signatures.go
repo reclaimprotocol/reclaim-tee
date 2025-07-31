@@ -143,7 +143,8 @@ func VerifyComprehensiveSignature(transcript *SignedTranscript, redactedStreams 
 	// Add request metadata
 	if transcript.RequestMetadata != nil {
 		buffer.Write(transcript.RequestMetadata.RedactedRequest)
-		buffer.Write(transcript.RequestMetadata.CommSP)
+		// Note: Commitments are no longer included in signature verification
+		// TEE_T verifies commitments and signs the proof stream
 
 		// Include redaction ranges in signature verification (same as signing)
 		if len(transcript.RequestMetadata.RedactionRanges) > 0 {
