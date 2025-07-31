@@ -818,7 +818,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 }
 
 // validateHTTPRequestFormat validates that the redacted request maintains proper HTTP format
-func (t *TEEK) validateHTTPRequestFormat(redactedRequest []byte, ranges []shared.RedactionRange) error {
+func (t *TEEK) validateHTTPRequestFormat(redactedRequest []byte, ranges []shared.RequestRedactionRange) error {
 	// Convert to string for easier parsing
 	reqStr := string(redactedRequest)
 
@@ -860,7 +860,7 @@ func (t *TEEK) validateHTTPRequestFormat(redactedRequest []byte, ranges []shared
 }
 
 // validateRedactionPositions validates that redaction ranges are within bounds and non-overlapping
-func (t *TEEK) validateRedactionPositions(ranges []shared.RedactionRange, requestLen int) error {
+func (t *TEEK) validateRedactionPositions(ranges []shared.RequestRedactionRange, requestLen int) error {
 	for i, r := range ranges {
 		// Check bounds
 		if r.Start < 0 || r.Length <= 0 || r.Start+r.Length > requestLen {
@@ -1110,7 +1110,7 @@ func (t *TEEK) requestKeyShareFromTEETWithSession(sessionID string, cipherSuite 
 	return t.sendMessageToTEETForSession(sessionID, msg)
 }
 
-func (t *TEEK) sendEncryptedRequestToTEET(encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64, redactionRanges []shared.RedactionRange) error {
+func (t *TEEK) sendEncryptedRequestToTEET(encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64, redactionRanges []shared.RequestRedactionRange) error {
 	fmt.Printf(" TEE_K sending encrypted request to TEE_T (%d bytes, %d ranges)\n", len(encryptedData), len(redactionRanges))
 
 	encReq := shared.EncryptedRequestData{
@@ -1126,7 +1126,7 @@ func (t *TEEK) sendEncryptedRequestToTEET(encryptedData, tagSecrets []byte, ciph
 }
 
 // sendEncryptedRequestToTEETWithSession sends encrypted request data and tag secrets to TEE_T with session ID
-func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64, redactionRanges []shared.RedactionRange, commitments [][]byte) error {
+func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64, redactionRanges []shared.RequestRedactionRange, commitments [][]byte) error {
 	fmt.Printf(" TEE_K sending encrypted request to TEE_T for session %s (%d bytes, %d ranges, %d commitments)\n", sessionID, len(encryptedData), len(redactionRanges), len(commitments))
 
 	encReq := shared.EncryptedRequestData{
@@ -1462,7 +1462,7 @@ func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Messa
 				requestMetadata = &shared.RequestMetadata{}
 			}
 			// Unmarshal the redaction ranges from JSON
-			var ranges []shared.RedactionRange
+			var ranges []shared.RequestRedactionRange
 			if err := json.Unmarshal(packet, &ranges); err != nil {
 				log.Printf("[TEE_K] Failed to unmarshal redaction ranges from transcript: %v", err)
 			} else {
@@ -1524,7 +1524,7 @@ func (t *TEEK) handleFinishedFromClientSession(sessionID string, msg *shared.Mes
 func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message) {
 	log.Printf("[TEE_K] Session %s: Handling redaction specification", sessionID)
 
-	var redactionSpec shared.RedactionSpec
+	var redactionSpec shared.ResponseRedactionSpec
 	if err := msg.UnmarshalData(&redactionSpec); err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to unmarshal redaction spec: %v", sessionID, err)
 		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("failed to parse redaction specification"), "failed to parse redaction specification")
@@ -1534,14 +1534,14 @@ func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message)
 	log.Printf("[TEE_K] Session %s: Received redaction spec with %d ranges", sessionID, len(redactionSpec.Ranges))
 
 	// Validate redaction ranges
-	if err := t.validateRedactionSpec(redactionSpec); err != nil {
+	if err := t.validateResponseRedactionSpec(redactionSpec); err != nil {
 		log.Printf("[TEE_K] Session %s: Invalid redaction spec: %v", sessionID, err)
 		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Invalid redaction specification: %v", err))
 		return
 	}
 
 	// Generate and send redacted decryption streams
-	if err := t.generateAndSendRedactedDecryptionStream(sessionID, redactionSpec); err != nil {
+	if err := t.generateAndSendRedactedDecryptionStreamResponse(sessionID, redactionSpec); err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to generate redacted streams: %v", sessionID, err)
 		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to generate redacted streams: %v", err))
 		return
@@ -1550,8 +1550,8 @@ func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message)
 	log.Printf("[TEE_K] Session %s: Successfully processed redaction specification", sessionID)
 }
 
-// validateRedactionSpec validates the redaction specification from client
-func (t *TEEK) validateRedactionSpec(spec shared.RedactionSpec) error {
+// validateResponseRedactionSpec validates the response redaction specification from client
+func (t *TEEK) validateResponseRedactionSpec(spec shared.ResponseRedactionSpec) error {
 	// Validate ranges don't overlap and are within bounds
 	for i, range1 := range spec.Ranges {
 		// Check if range has redaction bytes
@@ -1563,7 +1563,7 @@ func (t *TEEK) validateRedactionSpec(spec shared.RedactionSpec) error {
 		// Check for overlaps with other ranges
 		for j := i + 1; j < len(spec.Ranges); j++ {
 			range2 := spec.Ranges[j]
-			if rangesOverlap(range1, range2) {
+			if rangesOverlapResponse(range1, range2) {
 				return fmt.Errorf("ranges %d and %d overlap", i, j)
 			}
 		}
@@ -1577,13 +1577,19 @@ func (t *TEEK) validateRedactionSpec(spec shared.RedactionSpec) error {
 	return nil
 }
 
-// rangesOverlap checks if two redaction ranges overlap
-func rangesOverlap(r1, r2 shared.RedactionRange) bool {
+// rangesOverlapResponse checks if two response redaction ranges overlap
+func rangesOverlapResponse(r1, r2 shared.ResponseRedactionRange) bool {
 	return r1.Start < r2.Start+r2.Length && r2.Start < r1.Start+r1.Length
 }
 
+// generateAndSendRedactedDecryptionStreamResponse creates redacted decryption streams for response redaction
+func (t *TEEK) generateAndSendRedactedDecryptionStreamResponse(sessionID string, spec shared.ResponseRedactionSpec) error {
+	// Direct call to the main implementation
+	return t.generateAndSendRedactedDecryptionStream(sessionID, spec)
+}
+
 // generateAndSendRedactedDecryptionStream creates redacted decryption streams but defers signature sending until all processing is complete
-func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec shared.RedactionSpec) error {
+func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec shared.ResponseRedactionSpec) error {
 	log.Printf("[TEE_K] Session %s: Generating redacted decryption stream with %d ranges", sessionID, len(spec.Ranges))
 
 	// Get session to access response state
@@ -1667,8 +1673,8 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 
 					seqToOperations[seqNum] = append(seqToOperations[seqNum], operation)
 
-					log.Printf("[TEE_K] Session %s: Range %d [%d:%d] affects seq %d at offset %d-%d (type: %s)",
-						sessionID, rangeIdx, rangeStart, rangeEnd, seqNum, overlapStart, overlapStart+overlapLength-1, redactionRange.Type)
+					log.Printf("[TEE_K] Session %s: Range %d [%d:%d] affects seq %d at offset %d-%d",
+						sessionID, rangeIdx, rangeStart, rangeEnd, seqNum, overlapStart, overlapStart+overlapLength-1)
 				}
 			}
 			seqOffset += length
@@ -1888,7 +1894,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 				requestMetadata = &shared.RequestMetadata{}
 			}
 			// Unmarshal the redaction ranges from JSON
-			var ranges []shared.RedactionRange
+			var ranges []shared.RequestRedactionRange
 			if err := json.Unmarshal(packet, &ranges); err != nil {
 				log.Printf("[TEE_K] Failed to unmarshal redaction ranges from transcript: %v", err)
 			} else {

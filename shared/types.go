@@ -215,7 +215,7 @@ type TLSSessionState struct {
 
 // RedactionSessionState holds redaction-specific state for each session
 type RedactionSessionState struct {
-	Ranges                []RedactionRange
+	Ranges                []RequestRedactionRange
 	CommitmentOpenings    [][]byte
 	ExpectedCommitments   [][]byte // [comm_s, comm_sp] received from TEE_K
 	EncryptedRequestData  []EncryptedRequestData
@@ -249,10 +249,19 @@ type ResponseSessionState struct {
 }
 
 // Protocol data structures
-type RedactionRange struct {
+
+// RequestRedactionRange is used for request redaction (needs types for proof verification)
+type RequestRedactionRange struct {
 	Start          int    `json:"start"`                     // Start position in the decryption stream
 	Length         int    `json:"length"`                    // Length of the range to redact
-	Type           string `json:"type"`                      // "sensitive" or "sensitive_proof", etc.
+	Type           string `json:"type"`                      // "sensitive" or "sensitive_proof"
+	RedactionBytes []byte `json:"redaction_bytes,omitempty"` // Bytes to use in redacted stream (calculated to produce '*' when XORed with ciphertext)
+}
+
+// ResponseRedactionRange is used for response redaction (no types needed - binary redaction)
+type ResponseRedactionRange struct {
+	Start          int    `json:"start"`                     // Start position in the decryption stream
+	Length         int    `json:"length"`                    // Length of the range to redact
 	RedactionBytes []byte `json:"redaction_bytes,omitempty"` // Bytes to use in redacted stream (calculated to produce '*' when XORed with ciphertext)
 }
 
@@ -353,9 +362,9 @@ type PlaintextData struct {
 
 // RedactedRequestData contains the redacted request and associated metadata
 type RedactedRequestData struct {
-	RedactedRequest []byte           `json:"redacted_request"` // R_red
-	Commitments     [][]byte         `json:"commitments"`      // [comm_s, comm_sp]
-	RedactionRanges []RedactionRange `json:"redaction_ranges"` // Position metadata
+	RedactedRequest []byte                  `json:"redacted_request"` // R_red
+	Commitments     [][]byte                `json:"commitments"`      // [comm_s, comm_sp]
+	RedactionRanges []RequestRedactionRange `json:"redaction_ranges"` // Position metadata
 }
 
 // RedactionStreamsData contains the XOR streams and commitment keys for revelation
@@ -386,12 +395,12 @@ type SessionReadyData struct {
 }
 
 type EncryptedRequestData struct {
-	EncryptedData   []byte           `json:"encrypted_data"` // R_red_Enc
-	TagSecrets      []byte           `json:"tag_secrets"`    // Data needed for tag computation
-	Commitments     [][]byte         `json:"commitments"`    // [comm_s, comm_sp] from TEE_K
-	CipherSuite     uint16           `json:"cipher_suite"`
-	SeqNum          uint64           `json:"seq_num"`          // Sequence number for AEAD
-	RedactionRanges []RedactionRange `json:"redaction_ranges"` // Redaction position metadata for stream application
+	EncryptedData   []byte                  `json:"encrypted_data"` // R_red_Enc
+	TagSecrets      []byte                  `json:"tag_secrets"`    // Data needed for tag computation
+	Commitments     [][]byte                `json:"commitments"`    // [comm_s, comm_sp] from TEE_K
+	CipherSuite     uint16                  `json:"cipher_suite"`
+	SeqNum          uint64                  `json:"seq_num"`          // Sequence number for AEAD
+	RedactionRanges []RequestRedactionRange `json:"redaction_ranges"` // Redaction position metadata for stream application
 }
 
 type EncryptedResponseData struct {
@@ -441,10 +450,15 @@ const (
 	TranscriptPacketTypeCommitment          = "commitment"
 )
 
-// RedactionSpec specifies which parts of the response should be redacted
-type RedactionSpec struct {
-	Ranges                     []RedactionRange `json:"ranges"`                        // Specific ranges to redact
-	AlwaysRedactSessionTickets bool             `json:"always_redact_session_tickets"` // Always redact session tickets
+// RequestRedactionSpec specifies which parts of the request should be redacted
+type RequestRedactionSpec struct {
+	Ranges []RequestRedactionRange `json:"ranges"` // Request redaction ranges with types
+}
+
+// ResponseRedactionSpec specifies which parts of the response should be redacted
+type ResponseRedactionSpec struct {
+	Ranges                     []ResponseRedactionRange `json:"ranges"`                        // Response redaction ranges (no types needed)
+	AlwaysRedactSessionTickets bool                     `json:"always_redact_session_tickets"` // Always redact session tickets
 }
 
 // SignedRedactedDecryptionStream represents a redacted decryption stream

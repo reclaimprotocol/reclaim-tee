@@ -277,7 +277,6 @@ func calculateResponseRedactionRanges(responseData []byte) []map[string]interfac
 				ranges = append(ranges, map[string]interface{}{
 					"start":  beforeTitleStart,
 					"length": beforeTitleLength,
-					"type":   "body_before_title",
 				})
 			}
 
@@ -292,7 +291,6 @@ func calculateResponseRedactionRanges(responseData []byte) []map[string]interfac
 			ranges = append(ranges, map[string]interface{}{
 				"start":  afterTitleStart,
 				"length": afterTitleLength,
-				"type":   "body_after_title",
 			})
 		}
 	} else {
@@ -300,7 +298,6 @@ func calculateResponseRedactionRanges(responseData []byte) []map[string]interfac
 		ranges = append(ranges, map[string]interface{}{
 			"start":  headerEndIndex,
 			"length": len(bodyContent),
-			"type":   "body_no_title",
 		})
 	}
 

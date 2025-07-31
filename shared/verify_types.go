@@ -3,8 +3,8 @@ package shared
 // RequestMetadata contains the redacted request data
 // that was previously included in the SignedTranscript packets
 type RequestMetadata struct {
-	RedactedRequest []byte           `json:"redacted_request"` // The redacted HTTP request (R_red)
-	RedactionRanges []RedactionRange `json:"redaction_ranges"` // Ranges used for request redaction (signed by TEE_K)
+	RedactedRequest []byte                  `json:"redacted_request"` // The redacted HTTP request (R_red)
+	RedactionRanges []RequestRedactionRange `json:"redaction_ranges"` // Ranges used for request redaction (signed by TEE_K)
 }
 
 // Opening contains the commitment opening data (Str_SP, K_SP) provided by the User

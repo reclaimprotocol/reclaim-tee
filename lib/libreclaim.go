@@ -56,9 +56,9 @@ type ProtocolSession struct {
 
 // RequestData represents the JSON structure for request data
 type RequestData struct {
-	Host                   string                  `json:"host"`
-	RawRequest             string                  `json:"raw_request"`
-	RequestRedactionRanges []shared.RedactionRange `json:"request_redaction_ranges"`
+	Host                   string                         `json:"host"`
+	RawRequest             string                         `json:"raw_request"`
+	RequestRedactionRanges []shared.RequestRedactionRange `json:"request_redaction_ranges"`
 }
 
 // ResponseData represents the JSON structure for response data
@@ -72,7 +72,7 @@ type ResponseData struct {
 
 // ResponseRedactionData represents the JSON structure for response redaction data
 type ResponseRedactionData struct {
-	ResponseRedactionRanges []shared.RedactionRange `json:"response_redaction_ranges"`
+	ResponseRedactionRanges []shared.ResponseRedactionRange `json:"response_redaction_ranges"`
 }
 
 // VerificationBundleData represents the JSON structure for verification bundle data
@@ -478,8 +478,8 @@ func reclaim_get_version() *C.char {
 
 // Helper functions
 
-// convertRangesToSpecs converts RedactionRange to RedactionSpec
-func convertRangesToSpecs(ranges []shared.RedactionRange) []clientlib.RedactionSpec {
+// convertRangesToSpecs converts RequestRedactionRange to RedactionSpec
+func convertRangesToSpecs(ranges []shared.RequestRedactionRange) []clientlib.RedactionSpec {
 	var specs []clientlib.RedactionSpec
 
 	// Convert the ranges to patterns that the clientlib can understand
@@ -527,7 +527,7 @@ func parseHost(host string) (string, string) {
 
 // ResponseCallbackImpl implements the response callback interface
 type ResponseCallbackImpl struct {
-	Ranges []shared.RedactionRange
+	Ranges []shared.ResponseRedactionRange
 }
 
 func (r *ResponseCallbackImpl) OnResponseReceived(response *clientlib.HTTPResponse) (*clientlib.RedactionResult, error) {

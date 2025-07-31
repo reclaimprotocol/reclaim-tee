@@ -1393,7 +1393,7 @@ func (t *TEET) verifyCommitments(streams, keys, expectedCommitments [][]byte) er
 }
 
 // reconstructFullRequestWithStreams is session-aware version that accepts redaction streams as parameter
-func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, ranges []shared.RedactionRange, redactionStreams [][]byte) ([]byte, error) {
+func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, ranges []shared.RequestRedactionRange, redactionStreams [][]byte) ([]byte, error) {
 	// Make a copy of the encrypted redacted data
 	reconstructed := make([]byte, len(encryptedRedacted))
 	copy(reconstructed, encryptedRedacted)

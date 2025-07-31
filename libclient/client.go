@@ -127,7 +127,7 @@ type Client struct {
 	reconstructedResponseSize    int  // Size of reconstructed response data
 
 	// Track redaction ranges so we can prettify later and include in bundle
-	requestRedactionRanges []shared.RedactionRange
+	requestRedactionRanges []shared.RequestRedactionRange
 	// Attestation verification fields
 	teekAttestationPublicKey []byte // Public key extracted from TEE_K attestation
 	teetAttestationPublicKey []byte // Public key extracted from TEE_T attestation
@@ -151,14 +151,14 @@ type Client struct {
 	phase1Completion chan struct{} // Channel to signal phase 1 completion
 
 	// Result tracking fields
-	protocolStartTime            time.Time                     // When protocol started
-	lastResponseData             *HTTPResponse                 // Last received HTTP response
-	lastProofClaims              []ProofClaim                  // Last generated proof claims
-	lastRedactionRanges          []shared.RedactionRange       // Last redaction ranges from callback
-	lastRedactedResponse         []byte                        // Last redacted response from callback
-	responseReconstructed        bool                          // Flag to prevent multiple response reconstruction
-	transcriptValidationResults  *TranscriptValidationResults  // Cached validation results
-	attestationValidationResults *AttestationValidationResults // Cached attestation results
+	protocolStartTime            time.Time                       // When protocol started
+	lastResponseData             *HTTPResponse                   // Last received HTTP response
+	lastProofClaims              []ProofClaim                    // Last generated proof claims
+	lastRedactionRanges          []shared.ResponseRedactionRange // Last redaction ranges from callback
+	lastRedactedResponse         []byte                          // Last redacted response from callback
+	responseReconstructed        bool                            // Flag to prevent multiple response reconstruction
+	transcriptValidationResults  *TranscriptValidationResults    // Cached validation results
+	attestationValidationResults *AttestationValidationResults   // Cached attestation results
 
 	// Verification bundle tracking fields
 	handshakeDisclosure     *shared.HandshakeKeyDisclosureData      // store handshake keys
@@ -376,7 +376,7 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 }
 
 // generateRedactionStreams generates random XOR streams and commitment keys for each redaction range
-func (c *Client) generateRedactionStreams(ranges []shared.RedactionRange) ([][]byte, [][]byte, error) {
+func (c *Client) generateRedactionStreams(ranges []shared.RequestRedactionRange) ([][]byte, [][]byte, error) {
 	streams := make([][]byte, len(ranges))
 	keys := make([][]byte, len(ranges))
 
@@ -400,7 +400,7 @@ func (c *Client) generateRedactionStreams(ranges []shared.RedactionRange) ([][]b
 }
 
 // applyRedaction applies XOR streams to sensitive data ranges in the HTTP request
-func (c *Client) applyRedaction(request []byte, ranges []shared.RedactionRange, streams [][]byte) []byte {
+func (c *Client) applyRedaction(request []byte, ranges []shared.RequestRedactionRange, streams [][]byte) []byte {
 	redacted := make([]byte, len(request))
 	copy(redacted, request)
 
@@ -433,7 +433,7 @@ func (c *Client) computeCommitments(streams, keys [][]byte) [][]byte {
 }
 
 // validateRedactionRanges ensures redaction ranges don't overlap and are within bounds
-func (c *Client) validateRedactionRanges(ranges []shared.RedactionRange, requestLen int) error {
+func (c *Client) validateRedactionRanges(ranges []shared.RequestRedactionRange, requestLen int) error {
 	for _, r := range ranges {
 		if r.Start < 0 || r.Length < 0 || r.Start+r.Length > requestLen {
 			return fmt.Errorf("invalid redaction range: start=%d, length=%d, requestLen=%d", r.Start, r.Length, requestLen)
@@ -443,8 +443,8 @@ func (c *Client) validateRedactionRanges(ranges []shared.RedactionRange, request
 }
 
 // applyRedactionSpecs applies redaction specifications from config to find redaction ranges
-func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]shared.RedactionRange, error) {
-	var ranges []shared.RedactionRange
+func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]shared.RequestRedactionRange, error) {
+	var ranges []shared.RequestRedactionRange
 	requestStr := string(httpRequest)
 
 	fmt.Printf("[Client] applyRedactionSpecs: checking %d redaction specs\n", len(c.requestRedactions))
@@ -461,7 +461,7 @@ func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]shared.RedactionRang
 		matches := findPatternMatches(requestStr, spec.Pattern)
 		fmt.Printf("[Client] applyRedactionSpecs: found %d matches for pattern '%s'\n", len(matches), spec.Pattern)
 		for _, match := range matches {
-			ranges = append(ranges, shared.RedactionRange{
+			ranges = append(ranges, shared.RequestRedactionRange{
 				Start:  match.Start,
 				Length: match.Length,
 				Type:   spec.Type,
@@ -644,7 +644,7 @@ func (c *Client) triggerResponseCallback(responseData []byte) {
 
 		// Log redaction ranges
 		for i, r := range result.RedactionRanges {
-			log.Printf("[Client] Redaction range %d: [%d:%d] type=%s", i+1, r.Start, r.Start+r.Length-1, r.Type)
+			log.Printf("[Client] Redaction range %d: [%d:%d]", i+1, r.Start, r.Start+r.Length-1)
 		}
 	}
 }

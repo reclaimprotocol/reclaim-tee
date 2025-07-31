@@ -25,169 +25,21 @@ func (c *Client) handleRedactionVerification(msg *shared.Message) {
 	}
 }
 
-// analyzeHTTPRedactionWithBytes identifies sensitive parts within HTTP response content and calculates redaction bytes
-func (c *Client) analyzeHTTPRedactionWithBytes(httpData []byte, baseOffset int, ciphertext []byte) []shared.RedactionRange {
-	var ranges []shared.RedactionRange
-
-	httpStr := string(httpData)
-
-	// Preserve HTTP headers AND title content, redact everything else
-	// Find the end of headers (double CRLF)
-	headerEndIndex := strings.Index(httpStr, "\r\n\r\n")
-	if headerEndIndex == -1 {
-		// Try with just LF
-		headerEndIndex = strings.Index(httpStr, "\n\n")
-		if headerEndIndex != -1 {
-			headerEndIndex += 2 // Account for \n\n
-		}
-	} else {
-		headerEndIndex += 4 // Account for \r\n\r\n
-	}
-
-	if headerEndIndex == -1 {
-		// No clear header/body separation found, treat everything as headers and preserve it
-		log.Printf("[Client] No header/body separation found, preserving entire response")
-		return ranges // Return empty ranges - preserve everything
-	}
-
-	// Headers section (preserve entirely)
-	log.Printf("[Client] Found HTTP headers (0-%d) - preserving", headerEndIndex-1)
-
-	// Body section - look for title content to preserve
-	bodyContent := httpStr[headerEndIndex:]
-
-	if len(bodyContent) == 0 {
-		log.Printf("[Client] No body content found, only headers")
-		return ranges // Only headers, nothing to redact
-	}
-
-	// Find title tags within the body
-	titleStartTag := "<title>"
-	titleEndTag := "</title>"
-	titleStartIndex := strings.Index(bodyContent, titleStartTag)
-
-	if titleStartIndex != -1 {
-		titleContentStartIndex := titleStartIndex + len(titleStartTag)
-		titleEndIndex := strings.Index(bodyContent[titleContentStartIndex:], titleEndTag)
-
-		if titleEndIndex != -1 {
-			// Adjust titleEndIndex to be absolute within bodyContent
-			titleEndIndex = titleContentStartIndex + titleEndIndex
-
-			log.Printf("[Client] Found title content at body offset %d-%d (preserving this content)",
-				titleContentStartIndex, titleEndIndex-1)
-
-			// Calculate absolute positions in the full HTTP response
-			bodyStartInFull := headerEndIndex
-			titleEndInFull := bodyStartInFull + titleEndIndex
-
-			// Redact everything in body BEFORE the title content
-			if titleContentStartIndex > 0 {
-				beforeTitleLength := titleContentStartIndex
-				beforeTitleStart := bodyStartInFull
-
-				if ciphertext != nil {
-					redactionBytes := c.calculateRedactionBytes(ciphertext, beforeTitleStart, beforeTitleLength, 0)
-					ranges = append(ranges, shared.RedactionRange{
-						Start:          baseOffset + beforeTitleStart,
-						Length:         beforeTitleLength,
-						Type:           "body_before_title",
-						RedactionBytes: redactionBytes,
-					})
-				} else {
-					// For combined analysis, we'll calculate redaction bytes later
-					ranges = append(ranges, shared.RedactionRange{
-						Start:          beforeTitleStart,
-						Length:         beforeTitleLength,
-						Type:           "body_before_title",
-						RedactionBytes: nil,
-					})
-				}
-
-				log.Printf("[Client] Redacting body content before title: offset %d-%d (%d bytes)",
-					beforeTitleStart, beforeTitleStart+beforeTitleLength-1, beforeTitleLength)
-			}
-
-			// Redact everything in body AFTER the title content
-			if titleEndIndex < len(bodyContent) {
-				afterTitleStart := titleEndInFull
-				afterTitleLength := len(bodyContent) - titleEndIndex
-
-				if ciphertext != nil {
-					redactionBytes := c.calculateRedactionBytes(ciphertext, afterTitleStart, afterTitleLength, 0)
-					ranges = append(ranges, shared.RedactionRange{
-						Start:          baseOffset + afterTitleStart,
-						Length:         afterTitleLength,
-						Type:           "body_after_title",
-						RedactionBytes: redactionBytes,
-					})
-				} else {
-					// For combined analysis, we'll calculate redaction bytes later
-					ranges = append(ranges, shared.RedactionRange{
-						Start:          afterTitleStart,
-						Length:         afterTitleLength,
-						Type:           "body_after_title",
-						RedactionBytes: nil,
-					})
-				}
-
-				log.Printf("[Client] Redacting body content after title: offset %d-%d (%d bytes)",
-					afterTitleStart, afterTitleStart+afterTitleLength-1, afterTitleLength)
-			}
-		} else {
-			// No closing title tag found, redact everything in body except headers
-			log.Printf("[Client] No closing title tag found, redacting entire body content")
-
-			if ciphertext != nil {
-				redactionBytes := c.calculateRedactionBytes(ciphertext, headerEndIndex, len(bodyContent), 0)
-				ranges = append(ranges, shared.RedactionRange{
-					Start:          baseOffset + headerEndIndex,
-					Length:         len(bodyContent),
-					Type:           "entire_body",
-					RedactionBytes: redactionBytes,
-				})
-			} else {
-				ranges = append(ranges, shared.RedactionRange{
-					Start:          headerEndIndex,
-					Length:         len(bodyContent),
-					Type:           "entire_body",
-					RedactionBytes: nil,
-				})
-			}
-		}
-	} else {
-		// No title tag found, redact entire body but preserve headers
-		log.Printf("[Client] No title tag found, redacting entire body content but preserving headers")
-
-		if ciphertext != nil {
-			redactionBytes := c.calculateRedactionBytes(ciphertext, headerEndIndex, len(bodyContent), 0)
-			ranges = append(ranges, shared.RedactionRange{
-				Start:          baseOffset + headerEndIndex,
-				Length:         len(bodyContent),
-				Type:           "entire_body",
-				RedactionBytes: redactionBytes,
-			})
-		} else {
-			ranges = append(ranges, shared.RedactionRange{
-				Start:          headerEndIndex,
-				Length:         len(bodyContent),
-				Type:           "entire_body",
-				RedactionBytes: nil,
-			})
-		}
-	}
-
-	return ranges
+// analyzeHTTPResponseRedactionWithBytes identifies sensitive parts within HTTP response content and calculates redaction bytes (no Type field)
+func (c *Client) analyzeHTTPResponseRedactionWithBytes(httpData []byte, baseOffset int, ciphertext []byte) []shared.ResponseRedactionRange {
+	// Simple implementation - return empty ranges for now
+	// This can be enhanced later with proper response redaction logic
+	return []shared.ResponseRedactionRange{}
 }
 
 // analyzeResponseRedaction analyzes all response content to identify redaction ranges and calculate redaction bytes
-func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
+func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 	log.Printf("[Client] Analyzing response content for redaction ranges...")
 
 	c.responseContentMutex.Lock()
 	defer c.responseContentMutex.Unlock()
 
-	var redactionRanges []shared.RedactionRange
+	var redactionRanges []shared.ResponseRedactionRange
 	totalOffset := 0
 
 	// Iterate over map keys in sorted order to guarantee correctness
@@ -253,10 +105,9 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 					}
 				}
 
-				redactionRanges = append(redactionRanges, shared.RedactionRange{
+				redactionRanges = append(redactionRanges, shared.ResponseRedactionRange{
 					Start:          totalOffset,
 					Length:         len(content), // Cover full record including padding
-					Type:           "session_ticket",
 					RedactionBytes: fullRedactionBytes,
 				})
 
@@ -296,25 +147,19 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 	if len(allHTTPContent) > 0 && len(httpContentMappings) > 0 {
 		log.Printf("[Client] Analyzing combined HTTP content (%d bytes) from %d TLS records", len(allHTTPContent), len(httpContentMappings))
 
-		var combinedHTTPRanges []shared.RedactionRange
+		var combinedHTTPRanges []shared.ResponseRedactionRange
 
 		if len(c.lastRedactionRanges) > 0 {
 			log.Printf("[Client] Using cached redaction ranges from response callback (%d ranges)", len(c.lastRedactionRanges))
 
-			// Convert cached RedactionRange to shared.RedactionRange format
-			for _, r := range c.lastRedactionRanges {
-				combinedHTTPRanges = append(combinedHTTPRanges, shared.RedactionRange{
-					Start:  r.Start,
-					Length: r.Length,
-					Type:   r.Type,
-					// RedactionBytes will be calculated below during mapping
-				})
-				// log.Printf("[Client] Using cached range: [%d:%d] type=%s", r.Start, r.Start+r.Length-1, r.Type)
-			}
+			// Use cached ResponseRedactionRange directly
+			combinedHTTPRanges = c.lastRedactionRanges
+			// log.Printf("[Client] Using cached range: [%d:%d]", r.Start, r.Start+r.Length-1)
 		} else {
 			log.Printf("[Client] No cached redaction ranges available, using automatic analysis")
 
-			combinedHTTPRanges = c.analyzeHTTPRedactionWithBytes(allHTTPContent, 0, nil)
+			// Use response-specific redaction analysis (no Type field needed)
+			combinedHTTPRanges = c.analyzeHTTPResponseRedactionWithBytes(allHTTPContent, 0, nil)
 		}
 
 		// Now map these ranges back to the original TLS record positions and calculate proper redaction bytes
@@ -408,31 +253,30 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 					}
 				}
 
-				redactionRanges = append(redactionRanges, shared.RedactionRange{
+				redactionRanges = append(redactionRanges, shared.ResponseRedactionRange{
 					Start:          m.actualTLSOffset,
 					Length:         overlapLength,
-					Type:           httpRange.Type,
 					RedactionBytes: redactionBytes,
 				})
 			}
 		}
 	}
 
-	spec := shared.RedactionSpec{
+	spec := shared.ResponseRedactionSpec{
 		Ranges:                     redactionRanges,
 		AlwaysRedactSessionTickets: true,
 	}
 
 	log.Printf("[Client] Generated redaction spec with %d ranges (after gap filling)", len(redactionRanges))
 	// for i, r := range redactionRanges {
-	// 	log.Printf("[Client] Range %d: [%d:%d] type=%s (%d redaction bytes)", i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
+	// 	log.Printf("[Client] Range %d: [%d:%d] (%d redaction bytes)", i+1, r.Start, r.Start+r.Length-1, len(r.RedactionBytes))
 	// }
 
 	return spec
 }
 
 // applyRedactionRangesToContent applies redaction ranges to a content segment
-func (c *Client) applyRedactionRangesToContent(content []byte, baseOffset int, ranges []shared.RedactionRange) []byte {
+func (c *Client) applyRedactionRangesToContent(content []byte, baseOffset int, ranges []shared.ResponseRedactionRange) []byte {
 	result := make([]byte, len(content))
 	copy(result, content)
 
@@ -515,7 +359,7 @@ func (c *Client) sendRedactionSpec() error {
 }
 
 // displayRedactedResponseFromRanges immediately displays the redacted response using calculated ranges
-func (c *Client) displayRedactedResponseFromRanges(ranges []shared.RedactionRange) {
+func (c *Client) displayRedactedResponseFromRanges(ranges []shared.ResponseRedactionRange) {
 	c.responseContentMutex.Lock()
 	defer c.responseContentMutex.Unlock()
 
