@@ -1815,20 +1815,27 @@ func (t *TEEK) checkAndSendSignatureIfReady(sessionID string) error {
 	session.StreamsMutex.Lock()
 	redactionComplete := session.RedactionProcessingComplete
 	hasRedactedStreams := len(session.RedactedStreams) > 0
+	// Add guard to prevent duplicate signature generation
+	signatureAlreadySent := session.SignatureSent
 	session.StreamsMutex.Unlock()
 
 	// All processing is complete when:
 	// 1. We have transcript data (from finished message)
 	// 2. Redaction processing is complete
 	// 3. We have redacted streams
-	allProcessingComplete := transcriptReady && redactionComplete && hasRedactedStreams
+	// 4. We haven't already sent a signature
+	allProcessingComplete := transcriptReady && redactionComplete && hasRedactedStreams && !signatureAlreadySent
 
 	if allProcessingComplete {
 		log.Printf("[TEE_K] Session %s: All processing complete, generating and sending signature", sessionID)
+		// Mark signature as sent to prevent duplicates
+		session.StreamsMutex.Lock()
+		session.SignatureSent = true
+		session.StreamsMutex.Unlock()
 		return t.generateComprehensiveSignatureAndSendTranscript(sessionID)
 	} else {
-		log.Printf("[TEE_K] Session %s: Not ready to send signature yet - transcript:%v redaction:%v streams:%v",
-			sessionID, transcriptReady, redactionComplete, hasRedactedStreams)
+		log.Printf("[TEE_K] Session %s: Not ready to send signature yet - transcript:%v redaction:%v streams:%v signatureSent:%v",
+			sessionID, transcriptReady, redactionComplete, hasRedactedStreams, signatureAlreadySent)
 	}
 
 	return nil

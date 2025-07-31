@@ -181,6 +181,7 @@ type Session struct {
 	// Master signature generation
 	RedactedStreams             []SignedRedactedDecryptionStream `json:"-"` // Collect streams for master signature
 	RedactionProcessingComplete bool                             `json:"-"` // Flag to track when redaction processing is complete
+	SignatureSent               bool                             `json:"-"` // Flag to prevent duplicate signature generation
 	StreamsMutex                sync.Mutex                       // Protect streams collection
 
 	// Connection management
