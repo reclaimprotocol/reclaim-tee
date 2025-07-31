@@ -1813,17 +1813,16 @@ func (t *TEEK) checkAndSendSignatureIfReady(sessionID string) error {
 		return fmt.Errorf("session %s not found: %v", sessionID, err)
 	}
 
-	// Check if all required processing is complete
+	// Check if all required processing is complete and atomically set signature flag
+	session.StreamsMutex.Lock()
+
 	session.TranscriptMutex.Lock()
 	transcriptReady := len(session.TranscriptPackets) > 0
 	session.TranscriptMutex.Unlock()
 
-	session.StreamsMutex.Lock()
 	redactionComplete := session.RedactionProcessingComplete
 	hasRedactedStreams := len(session.RedactedStreams) > 0
-	// Add guard to prevent duplicate signature generation
 	signatureAlreadySent := session.SignatureSent
-	session.StreamsMutex.Unlock()
 
 	// All processing is complete when:
 	// 1. We have transcript data (from finished message)
@@ -1835,13 +1834,15 @@ func (t *TEEK) checkAndSendSignatureIfReady(sessionID string) error {
 	if allProcessingComplete {
 		log.Printf("[TEE_K] Session %s: All processing complete, generating and sending signature", sessionID)
 		// Mark signature as sent to prevent duplicates
-		session.StreamsMutex.Lock()
 		session.SignatureSent = true
+		// Release lock before calling generateComprehensiveSignatureAndSendTranscript
 		session.StreamsMutex.Unlock()
 		return t.generateComprehensiveSignatureAndSendTranscript(sessionID)
 	} else {
 		log.Printf("[TEE_K] Session %s: Not ready to send signature yet - transcript:%v redaction:%v streams:%v signatureSent:%v",
 			sessionID, transcriptReady, redactionComplete, hasRedactedStreams, signatureAlreadySent)
+		// Don't set SignatureSent = true if we're not actually sending a signature
+		session.StreamsMutex.Unlock()
 	}
 
 	return nil
