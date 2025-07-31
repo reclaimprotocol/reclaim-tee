@@ -28,6 +28,13 @@ var teekUpgrader = websocket.Upgrader{
 	},
 }
 
+type RedactionOperation struct {
+	SeqNum uint64
+	Start  int    // Start offset within the sequence
+	End    int    // End offset within the sequence
+	Bytes  []byte // Redaction bytes to apply
+}
+
 type TEEK struct {
 	port int
 
@@ -1615,8 +1622,69 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 	session.RedactedStreams = make([]shared.SignedRedactedDecryptionStream, 0)
 	session.StreamsMutex.Unlock()
 
-	// Create redacted decryption stream for each sequence
-	currentOffset := 0
+	log.Printf("[TEE_K] Session %s: Pre-processing %d redaction ranges", sessionID, len(spec.Ranges))
+
+	// Map each sequence to its redaction operations
+	seqToOperations := make(map[uint64][]RedactionOperation)
+
+	// Process each range exactly once
+	for rangeIdx, redactionRange := range spec.Ranges {
+		rangeStart := redactionRange.Start
+		rangeEnd := redactionRange.Start + redactionRange.Length
+
+		// Find which sequences this range affects
+		seqOffset := 0
+		for _, seqNum := range seqNumbers {
+			length := int(session.ResponseState.ResponseLengthBySeq[seqNum])
+			seqStart := seqOffset
+			seqEnd := seqOffset + length
+
+			// Check if this range overlaps with current sequence
+			if rangeStart < seqEnd && rangeEnd > seqStart {
+				// Calculate overlap
+				overlapStart := max(rangeStart, seqStart) - seqStart
+				overlapEnd := min(rangeEnd, seqEnd) - seqStart
+				overlapLength := overlapEnd - overlapStart
+
+				if overlapLength > 0 {
+					// Calculate offset within the redaction range
+					redactionOffset := max(0, seqStart-rangeStart)
+
+					// Create redaction operation for this sequence
+					operation := RedactionOperation{
+						SeqNum: seqNum,
+						Start:  overlapStart,
+						End:    overlapStart + overlapLength,
+						Bytes:  make([]byte, overlapLength),
+					}
+
+					// Copy redaction bytes for this overlap
+					for i := 0; i < overlapLength; i++ {
+						if redactionOffset+i < len(redactionRange.RedactionBytes) {
+							operation.Bytes[i] = redactionRange.RedactionBytes[redactionOffset+i]
+						}
+					}
+
+					seqToOperations[seqNum] = append(seqToOperations[seqNum], operation)
+
+					log.Printf("[TEE_K] Session %s: Range %d [%d:%d] affects seq %d at offset %d-%d (type: %s)",
+						sessionID, rangeIdx, rangeStart, rangeEnd, seqNum, overlapStart, overlapStart+overlapLength-1, redactionRange.Type)
+				}
+			}
+			seqOffset += length
+		}
+	}
+
+	log.Printf("[TEE_K] Session %s: Pre-processing complete. Generated %d total redaction operations",
+		sessionID, func() int {
+			total := 0
+			for _, ops := range seqToOperations {
+				total += len(ops)
+			}
+			return total
+		}())
+
+	// Create redacted decryption stream for each sequence using pre-computed operations
 	for _, seqNum := range seqNumbers {
 		length := int(session.ResponseState.ResponseLengthBySeq[seqNum])
 
@@ -1687,45 +1755,20 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 			return fmt.Errorf("failed to generate original decryption stream for seq %d: %v", seqNum, err)
 		}
 
-		// Apply redaction to this stream
+		// Apply redaction to this stream using pre-computed operations
 		redactedStream := make([]byte, len(originalStream))
 		copy(redactedStream, originalStream)
 
-		// Apply redaction ranges that fall within this sequence
-		for _, redactionRange := range spec.Ranges {
-			rangeStart := redactionRange.Start
-			rangeEnd := redactionRange.Start + redactionRange.Length
-
-			// The explicit IV is part of the TLS record but NOT part of the encrypted data
-			// The keystream only decrypts the actual encrypted data, not the explicit IV
-			// So redaction ranges should NOT be offset for TLS 1.2
-			log.Printf("[TEE_K] DEBUG: Redaction range [%d:%d] (no offset adjustment)", rangeStart, rangeEnd)
-
-			// Check if this range overlaps with current sequence
-			seqStart := currentOffset
-			seqEnd := currentOffset + length
-
-			if rangeStart < seqEnd && rangeEnd > seqStart {
-				// Calculate overlap
-				overlapStart := max(rangeStart, seqStart) - seqStart
-				overlapEnd := min(rangeEnd, seqEnd) - seqStart
-				overlapLength := overlapEnd - overlapStart
-
-				if overlapLength > 0 {
-					// Calculate offset within the redaction range
-					redactionOffset := max(0, seqStart-rangeStart)
-
-					// Copy redaction bytes for this overlap
-					for i := 0; i < overlapLength; i++ {
-						if overlapStart+i < len(redactedStream) && redactionOffset+i < len(redactionRange.RedactionBytes) {
-							redactedStream[overlapStart+i] = redactionRange.RedactionBytes[redactionOffset+i]
-						}
-					}
-
-					log.Printf("[TEE_K] Session %s: Applied redaction to seq %d at offset %d-%d (type: %s)",
-						sessionID, seqNum, overlapStart, overlapStart+overlapLength-1, redactionRange.Type)
-				}
+		// Apply pre-computed redaction operations for this sequence (O(1) per sequence)
+		operations := seqToOperations[seqNum]
+		for _, operation := range operations {
+			// Apply redaction bytes for this operation
+			for i := 0; i < len(operation.Bytes) && operation.Start+i < len(redactedStream); i++ {
+				redactedStream[operation.Start+i] = operation.Bytes[i]
 			}
+
+			log.Printf("[TEE_K] Session %s: Applied pre-computed redaction to seq %d at offset %d-%d",
+				sessionID, seqNum, operation.Start, operation.End-1)
 		}
 
 		// Store redacted stream in session for master signature generation
@@ -1738,10 +1781,8 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		session.RedactedStreams = append(session.RedactedStreams, streamData)
 		session.StreamsMutex.Unlock()
 
-		log.Printf("[TEE_K] Session %s: Generated redacted decryption stream for seq %d (%d bytes)",
-			sessionID, seqNum, len(redactedStream))
-
-		currentOffset += length
+		log.Printf("[TEE_K] Session %s: Generated redacted decryption stream for seq %d (%d bytes, %d operations)",
+			sessionID, seqNum, len(redactedStream), len(operations))
 	}
 
 	// Instead of immediately sending signature, mark redaction processing as complete
