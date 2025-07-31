@@ -1261,7 +1261,7 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 	}
 
 	if tlsVersion == 0x0303 { // TLS 1.2
-		if len(explicitIV) > 0 && (cipherSuite == 0xc02f || cipherSuite == 0xc02b || cipherSuite == 0xc030 || cipherSuite == 0xc02c) {
+		if len(explicitIV) > 0 && shared.IsTLS12AESGCMCipherSuite(cipherSuite) {
 			// TLS 1.2 AES-GCM with explicit IV
 			if len(explicitIV) != 8 {
 				return nil, fmt.Errorf("TLS 1.2 explicit IV must be 8 bytes, got %d", len(explicitIV))
@@ -1301,7 +1301,7 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 				tagSecrets[0:16], tagSecrets[16:32])
 
 			return tagSecrets, nil
-		} else if cipherSuite == 0xcca8 || cipherSuite == 0xcca9 {
+		} else if shared.IsTLS12ChaCha20Poly1305CipherSuite(cipherSuite) {
 			// TLS 1.2 ChaCha20-Poly1305 (no explicit IV)
 			// Use TLS 1.2 ChaCha20 nonce construction: IV XOR sequence number
 			nonce := make([]byte, len(serverAppIV))
@@ -2021,7 +2021,7 @@ func (t *TEEK) constructNonce(iv []byte, seqNum uint64, cipherSuite uint16) []by
 		return nonce
 
 	// TLS 1.2 AES-GCM - explicit nonce format (RFC 5288)
-	case 0xc02f, 0xc02b, 0xc030, 0xc02c: // TLS 1.2 AES-GCM cipher suites
+	case shared.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, shared.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, shared.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, shared.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: // TLS 1.2 AES-GCM cipher suites
 		// 12-byte nonce = implicit_iv(4) || explicit_nonce(8)
 		nonce := make([]byte, 12)
 		copy(nonce[0:4], iv) // 4-byte implicit IV
@@ -2037,7 +2037,7 @@ func (t *TEEK) constructNonce(iv []byte, seqNum uint64, cipherSuite uint16) []by
 		return nonce
 
 	// TLS 1.2 ChaCha20 - IV XOR sequence number (RFC 7905)
-	case 0xcca8, 0xcca9: // TLS 1.2 ChaCha20-Poly1305 cipher suites
+	case shared.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, shared.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: // TLS 1.2 ChaCha20-Poly1305 cipher suites
 		nonce := make([]byte, len(iv))
 		copy(nonce, iv)
 		for i := 0; i < 8; i++ {

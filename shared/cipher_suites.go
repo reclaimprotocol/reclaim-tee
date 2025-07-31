@@ -271,3 +271,54 @@ func GetKeyAndIVLengths(cipherSuite uint16) (keyLen, ivLen int, err error) {
 	}
 	return info.KeyLength, info.IVLength, nil
 }
+
+// IsTLS12CipherSuite checks if a cipher suite belongs to TLS 1.2
+func IsTLS12CipherSuite(cipherSuite uint16) bool {
+	info, found := CipherSuiteInfoMap[cipherSuite]
+	if !found {
+		return false
+	}
+	return info.TLSVersion == VersionTLS12
+}
+
+// IsTLS12AESGCMCipherSuite checks if a cipher suite is a TLS 1.2 AES-GCM cipher suite
+func IsTLS12AESGCMCipherSuite(cipherSuite uint16) bool {
+	switch cipherSuite {
+	case TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, // 0xc02f
+		TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, // 0xc02b
+		TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,   // 0xc030
+		TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: // 0xc02c
+		return true
+	default:
+		return false
+	}
+}
+
+// IsTLS12ChaCha20Poly1305CipherSuite checks if a cipher suite is a TLS 1.2 ChaCha20-Poly1305 cipher suite
+func IsTLS12ChaCha20Poly1305CipherSuite(cipherSuite uint16) bool {
+	switch cipherSuite {
+	case TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, // 0xcca8
+		TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: // 0xcca9
+		return true
+	default:
+		return false
+	}
+}
+
+// IsTLS13CipherSuite checks if a cipher suite belongs to TLS 1.3
+func IsTLS13CipherSuite(cipherSuite uint16) bool {
+	info, found := CipherSuiteInfoMap[cipherSuite]
+	if !found {
+		return false
+	}
+	return info.TLSVersion == VersionTLS13
+}
+
+// GetTLSVersion returns the TLS version for a cipher suite
+func GetTLSVersion(cipherSuite uint16) uint16 {
+	info, found := CipherSuiteInfoMap[cipherSuite]
+	if !found {
+		return 0 // Unknown
+	}
+	return info.TLSVersion
+}

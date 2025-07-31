@@ -319,10 +319,7 @@ func (c *Client) handleEncryptedData(msg *shared.Message) {
 
 	// Check if this is TLS 1.2 AES-GCM (needs explicit IV)
 	isTLS12AESGCMCipher := c.handshakeDisclosure != nil &&
-		(c.handshakeDisclosure.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-			c.handshakeDisclosure.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-			c.handshakeDisclosure.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-			c.handshakeDisclosure.CipherSuite == 0xc02c) // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+		shared.IsTLS12AESGCMCipherSuite(c.handshakeDisclosure.CipherSuite)
 
 	if isTLS12AESGCMCipher {
 		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)

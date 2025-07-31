@@ -132,10 +132,7 @@ func Validate(bundlePath string) error {
 	var ciphertexts [][]byte
 
 	// Check if this is TLS 1.2 AES-GCM (has explicit IV)
-	isTLS12AESGCM := bundle.HandshakeKeys.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-		bundle.HandshakeKeys.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-		bundle.HandshakeKeys.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-		bundle.HandshakeKeys.CipherSuite == 0xc02c // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+	isTLS12AESGCM := shared.IsTLS12AESGCMCipherSuite(bundle.HandshakeKeys.CipherSuite)
 
 	for _, pkt := range bundle.Transcripts.TEET.Packets {
 		if len(pkt) < 5+16 {

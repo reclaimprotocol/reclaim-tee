@@ -72,16 +72,3 @@ func (c *Client) sendFinishedCommand() error {
 
 	return nil
 }
-
-// isTLS12AESGCMCipher checks if the current connection is using TLS 1.2 AES-GCM
-func (c *Client) isTLS12AESGCMCipher() bool {
-	if c.handshakeDisclosure == nil {
-		return false
-	}
-
-	cipherSuite := c.handshakeDisclosure.CipherSuite
-	return cipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-		cipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-		cipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-		cipherSuite == 0xc02c // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-}

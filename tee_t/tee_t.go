@@ -593,10 +593,7 @@ func (t *TEET) addSingleResponseToTranscript(sessionID string, encryptedResp *sh
 	// For TLS 1.2 AES-GCM, we need to include the explicit IV in the response record too
 
 	// Check if this is TLS 1.2 AES-GCM cipher suite
-	isTLS12AESGCMCipher := encryptedResp.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-		encryptedResp.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-		encryptedResp.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-		encryptedResp.CipherSuite == 0xc02c // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+	isTLS12AESGCMCipher := shared.IsTLS12AESGCMCipherSuite(encryptedResp.CipherSuite)
 
 	var payload []byte
 	if isTLS12AESGCMCipher && encryptedResp.ExplicitIV != nil && len(encryptedResp.ExplicitIV) == 8 {
@@ -1165,10 +1162,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	// For TLS 1.2 AES-GCM, we need to include the explicit IV
 
 	// Check if this is TLS 1.2 AES-GCM cipher suite
-	isTLS12AESGCMCipher := encReq.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-		encReq.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-		encReq.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-		encReq.CipherSuite == 0xc02c // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+	isTLS12AESGCMCipher := shared.IsTLS12AESGCMCipherSuite(encReq.CipherSuite)
 
 	var payload []byte
 	if isTLS12AESGCMCipher {
@@ -1327,7 +1321,6 @@ func (t *TEET) verifyCommitmentsIfReady(sessionID string) error {
 	}
 
 	if session.RedactionState == nil {
-		// SECURITY: Redaction state is required for commitment verification
 		return fmt.Errorf("critical security failure: no redaction state available for commitment verification in session %s", sessionID)
 	}
 
@@ -1336,12 +1329,10 @@ func (t *TEET) verifyCommitmentsIfReady(sessionID string) error {
 	hasCommitments := len(session.RedactionState.ExpectedCommitments) > 0
 
 	if !hasStreams {
-		// SECURITY: Missing redaction streams prevents proper commitment verification
 		return fmt.Errorf("critical security failure: redaction streams not available for commitment verification in session %s", sessionID)
 	}
 
 	if !hasCommitments {
-		// SECURITY: Missing expected commitments prevents proper verification
 		return fmt.Errorf("critical security failure: expected commitments from TEE_K not available for verification in session %s", sessionID)
 	}
 

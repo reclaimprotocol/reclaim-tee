@@ -165,10 +165,7 @@ func (c *Client) processTLSRecord(record []byte) {
 
 	// Check if this is TLS 1.2 AES-GCM response (needs explicit IV extraction)
 	isTLS12AESGCMResponse := c.handshakeDisclosure != nil &&
-		(c.handshakeDisclosure.CipherSuite == 0xc02f || // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-			c.handshakeDisclosure.CipherSuite == 0xc02b || // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-			c.handshakeDisclosure.CipherSuite == 0xc030 || // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-			c.handshakeDisclosure.CipherSuite == 0xc02c) // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+		shared.IsTLS12AESGCMCipherSuite(c.handshakeDisclosure.CipherSuite)
 
 	if isTLS12AESGCMResponse {
 		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)
@@ -404,7 +401,7 @@ func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 	}
 
 	// Check TLS version from cipher suite in handshake disclosure
-	isTLS12 := c.handshakeDisclosure != nil && c.isTLS12CipherSuite(c.handshakeDisclosure.CipherSuite)
+	isTLS12 := c.handshakeDisclosure != nil && shared.IsTLS12CipherSuite(c.handshakeDisclosure.CipherSuite)
 
 	if isTLS12 {
 		// TLS 1.2: No inner content type or padding, content type comes from record header
@@ -477,17 +474,5 @@ func (c *Client) processTLSRecordFromData(data []byte) {
 			// Not enough data for complete record, wait for more
 			break
 		}
-	}
-}
-
-// isTLS12CipherSuite checks if a cipher suite belongs to TLS 1.2
-func (c *Client) isTLS12CipherSuite(cipherSuite uint16) bool {
-	switch cipherSuite {
-	case 0xc02f, 0xc02b, 0xc030, 0xc02c: // TLS 1.2 AES-GCM cipher suites
-		return true
-	case 0xcca8, 0xcca9: // TLS 1.2 ChaCha20-Poly1305 cipher suites
-		return true
-	default:
-		return false // TLS 1.3 or other
 	}
 }

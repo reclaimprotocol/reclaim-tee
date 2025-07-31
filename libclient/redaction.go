@@ -235,7 +235,7 @@ func (c *Client) analyzeResponseRedaction() shared.RedactionSpec {
 				// For TLS 1.3, actualContent is at the beginning of the decrypted payload
 				// For TLS 1.2, we need to account for explicit IV and other headers
 				ciphertextOffset := 0
-				if c.isTLS12AESGCMCipher() {
+				if c.handshakeDisclosure != nil && shared.IsTLS12AESGCMCipherSuite(c.handshakeDisclosure.CipherSuite) {
 					ciphertextOffset = 8 // Skip explicit IV for TLS 1.2 AES-GCM
 				}
 
