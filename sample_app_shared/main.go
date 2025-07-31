@@ -304,14 +304,6 @@ func calculateResponseRedactionRanges(responseData []byte) []map[string]interfac
 	return ranges
 }
 
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // writeVerificationBundle writes the verification bundle data to a file
 func writeVerificationBundle(path string, bundleData []byte) error {
 	return os.WriteFile(path, bundleData, 0644)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	clientlib "tee-mpc/libclient"
@@ -176,8 +177,7 @@ func main() {
 
 	// Run offline verification using the new verifier package
 	if err := proofverifier.Validate(bundlePath); err != nil {
-		fmt.Printf("\n🔴 Offline verification failed: %v\n", err)
-		fmt.Printf("⚠️  Continuing despite verification failure...\n")
+		log.Fatalf("\n🔴 Offline verification failed: %v\n", err)
 	} else {
 		fmt.Println("\n✅ Offline verification succeeded")
 	}
