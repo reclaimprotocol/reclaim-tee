@@ -3,6 +3,7 @@ package shared
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"sync"
 	"time"
 
@@ -265,6 +266,35 @@ type RequestRedactionRange struct {
 type ResponseRedactionRange struct {
 	Start  int `json:"start"`  // Start position in the decryption stream
 	Length int `json:"length"` // Length of the range to redact
+}
+
+// ConsolidateResponseRedactionRanges merges consecutive or overlapping redaction ranges
+func ConsolidateResponseRedactionRanges(ranges []ResponseRedactionRange) []ResponseRedactionRange {
+	if len(ranges) == 0 {
+		return ranges
+	}
+
+	// Sort by start position
+	sort.Slice(ranges, func(i, j int) bool {
+		return ranges[i].Start < ranges[j].Start
+	})
+
+	var consolidated []ResponseRedactionRange
+	current := ranges[0]
+
+	for i := 1; i < len(ranges); i++ {
+		next := ranges[i]
+		// If ranges are consecutive or overlapping, merge them
+		if current.Start+current.Length >= next.Start {
+			current.Length = max(current.Start+current.Length, next.Start+next.Length) - current.Start
+		} else {
+			consolidated = append(consolidated, current)
+			current = next
+		}
+	}
+	consolidated = append(consolidated, current)
+
+	return consolidated
 }
 
 // Client to TEE_K: Request to establish connection

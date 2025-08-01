@@ -531,9 +531,20 @@ type ResponseCallbackImpl struct {
 }
 
 func (r *ResponseCallbackImpl) OnResponseReceived(response *clientlib.HTTPResponse) (*clientlib.RedactionResult, error) {
+	// Consolidate ranges to reduce transmission overhead (same as standalone client)
+	originalCount := len(r.Ranges)
+	consolidatedRanges := shared.ConsolidateResponseRedactionRanges(r.Ranges)
+	consolidatedCount := len(consolidatedRanges)
+
+	// Log consolidation results (if ranges were consolidated)
+	if originalCount != consolidatedCount {
+		fmt.Printf("[Lib] Consolidated redaction ranges: %d → %d (%.1f%% reduction)\n",
+			originalCount, consolidatedCount, float64(originalCount-consolidatedCount)/float64(originalCount)*100)
+	}
+
 	return &clientlib.RedactionResult{
 		RedactedBody:    response.FullResponse,
-		RedactionRanges: r.Ranges,
+		RedactionRanges: consolidatedRanges,
 		ProofClaims:     []clientlib.ProofClaim{},
 	}, nil
 }

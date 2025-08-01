@@ -272,22 +272,21 @@ func (c *Client) sendRedactionSpec() error {
 	// Analyze response content to identify redaction ranges
 	redactionSpec := c.analyzeResponseRedaction()
 
+	// Consolidate ranges to reduce transmission overhead
+	originalCount := len(redactionSpec.Ranges)
+	redactionSpec.Ranges = shared.ConsolidateResponseRedactionRanges(redactionSpec.Ranges)
+	consolidatedCount := len(redactionSpec.Ranges)
+
+	log.Printf("[Client] Consolidated redaction ranges: %d → %d (%.1f%% reduction)",
+		originalCount, consolidatedCount, float64(originalCount-consolidatedCount)/float64(originalCount)*100)
+
 	// Send redaction spec to TEE_K
 	msg := shared.CreateSessionMessage(shared.MsgRedactionSpec, c.sessionID, redactionSpec)
 	if err := c.wsConn.WriteJSON(msg); err != nil {
 		return fmt.Errorf("failed to send redaction spec to TEE_K: %v", err)
 	}
 
-	log.Printf("[Client] Sent redaction specification to TEE_K with %d ranges", len(redactionSpec.Ranges))
-
-	// Display ranges sent to TEE_K
-	// for i, r := range redactionSpec.Ranges {
-	// 	if r.Type == "session_ticket" {
-	// 		log.Printf("[Client] Range %d: [%d:%d] type=%s (session ticket)", i+1, r.Start, r.Start+r.Length-1, r.Type)
-	// 	} else {
-	// 		log.Printf("[Client] Range %d: [%d:%d] type=%s (%d bytes)", i+1, r.Start, r.Start+r.Length-1, r.Type, len(r.RedactionBytes))
-	// 	}
-	// }
+	log.Printf("[Client] Sent redaction specification to TEE_K with %d consolidated ranges", len(redactionSpec.Ranges))
 
 	log.Printf("[Client] Redaction specification sent successfully")
 
@@ -497,7 +496,9 @@ func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Messag
 
 				log.Printf("[Client] All redacted streams received - displaying final redacted response")
 				redactionSpec := c.analyzeResponseRedaction()
-				c.displayRedactedResponseFromRandomGarbage(redactionSpec.Ranges)
+				// Consolidate ranges for display (same as verifier)
+				consolidatedRanges := shared.ConsolidateResponseRedactionRanges(redactionSpec.Ranges)
+				c.displayRedactedResponseFromRandomGarbage(consolidatedRanges)
 
 				// Check if we can now proceed with full protocol completion
 				transcriptsComplete := c.transcriptsReceived >= 2

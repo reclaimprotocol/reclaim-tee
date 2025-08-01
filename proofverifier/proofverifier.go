@@ -187,8 +187,10 @@ func Validate(bundlePath string) error {
 
 		// Replace random garbage with asterisks using response redaction ranges
 		if bundle.Transcripts.TEEK.ResponseRedactionRanges != nil && len(bundle.Transcripts.TEEK.ResponseRedactionRanges) > 0 {
-			reconstructed = replaceRandomGarbageWithAsterisks(reconstructed, bundle.Transcripts.TEEK.ResponseRedactionRanges)
-			fmt.Printf("[Verifier] Applied %d response redaction ranges to replace random garbage with asterisks\n", len(bundle.Transcripts.TEEK.ResponseRedactionRanges))
+			// Consolidate ranges for display (same as client)
+			consolidatedRanges := shared.ConsolidateResponseRedactionRanges(bundle.Transcripts.TEEK.ResponseRedactionRanges)
+			reconstructed = replaceRandomGarbageWithAsterisks(reconstructed, consolidatedRanges)
+			fmt.Printf("[Verifier] Applied %d consolidated response redaction ranges to replace random garbage with asterisks\n", len(consolidatedRanges))
 		}
 
 		fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + collapseAsterisks(string(reconstructed)) + "\n---")
