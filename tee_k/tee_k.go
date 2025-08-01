@@ -649,7 +649,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		return
 	}
 
-	fmt.Printf("[TEE_K] Session %s: Validating redacted request (%d bytes, %d ranges)\n", sessionID, len(redactedRequest.RedactedRequest), len(redactedRequest.RedactionRanges))
+	fmt.Printf("[TEE_K] Session %s: Validating redacted request (%d bytes, %d ranges, %d commitments)\n", sessionID, len(redactedRequest.RedactedRequest), len(redactedRequest.RedactionRanges), len(redactedRequest.Commitments))
 
 	// Validate redacted request format and positions
 	if err := t.validateHTTPRequestFormat(redactedRequest.RedactedRequest, redactedRequest.RedactionRanges); err != nil {
@@ -1180,9 +1180,9 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 		serverAppKey = tls12AEAD.GetReadKey()
 		serverAppIV = tls12AEAD.GetReadIV()
 
-		fmt.Printf("[TEE_K] Using TLS 1.2 server keys for response tag secrets\n")
-		fmt.Printf("[TEE_K] 🔑 Server Read Key: %x\n", serverAppKey)
-		fmt.Printf("[TEE_K] 🔑 Server Read IV:  %x\n", serverAppIV)
+		// fmt.Printf("[TEE_K] Using TLS 1.2 server keys for response tag secrets\n")
+		// fmt.Printf("[TEE_K] 🔑 Server Read Key: %x\n", serverAppKey)
+		// fmt.Printf("[TEE_K] 🔑 Server Read IV:  %x\n", serverAppIV)
 	} else { // TLS 1.3
 		// Get server application AEAD for tag secret generation
 		serverAEAD := tlsClient.GetServerApplicationAEAD()
@@ -1199,7 +1199,7 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 		serverAppKey = keySchedule.GetServerApplicationKey()
 		serverAppIV = keySchedule.GetServerApplicationIV()
 
-		fmt.Printf("[TEE_K] Using TLS 1.3 server keys for response tag secrets\n")
+		// fmt.Printf("[TEE_K] Using TLS 1.3 server keys for response tag secrets\n")
 	}
 
 	if serverAppKey == nil || serverAppIV == nil {
@@ -1641,7 +1641,7 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 	seqToOperations := make(map[uint64][]RedactionOperation)
 
 	// Process each range exactly once
-	for rangeIdx, redactionRange := range spec.Ranges {
+	for _, redactionRange := range spec.Ranges {
 		rangeStart := redactionRange.Start
 		rangeEnd := redactionRange.Start + redactionRange.Length
 
@@ -1676,8 +1676,8 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 
 					seqToOperations[seqNum] = append(seqToOperations[seqNum], operation)
 
-					log.Printf("[TEE_K] Session %s: Range %d [%d:%d] affects seq %d at offset %d-%d",
-						sessionID, rangeIdx, rangeStart, rangeEnd, seqNum, overlapStart, overlapStart+overlapLength-1)
+					// log.Printf("[TEE_K] Session %s: Range %d [%d:%d] affects seq %d at offset %d-%d",
+					// 	sessionID, rangeIdx, rangeStart, rangeEnd, seqNum, overlapStart, overlapStart+overlapLength-1)
 				}
 			}
 			seqOffset += length
@@ -2362,7 +2362,7 @@ func (t *TEEK) generateSingleDecryptionStreamWithSession(sessionID string, respo
 		serverAppKey = tls12AEAD.GetReadKey()
 		serverAppIV = tls12AEAD.GetReadIV()
 
-		fmt.Printf("[TEE_K] Using TLS 1.2 server keys for batched decryption stream\n")
+		// fmt.Printf("[TEE_K] Using TLS 1.2 server keys for batched decryption stream\n")
 	} else { // TLS 1.3
 		// Get key schedule to access server application keys
 		keySchedule := tlsClient.GetKeySchedule()
@@ -2373,7 +2373,7 @@ func (t *TEEK) generateSingleDecryptionStreamWithSession(sessionID string, respo
 		serverAppKey = keySchedule.GetServerApplicationKey()
 		serverAppIV = keySchedule.GetServerApplicationIV()
 
-		fmt.Printf("[TEE_K] Using TLS 1.3 server keys for batched decryption stream\n")
+		// fmt.Printf("[TEE_K] Using TLS 1.3 server keys for batched decryption stream\n")
 	}
 
 	if serverAppKey == nil || serverAppIV == nil {

@@ -82,15 +82,15 @@ echo ""
 echo "Client finished with exit code: $CLIENT_EXIT_CODE"
 
 # Show service logs if client failed
-if [ $CLIENT_EXIT_CODE -ne 0 ]; then
-    echo ""
-    echo "Service logs for debugging:"
-    echo "--- TEE_K log ---"
-    cat /tmp/demo_teek.log
-    echo ""
-    echo "--- TEE_T log ---"
-    cat /tmp/demo_teet.log
-fi
+
+echo ""
+echo "Service logs for debugging:"
+echo "--- TEE_K log ---"
+cat /tmp/demo_teek.log
+echo ""
+echo "--- TEE_T log ---"
+cat /tmp/demo_teet.log
+
 
 # Client completed, cleanup and exit
 cleanup

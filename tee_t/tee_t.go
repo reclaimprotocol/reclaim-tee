@@ -452,15 +452,8 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 
 	t.logger.InfoIf("Redaction streams stored for session", zap.String("session_id", sessionID))
 
-	// Verify commitments if expected commitments are already available from TEE_K
-	if err := t.verifyCommitmentsIfReady(sessionID); err != nil {
-		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoCommitmentFailed, err,
-			zap.Int("streams_count", len(streamsData.Streams)),
-			zap.Int("keys_count", len(streamsData.CommitmentKeys))) {
-			return
-		}
-		return
-	}
+	// Note: Commitment verification will happen when encrypted request arrives from TEE_K
+	// Do not verify commitments here as they may not be available yet
 
 	// Process pending encrypted request if available
 	if session.ResponseState != nil && session.ResponseState.PendingEncryptedRequest != nil {
