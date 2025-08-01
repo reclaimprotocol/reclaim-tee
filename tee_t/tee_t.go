@@ -234,11 +234,11 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			t.logger.DebugIf("Handling MsgRedactionStreams", zap.String("session_id", sessionID))
 			t.handleRedactionStreamsSession(sessionID, msg)
 		case shared.MsgAttestationRequest:
-			t.logger.DebugIf("Handling MsgAttestationRequest", zap.String("session_id", sessionID))
+			t.logger.DebugIf("Handling MsgAttestationRequest from client", zap.String("session_id", sessionID))
 			t.handleAttestationRequestSession(sessionID, msg)
 		case shared.MsgFinished:
-			t.logger.DebugIf("Handling MsgFinished from client", zap.String("session_id", sessionID))
-			t.handleFinishedFromClientSession(sessionID, msg)
+			t.logger.DebugIf("Handling MsgFinished from TEE_K", zap.String("session_id", sessionID))
+			t.handleFinishedFromTEEKSession(msg)
 
 		case shared.MsgBatchedEncryptedResponses:
 			t.logger.DebugIf("Handling MsgBatchedEncryptedResponses", zap.String("session_id", sessionID))
@@ -1619,41 +1619,6 @@ func (t *TEET) getTranscriptForSession(sessionID string) [][]byte {
 
 // Single Session Mode: Finished command tracking
 
-// handleFinishedFromClientSession handles finished messages from clients
-func (t *TEET) handleFinishedFromClientSession(sessionID string, msg *shared.Message) {
-	t.logger.InfoIf("Handling finished message from client",
-		zap.String("session_id", sessionID))
-
-	var finishedMsg shared.FinishedMessage
-	if err := msg.UnmarshalData(&finishedMsg); err != nil {
-		t.logger.Error("Failed to unmarshal finished message from client",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-		return
-	}
-
-	// Note: Source field removed - message context determines source
-
-	t.logger.InfoIf("Received finished command from client",
-		zap.String("session_id", sessionID))
-
-	// Update finished state for this session
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		t.logger.Error("Failed to get session for finished tracking",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-		return
-	}
-
-	session.FinishedStateMutex.Lock()
-	session.ClientFinished = true
-	session.FinishedStateMutex.Unlock()
-
-	// Check if we should process the finished command
-	t.checkFinishedCondition(sessionID)
-}
-
 // handleFinishedFromTEEKSession handles finished messages from TEE_K
 func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
 	t.logger.InfoIf("Handling finished message from TEE_K",
@@ -1691,7 +1656,7 @@ func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
 	t.checkFinishedCondition(sessionID)
 }
 
-// checkFinishedCondition checks if both client and TEE_K have sent finished messages
+// checkFinishedCondition checks if TEE_K has sent finished message
 func (t *TEET) checkFinishedCondition(sessionID string) {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
@@ -1702,7 +1667,6 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 	}
 
 	session.FinishedStateMutex.Lock()
-	clientFinished := session.ClientFinished
 	teekFinished := session.TEEKFinished
 	session.FinishedStateMutex.Unlock()
 
@@ -1737,20 +1701,6 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			zap.Int("total_packets", len(transcript)),
 			zap.Int("signature_bytes", len(signature)))
 
-		// Send "finished" response to TEE_K
-		responseMsg := shared.FinishedMessage{}
-
-		finishedResponse := shared.CreateSessionMessage(shared.MsgFinished, sessionID, responseMsg)
-		if err := t.sendMessageToTEEKForSession(sessionID, finishedResponse); err != nil {
-			t.logger.Error("Failed to send finished response to TEE_K",
-				zap.String("session_id", sessionID),
-				zap.Error(err))
-			return
-		}
-
-		t.logger.InfoIf("Sent finished response to TEE_K",
-			zap.String("session_id", sessionID))
-
 		// Get public key in DER format
 		publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
 		if err != nil {
@@ -1780,9 +1730,8 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 
 		// No need to clean up finished state - it will be cleaned up when session is closed
 	} else {
-		t.logger.DebugIf("Waiting for finished from both parties",
+		t.logger.DebugIf("Waiting for finished from TEE_K",
 			zap.String("session_id", sessionID),
-			zap.Bool("client_finished", clientFinished),
 			zap.Bool("teek_finished", teekFinished))
 	}
 }

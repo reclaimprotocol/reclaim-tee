@@ -175,7 +175,6 @@ type Session struct {
 	TranscriptMutex       sync.Mutex // Protect transcript collection
 
 	// Per-session finished state tracking
-	ClientFinished     bool       // Whether client has sent finished message
 	TEEKFinished       bool       // Whether TEE_K has sent finished message
 	FinishedStateMutex sync.Mutex // Protect finished state
 

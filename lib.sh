@@ -17,7 +17,7 @@ LIB_DIR="lib"
 SAMPLE_APP_DIR="sample_app_shared"
 LIB_NAME="libreclaim.so"
 SAMPLE_APP_NAME="sample_app_shared"
-BUILD_DIR="build"
+BIN_DIR="bin"
 
 # Function to print colored output
 print_status() {
@@ -84,9 +84,13 @@ clean_builds() {
         rm -f "$SAMPLE_APP_DIR/$SAMPLE_APP_NAME"
     fi
     
-    # Clean build directory
-    if [ -d "$BUILD_DIR" ]; then
-        rm -rf "$BUILD_DIR"
+    # Clean bin directory artifacts
+    if [ -f "$BIN_DIR/$LIB_NAME" ]; then
+        rm -f "$BIN_DIR/$LIB_NAME"
+    fi
+    
+    if [ -f "$BIN_DIR/$SAMPLE_APP_NAME" ]; then
+        rm -f "$BIN_DIR/$SAMPLE_APP_NAME"
     fi
     
     print_success "Cleanup completed"
@@ -111,6 +115,10 @@ build_library() {
         if [ -f "$LIB_NAME" ]; then
             print_status "Library file: $(pwd)/$LIB_NAME"
             print_status "Library size: $(du -h "$LIB_NAME" | cut -f1)"
+            
+            # Copy to bin directory
+            cp "$LIB_NAME" "../$BIN_DIR/"
+            print_success "Library copied to $BIN_DIR/$LIB_NAME"
         else
             print_error "Library file not found after build"
             exit 1
@@ -137,21 +145,21 @@ build_sample_app() {
     # Set environment variables for CGO
     export CGO_ENABLED=1
     export CGO_CFLAGS="-I."
-    export CGO_LDFLAGS="-L../lib -lreclaim"
+    export CGO_LDFLAGS="-L../$BIN_DIR -lreclaim"
     
     print_status "CGO Environment:"
     print_status "  CGO_ENABLED=$CGO_ENABLED"
     print_status "  CGO_CFLAGS=$CGO_CFLAGS"
     print_status "  CGO_LDFLAGS=$CGO_LDFLAGS"
     
-    # Build the application
-    if go build -o "$SAMPLE_APP_NAME" main.go; then
+    # Build the application directly to bin directory
+    if go build -o "../$BIN_DIR/$SAMPLE_APP_NAME" main.go; then
         print_success "Sample application built successfully"
         
         # Verify the app was created
-        if [ -f "$SAMPLE_APP_NAME" ]; then
-            print_status "Application file: $(pwd)/$SAMPLE_APP_NAME"
-            print_status "Application size: $(du -h "$SAMPLE_APP_NAME" | cut -f1)"
+        if [ -f "../$BIN_DIR/$SAMPLE_APP_NAME" ]; then
+            print_status "Application file: ../$BIN_DIR/$SAMPLE_APP_NAME"
+            print_status "Application size: $(du -h "../$BIN_DIR/$SAMPLE_APP_NAME" | cut -f1)"
         else
             print_error "Application file not found after build"
             exit 1
@@ -168,20 +176,25 @@ build_sample_app() {
 run_sample_app() {
     print_status "Running sample application..."
     
-    if [ ! -f "$SAMPLE_APP_DIR/$SAMPLE_APP_NAME" ]; then
-        print_error "Sample application not found. Please build first."
+    if [ ! -f "$BIN_DIR/$SAMPLE_APP_NAME" ]; then
+        print_error "Sample application not found in $BIN_DIR. Please build first."
         exit 1
     fi
     
-    # Set library path
-    export LD_LIBRARY_PATH="$LIB_DIR:$LD_LIBRARY_PATH"
+    if [ ! -f "$BIN_DIR/$LIB_NAME" ]; then
+        print_error "Shared library not found in $BIN_DIR. Please build first."
+        exit 1
+    fi
+    
+    # Set library path to bin directory
+    export LD_LIBRARY_PATH="$BIN_DIR:$LD_LIBRARY_PATH"
     
     print_status "Library path: $LD_LIBRARY_PATH"
     
-    # Run the application
-    cd "$SAMPLE_APP_DIR"
+    # Run the application from bin directory
+    cd "$BIN_DIR"
     
-    print_status "Starting sample application..."
+    print_status "Starting sample application from $BIN_DIR..."
     echo "=========================================="
     
     if ./"$SAMPLE_APP_NAME"; then
@@ -201,8 +214,8 @@ show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  build     Build the shared library and sample application"
-    echo "  run       Run the sample application (builds if needed)"
+    echo "  build     Build the shared library and sample application to $BIN_DIR"
+    echo "  run       Run the sample application from $BIN_DIR (builds if needed)"
     echo "  clean     Clean all build artifacts"
     echo "  install   Install the shared library to system directories"
     echo "  test      Run tests for the shared library"
@@ -215,14 +228,16 @@ show_usage() {
     echo "  $0 build    # Build only"
     echo "  $0 run      # Run only (builds if needed)"
     echo "  $0 clean    # Clean builds"
+    echo ""
+    echo "Build artifacts will be placed in: $BIN_DIR/"
 }
 
 # Function to install library
 install_library() {
     print_status "Installing shared library..."
     
-    if [ ! -f "$LIB_DIR/$LIB_NAME" ]; then
-        print_error "Library not found. Please build first."
+    if [ ! -f "$BIN_DIR/$LIB_NAME" ]; then
+        print_error "Library not found in $BIN_DIR. Please build first."
         exit 1
     fi
     
@@ -242,8 +257,8 @@ install_library() {
 run_tests() {
     print_status "Running library tests..."
     
-    if [ ! -f "$LIB_DIR/$LIB_NAME" ]; then
-        print_error "Library not found. Please build first."
+    if [ ! -f "$BIN_DIR/$LIB_NAME" ]; then
+        print_error "Library not found in $BIN_DIR. Please build first."
         exit 1
     fi
     
@@ -263,8 +278,8 @@ run_tests() {
 show_info() {
     print_status "Library information..."
     
-    if [ ! -f "$LIB_DIR/$LIB_NAME" ]; then
-        print_error "Library not found. Please build first."
+    if [ ! -f "$BIN_DIR/$LIB_NAME" ]; then
+        print_error "Library not found in $BIN_DIR. Please build first."
         exit 1
     fi
     
@@ -291,12 +306,14 @@ main() {
             build_library
             build_sample_app
             print_success "Build completed successfully"
+            print_status "Build artifacts in $BIN_DIR/:"
+            ls -la "$BIN_DIR/$LIB_NAME" "$BIN_DIR/$SAMPLE_APP_NAME" 2>/dev/null || true
             ;;
         "run")
             check_dependencies
             # Build if needed
-            if [ ! -f "$SAMPLE_APP_DIR/$SAMPLE_APP_NAME" ] || [ ! -f "$LIB_DIR/$LIB_NAME" ]; then
-                print_warning "Build artifacts not found, building first..."
+            if [ ! -f "$BIN_DIR/$SAMPLE_APP_NAME" ] || [ ! -f "$BIN_DIR/$LIB_NAME" ]; then
+                print_warning "Build artifacts not found in $BIN_DIR, building first..."
                 clean_builds
                 build_library
                 build_sample_app

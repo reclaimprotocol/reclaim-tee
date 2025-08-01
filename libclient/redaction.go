@@ -292,11 +292,9 @@ func (c *Client) sendRedactionSpec() error {
 
 	c.advanceToPhase(PhaseReceivingRedacted)
 
-	//  send finished command when entering redacted receiving phase ***
-	log.Printf("[Client] Entering redacted receiving phase - automatically sending finished command")
-	if err := c.sendFinishedCommand(); err != nil {
-		log.Printf("[Client] Failed to send finished command: %v", err)
-	}
+	// Protocol specification: TEE_K will send 'finished' to TEE_T after processing redaction specification
+	// No client finished messages are required in single session mode
+	log.Printf("[Client] Entering redacted receiving phase - waiting for TEE_K to send 'finished' to TEE_T")
 
 	return nil
 }

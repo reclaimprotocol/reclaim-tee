@@ -47,11 +47,6 @@ func (c *Client) checkProtocolCompletion(reason string) {
 	}
 }
 
-// sendFinishedCommand sends "finished" message to both TEE_K and TEE_T
-func (c *Client) sendFinishedCommand() error {
-	log.Printf("[Client] Protocol specification requires no client 'finished' messages")
-	log.Printf("[Client] TEE_K will send 'finished' to TEE_T after processing redaction specification")
-	log.Printf("[Client] Now waiting for signed transcripts from both TEE_K and TEE_T...")
-
-	return nil
-}
+// Protocol flow: TEE_K sends 'finished' to TEE_T after processing redaction specification
+// TEE_T then signs transcript and sends it to client
+// No client finished messages are required in single session mode

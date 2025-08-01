@@ -208,7 +208,8 @@ func (t *TEEK) handleTEETMessagesForSession(sessionID string, conn *websocket.Co
 		// Route session-aware messages
 		switch msg.Type {
 		case shared.MsgFinished:
-			t.handleFinishedFromTEETSession(msg.SessionID, msg)
+			// Protocol specification: TEE_T no longer sends finished responses to TEE_K
+			log.Printf("[TEE_K] Session %s: Ignoring finished message from TEE_T (not needed in single session mode)", sessionID)
 
 		case shared.MsgBatchedResponseLengths:
 			t.handleBatchedResponseLengthsSession(msg.SessionID, msg)
@@ -322,7 +323,9 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgRedactionSpec:
 			t.handleRedactionSpecSession(sessionID, msg)
 		case shared.MsgFinished:
-			t.handleFinishedFromClientSession(sessionID, msg)
+			// Protocol specification: No client finished messages in single session mode
+			// TEE_K only sends finished to TEE_T, doesn't receive from client
+			log.Printf("[TEE_K] Session %s: Ignoring finished message from client (not needed in single session mode)", sessionID)
 		case shared.MsgAttestationRequest:
 			t.handleAttestationRequestSession(sessionID, msg)
 		default:
@@ -1405,107 +1408,6 @@ func (t *TEEK) getTranscriptForSession(sessionID string) [][]byte {
 	}
 
 	return transcriptCopy
-}
-
-// handleFinishedFromTEETSession handles finished messages from TEE_T
-func (t *TEEK) handleFinishedFromTEETSession(sessionID string, msg *shared.Message) {
-	log.Printf("[TEE_K] Handling finished response from TEE_T for session %s", sessionID)
-
-	var finishedMsg shared.FinishedMessage
-	if err := msg.UnmarshalData(&finishedMsg); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal finished message from TEE_T: %v", err)
-		return
-	}
-
-	// Note: Source field removed - message context determines source
-
-	log.Printf("[TEE_K] Received finished confirmation from TEE_T, preparing transcript data")
-
-	// Get session for transcript data
-	sessionForSigned, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		log.Printf("[TEE_K] Failed to get session %s: %v", sessionID, err)
-		return
-	}
-
-	sessionForSigned.TranscriptMutex.Lock()
-	defer sessionForSigned.TranscriptMutex.Unlock()
-
-	if len(sessionForSigned.TranscriptPackets) == 0 {
-		log.Printf("[TEE_K] No transcript packets to sign for session %s", sessionID)
-		return
-	}
-
-	// Separate TLS packets from metadata
-	tlsPackets := make([][]byte, 0)
-	tlsPacketTypes := make([]string, 0)
-	var requestMetadata *shared.RequestMetadata
-
-	for i, packet := range sessionForSigned.TranscriptPackets {
-		packetType := ""
-		if i < len(sessionForSigned.TranscriptPacketTypes) {
-			packetType = sessionForSigned.TranscriptPacketTypes[i]
-		}
-
-		switch packetType {
-		case shared.TranscriptPacketTypeTLSRecord:
-			tlsPackets = append(tlsPackets, packet)
-			tlsPacketTypes = append(tlsPacketTypes, packetType)
-		case shared.TranscriptPacketTypeHTTPRequestRedacted:
-			if requestMetadata == nil {
-				requestMetadata = &shared.RequestMetadata{}
-			}
-			requestMetadata.RedactedRequest = packet
-		// Note: Commitments are no longer included in TEE_K transcript
-		// TEE_T verifies commitments and signs the proof stream
-		case "redaction_ranges":
-			if requestMetadata == nil {
-				requestMetadata = &shared.RequestMetadata{}
-			}
-			// Unmarshal the redaction ranges from JSON
-			var ranges []shared.RequestRedactionRange
-			if err := json.Unmarshal(packet, &ranges); err != nil {
-				log.Printf("[TEE_K] Failed to unmarshal redaction ranges from transcript: %v", err)
-			} else {
-				requestMetadata.RedactionRanges = ranges
-				log.Printf("[TEE_K] Loaded %d redaction ranges from transcript", len(ranges))
-			}
-		default:
-			// Default to TLS record for unknown types
-			tlsPackets = append(tlsPackets, packet)
-			tlsPacketTypes = append(tlsPacketTypes, shared.TranscriptPacketTypeTLSRecord)
-		}
-	}
-
-	if t.signingKeyPair == nil {
-		log.Printf("[TEE_K] No signing key pair available")
-		return
-	}
-
-	// Just log that transcript is ready, but wait for redaction processing to complete
-	log.Printf("[TEE_K] Session %s: Transcript prepared with %d TLS packets, waiting for redaction processing to complete before sending signature", sessionID, len(tlsPackets))
-
-	// Don't check for signature readiness here - it will be checked when redaction processing completes
-	// The signature should only be sent once when all processing is complete
-}
-
-// handleFinishedFromClientSession handles finished messages from clients
-func (t *TEEK) handleFinishedFromClientSession(sessionID string, msg *shared.Message) {
-	log.Printf("[TEE_K] Handling finished message from client for session %s", sessionID)
-
-	var finishedMsg shared.FinishedMessage
-	if err := msg.UnmarshalData(&finishedMsg); err != nil {
-		log.Printf("[TEE_K] Failed to unmarshal finished message: %v", err)
-		return
-	}
-
-	// Note: Source field removed - message context determines source
-
-	log.Printf("[TEE_K] Received finished command from client")
-
-	// According to protocol specification, TEE_K should send 'finished' to TEE_T
-	// after processing redaction specification, not when client sends 'finished'
-	// The redaction specification processing will trigger the 'finished' message
 }
 
 // handleRedactionSpecSession handles redaction specification from client
