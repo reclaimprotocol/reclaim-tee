@@ -184,6 +184,9 @@ type Session struct {
 	SignatureSent               bool                             `json:"-"` // Flag to prevent duplicate signature generation
 	StreamsMutex                sync.Mutex                       // Protect streams collection
 
+	// Cache for original decryption streams to avoid regeneration during redaction
+	CachedDecryptionStreams map[uint64][]byte `json:"-"` // Cache original streams by seqNum for redaction reuse
+
 	// Connection management
 	IsClosed bool
 	Context  context.Context

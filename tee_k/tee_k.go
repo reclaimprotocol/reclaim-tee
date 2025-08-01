@@ -1599,71 +1599,10 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 	for _, seqNum := range seqNumbers {
 		length := int(session.ResponseState.ResponseLengthBySeq[seqNum])
 
-		// Get server application key and IV for response decryption
-		tlsState, err := t.getSessionTLSState(sessionID)
+		// Get original decryption stream from cache (reuse from Phase 4)
+		originalStream, err := t.getCachedDecryptionStream(sessionID, length, seqNum)
 		if err != nil {
-			return fmt.Errorf("failed to get TLS state: %v", err)
-		}
-
-		tlsClient, ok := tlsState.TLSClient.(*minitls.Client)
-		if tlsClient == nil || !ok {
-			return fmt.Errorf("no TLS client available for decryption key")
-		}
-
-		// Get server application keys based on TLS version
-		var serverAppKey, serverAppIV []byte
-
-		tlsVersion := tlsClient.GetNegotiatedVersion()
-		if tlsVersion == 0x0303 { // TLS 1.2
-			// Get server keys from TLS 1.2 AEAD context
-			tls12AEAD := tlsClient.GetTLS12AEAD()
-			if tls12AEAD == nil {
-				return fmt.Errorf("no TLS 1.2 AEAD available for redacted decryption")
-			}
-
-			serverAppKey = tls12AEAD.GetReadKey()
-			serverAppIV = tls12AEAD.GetReadIV()
-
-			// fmt.Printf("[TEE_K] Session %s: Using TLS 1.2 server keys for redacted decryption stream\n", sessionID)
-		} else { // TLS 1.3
-			keySchedule := tlsClient.GetKeySchedule()
-			if keySchedule == nil {
-				return fmt.Errorf("no key schedule available")
-			}
-
-			serverAppKey = keySchedule.GetServerApplicationKey()
-			serverAppIV = keySchedule.GetServerApplicationIV()
-
-			// fmt.Printf("[TEE_K] Session %s: Using TLS 1.3 server keys for redacted decryption stream\n", sessionID)
-		}
-
-		if serverAppKey == nil || serverAppIV == nil {
-			return fmt.Errorf("missing server application key or IV")
-		}
-
-		// Get cipher suite from TLS client
-		cipherSuite := tlsClient.GetCipherSuite()
-
-		// Generate original decryption stream for this sequence using server application key
-		// For TLS 1.2 AES-GCM, retrieve the stored explicit IV for this sequence
-		var explicitIV []byte
-		responseState, err := t.getSessionResponseState(sessionID)
-		if err == nil && responseState.ExplicitIVBySeq != nil {
-			explicitIV = responseState.ExplicitIVBySeq[seqNum]
-		}
-
-		// Use same sequence logic as tag generation for consistency
-		var serverSeqNum uint64
-		if tlsVersion == 0x0303 { // TLS 1.2
-			serverSeqNum = seqNum // Server sequence matches client sequence
-			// fmt.Printf("[TEE_K] TLS 1.2 redacted decryption: Using server sequence %d (same as client)\n", serverSeqNum)
-		} else { // TLS 1.3
-			serverSeqNum = seqNum - 1
-			// fmt.Printf("[TEE_K] TLS 1.3 redacted decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
-		}
-		originalStream, err := minitls.GenerateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, length, cipherSuite, explicitIV)
-		if err != nil {
-			return fmt.Errorf("failed to generate original decryption stream for seq %d: %v", seqNum, err)
+			return fmt.Errorf("failed to get cached decryption stream for seq %d: %v", seqNum, err)
 		}
 
 		// Apply redaction to this stream using pre-computed operations
@@ -2230,7 +2169,39 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 	fmt.Printf("[TEE_K] BATCHING: Successfully sent batch of %d decryption streams to client\n", len(decryptionStreams))
 }
 
+// getCachedDecryptionStream retrieves a cached decryption stream, generating it if not cached
+func (t *TEEK) getCachedDecryptionStream(sessionID string, responseLength int, seqNum uint64) ([]byte, error) {
+	// Get session to access cache
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session %s not found: %v", sessionID, err)
+	}
+
+	// Check cache first
+	session.StreamsMutex.Lock()
+	if session.CachedDecryptionStreams == nil {
+		session.CachedDecryptionStreams = make(map[uint64][]byte)
+	}
+	if cachedStream, exists := session.CachedDecryptionStreams[seqNum]; exists {
+		session.StreamsMutex.Unlock()
+		// Return a copy to avoid external modification
+		streamCopy := make([]byte, len(cachedStream))
+		copy(streamCopy, cachedStream)
+		return streamCopy, nil
+	}
+	session.StreamsMutex.Unlock()
+
+	// If not cached, generate and cache it
+	return t.generateSingleDecryptionStreamWithSession(sessionID, responseLength, seqNum)
+}
+
 func (t *TEEK) generateSingleDecryptionStreamWithSession(sessionID string, responseLength int, seqNum uint64) ([]byte, error) {
+	// Get session to access cache
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session %s not found: %v", sessionID, err)
+	}
+
 	// Get TLS client from session state
 	var tlsClient *minitls.Client
 	if sessionID != "" {
@@ -2309,6 +2280,14 @@ func (t *TEEK) generateSingleDecryptionStreamWithSession(sessionID string, respo
 		return nil, fmt.Errorf("failed to generate decryption stream: %v", err)
 	}
 
-	// fmt.Printf("[TEE_K] Generated batched decryption stream (seq=%d, %d bytes)\n", seqNum, len(decryptionStream))
+	// Cache the generated stream
+	session.StreamsMutex.Lock()
+	if session.CachedDecryptionStreams == nil {
+		session.CachedDecryptionStreams = make(map[uint64][]byte)
+	}
+	session.CachedDecryptionStreams[seqNum] = decryptionStream
+	session.StreamsMutex.Unlock()
+
+	// fmt.Printf("[TEE_K] Generated and cached decryption stream (seq=%d, %d bytes)\n", seqNum, len(decryptionStream))
 	return decryptionStream, nil
 }
