@@ -666,10 +666,10 @@ func (sa *SplitAEAD) generateChaChaTagSecrets(nonce []byte) []byte {
 
 // ComputeTagFromSecrets computes GCM authentication tag using proper GHASH (TEE_T responsibility)
 func ComputeTagFromSecrets(ciphertext, tagSecrets []byte, cipherSuite uint16, additionalData []byte) ([]byte, error) {
-	fmt.Printf("[ComputeTagFromSecrets] DEBUG: cipher=0x%04x, aad_len=%d, ciphertext_len=%d\n",
-		cipherSuite, len(additionalData), len(ciphertext))
-	fmt.Printf("[ComputeTagFromSecrets] AAD: %x\n", additionalData)
-	fmt.Printf("[ComputeTagFromSecrets] Tag secrets: %x\n", tagSecrets)
+	// fmt.Printf("[ComputeTagFromSecrets] DEBUG: cipher=0x%04x, aad_len=%d, ciphertext_len=%d\n",
+	// 	cipherSuite, len(additionalData), len(ciphertext))
+	// fmt.Printf("[ComputeTagFromSecrets] AAD: %x\n", additionalData)
+	// fmt.Printf("[ComputeTagFromSecrets] Tag secrets: %x\n", tagSecrets)
 
 	switch cipherSuite {
 	case TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
@@ -705,9 +705,9 @@ func ComputeTagFromSecrets(ciphertext, tagSecrets []byte, cipherSuite uint16, ad
 			tag[i] = ghashResult[i] ^ encryptedCounter[i]
 		}
 
-		fmt.Printf("[ComputeTagFromSecrets] GHASH result: %x\n", ghashResult)
-		fmt.Printf("[ComputeTagFromSecrets] Encrypted counter: %x\n", encryptedCounter)
-		fmt.Printf("[ComputeTagFromSecrets] Computed tag: %x\n", tag)
+		// fmt.Printf("[ComputeTagFromSecrets] GHASH result: %x\n", ghashResult)
+		// fmt.Printf("[ComputeTagFromSecrets] Encrypted counter: %x\n", encryptedCounter)
+		// fmt.Printf("[ComputeTagFromSecrets] Computed tag: %x\n", tag)
 
 		return tag, nil
 

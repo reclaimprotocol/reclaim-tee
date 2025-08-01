@@ -1235,8 +1235,8 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 		additionalData[11] = byte(responseLength >> 8)   // plaintext length high byte
 		additionalData[12] = byte(responseLength & 0xFF) // plaintext length low byte
 
-		fmt.Printf("[TEE_K] TLS 1.2 tag secret AAD: seq=%d, plaintext_len=%d, aad=%x\n",
-			seqNum, responseLength, additionalData)
+		// fmt.Printf("[TEE_K] TLS 1.2 tag secret AAD: seq=%d, plaintext_len=%d, aad=%x\n",
+		// 	seqNum, responseLength, additionalData)
 	} else {
 		// TLS 1.3: AAD = record header with ciphertext+tag length (5 bytes)
 		tagSize := 16                                // GCM tag size
@@ -1249,7 +1249,7 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 			byte(ciphertextLength & 0xFF), // Length low byte (includes tag)
 		}
 
-		fmt.Printf("[TEE_K] TLS 1.3 tag secret AAD: %x (ciphertext+tag length: %d)\n", additionalData, ciphertextLength)
+		// fmt.Printf("[TEE_K] TLS 1.3 tag secret AAD: %x (ciphertext+tag length: %d)\n", additionalData, ciphertextLength)
 	}
 
 	// For TLS 1.2, server sequence matches client sequence (both start at 1 after handshake)
@@ -1257,10 +1257,10 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 	var actualSeqToUse uint64
 	if tlsVersion == 0x0303 { // TLS 1.2
 		actualSeqToUse = seqNum // Server sequence matches client sequence
-		fmt.Printf("[TEE_K] TLS 1.2: Using server sequence %d (same as client sequence)\n", actualSeqToUse)
+		// fmt.Printf("[TEE_K] TLS 1.2: Using server sequence %d (same as client sequence)\n", actualSeqToUse)
 	} else { // TLS 1.3
 		actualSeqToUse = seqNum - 1
-		fmt.Printf("[TEE_K] TLS 1.3: Using server sequence %d (client sequence %d - 1)\n", actualSeqToUse, seqNum)
+		// fmt.Printf("[TEE_K] TLS 1.3: Using server sequence %d (client sequence %d - 1)\n", actualSeqToUse, seqNum)
 	}
 
 	if tlsVersion == 0x0303 { // TLS 1.2
@@ -1278,8 +1278,8 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 			copy(nonce[0:4], serverAppIV[0:4])                        // 4-byte implicit IV
 			binary.BigEndian.PutUint64(nonce[4:12], explicitIVUint64) // 8-byte explicit IV as uint64
 
-			fmt.Printf("[TEE_K] TLS 1.2 AES-GCM nonce construction: implicit_iv=%x + explicit_iv_uint64=%d = nonce=%x\n",
-				serverAppIV[0:4], explicitIVUint64, nonce)
+			// fmt.Printf("[TEE_K] TLS 1.2 AES-GCM nonce construction: implicit_iv=%x + explicit_iv_uint64=%d = nonce=%x\n",
+			// 	serverAppIV[0:4], explicitIVUint64, nonce)
 
 			// Generate AES-GCM tag secrets using the constructed nonce
 			block, err := aes.NewCipher(serverAppKey)
@@ -1300,8 +1300,8 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 			nonceWith1[15] = 1
 			block.Encrypt(tagSecrets[16:32], nonceWith1)
 
-			fmt.Printf("[TEE_K] Generated TLS 1.2 AES-GCM tag secrets: E_K(0^128)=%x, E_K(nonce||1)=%x\n",
-				tagSecrets[0:16], tagSecrets[16:32])
+			// fmt.Printf("[TEE_K] Generated TLS 1.2 AES-GCM tag secrets: E_K(0^128)=%x, E_K(nonce||1)=%x\n",
+			// 	tagSecrets[0:16], tagSecrets[16:32])
 
 			return tagSecrets, nil
 		} else if shared.IsTLS12ChaCha20Poly1305CipherSuite(cipherSuite) {
@@ -1313,8 +1313,8 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 				nonce[len(nonce)-1-i] ^= byte(actualSeqToUse >> (8 * i))
 			}
 
-			fmt.Printf("[TEE_K] TLS 1.2 ChaCha20 nonce construction: iv=%x XOR seq=%d = nonce=%x\n",
-				serverAppIV, actualSeqToUse, nonce)
+			// fmt.Printf("[TEE_K] TLS 1.2 ChaCha20 nonce construction: iv=%x XOR seq=%d = nonce=%x\n",
+			// 	serverAppIV, actualSeqToUse, nonce)
 
 			// Use consolidated minitls function for ChaCha20-Poly1305 tag secrets
 			splitAEAD := minitls.NewSplitAEAD(serverAppKey, serverAppIV, cipherSuite)
@@ -1722,7 +1722,7 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 			serverAppKey = tls12AEAD.GetReadKey()
 			serverAppIV = tls12AEAD.GetReadIV()
 
-			fmt.Printf("[TEE_K] Session %s: Using TLS 1.2 server keys for redacted decryption stream\n", sessionID)
+			// fmt.Printf("[TEE_K] Session %s: Using TLS 1.2 server keys for redacted decryption stream\n", sessionID)
 		} else { // TLS 1.3
 			keySchedule := tlsClient.GetKeySchedule()
 			if keySchedule == nil {
@@ -1732,7 +1732,7 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 			serverAppKey = keySchedule.GetServerApplicationKey()
 			serverAppIV = keySchedule.GetServerApplicationIV()
 
-			fmt.Printf("[TEE_K] Session %s: Using TLS 1.3 server keys for redacted decryption stream\n", sessionID)
+			// fmt.Printf("[TEE_K] Session %s: Using TLS 1.3 server keys for redacted decryption stream\n", sessionID)
 		}
 
 		if serverAppKey == nil || serverAppIV == nil {
@@ -1754,10 +1754,10 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		var serverSeqNum uint64
 		if tlsVersion == 0x0303 { // TLS 1.2
 			serverSeqNum = seqNum // Server sequence matches client sequence
-			fmt.Printf("[TEE_K] TLS 1.2 redacted decryption: Using server sequence %d (same as client)\n", serverSeqNum)
+			// fmt.Printf("[TEE_K] TLS 1.2 redacted decryption: Using server sequence %d (same as client)\n", serverSeqNum)
 		} else { // TLS 1.3
 			serverSeqNum = seqNum - 1
-			fmt.Printf("[TEE_K] TLS 1.3 redacted decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
+			// fmt.Printf("[TEE_K] TLS 1.3 redacted decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
 		}
 		originalStream, err := minitls.GenerateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, length, cipherSuite, explicitIV)
 		if err != nil {
@@ -1776,8 +1776,8 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 				redactedStream[operation.Start+i] = operation.Bytes[i]
 			}
 
-			log.Printf("[TEE_K] Session %s: Applied pre-computed redaction to seq %d at offset %d-%d",
-				sessionID, seqNum, operation.Start, operation.End-1)
+			// log.Printf("[TEE_K] Session %s: Applied pre-computed redaction to seq %d at offset %d-%d",
+			// 	sessionID, seqNum, operation.Start, operation.End-1)
 		}
 
 		// Store redacted stream in session for master signature generation
@@ -1790,8 +1790,8 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		session.RedactedStreams = append(session.RedactedStreams, streamData)
 		session.StreamsMutex.Unlock()
 
-		log.Printf("[TEE_K] Session %s: Generated redacted decryption stream for seq %d (%d bytes, %d operations)",
-			sessionID, seqNum, len(redactedStream), len(operations))
+		// log.Printf("[TEE_K] Session %s: Generated redacted decryption stream for seq %d (%d bytes, %d operations)",
+		// 	sessionID, seqNum, len(redactedStream), len(operations))
 	}
 
 	// Instead of immediately sending signature, mark redaction processing as complete
@@ -2385,24 +2385,21 @@ func (t *TEEK) generateSingleDecryptionStreamWithSession(sessionID string, respo
 
 	// Get stored explicit IV for TLS 1.2 AES-GCM
 	var explicitIV []byte
-	if sessionID != "" {
-		// Use session state
-		responseState, err := t.getSessionResponseState(sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get session response state: %v", err)
-		}
-		explicitIV = responseState.ExplicitIVBySeq[seqNum]
+	responseState, err := t.getSessionResponseState(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session response state: %v", err)
 	}
+	explicitIV = responseState.ExplicitIVBySeq[seqNum]
 
 	// Generate cipher-agnostic decryption stream
 	// Use same sequence logic as tag generation for consistency
 	var serverSeqNum uint64
 	if tlsVersion == 0x0303 { // TLS 1.2
 		serverSeqNum = seqNum // Server sequence matches client sequence
-		fmt.Printf("[TEE_K] TLS 1.2 batched decryption: Using server sequence %d (same as client)\n", serverSeqNum)
+		// fmt.Printf("[TEE_K] TLS 1.2 batched decryption: Using server sequence %d (same as client)\n", serverSeqNum)
 	} else { // TLS 1.3
 		serverSeqNum = seqNum - 1
-		fmt.Printf("[TEE_K] TLS 1.3 batched decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
+		// fmt.Printf("[TEE_K] TLS 1.3 batched decryption: Using server sequence %d (client - 1)\n", serverSeqNum)
 	}
 
 	decryptionStream, err := minitls.GenerateDecryptionStream(serverAppKey, serverAppIV, serverSeqNum, streamLength, cipherSuite, explicitIV)
@@ -2410,6 +2407,6 @@ func (t *TEEK) generateSingleDecryptionStreamWithSession(sessionID string, respo
 		return nil, fmt.Errorf("failed to generate decryption stream: %v", err)
 	}
 
-	fmt.Printf("[TEE_K] Generated batched decryption stream (seq=%d, %d bytes)\n", seqNum, len(decryptionStream))
+	// fmt.Printf("[TEE_K] Generated batched decryption stream (seq=%d, %d bytes)\n", seqNum, len(decryptionStream))
 	return decryptionStream, nil
 }
