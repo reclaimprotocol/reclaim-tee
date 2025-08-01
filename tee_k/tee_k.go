@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/aes"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -1527,6 +1528,20 @@ func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message)
 		return
 	}
 
+	// Store response redaction ranges in session state for transcript signature
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		log.Printf("[TEE_K] Session %s: Failed to get session for storing redaction ranges: %v", sessionID, err)
+		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to store redaction ranges: %v", err))
+		return
+	}
+
+	if session.ResponseState == nil {
+		session.ResponseState = &shared.ResponseSessionState{}
+	}
+	session.ResponseState.ResponseRedactionRanges = redactionSpec.Ranges
+	log.Printf("[TEE_K] Session %s: Stored %d response redaction ranges for transcript signature", sessionID, len(redactionSpec.Ranges))
+
 	// Generate and send redacted decryption streams
 	if err := t.generateAndSendRedactedDecryptionStreamResponse(sessionID, redactionSpec); err != nil {
 		log.Printf("[TEE_K] Session %s: Failed to generate redacted streams: %v", sessionID, err)
@@ -1552,12 +1567,6 @@ func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message)
 func (t *TEEK) validateResponseRedactionSpec(spec shared.ResponseRedactionSpec) error {
 	// Validate ranges don't overlap and are within bounds
 	for i, range1 := range spec.Ranges {
-		// Check if range has redaction bytes
-		if len(range1.RedactionBytes) != range1.Length {
-			return fmt.Errorf("range %d: redaction bytes length (%d) doesn't match range length (%d)",
-				i, len(range1.RedactionBytes), range1.Length)
-		}
-
 		// Check for overlaps with other ranges
 		for j := i + 1; j < len(spec.Ranges); j++ {
 			range2 := spec.Ranges[j]
@@ -1651,9 +1660,6 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 				overlapLength := overlapEnd - overlapStart
 
 				if overlapLength > 0 {
-					// Calculate offset within the redaction range
-					redactionOffset := max(0, seqStart-rangeStart)
-
 					// Create redaction operation for this sequence
 					operation := RedactionOperation{
 						SeqNum: seqNum,
@@ -1662,11 +1668,10 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 						Bytes:  make([]byte, overlapLength),
 					}
 
-					// Copy redaction bytes for this overlap
-					for i := 0; i < overlapLength; i++ {
-						if redactionOffset+i < len(redactionRange.RedactionBytes) {
-							operation.Bytes[i] = redactionRange.RedactionBytes[redactionOffset+i]
-						}
+					// Generate cryptographically secure random bytes for redaction
+					_, err := rand.Read(operation.Bytes)
+					if err != nil {
+						return fmt.Errorf("failed to generate random redaction bytes: %v", err)
 					}
 
 					seqToOperations[seqNum] = append(seqToOperations[seqNum], operation)
@@ -1924,6 +1929,16 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		}
 	}
 
+	// Add response redaction ranges to signature
+	if session.ResponseState != nil && len(session.ResponseState.ResponseRedactionRanges) > 0 {
+		responseRedactionRangesBytes, err := json.Marshal(session.ResponseState.ResponseRedactionRanges)
+		if err != nil {
+			return fmt.Errorf("failed to marshal response redaction ranges for signature: %v", err)
+		}
+		masterBuffer.Write(responseRedactionRangesBytes)
+		log.Printf("[TEE_K] Session %s: Included %d response redaction ranges in signature", sessionID, len(session.ResponseState.ResponseRedactionRanges))
+	}
+
 	// Add redacted streams
 	for _, stream := range session.RedactedStreams {
 		masterBuffer.Write(stream.RedactedStream)
@@ -1951,6 +1966,12 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		RequestMetadata: requestMetadata,
 		Signature:       comprehensiveSignature,
 		PublicKey:       publicKeyDER,
+	}
+
+	// Add response redaction ranges to transcript if available
+	if session.ResponseState != nil && len(session.ResponseState.ResponseRedactionRanges) > 0 {
+		signedTranscript.ResponseRedactionRanges = session.ResponseState.ResponseRedactionRanges
+		log.Printf("[TEE_K] Session %s: Added %d response redaction ranges to transcript", sessionID, len(session.ResponseState.ResponseRedactionRanges))
 	}
 
 	log.Printf("[TEE_K] Session %s: Generated comprehensive signature over %d TLS packets, %d redacted streams, metadata present: %v",

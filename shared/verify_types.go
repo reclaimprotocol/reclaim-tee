@@ -20,6 +20,9 @@ type TEEKTranscript struct {
 	// Request metadata (redacted request, commitment, redaction ranges)
 	RequestMetadata *RequestMetadata `json:"request_metadata,omitempty"`
 
+	// Response redaction ranges for verifier display
+	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`
+
 	// Signed decryption keystreams produced by TEE_K, one per ApplicationData record
 	RedactedStreams []SignedRedactedDecryptionStream `json:"redacted_streams,omitempty"`
 

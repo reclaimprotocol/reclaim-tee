@@ -246,6 +246,9 @@ type ResponseSessionState struct {
 	ResponseLengthBySeqInt map[uint64]int // Keep both for compatibility
 	ExplicitIVBySeq        map[uint64][]byte
 	TEETConnForPending     interface{} // *websocket.Conn (using interface{} to avoid import cycle)
+
+	// Response redaction ranges for transcript signature
+	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`
 }
 
 // Protocol data structures
@@ -260,9 +263,8 @@ type RequestRedactionRange struct {
 
 // ResponseRedactionRange is used for response redaction (no types needed - binary redaction)
 type ResponseRedactionRange struct {
-	Start          int    `json:"start"`                     // Start position in the decryption stream
-	Length         int    `json:"length"`                    // Length of the range to redact
-	RedactionBytes []byte `json:"redaction_bytes,omitempty"` // Bytes to use in redacted stream (calculated to produce '*' when XORed with ciphertext)
+	Start  int `json:"start"`  // Start position in the decryption stream
+	Length int `json:"length"` // Length of the range to redact
 }
 
 // Client to TEE_K: Request to establish connection
@@ -438,6 +440,9 @@ type SignedTranscript struct {
 
 	// Request metadata (formerly included in packets for TEE_K)
 	RequestMetadata *RequestMetadata `json:"request_metadata,omitempty"`
+
+	// Response redaction ranges for verifier display
+	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`
 
 	Signature []byte `json:"signature"`  // Comprehensive signature over all data (TLS packets + metadata + streams)
 	PublicKey []byte `json:"public_key"` // Public key in DER format (binary data)

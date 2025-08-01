@@ -41,11 +41,12 @@ func (c *Client) BuildVerificationBundle(path string) error {
 		signature := c.teekSignedTranscript.Signature
 
 		bundle.Transcripts.TEEK = &shared.TEEKTranscript{
-			Packets:         c.teekSignedTranscript.Packets,
-			RequestMetadata: c.teekSignedTranscript.RequestMetadata,
-			RedactedStreams: orderedStreams,
-			Signature:       signature,
-			PublicKey:       c.teekSignedTranscript.PublicKey,
+			Packets:                 c.teekSignedTranscript.Packets,
+			RequestMetadata:         c.teekSignedTranscript.RequestMetadata,
+			ResponseRedactionRanges: c.teekSignedTranscript.ResponseRedactionRanges,
+			RedactedStreams:         orderedStreams,
+			Signature:               signature,
+			PublicKey:               c.teekSignedTranscript.PublicKey,
 		}
 	}
 

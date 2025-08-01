@@ -156,6 +156,15 @@ func VerifyComprehensiveSignature(transcript *SignedTranscript, redactedStreams 
 		}
 	}
 
+	// Add response redaction ranges to signature verification (same as signing)
+	if len(transcript.ResponseRedactionRanges) > 0 {
+		responseRedactionRangesBytes, err := json.Marshal(transcript.ResponseRedactionRanges)
+		if err != nil {
+			return fmt.Errorf("failed to marshal response redaction ranges for verification: %v", err)
+		}
+		buffer.Write(responseRedactionRangesBytes)
+	}
+
 	// Add concatenated redacted streams
 	for _, stream := range redactedStreams {
 		buffer.Write(stream.RedactedStream)

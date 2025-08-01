@@ -51,6 +51,30 @@ func collapseAsterisks(data string) string {
 	return result.String()
 }
 
+// replaceRandomGarbageWithAsterisks replaces random garbage in redacted plaintext with asterisks
+func replaceRandomGarbageWithAsterisks(content []byte, ranges []shared.ResponseRedactionRange) []byte {
+	result := make([]byte, len(content))
+	copy(result, content)
+
+	// Apply each redaction range to replace random garbage with asterisks
+	for _, r := range ranges {
+		rangeStart := r.Start
+		rangeEnd := r.Start + r.Length
+
+		// Check bounds
+		if rangeStart < 0 || rangeEnd > len(content) {
+			continue // Skip invalid ranges
+		}
+
+		// Replace random garbage with asterisks
+		for i := rangeStart; i < rangeEnd; i++ {
+			result[i] = '*'
+		}
+	}
+
+	return result
+}
+
 // Validate loads the verification bundle from the given file path and performs
 // a minimal set of checks (transcript signature verification, redacted stream
 // XOR match against redacted response). It returns an error if any check fails.
@@ -161,6 +185,12 @@ func Validate(bundlePath string) error {
 			cipherIdx++
 		}
 
+		// Replace random garbage with asterisks using response redaction ranges
+		if bundle.Transcripts.TEEK.ResponseRedactionRanges != nil && len(bundle.Transcripts.TEEK.ResponseRedactionRanges) > 0 {
+			reconstructed = replaceRandomGarbageWithAsterisks(reconstructed, bundle.Transcripts.TEEK.ResponseRedactionRanges)
+			fmt.Printf("[Verifier] Applied %d response redaction ranges to replace random garbage with asterisks\n", len(bundle.Transcripts.TEEK.ResponseRedactionRanges))
+		}
+
 		fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + collapseAsterisks(string(reconstructed)) + "\n---")
 		fmt.Println("[Verifier] Redacted streams applied successfully ✅")
 	} else {
@@ -209,6 +239,15 @@ func verifyTEEKTranscript(transcript *shared.TEEKTranscript) error {
 			}
 			buffer.Write(redactionRangesBytes)
 		}
+	}
+
+	// Add response redaction ranges to signature verification (same as signing)
+	if len(transcript.ResponseRedactionRanges) > 0 {
+		responseRedactionRangesBytes, err := json.Marshal(transcript.ResponseRedactionRanges)
+		if err != nil {
+			return fmt.Errorf("failed to marshal response redaction ranges for verification: %v", err)
+		}
+		buffer.Write(responseRedactionRangesBytes)
 	}
 
 	// Add concatenated redacted streams

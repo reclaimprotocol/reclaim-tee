@@ -83,35 +83,12 @@ func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 			if len(actualContent) >= 4 && actualContent[0] == 0x04 { // NewSessionTicket
 				log.Printf("[Client] Redacting NewSessionTicket at offset %d-%d", totalOffset, totalOffset+len(actualContent)-1)
 
-				// Find where actualContent starts within the original ciphertext
-				// For TLS 1.3, actualContent is at the beginning of the decrypted payload
-				// For TLS 1.2, we need to account for explicit IV and other headers
-				ciphertextOffset := 0
-				if c.handshakeDisclosure != nil && shared.IsTLS12AESGCMCipherSuite(c.handshakeDisclosure.CipherSuite) {
-					ciphertextOffset = 8 // Skip explicit IV for TLS 1.2 AES-GCM
-				}
-
-				// Calculate redaction bytes using correct offset within ciphertext
-				redactionBytes := c.calculateRedactionBytes(ciphertext, ciphertextOffset, len(actualContent), seqNum)
-
-				// Cover full TLS record including padding
-				// Extend redaction bytes to cover the full record
-				fullRedactionBytes := make([]byte, len(content))
-				copy(fullRedactionBytes, redactionBytes)
-				// Fill padding byte with asterisk redaction
-				for i := len(redactionBytes); i < len(content); i++ {
-					if i < len(ciphertext) {
-						fullRedactionBytes[i] = ciphertext[i] ^ byte('*')
-					}
-				}
-
 				redactionRanges = append(redactionRanges, shared.ResponseRedactionRange{
-					Start:          totalOffset,
-					Length:         len(content), // Cover full record including padding
-					RedactionBytes: fullRedactionBytes,
+					Start:  totalOffset,
+					Length: len(content), // Cover full record including padding
 				})
 
-				log.Printf("[Client] Session ticket redaction: ciphertext offset=%d, length=%d", ciphertextOffset, len(actualContent))
+				log.Printf("[Client] Session ticket redaction: length=%d", len(actualContent))
 			}
 
 		case 0x17: // ApplicationData - HTTP response
@@ -238,25 +215,9 @@ func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 					}
 				}
 
-				// Calculate redaction bytes for this specific TLS record portion
-				baseRedactionBytes := c.calculateRedactionBytes(m.mapping.ciphertext, m.localStart, m.overlapLength, m.mapping.seqNum)
-
-				// If we extended for gap filling, add gap redaction byte
-				redactionBytes := baseRedactionBytes
-				if overlapLength > m.overlapLength {
-					// The gap byte is the padding at the end of the current record
-					ciphertext := m.mapping.ciphertext
-					if len(ciphertext) > m.localStart+m.overlapLength {
-						gapCipherByte := ciphertext[m.localStart+m.overlapLength] // Gap byte at end of content
-						gapByte := gapCipherByte ^ byte('*')                      // Should produce asterisk
-						redactionBytes = append(redactionBytes, gapByte)
-					}
-				}
-
 				redactionRanges = append(redactionRanges, shared.ResponseRedactionRange{
-					Start:          m.actualTLSOffset,
-					Length:         overlapLength,
-					RedactionBytes: redactionBytes,
+					Start:  m.actualTLSOffset,
+					Length: overlapLength,
 				})
 			}
 		}
@@ -302,23 +263,6 @@ func (c *Client) applyRedactionRangesToContent(content []byte, baseOffset int, r
 	}
 
 	return result
-}
-
-// calculateRedactionBytes calculates what should replace parts of decryption stream to produce '*' when XORed with ciphertext
-func (c *Client) calculateRedactionBytes(ciphertext []byte, startOffset, length int, seqNum uint64) []byte {
-	redactionBytes := make([]byte, length)
-	asterisk := byte('*') // 0x2A
-
-	for i := 0; i < length; i++ {
-		pos := startOffset + i
-		if pos < len(ciphertext) {
-			// redaction_byte = ciphertext_byte XOR '*'
-			// This ensures: ciphertext_byte XOR redaction_byte = '*'
-			redactionBytes[i] = ciphertext[pos] ^ asterisk
-		}
-	}
-
-	return redactionBytes
 }
 
 // sendRedactionSpec sends redaction specification to TEE_K
@@ -404,6 +348,81 @@ func (c *Client) displayRedactedResponseFromRanges(ranges []shared.ResponseRedac
 	log.Printf("[Client] Displayed redacted response from ranges (%d bytes)", len(redactedResponse))
 }
 
+// displayRedactedResponseFromRandomGarbage displays the redacted response by replacing random garbage with asterisks
+func (c *Client) displayRedactedResponseFromRandomGarbage(ranges []shared.ResponseRedactionRange) {
+	c.responseContentMutex.Lock()
+	defer c.responseContentMutex.Unlock()
+
+	// Guard against multiple displays
+	if c.fullRedactedResponse != nil {
+		log.Printf("[Client] Redacted response already displayed, skipping...")
+		return
+	}
+
+	// Build the complete response in sequence order
+	keys := make([]int, 0, len(c.redactedPlaintextBySeq))
+	for k := range c.redactedPlaintextBySeq {
+		keys = append(keys, int(k))
+	}
+	sort.Ints(keys)
+
+	var fullResponse strings.Builder
+	totalOffset := 0
+
+	for _, k := range keys {
+		seqNum := uint64(k)
+		redactedPlaintext := c.redactedPlaintextBySeq[seqNum]
+
+		// Replace random garbage with asterisks in the redacted plaintext
+		redactedContent := c.replaceRandomGarbageWithAsterisks(redactedPlaintext, totalOffset, ranges)
+
+		// Remove TLS padding and get actual HTTP content
+		actualRedactedContent, _ := c.removeTLSPadding(redactedContent)
+		fullResponse.Write(actualRedactedContent)
+
+		// Use same offset calculation as range generation
+		totalOffset += len(redactedPlaintext) // Full content including TLS padding
+	}
+
+	redactedResponse := fullResponse.String()
+	c.fullRedactedResponse = []byte(redactedResponse)
+
+	// Display the redacted response immediately with collapsed asterisks
+	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE (FROM RANDOM GARBAGE) ---\n%s\n--- END REDACTED RESPONSE ---\n\n",
+		collapseAsterisks(string(c.fullRedactedResponse)))
+
+	log.Printf("[Client] Displayed redacted response from random garbage (%d bytes)", len(redactedResponse))
+}
+
+// replaceRandomGarbageWithAsterisks replaces random garbage in redacted plaintext with asterisks
+func (c *Client) replaceRandomGarbageWithAsterisks(content []byte, baseOffset int, ranges []shared.ResponseRedactionRange) []byte {
+	result := make([]byte, len(content))
+	copy(result, content)
+
+	// Apply each redaction range that overlaps with this content
+	for _, r := range ranges {
+		rangeStart := r.Start
+		rangeEnd := r.Start + r.Length
+		contentStart := baseOffset
+		contentEnd := baseOffset + len(content)
+
+		// Check for overlap
+		overlapStart := max(rangeStart, contentStart)
+		overlapEnd := min(rangeEnd, contentEnd)
+
+		if overlapStart < overlapEnd {
+			// Replace random garbage with asterisks
+			localStart := overlapStart - contentStart
+			localEnd := overlapEnd - contentStart
+			for i := localStart; i < localEnd; i++ {
+				result[i] = '*'
+			}
+		}
+	}
+
+	return result
+}
+
 // handleBatchedSignedRedactedDecryptionStreams handles batched signed redacted decryption streams
 // while preserving exact same state machine behavior as individual messages
 func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Message) {
@@ -478,7 +497,7 @@ func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Messag
 
 				log.Printf("[Client] All redacted streams received - displaying final redacted response")
 				redactionSpec := c.analyzeResponseRedaction()
-				c.displayRedactedResponseFromRanges(redactionSpec.Ranges)
+				c.displayRedactedResponseFromRandomGarbage(redactionSpec.Ranges)
 
 				// Check if we can now proceed with full protocol completion
 				transcriptsComplete := c.transcriptsReceived >= 2
