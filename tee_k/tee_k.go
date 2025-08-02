@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"tee-mpc/minitls"
@@ -36,11 +37,79 @@ type RedactionOperation struct {
 	Bytes  []byte // Redaction bytes to apply
 }
 
+// TEEKSessionState holds TEE_K specific session state
+type TEEKSessionState struct {
+	// TLS handshake data
+	HandshakeComplete bool
+	ClientHello       []byte
+	ServerHello       []byte
+	MasterSecret      []byte
+	KeyBlock          []byte
+	KeyShare          []byte
+	CipherSuite       uint16
+
+	// TLS client and connection state
+	TLSClient         *minitls.Client
+	WSConn2TLS        *WebSocketConn
+	CurrentConn       *websocket.Conn
+	CurrentRequest    *shared.RequestConnectionData
+	TCPReady          chan bool
+	CombinedKey       []byte
+	ServerSequenceNum uint64
+}
+
+// TEEKSessionManager extends shared session manager with TEE_K specific state
+type TEEKSessionManager struct {
+	*shared.SessionManager
+	teekStates map[string]*TEEKSessionState
+	stateMutex sync.Mutex
+}
+
+// NewTEEKSessionManager creates a new TEE_K session manager
+func NewTEEKSessionManager() *TEEKSessionManager {
+	return &TEEKSessionManager{
+		SessionManager: shared.NewSessionManager(),
+		teekStates:     make(map[string]*TEEKSessionState),
+	}
+}
+
+// GetTEEKSessionState gets TEE_K specific state for a session
+func (t *TEEKSessionManager) GetTEEKSessionState(sessionID string) (*TEEKSessionState, error) {
+	t.stateMutex.Lock()
+	defer t.stateMutex.Unlock()
+
+	state, exists := t.teekStates[sessionID]
+	if !exists {
+		return nil, fmt.Errorf("TEE_K session state not found for session %s", sessionID)
+	}
+	return state, nil
+}
+
+// SetTEEKSessionState sets TEE_K specific state for a session
+func (t *TEEKSessionManager) SetTEEKSessionState(sessionID string, state *TEEKSessionState) {
+	t.stateMutex.Lock()
+	defer t.stateMutex.Unlock()
+	t.teekStates[sessionID] = state
+}
+
+// RemoveTEEKSessionState removes TEE_K specific state for a session
+func (t *TEEKSessionManager) RemoveTEEKSessionState(sessionID string) {
+	t.stateMutex.Lock()
+	defer t.stateMutex.Unlock()
+	delete(t.teekStates, sessionID)
+}
+
+// Override CloseSession to also clean up TEE_K state
+func (t *TEEKSessionManager) CloseSession(sessionID string) error {
+	t.RemoveTEEKSessionState(sessionID)
+	return t.SessionManager.CloseSession(sessionID)
+}
+
 type TEEK struct {
 	port int
 
 	// Session management
-	sessionManager    shared.SessionManagerInterface
+	sessionManager    *TEEKSessionManager
 	sessionTerminator *shared.SessionTerminator
 
 	// TEE_T connection settings
@@ -92,7 +161,7 @@ func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 
 	return &TEEK{
 		port:              port,
-		sessionManager:    shared.NewSessionManager(),
+		sessionManager:    NewTEEKSessionManager(),
 		sessionTerminator: shared.NewSessionTerminator(shared.GetTEEKLogger()),
 		teetURL:           "ws://localhost:8081/teek", // Default TEE_T URL
 		signingKeyPair:    signingKeyPair,
@@ -403,17 +472,8 @@ func (t *TEEK) cleanupSession(sessionID string) {
 // Session-aware handler methods
 
 // Helper functions to access session state
-func (t *TEEK) getSessionTLSState(sessionID string) (*shared.TLSSessionState, error) {
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		return nil, err
-	}
-	if session.TLSState == nil {
-		session.TLSState = &shared.TLSSessionState{
-			TCPReady: make(chan bool, 1),
-		}
-	}
-	return session.TLSState, nil
+func (t *TEEK) getSessionTLSState(sessionID string) (*TEEKSessionState, error) {
+	return t.sessionManager.GetTEEKSessionState(sessionID)
 }
 
 func (t *TEEK) getSessionResponseState(sessionID string) (*shared.ResponseSessionState, error) {
@@ -498,6 +558,13 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 		return
 	}
 
+	// Initialize TEE_K session state first
+	initialState := &TEEKSessionState{
+		HandshakeComplete: false,
+		TCPReady:          make(chan bool, 1),
+	}
+	t.sessionManager.SetTEEKSessionState(sessionID, initialState)
+
 	// Create session-specific TLS client
 	wsConn := session.ClientConn.(*shared.WSConnection)
 	tlsConn := &WebSocketConn{
@@ -576,11 +643,8 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 		return
 	}
 
-	// Store TLS state in session
-	if session.TLSState == nil {
-		session.TLSState = &shared.TLSSessionState{}
-	}
-	session.TLSState.HandshakeComplete = true
+	// Update TEE_K session state to mark handshake complete
+	tlsState.HandshakeComplete = true
 
 	// Get crypto material for certificate verification
 	hsKey := tlsClient.GetHandshakeKey()
@@ -635,9 +699,9 @@ func (t *TEEK) handleTCPDataSession(sessionID string, msg *shared.Message) {
 		return
 	}
 
-	if wsConn2TLS, ok := tlsState.WSConn2TLS.(*WebSocketConn); ok && wsConn2TLS != nil {
+	if tlsState.WSConn2TLS != nil {
 		// Forward data to TLS client for processing
-		wsConn2TLS.pendingData <- tcpData.Data
+		tlsState.WSConn2TLS.pendingData <- tcpData.Data
 	} else {
 		log.Printf("[TEE_K] Session %s: No WebSocket-to-TLS adapter available", sessionID)
 		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("no WebSocket-to-TLS adapter available"), "No WebSocket-to-TLS adapter available")
@@ -695,8 +759,8 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		return
 	}
 
-	tlsClient, ok := tlsState.TLSClient.(*minitls.Client)
-	if tlsClient == nil || !ok {
+	tlsClient := tlsState.TLSClient
+	if tlsClient == nil {
 		log.Printf("[TEE_K] Session %s: No TLS client available for encryption", sessionID)
 		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("no tls client available for encryption"), "no tls client available for encryption")
 		return
@@ -1160,9 +1224,7 @@ func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseL
 		if err != nil {
 			return nil, fmt.Errorf("failed to get TLS state: %v", err)
 		}
-		if tlsClientInterface, ok := tlsState.TLSClient.(*minitls.Client); ok {
-			tlsClient = tlsClientInterface
-		}
+		tlsClient = tlsState.TLSClient
 	}
 
 	if tlsClient == nil {
@@ -2209,9 +2271,7 @@ func (t *TEEK) generateSingleDecryptionStreamWithSession(sessionID string, respo
 		if err != nil {
 			return nil, fmt.Errorf("failed to get TLS state: %v", err)
 		}
-		if tlsClientInterface, ok := tlsState.TLSClient.(*minitls.Client); ok {
-			tlsClient = tlsClientInterface
-		}
+		tlsClient = tlsState.TLSClient
 	}
 
 	if tlsClient == nil {

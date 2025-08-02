@@ -57,14 +57,11 @@ func (sm *SessionManager) CreateSession(clientConn Connection) (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	session := &Session{
-		ID:           sessionID.String(),
-		ClientConn:   clientConn,
-		CreatedAt:    time.Now(),
-		LastActiveAt: time.Now(),
-		State:        SessionStateNew,
-		TLSState: &TLSSessionState{
-			TCPReady: make(chan bool, 1),
-		},
+		ID:             sessionID.String(),
+		ClientConn:     clientConn,
+		CreatedAt:      time.Now(),
+		LastActiveAt:   time.Now(),
+		State:          SessionStateNew,
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),
@@ -95,12 +92,9 @@ func (sm *SessionManager) RegisterSession(sessionID string) error {
 
 	// Create placeholder session
 	session := &Session{
-		ID:        sessionID,
-		CreatedAt: time.Now(),
-		State:     SessionStateNew,
-		TLSState: &TLSSessionState{
-			TCPReady: make(chan bool, 1),
-		},
+		ID:             sessionID,
+		CreatedAt:      time.Now(),
+		State:          SessionStateNew,
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),

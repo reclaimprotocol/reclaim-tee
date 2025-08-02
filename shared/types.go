@@ -164,7 +164,6 @@ type Session struct {
 	State        SessionState
 
 	// Protocol state per session
-	TLSState       *TLSSessionState
 	RedactionState *RedactionSessionState
 	ResponseState  *ResponseSessionState
 	ConnectionData interface{} // Store connection request data
@@ -191,29 +190,6 @@ type Session struct {
 	IsClosed bool
 	Context  context.Context
 	Cancel   context.CancelFunc
-
-	// Additional connection state migrated from TEE_T global state
-	TEETClientConn interface{} // *websocket.Conn (using interface{} to avoid import cycle)
-}
-
-// TLSSessionState holds TLS-specific state for each session
-type TLSSessionState struct {
-	HandshakeComplete bool
-	ClientHello       []byte
-	ServerHello       []byte
-	MasterSecret      []byte
-	KeyBlock          []byte
-	KeyShare          []byte
-	CipherSuite       uint16
-
-	// TLS client and connection state
-	TLSClient         interface{} // *minitls.Client (using interface{} to avoid import cycle)
-	WSConn2TLS        interface{} // *WebSocketConn (using interface{} to avoid import cycle)
-	CurrentConn       interface{} // *websocket.Conn (using interface{} to avoid import cycle)
-	CurrentRequest    *RequestConnectionData
-	TCPReady          chan bool
-	CombinedKey       []byte
-	ServerSequenceNum uint64
 }
 
 // RedactionSessionState holds redaction-specific state for each session
@@ -225,21 +201,14 @@ type RedactionSessionState struct {
 	EncryptedResponseData []EncryptedResponseData
 	RedactionStreams      [][]byte
 	CommitmentKeys        [][]byte
-
-	// Additional redaction state migrated from TEE_T global state
-	KeyShare                []byte
-	CipherSuite             uint16
-	PendingEncryptedRequest *EncryptedRequestData
-	TEETConnForPending      interface{} // *websocket.Conn (using interface{} to avoid import cycle)
 }
 
 // ResponseSessionState holds response handling state for each session
 type ResponseSessionState struct {
-	PendingResponses        map[string][]byte
-	ResponseSequence        int
-	LastResponseTime        time.Time
-	ResponseLengthBySeq     map[uint64]uint32
-	PendingEncryptedRequest *EncryptedRequestData
+	PendingResponses    map[string][]byte
+	ResponseSequence    int
+	LastResponseTime    time.Time
+	ResponseLengthBySeq map[uint64]uint32
 
 	// Per-session pending encrypted responses
 	PendingEncryptedResponses map[uint64]*EncryptedResponseData // Responses awaiting tag secrets by seq num
@@ -248,7 +217,6 @@ type ResponseSessionState struct {
 	// Additional response state migrated from global state
 	ResponseLengthBySeqInt map[uint64]int // Keep both for compatibility
 	ExplicitIVBySeq        map[uint64][]byte
-	TEETConnForPending     interface{} // *websocket.Conn (using interface{} to avoid import cycle)
 
 	// Response redaction ranges for transcript signature
 	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`

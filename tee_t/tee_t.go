@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"tee-mpc/minitls"
 	"tee-mpc/shared"
@@ -24,12 +25,73 @@ var teetUpgrader = websocket.Upgrader{
 	},
 }
 
+// TEETSessionState holds TEE_T specific session state
+type TEETSessionState struct {
+	// TEE_T specific connection state
+	TEETClientConn *websocket.Conn
+
+	// TEE_T specific redaction state
+	KeyShare    []byte
+	CipherSuite uint16
+
+	// TEE_T specific pending request state
+	PendingEncryptedRequest *shared.EncryptedRequestData
+	TEETConnForPending      *websocket.Conn
+}
+
+// TEETSessionManager extends shared session manager with TEE_T specific state
+type TEETSessionManager struct {
+	*shared.SessionManager
+	teetStates map[string]*TEETSessionState
+	stateMutex sync.Mutex
+}
+
+// NewTEETSessionManager creates a new TEE_T session manager
+func NewTEETSessionManager() *TEETSessionManager {
+	return &TEETSessionManager{
+		SessionManager: shared.NewSessionManager(),
+		teetStates:     make(map[string]*TEETSessionState),
+	}
+}
+
+// GetTEETSessionState gets TEE_T specific state for a session
+func (t *TEETSessionManager) GetTEETSessionState(sessionID string) (*TEETSessionState, error) {
+	t.stateMutex.Lock()
+	defer t.stateMutex.Unlock()
+
+	state, exists := t.teetStates[sessionID]
+	if !exists {
+		return nil, fmt.Errorf("TEE_T session state not found for session %s", sessionID)
+	}
+	return state, nil
+}
+
+// SetTEETSessionState sets TEE_T specific state for a session
+func (t *TEETSessionManager) SetTEETSessionState(sessionID string, state *TEETSessionState) {
+	t.stateMutex.Lock()
+	defer t.stateMutex.Unlock()
+	t.teetStates[sessionID] = state
+}
+
+// RemoveTEETSessionState removes TEE_T specific state for a session
+func (t *TEETSessionManager) RemoveTEETSessionState(sessionID string) {
+	t.stateMutex.Lock()
+	defer t.stateMutex.Unlock()
+	delete(t.teetStates, sessionID)
+}
+
+// Override CloseSession to also clean up TEE_T state
+func (t *TEETSessionManager) CloseSession(sessionID string) error {
+	t.RemoveTEETSessionState(sessionID)
+	return t.SessionManager.CloseSession(sessionID)
+}
+
 // TEET represents the TEE_T (Execution Environment for Transcript generation)
 type TEET struct {
 	port int
 
 	// Session management
-	sessionManager shared.SessionManagerInterface
+	sessionManager *TEETSessionManager
 
 	// Logging and error handling
 	logger            *shared.Logger
@@ -60,7 +122,7 @@ func NewTEETWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 
 	return &TEET{
 		port:              port,
-		sessionManager:    shared.NewSessionManager(),
+		sessionManager:    NewTEETSessionManager(),
 		logger:            shared.GetTEETLogger(),
 		sessionTerminator: shared.NewSessionTerminator(shared.GetTEETLogger()),
 		signingKeyPair:    signingKeyPair,
@@ -92,7 +154,7 @@ func NewTEETWithEnclaveManagerAndLogger(port int, enclaveManager *shared.Enclave
 
 	return &TEET{
 		port:              port,
-		sessionManager:    shared.NewSessionManager(),
+		sessionManager:    NewTEETSessionManager(),
 		logger:            logger,
 		sessionTerminator: sessionTerminator,
 		signingKeyPair:    signingKeyPair,
@@ -101,11 +163,11 @@ func NewTEETWithEnclaveManagerAndLogger(port int, enclaveManager *shared.Enclave
 }
 
 // NewTEETWithSessionManager creates a TEET with a specific session manager
-func NewTEETWithSessionManager(port int, sessionManager shared.SessionManagerInterface) *TEET {
+func NewTEETWithSessionManager(port int, sessionManager *TEETSessionManager) *TEET {
 	return NewTEETWithSessionManagerAndEnclaveManager(port, sessionManager, nil)
 }
 
-func NewTEETWithSessionManagerAndEnclaveManager(port int, sessionManager shared.SessionManagerInterface, enclaveManager *shared.EnclaveManager) *TEET {
+func NewTEETWithSessionManagerAndEnclaveManager(port int, sessionManager *TEETSessionManager, enclaveManager *shared.EnclaveManager) *TEET {
 	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
@@ -137,6 +199,10 @@ func (t *TEET) getSessionRedactionState(sessionID string) (*shared.RedactionSess
 		session.RedactionState = &shared.RedactionSessionState{}
 	}
 	return session.RedactionState, nil
+}
+
+func (t *TEET) getTEETSessionState(sessionID string) (*TEETSessionState, error) {
+	return t.sessionManager.GetTEETSessionState(sessionID)
 }
 
 // Start method removed - now handled by main.go with proper graceful shutdown
@@ -210,6 +276,12 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 					t.sendErrorToClient(conn, "Failed to activate session")
 					break // Terminate session
 				}
+
+				// Initialize TEE_T session state
+				teetState := &TEETSessionState{
+					TEETClientConn: conn,
+				}
+				t.sessionManager.SetTEETSessionState(sessionID, teetState)
 				t.logger.InfoIf("Activated session for client",
 					zap.String("session_id", sessionID),
 					zap.String("remote_addr", conn.RemoteAddr().String()))
@@ -456,18 +528,18 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 	// Do not verify commitments here as they may not be available yet
 
 	// Process pending encrypted request if available
-	if session.ResponseState != nil && session.ResponseState.PendingEncryptedRequest != nil {
+	teetState, err := t.getTEETSessionState(sessionID)
+	if err == nil && teetState.PendingEncryptedRequest != nil {
 		t.logger.InfoIf("Processing pending encrypted request with newly received streams", zap.String("session_id", sessionID))
-		// Get the stored TEE_K connection from session state
-		if session.ResponseState.TEETConnForPending != nil {
-			if teekConn, ok := session.ResponseState.TEETConnForPending.(*websocket.Conn); ok {
-				t.processEncryptedRequestWithStreamsForSession(sessionID, session.ResponseState.PendingEncryptedRequest, teekConn)
-			}
+
+		// Process pending request if available
+		if teetState.TEETConnForPending != nil {
+			t.processEncryptedRequestWithStreamsForSession(sessionID, teetState.PendingEncryptedRequest, teetState.TEETConnForPending)
 		}
 
 		// Clear pending request
-		session.ResponseState.PendingEncryptedRequest = nil
-		session.ResponseState.TEETConnForPending = nil
+		teetState.PendingEncryptedRequest = nil
+		teetState.TEETConnForPending = nil
 	}
 
 	// Send verification response to client using session routing
@@ -706,16 +778,16 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 		return
 	}
 
-	// Store in session state
-	redactionState, err := t.getSessionRedactionState(sessionID)
+	// Store in TEE_T session state
+	// Get TEE_T session state
+	teetState, err := t.getTEETSessionState(sessionID)
 	if err != nil {
-		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionManagerFailure, err) {
-			return
-		}
+		t.logger.Error("Failed to get TEE_T session state", zap.String("session_id", sessionID), zap.Error(err))
 		return
 	}
-	redactionState.KeyShare = keyShare
-	redactionState.CipherSuite = keyReq.CipherSuite
+
+	teetState.KeyShare = keyShare
+	teetState.CipherSuite = keyReq.CipherSuite
 
 	// Global state removed - using session state only
 
@@ -814,11 +886,17 @@ func (t *TEET) handleEncryptedRequestSession(msg *shared.Message) {
 	// Check if redaction streams are available
 	if len(session.RedactionState.RedactionStreams) == 0 {
 		// No redaction streams available yet - store request and wait
-		session.ResponseState.PendingEncryptedRequest = &encReq
+		teetState, err := t.getTEETSessionState(sessionID)
+		if err != nil {
+			t.logger.Error("Failed to get TEE_T session state", zap.String("session_id", sessionID), zap.Error(err))
+			return
+		}
+
+		teetState.PendingEncryptedRequest = &encReq
 
 		// Store TEE_K connection for pending request in session state
 		wsConn := session.TEEKConn.(*shared.WSConnection)
-		session.ResponseState.TEETConnForPending = wsConn.GetWebSocketConn()
+		teetState.TEETConnForPending = wsConn.GetWebSocketConn()
 		t.logger.InfoIf("Storing encrypted request for session, waiting for redaction streams...",
 			zap.String("session_id", sessionID))
 		return

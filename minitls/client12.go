@@ -121,7 +121,7 @@ func (c *Client) handshakeTLS12(serverName string) error {
 		return fmt.Errorf("ECDH failed: %v", err)
 	}
 
-	fmt.Printf("Shared secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
+	// fmt.Printf("Shared secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
 
 	// Step 7: Calculate session hash for Extended Master Secret BEFORE adding ClientKeyExchange
 	var sessionHash []byte
@@ -140,19 +140,19 @@ func (c *Client) handshakeTLS12(serverName string) error {
 
 	if c.extendedMasterSecret {
 		// RFC 7627: Use Extended Master Secret
-		fmt.Println("Using Extended Master Secret (RFC 7627)")
-		fmt.Printf("DEBUG: Pre-master secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
-		fmt.Printf("DEBUG: Session hash (%d bytes): %x\n", len(sessionHash), sessionHash)
+		// fmt.Println("Using Extended Master Secret (RFC 7627)")
+		// fmt.Printf("DEBUG: Pre-master secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
+		// fmt.Printf("DEBUG: Session hash (%d bytes): %x\n", len(sessionHash), sessionHash)
 		c.tls12KeySchedule.DeriveMasterSecretExtended(sharedSecret, sessionHash)
-		fmt.Printf("DEBUG: Derived master secret (%d bytes): %x\n", len(c.tls12KeySchedule.masterSecret), c.tls12KeySchedule.masterSecret)
+		// fmt.Printf("DEBUG: Derived master secret (%d bytes): %x\n", len(c.tls12KeySchedule.masterSecret), c.tls12KeySchedule.masterSecret)
 	} else {
 		// Standard master secret derivation
-		fmt.Println("Using standard master secret derivation")
-		fmt.Printf("DEBUG: Pre-master secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
-		fmt.Printf("DEBUG: Client random: %x\n", c.clientRandom)
-		fmt.Printf("DEBUG: Server random: %x\n", c.serverRandom)
+		// fmt.Println("Using standard master secret derivation")
+		// fmt.Printf("DEBUG: Pre-master secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
+		// fmt.Printf("DEBUG: Client random: %x\n", c.clientRandom)
+		// fmt.Printf("DEBUG: Server random: %x\n", c.serverRandom)
 		c.tls12KeySchedule.DeriveMasterSecret(sharedSecret)
-		fmt.Printf("DEBUG: Derived master secret (%d bytes): %x\n", len(c.tls12KeySchedule.masterSecret), c.tls12KeySchedule.masterSecret)
+		// fmt.Printf("DEBUG: Derived master secret (%d bytes): %x\n", len(c.tls12KeySchedule.masterSecret), c.tls12KeySchedule.masterSecret)
 	}
 
 	fmt.Println("Master secret derived successfully")
@@ -284,7 +284,7 @@ func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.P
 		return fmt.Errorf("ECDH failed: %v", err)
 	}
 
-	fmt.Printf("Shared secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
+	// fmt.Printf("Shared secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
 
 	// Step 7: Calculate session hash for Extended Master Secret BEFORE adding ClientKeyExchange
 	var sessionHash []byte

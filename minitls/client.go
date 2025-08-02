@@ -582,7 +582,7 @@ func (c *Client) continueTLS13Handshake(serverName string, clientPrivateKey *ecd
 		return fmt.Errorf("ECDH failed: %v", err)
 	}
 
-	fmt.Printf("Shared secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
+	// fmt.Printf("Shared secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
 
 	// Initialize key schedule with shared secret and current transcript
 	c.keySchedule = NewKeySchedule(cipherSuite, sharedSecret, c.transcript)
@@ -818,13 +818,6 @@ func (c *Client) parseKeyShare(data []byte) (*ecdh.PublicKey, error) {
 	}
 
 	return publicKey, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // SendHTTPRequest sends an HTTP request over the established TLS connection
