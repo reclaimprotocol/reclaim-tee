@@ -107,6 +107,7 @@ func isValidCachedCertificate(cert *tls.Certificate) bool {
 
 // NewVSockLegoManager creates a new Lego manager that works with VSock
 func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLegoManager, error) {
+	// Note: This function doesn't have access to a logger, so we'll keep the log.Printf for now
 	log.Printf("[%s] Initializing Lego certificate manager with VSock support", config.ServiceName)
 	log.Printf("[%s] CA Directory: %s", config.ServiceName, config.CADirURL)
 	log.Printf("[%s] Domain: %s", config.ServiceName, config.Domain)

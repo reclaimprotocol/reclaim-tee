@@ -48,7 +48,7 @@ func (c *Client) handleHTTPResponse(msg *shared.Message) {
 
 	if responseData.Success {
 	} else {
-		fmt.Println(" TEE_K reported HTTP request failed")
+		c.logger.Error("TEE_K reported HTTP request failed")
 	}
 }
 

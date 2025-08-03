@@ -21,9 +21,9 @@ func (c *Client) handleRedactionVerification(msg *shared.Message) {
 	}
 
 	if verificationData.Success {
-		fmt.Println(" Redaction verification successful")
+		c.logger.Info("Redaction verification successful")
 	} else {
-		fmt.Println(" Redaction verification failed")
+		c.logger.Error("Redaction verification failed")
 	}
 }
 
