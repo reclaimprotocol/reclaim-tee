@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"hash"
 	"io"
+
+	"go.uber.org/zap"
 )
 
 // TLS 1.2 Client Handshake Implementation
@@ -16,7 +18,7 @@ import (
 
 // handshakeTLS12 performs a complete TLS 1.2 handshake
 func (c *Client) handshakeTLS12(serverName string) error {
-	fmt.Println("=== Starting TLS 1.2 Handshake ===")
+	c.logger.Debug("Starting TLS 1.2 Handshake")
 
 	// Step 1: Send ClientHello (pure TLS 1.2 without keyShares)
 	clientHello, err := c.buildPureTLS12ClientHello(serverName)
@@ -24,7 +26,7 @@ func (c *Client) handshakeTLS12(serverName string) error {
 		return fmt.Errorf("failed to build ClientHello: %v", err)
 	}
 
-	fmt.Printf("Sending TLS 1.2 ClientHello (%d bytes)\n", len(clientHello))
+	c.logger.Debug("Sending TLS 1.2 ClientHello", zap.Int("bytes", len(clientHello)))
 	if _, err := c.conn.Write(clientHello); err != nil {
 		return fmt.Errorf("failed to send ClientHello: %v", err)
 	}
@@ -48,7 +50,7 @@ func (c *Client) handshakeTLS12(serverName string) error {
 
 	c.cipherSuite = cipherSuite
 	c.negotiatedVersion = VersionTLS12
-	fmt.Printf("Negotiated TLS 1.2 cipher suite: 0x%04x\n", cipherSuite)
+	c.logger.Debug("Negotiated TLS 1.2 cipher suite", zap.Uint16("cipher_suite", cipherSuite))
 
 	// Step 3: Read Certificate message
 	certificate, err := c.readHandshakeMessage()
@@ -100,7 +102,7 @@ func (c *Client) handshakeTLS12(serverName string) error {
 		return fmt.Errorf("failed to generate client ECDH key: %v", err)
 	}
 
-	fmt.Printf("Generated client ECDH key pair using curve %d\n", msg.GetNamedCurve())
+	c.logger.Debug("Generated client ECDH key pair", zap.Uint16("curve", msg.GetNamedCurve()))
 
 	// Step 5: Read ServerHelloDone message
 	serverHelloDone, err := c.readHandshakeMessage()
@@ -113,7 +115,7 @@ func (c *Client) handshakeTLS12(serverName string) error {
 		return fmt.Errorf("failed to parse ServerHelloDone: %v", err)
 	}
 
-	fmt.Println("=== Received Server Hello Done ===")
+	c.logger.Debug("Received Server Hello Done")
 
 	// Step 6: Generate pre-master secret using ECDH
 	sharedSecret, err := clientPrivateKey.ECDH(serverPublicKey)
@@ -132,7 +134,9 @@ func (c *Client) handshakeTLS12(serverName string) error {
 		hasher := hashFunc()
 		hasher.Write(c.transcript)
 		sessionHash = hasher.Sum(nil)
-		fmt.Printf("Extended Master Secret session hash (%d bytes): %x\n", len(sessionHash), sessionHash)
+		c.logger.Debug("Extended Master Secret session hash",
+			zap.Int("bytes", len(sessionHash)),
+			zap.String("hash", fmt.Sprintf("%x", sessionHash)))
 	}
 
 	// Step 8: Initialize TLS 1.2 key schedule and derive master secret
@@ -155,7 +159,7 @@ func (c *Client) handshakeTLS12(serverName string) error {
 		// fmt.Printf("DEBUG: Derived master secret (%d bytes): %x\n", len(c.tls12KeySchedule.masterSecret), c.tls12KeySchedule.masterSecret)
 	}
 
-	fmt.Println("Master secret derived successfully")
+	c.logger.Debug("Master secret derived successfully")
 
 	// Step 8: Send ClientKeyExchange
 	clientKeyExchange := NewClientKeyExchange(clientPrivateKey.PublicKey().Bytes())
@@ -168,7 +172,7 @@ func (c *Client) handshakeTLS12(serverName string) error {
 	}
 
 	c.transcript = append(c.transcript, clientKeyExchangeMsg...)
-	fmt.Println("Sent ClientKeyExchange")
+	c.logger.Debug("Sent ClientKeyExchange")
 
 	// Step 9: Send ChangeCipherSpec
 	changeCipherSpec := &ChangeCipherSpecMsg{}
@@ -177,7 +181,7 @@ func (c *Client) handshakeTLS12(serverName string) error {
 		return fmt.Errorf("failed to send ChangeCipherSpec: %v", err)
 	}
 
-	fmt.Println("Sent ChangeCipherSpec")
+	c.logger.Debug("Sent ChangeCipherSpec")
 
 	// Step 10: Derive session keys and initialize AEAD
 	if err := c.initTLS12AEAD(); err != nil {
@@ -202,16 +206,17 @@ func (c *Client) handshakeTLS12(serverName string) error {
 	// Step 14: TLS 1.2 sequence numbers continue from handshake (no reset needed)
 	// Client has sent 1 encrypted message (Finished), so writeSeq=1
 	// Server has sent 1 encrypted message (Finished), so readSeq=1
-	fmt.Printf("TLS 1.2 sequence numbers after handshake (read seq=%d, write seq=%d)\n",
-		c.tls12AEAD.GetReadSequence(), c.tls12AEAD.GetWriteSequence())
+	c.logger.Debug("TLS 1.2 sequence numbers after handshake",
+		zap.Uint64("read_seq", c.tls12AEAD.GetReadSequence()),
+		zap.Uint64("write_seq", c.tls12AEAD.GetWriteSequence()))
 
-	fmt.Println("=== TLS 1.2 Handshake Completed Successfully ===")
+	c.logger.Debug("TLS 1.2 Handshake Completed Successfully")
 	return nil
 }
 
 // continueTLS12HandshakeAfterServerHello continues TLS 1.2 handshake after ServerHello has been processed
 func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.PrivateKey) error {
-	fmt.Println("=== Continuing TLS 1.2 handshake after ServerHello ===")
+	c.logger.Debug("Continuing TLS 1.2 handshake after ServerHello")
 
 	// Step 3: Read Certificate message
 	certificate, err := c.readHandshakeMessage()
@@ -263,7 +268,7 @@ func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.P
 		return fmt.Errorf("failed to generate client ECDH key: %v", err)
 	}
 
-	fmt.Printf("Generated client ECDH key pair using curve %d\n", msg.GetNamedCurve())
+	c.logger.Debug("Generated client ECDH key pair", zap.Uint16("curve", msg.GetNamedCurve()))
 
 	// Step 5: Read ServerHelloDone message
 	serverHelloDone, err := c.readHandshakeMessage()
@@ -276,7 +281,7 @@ func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.P
 		return fmt.Errorf("failed to parse ServerHelloDone: %v", err)
 	}
 
-	fmt.Println("=== Received Server Hello Done ===")
+	c.logger.Debug("Received Server Hello Done")
 
 	// Step 6: Generate pre-master secret using ECDH
 	sharedSecret, err := clientPrivateKey.ECDH(serverPublicKey)
@@ -295,7 +300,9 @@ func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.P
 		hasher := hashFunc()
 		hasher.Write(c.transcript)
 		sessionHash = hasher.Sum(nil)
-		fmt.Printf("Extended Master Secret session hash (%d bytes): %x\n", len(sessionHash), sessionHash)
+		c.logger.Debug("Extended Master Secret session hash",
+			zap.Int("bytes", len(sessionHash)),
+			zap.String("hash", fmt.Sprintf("%x", sessionHash)))
 	}
 
 	// Step 8: Initialize TLS 1.2 key schedule and derive master secret
@@ -303,22 +310,22 @@ func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.P
 
 	if c.extendedMasterSecret {
 		// RFC 7627: Use Extended Master Secret
-		fmt.Println("Using Extended Master Secret (RFC 7627)")
-		fmt.Printf("DEBUG: Pre-master secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
-		fmt.Printf("DEBUG: Session hash (%d bytes): %x\n", len(sessionHash), sessionHash)
+		c.logger.Debug("Using Extended Master Secret (RFC 7627)")
+		c.logger.Debug("Pre-master secret", zap.Int("bytes", len(sharedSecret)), zap.String("secret", fmt.Sprintf("%x", sharedSecret)))
+		c.logger.Debug("Session hash", zap.Int("bytes", len(sessionHash)), zap.String("hash", fmt.Sprintf("%x", sessionHash)))
 		c.tls12KeySchedule.DeriveMasterSecretExtended(sharedSecret, sessionHash)
-		fmt.Printf("DEBUG: Derived master secret (%d bytes): %x\n", len(c.tls12KeySchedule.masterSecret), c.tls12KeySchedule.masterSecret)
+		c.logger.Debug("Derived master secret", zap.Int("bytes", len(c.tls12KeySchedule.masterSecret)), zap.String("secret", fmt.Sprintf("%x", c.tls12KeySchedule.masterSecret)))
 	} else {
 		// Standard master secret derivation
-		fmt.Println("Using standard master secret derivation")
-		fmt.Printf("DEBUG: Pre-master secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
-		fmt.Printf("DEBUG: Client random: %x\n", c.clientRandom)
-		fmt.Printf("DEBUG: Server random: %x\n", c.serverRandom)
+		c.logger.Debug("Using standard master secret derivation")
+		c.logger.Debug("Pre-master secret", zap.Int("bytes", len(sharedSecret)), zap.String("secret", fmt.Sprintf("%x", sharedSecret)))
+		c.logger.Debug("Client random", zap.String("random", fmt.Sprintf("%x", c.clientRandom)))
+		c.logger.Debug("Server random", zap.String("random", fmt.Sprintf("%x", c.serverRandom)))
 		c.tls12KeySchedule.DeriveMasterSecret(sharedSecret)
-		fmt.Printf("DEBUG: Derived master secret (%d bytes): %x\n", len(c.tls12KeySchedule.masterSecret), c.tls12KeySchedule.masterSecret)
+		c.logger.Debug("Derived master secret", zap.Int("bytes", len(c.tls12KeySchedule.masterSecret)), zap.String("secret", fmt.Sprintf("%x", c.tls12KeySchedule.masterSecret)))
 	}
 
-	fmt.Println("Master secret derived successfully")
+	c.logger.Debug("Master secret derived successfully")
 
 	// Step 8: Send ClientKeyExchange
 	clientKeyExchange := NewClientKeyExchange(clientPrivateKey.PublicKey().Bytes())
@@ -331,7 +338,7 @@ func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.P
 	}
 
 	c.transcript = append(c.transcript, clientKeyExchangeMsg...)
-	fmt.Println("Sent ClientKeyExchange")
+	c.logger.Debug("Sent ClientKeyExchange")
 
 	// Step 9: Send ChangeCipherSpec
 	changeCipherSpec := &ChangeCipherSpecMsg{}
@@ -340,7 +347,7 @@ func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.P
 		return fmt.Errorf("failed to send ChangeCipherSpec: %v", err)
 	}
 
-	fmt.Println("Sent ChangeCipherSpec")
+	c.logger.Debug("Sent ChangeCipherSpec")
 
 	// Step 10: Derive session keys and initialize AEAD
 	if err := c.initTLS12AEAD(); err != nil {
@@ -374,7 +381,7 @@ func (c *Client) continueTLS12HandshakeAfterServerHello(clientPrivateKey *ecdh.P
 
 // processServerCertificateTLS12 processes a TLS 1.2 server certificate message
 func (c *Client) processServerCertificateTLS12(data []byte) error {
-	fmt.Println("=== Processing TLS 1.2 Server Certificate ===")
+	c.logger.Debug("Processing TLS 1.2 Server Certificate")
 	// data is the entire handshake message, including its 4-byte header.
 	payload := data[4:]
 

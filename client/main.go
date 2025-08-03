@@ -9,10 +9,19 @@ import (
 	proofverifier "tee-mpc/proofverifier" // add new import
 	"tee-mpc/shared"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 func main() {
-	fmt.Println("=== Client ===")
+	// Initialize logger
+	logger, err := zap.NewDevelopment()
+	if err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+	defer logger.Sync()
+
+	logger.Info("=== Client ===")
 
 	// Default to enclave mode, fallback to standalone if specified
 	teekURL := "wss://tee-k.reclaimprotocol.org/ws" // Default to enclave
@@ -27,6 +36,7 @@ func main() {
 	if len(os.Args) > 2 {
 		forceTLSVersion = os.Args[2]
 		if forceTLSVersion != "1.2" && forceTLSVersion != "1.3" && forceTLSVersion != "" {
+			logger.Error("Invalid TLS version", zap.String("version", forceTLSVersion))
 			fmt.Printf("Invalid TLS version '%s'. Use '1.2', '1.3', or omit for auto-negotiation\n", forceTLSVersion)
 			os.Exit(1)
 		}
@@ -37,26 +47,27 @@ func main() {
 		forceCipherSuite = os.Args[3]
 		// Validate cipher suite format (hex or name)
 		if forceCipherSuite != "" && !isValidCipherSuite(forceCipherSuite) {
+			logger.Error("Invalid cipher suite", zap.String("cipher_suite", forceCipherSuite))
 			fmt.Printf("Invalid cipher suite '%s'. Use hex format (e.g. '0xc02f') or valid name\n", forceCipherSuite)
 			os.Exit(1)
 		}
 	}
 
-	fmt.Printf(" Starting Client, connecting to TEE_K at %s\n", teekURL)
+	logger.Info("Starting Client", zap.String("teek_url", teekURL))
 	if forceTLSVersion != "" {
-		fmt.Printf(" Forcing TLS version %s\n", forceTLSVersion)
+		logger.Info("Forcing TLS version", zap.String("version", forceTLSVersion))
 	} else {
-		fmt.Printf(" TLS version auto-negotiation enabled\n")
+		logger.Info("TLS version auto-negotiation enabled")
 	}
 	if forceCipherSuite != "" {
-		fmt.Printf(" Forcing cipher suite %s\n", forceCipherSuite)
+		logger.Info("Forcing cipher suite", zap.String("cipher_suite", forceCipherSuite))
 	} else {
-		fmt.Printf(" Cipher suite auto-negotiation enabled\n")
+		logger.Info("Cipher suite auto-negotiation enabled")
 	}
 
 	// Auto-detect TEE_T URL based on TEE_K URL
 	teetURL := autoDetectTEETURL(teekURL)
-	fmt.Printf(" Auto-detected TEE_T URL: %s\n", teetURL)
+	logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
 
 	// Create client configuration
 	config := clientlib.ClientConfig{
@@ -76,26 +87,28 @@ func main() {
 
 	// Connect to both TEE_K and TEE_T
 	if err := client.Connect(); err != nil {
+		logger.Error("Failed to connect", zap.Error(err))
 		fmt.Printf("❌ Failed to connect: %v\n", err)
 		return
 	}
 
 	// Request HTTP to github.com (supports all cipher suites)
 	if err := client.RequestHTTP("github.com", 443); err != nil {
+		logger.Error("Failed to request HTTP", zap.Error(err))
 		fmt.Printf("❌ Failed to request HTTP: %v\n", err)
 		return
 	}
 
 	// Wait for processing to complete using proper completion tracking
-	fmt.Println("⏳ Waiting for all processing to complete...")
-	fmt.Println(" (decryption streams + redaction verification)")
+	logger.Info("⏳ Waiting for all processing to complete...")
+	logger.Info(" (decryption streams + redaction verification)")
 
 	select {
 	case <-client.WaitForCompletion():
-		fmt.Println(" Split AEAD protocol completed successfully!")
+		logger.Info(" Split AEAD protocol completed successfully!")
 	case <-time.After(clientlib.DefaultProcessingTimeout): // Configurable processing timeout
-		fmt.Printf("⏰ Processing timeout - operation may still be in progress\n")
-		fmt.Printf("⚠️  Continuing with partial results...\n")
+		logger.Warn("⏰ Processing timeout - operation may still be in progress")
+		logger.Warn("⚠️  Continuing with partial results...")
 	}
 
 	// Demonstrate accessing protocol results

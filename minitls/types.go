@@ -1,9 +1,5 @@
 package minitls
 
-import (
-	"fmt"
-)
-
 // TLS version constants (following Go's crypto/tls conventions)
 const (
 	VersionTLS12 = 0x0303
@@ -243,7 +239,7 @@ func (m *ClientHelloMsg) Marshal() []byte {
 	// Handshake protocol header
 	b = append(b, byte(typeClientHello), 0, 0, 0) // Message type and placeholder for length
 
-	fmt.Printf("DEBUG: Starting ClientHello marshal\n")
+	// fmt.Printf("DEBUG: Starting ClientHello marshal\n")
 
 	// TLS 1.2 compatibility version
 	b = append(b, 0x03, 0x03)

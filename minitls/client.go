@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+
+	"go.uber.org/zap"
 )
 
 type Client struct {
@@ -18,7 +20,8 @@ type Client struct {
 	serverAEAD *AEAD
 
 	// Configuration
-	Config *Config // TLS configuration (min/max versions, cipher suites)
+	Config *Config     // TLS configuration (min/max versions, cipher suites)
+	logger *zap.Logger // Logger for structured logging
 
 	// Version-specific components
 	negotiatedVersion uint16            // Negotiated TLS version (0x0303 for 1.2, 0x0304 for 1.3)
@@ -51,6 +54,7 @@ func NewClient(conn net.Conn) *Client {
 			MinVersion: VersionTLS12,
 			MaxVersion: VersionTLS12,
 		}, // Use default config (supports both TLS 1.2 and 1.3)
+		logger: zap.NewNop(), // Default to no-op logger
 	}
 }
 
@@ -62,6 +66,7 @@ func NewClientWithConfig(conn net.Conn, config *Config) *Client {
 	return &Client{
 		conn:   conn,
 		Config: config,
+		logger: zap.NewNop(), // Default to no-op logger
 	}
 }
 
@@ -75,7 +80,7 @@ func (c *Client) getCipherSuites() []uint16 {
 }
 
 func (c *Client) Handshake(serverName string) error {
-	fmt.Println("=== Starting TLS Handshake (version negotiation) ===")
+	c.logger.Debug("Starting TLS Handshake (version negotiation)")
 
 	// Step 1: Send ClientHello that supports both TLS 1.2 and 1.3
 	clientHello, clientPrivateKey, err := c.buildClientHelloTLS12(serverName) // Use TLS12 version which supports both
@@ -83,7 +88,7 @@ func (c *Client) Handshake(serverName string) error {
 		return fmt.Errorf("failed to build ClientHello: %v", err)
 	}
 
-	fmt.Printf("Sending ClientHello (%d bytes)\n", len(clientHello))
+	c.logger.Debug("Sending ClientHello", zap.Int("bytes", len(clientHello)))
 	if _, err := c.conn.Write(clientHello); err != nil {
 		return fmt.Errorf("failed to send ClientHello: %v", err)
 	}
@@ -109,19 +114,21 @@ func (c *Client) Handshake(serverName string) error {
 	c.negotiatedVersion = negotiatedVersion
 	c.cipherSuite = cipherSuite
 
-	fmt.Printf("Negotiated TLS version: 0x%04x, cipher suite: 0x%04x\n", negotiatedVersion, cipherSuite)
+	c.logger.Debug("Negotiated TLS version and cipher suite",
+		zap.Uint16("version", negotiatedVersion),
+		zap.Uint16("cipher_suite", cipherSuite))
 
 	// Route to the appropriate handshake implementation
 	switch negotiatedVersion {
 	case VersionTLS12:
-		fmt.Println("=== Proceeding with TLS 1.2 handshake ===")
+		c.logger.Debug("Proceeding with TLS 1.2 handshake")
 		// For TLS 1.2, we need to extract server random from ServerHello
 		if err := c.extractServerRandomTLS12(serverHello); err != nil {
 			return fmt.Errorf("failed to extract server random: %v", err)
 		}
 		return c.continueTLS12Handshake(serverName, clientPrivateKey)
 	case VersionTLS13:
-		fmt.Println("=== Proceeding with TLS 1.3 handshake ===")
+		c.logger.Debug("Proceeding with TLS 1.3 handshake")
 		return c.continueTLS13Handshake(serverName, clientPrivateKey, cipherSuite)
 	default:
 		return fmt.Errorf("unsupported TLS version: 0x%04x", negotiatedVersion)
@@ -129,7 +136,7 @@ func (c *Client) Handshake(serverName string) error {
 }
 
 func (c *Client) processEncryptedHandshakeMessages() error {
-	fmt.Println("=== Processing Encrypted Handshake Messages ===")
+	c.logger.Debug("Processing Encrypted Handshake Messages")
 
 	// This loop will exit when the Finished message has been processed,
 	// which is signaled by the processHandshakeBuffer function.
@@ -145,7 +152,7 @@ func (c *Client) processEncryptedHandshakeMessages() error {
 
 		// If we're here, it means the buffer doesn't contain a full message yet.
 		// We need to read the next TLS record from the network.
-		fmt.Println("[CLIENT] Handshake buffer incomplete, reading next record...")
+		c.logger.Debug("Handshake buffer incomplete, reading next record")
 		header := make([]byte, 5)
 		if _, err := io.ReadFull(c.conn, header); err != nil {
 			return fmt.Errorf("failed to read record header: %v", err)
@@ -153,7 +160,10 @@ func (c *Client) processEncryptedHandshakeMessages() error {
 
 		recordType := header[0]
 		recordLength := int(header[3])<<8 | int(header[4])
-		fmt.Printf("[CLIENT] \nRecord: type=%d, version=0x%04x, length=%d\n", recordType, uint16(header[1])<<8|uint16(header[2]), recordLength)
+		c.logger.Debug("TLS record received",
+			zap.Uint8("type", recordType),
+			zap.Uint16("version", uint16(header[1])<<8|uint16(header[2])),
+			zap.Int("length", recordLength))
 
 		payload := make([]byte, recordLength)
 		if _, err := io.ReadFull(c.conn, payload); err != nil {
@@ -161,7 +171,7 @@ func (c *Client) processEncryptedHandshakeMessages() error {
 		}
 
 		if recordType == recordTypeChangeCipherSpec {
-			fmt.Println(" Received ChangeCipherSpec (TLS 1.3 compatibility - ignored)")
+			c.logger.Debug("Received ChangeCipherSpec (TLS 1.3 compatibility - ignored)")
 			continue
 		}
 		if recordType != recordTypeApplicationData {
@@ -169,7 +179,9 @@ func (c *Client) processEncryptedHandshakeMessages() error {
 		}
 
 		// Decrypt the payload and add it to our handshake buffer
-		fmt.Printf(" Encrypted handshake record - attempting to decrypt %d bytes with sequence %d\n", len(payload), c.serverAEAD.seq)
+		c.logger.Debug("Encrypted handshake record - attempting to decrypt",
+			zap.Int("bytes", len(payload)),
+			zap.Uint64("sequence", c.serverAEAD.seq))
 		plaintext, err := c.serverAEAD.Decrypt(payload, header)
 		if err != nil {
 			return fmt.Errorf("decryption failed during handshake: %v", err)
@@ -198,7 +210,8 @@ func (c *Client) processEncryptedHandshakeMessages() error {
 			copy(encryptedPacket[:5], header)
 			copy(encryptedPacket[5:], payload)
 			certificatePacket = encryptedPacket
-			fmt.Printf(" Captured encrypted certificate packet (%d bytes) for key disclosure\n", len(certificatePacket))
+			c.logger.Debug("Captured encrypted certificate packet for key disclosure",
+				zap.Int("bytes", len(certificatePacket)))
 		}
 
 		c.handshakeBuffer = append(c.handshakeBuffer, actualData...)
@@ -220,14 +233,18 @@ func (c *Client) processHandshakeBuffer() (bool, error) {
 
 		// Check if the full message is in the buffer.
 		if uint32(len(c.handshakeBuffer)) < totalMsgLen {
-			fmt.Printf(" ... entire message not yet in buffer (need %d, have %d). Reading more.\n", totalMsgLen, len(c.handshakeBuffer))
+			c.logger.Debug("Entire message not yet in buffer, reading more",
+				zap.Uint32("need", totalMsgLen),
+				zap.Int("have", len(c.handshakeBuffer)))
 			return false, nil // Need more data
 		}
 
 		// We have a full message, so let's process it.
 		msg := c.handshakeBuffer[:totalMsgLen]
 		msgType := HandshakeType(msg[0])
-		fmt.Printf(" Processing buffered handshake message: type=%s, length=%d\n", handshakeTypeString(msgType), msgLen)
+		c.logger.Debug("Processing buffered handshake message",
+			zap.String("type", handshakeTypeString(msgType)),
+			zap.Uint32("length", msgLen))
 
 		// Process the message.
 		// NOTE: The `processSingleHandshakeMessage` function now replaces the old `processHandshakeMessage`.
@@ -252,7 +269,7 @@ func (c *Client) processSingleHandshakeMessage(data []byte) (bool, error) {
 
 	switch msgType {
 	case typeEncryptedExtensions, typeCertificateVerify:
-		fmt.Printf(" Received %s\n", handshakeTypeString(msgType))
+		c.logger.Debug("Received handshake message", zap.String("type", handshakeTypeString(msgType)))
 		c.finishedTranscript = append(c.finishedTranscript, data...)
 
 	case typeCertificate:
@@ -262,11 +279,13 @@ func (c *Client) processSingleHandshakeMessage(data []byte) (bool, error) {
 		c.finishedTranscript = append(c.finishedTranscript, data...)
 
 	case typeFinished:
-		fmt.Printf(" Received Finished\n")
+		c.logger.Debug("Received Finished message")
 		hasherForVerify := c.keySchedule.getHashFunc()()
 		hasherForVerify.Write(c.finishedTranscript)
 		transcriptHashForVerify := hasherForVerify.Sum(nil)
-		fmt.Printf(" Transcript hash for verification (48 bytes): %x\n", transcriptHashForVerify)
+		c.logger.Debug("Transcript hash for verification",
+			zap.Int("bytes", len(transcriptHashForVerify)),
+			zap.String("hash", fmt.Sprintf("%x", transcriptHashForVerify)))
 
 		if err := c.verifyServerFinished(data, transcriptHashForVerify); err != nil {
 			return false, fmt.Errorf("server Finished verification failed: %v", err)
@@ -290,7 +309,7 @@ func (c *Client) processSingleHandshakeMessage(data []byte) (bool, error) {
 		return true, nil // Handshake is complete.
 
 	default:
-		fmt.Printf(" Received unknown message type: %d\n", msgType)
+		c.logger.Debug("Received unknown handshake message type", zap.Uint8("type", uint8(msgType)))
 		c.finishedTranscript = append(c.finishedTranscript, data...)
 	}
 
@@ -313,14 +332,18 @@ func (c *Client) verifyServerFinished(msg []byte, transcriptHash []byte) error {
 
 	// Extract the verify_data from the server's Finished message
 	serverVerifyData := msg[4 : 4+msgLen]
-	fmt.Printf(" Server verify_data (%d bytes): %x\n", len(serverVerifyData), serverVerifyData)
+	c.logger.Debug("Server verify_data",
+		zap.Int("bytes", len(serverVerifyData)),
+		zap.String("data", fmt.Sprintf("%x", serverVerifyData)))
 
 	// Calculate what the verify_data should be.
 	expectedVerifyData, err := c.keySchedule.CalculateServerFinishedVerifyData(transcriptHash)
 	if err != nil {
 		return fmt.Errorf("failed to calculate expected verify_data: %v", err)
 	}
-	fmt.Printf(" Expected verify_data (%d bytes): %x\n", len(expectedVerifyData), expectedVerifyData)
+	c.logger.Debug("Expected verify_data",
+		zap.Int("bytes", len(expectedVerifyData)),
+		zap.String("data", fmt.Sprintf("%x", expectedVerifyData)))
 
 	if !hmac.Equal(serverVerifyData, expectedVerifyData) {
 		return fmt.Errorf("verify_data mismatch")
@@ -330,10 +353,11 @@ func (c *Client) verifyServerFinished(msg []byte, transcriptHash []byte) error {
 }
 
 func (c *Client) deriveApplicationKeys(transcriptHash []byte) error {
-	fmt.Println("=== Deriving Application Keys ===")
+	c.logger.Debug("Deriving Application Keys")
 
 	// The handshake hash should be the hash of ClientHello...ServerFinished
-	fmt.Printf("Using full transcript hash (%d bytes) for application key derivation\n", len(transcriptHash))
+	c.logger.Debug("Using full transcript hash for application key derivation",
+		zap.Int("bytes", len(transcriptHash)))
 
 	if err := c.keySchedule.DeriveApplicationKeys(transcriptHash); err != nil {
 		return fmt.Errorf("failed to derive application keys: %v", err)
@@ -354,18 +378,20 @@ func (c *Client) deriveApplicationKeys(transcriptHash []byte) error {
 	c.clientAEAD = clientAppAEAD
 	c.serverAEAD = serverAppAEAD
 
-	fmt.Println("Application keys derived successfully")
+	c.logger.Debug("Application keys derived successfully")
 	return nil
 }
 
 func (c *Client) sendClientFinished() error {
-	fmt.Println("=== Sending Client Finished ===")
+	c.logger.Debug("Sending Client Finished")
 
 	// The transcript hash for the client's Finished message includes the server's Finished.
 	hasher := c.keySchedule.getHashFunc()()
 	hasher.Write(c.finishedTranscript)
 	transcriptHash := hasher.Sum(nil)
-	fmt.Printf(" Transcript hash for client Finished (%d bytes): %x\n", len(transcriptHash), transcriptHash)
+	c.logger.Debug("Transcript hash for client Finished",
+		zap.Int("bytes", len(transcriptHash)),
+		zap.String("hash", fmt.Sprintf("%x", transcriptHash)))
 
 	// Calculate verify_data - use version-specific method
 	var verifyData []byte
@@ -401,7 +427,7 @@ func (c *Client) sendClientFinished() error {
 	header[3] = byte(ciphertextLen >> 8)
 	header[4] = byte(ciphertextLen)
 
-	fmt.Printf("AEAD Encrypt (Client Finished): seq=%d\n", c.clientAEAD.seq)
+	c.logger.Debug("AEAD Encrypt (Client Finished)", zap.Uint64("seq", c.clientAEAD.seq))
 	ciphertext := c.clientAEAD.Encrypt(plaintextWithContentType, header)
 
 	// Send the encrypted record
@@ -410,7 +436,7 @@ func (c *Client) sendClientFinished() error {
 		return fmt.Errorf("failed to write client Finished record: %v", err)
 	}
 
-	fmt.Println(" Client Finished message sent successfully.")
+	c.logger.Debug("Client Finished message sent successfully")
 	return nil
 }
 
@@ -423,7 +449,9 @@ func (c *Client) buildClientHello(serverName string) ([]byte, *ecdh.PrivateKey, 
 	}
 
 	publicKeyBytes := privateKey.PublicKey().Bytes()
-	fmt.Printf("Generated X25519 public key (%d bytes): %x\n", len(publicKeyBytes), publicKeyBytes)
+	c.logger.Debug("Generated X25519 public key",
+		zap.Int("bytes", len(publicKeyBytes)),
+		zap.String("key", fmt.Sprintf("%x", publicKeyBytes)))
 
 	// Build ClientHello message
 	cipherSuites := c.getCipherSuites()
@@ -574,7 +602,7 @@ func (c *Client) continueTLS13Handshake(serverName string, clientPrivateKey *ecd
 		return fmt.Errorf("failed to parse ServerHello for TLS 1.3: %v", err)
 	}
 
-	fmt.Printf("Negotiated TLS 1.3 cipher suite: 0x%04x\n", cipherSuite)
+	c.logger.Debug("Negotiated TLS 1.3 cipher suite", zap.Uint16("cipher_suite", cipherSuite))
 
 	// Derive shared secret using ECDH
 	sharedSecret, err := clientPrivateKey.ECDH(serverPublicKey)
@@ -582,7 +610,7 @@ func (c *Client) continueTLS13Handshake(serverName string, clientPrivateKey *ecd
 		return fmt.Errorf("ECDH failed: %v", err)
 	}
 
-	// fmt.Printf("Shared secret (%d bytes): %x\n", len(sharedSecret), sharedSecret)
+	// c.logger.Debug("Shared secret", zap.Int("bytes", len(sharedSecret)), zap.String("secret", fmt.Sprintf("%x", sharedSecret)))
 
 	// Initialize key schedule with shared secret and current transcript
 	c.keySchedule = NewKeySchedule(cipherSuite, sharedSecret, c.transcript)
@@ -602,14 +630,14 @@ func (c *Client) continueTLS13Handshake(serverName string, clientPrivateKey *ecd
 		return fmt.Errorf("failed to create server handshake AEAD: %v", err)
 	}
 
-	fmt.Println("TLS 1.3 handshake keys derived successfully")
+	c.logger.Debug("TLS 1.3 handshake keys derived successfully")
 
 	// Process encrypted handshake messages
 	if err := c.processEncryptedHandshakeMessages(); err != nil {
 		return fmt.Errorf("failed to process encrypted handshake messages: %v", err)
 	}
 
-	fmt.Println("=== TLS 1.3 handshake completed successfully ===")
+	c.logger.Debug("TLS 1.3 handshake completed successfully")
 	return nil
 }
 
@@ -638,7 +666,7 @@ func (c *Client) readServerHello() ([]byte, error) {
 		return nil, fmt.Errorf("expected ServerHello message type 2, got %d", message[0])
 	}
 
-	fmt.Printf("Received ServerHello (%d bytes)\n", len(message))
+	c.logger.Debug("Received ServerHello", zap.Int("bytes", len(message)))
 	return message, nil
 }
 
@@ -667,7 +695,7 @@ func (c *Client) extractServerRandomTLS12(serverHello []byte) error {
 	copy(c.serverRandom, payload[offset:offset+32])
 	offset += 32
 
-	fmt.Printf("Extracted server random: %x\n", c.serverRandom)
+	c.logger.Debug("Extracted server random", zap.String("random", fmt.Sprintf("%x", c.serverRandom)))
 
 	// Parse session ID
 	sessionIDLen := payload[offset]
@@ -681,12 +709,12 @@ func (c *Client) extractServerRandomTLS12(serverHello []byte) error {
 
 	// Parse extensions for Extended Master Secret
 	c.extendedMasterSecret = false // Default to false
-	fmt.Printf("DEBUG: TLS 1.2 ServerHello parsing - offset=%d, payload length=%d\n", offset, len(payload))
+	c.logger.Debug("TLS 1.2 ServerHello parsing", zap.Int("offset", offset), zap.Int("payload_length", len(payload)))
 	if len(payload) > offset+2 {
 		extensionsLen := int(payload[offset])<<8 | int(payload[offset+1])
 		offset += 2
 
-		fmt.Printf("DEBUG: TLS 1.2 ServerHello has %d bytes of extensions\n", extensionsLen)
+		c.logger.Debug("TLS 1.2 ServerHello has extensions", zap.Int("extensions_length", extensionsLen))
 
 		if len(payload) >= offset+extensionsLen {
 			extensionsData := payload[offset : offset+extensionsLen]
@@ -702,11 +730,11 @@ func (c *Client) extractServerRandomTLS12(serverHello []byte) error {
 				extLen := int(extensionsData[extOffset+2])<<8 | int(extensionsData[extOffset+3])
 				extOffset += 4
 
-				fmt.Printf("DEBUG: Found extension type %d (0x%04x), length %d\n", extType, extType, extLen)
+				c.logger.Debug("Found extension", zap.Uint16("type", extType), zap.Uint16("type_hex", extType), zap.Int("length", extLen))
 
 				if extType == extensionExtendedMasterSecret {
 					c.extendedMasterSecret = true
-					fmt.Println("Server supports Extended Master Secret (RFC 7627)")
+					c.logger.Debug("Server supports Extended Master Secret (RFC 7627)")
 					break
 				}
 
@@ -714,7 +742,7 @@ func (c *Client) extractServerRandomTLS12(serverHello []byte) error {
 			}
 		}
 	} else {
-		fmt.Println("DEBUG: TLS 1.2 ServerHello has no extensions")
+		c.logger.Debug("TLS 1.2 ServerHello has no extensions")
 	}
 
 	return nil
@@ -732,8 +760,11 @@ func (c *Client) parseServerHello(data []byte) (uint16, *ecdh.PublicKey, error) 
 	random := data[6:38]
 	sessionIDLen := int(data[38])
 
-	fmt.Printf("ServerHello: type=%d, len=%d, version=0x%04x, sessionIDLen=%d\n",
-		msgType, msgLen, version, sessionIDLen)
+	c.logger.Debug("ServerHello parsed",
+		zap.Uint8("type", msgType),
+		zap.Int("length", msgLen),
+		zap.Uint16("version", version),
+		zap.Int("session_id_length", sessionIDLen))
 
 	offset := 39 + sessionIDLen
 	if offset+2 > len(data) {
@@ -809,7 +840,9 @@ func (c *Client) parseKeyShare(data []byte) (*ecdh.PublicKey, error) {
 	}
 
 	keyBytes := data[4 : 4+keyLen]
-	fmt.Printf("Server public key (%d bytes): %x\n", len(keyBytes), keyBytes)
+	c.logger.Debug("Server public key",
+		zap.Int("bytes", len(keyBytes)),
+		zap.String("key", fmt.Sprintf("%x", keyBytes)))
 
 	curve := ecdh.X25519()
 	publicKey, err := curve.NewPublicKey(keyBytes)
@@ -872,7 +905,7 @@ func handshakeTypeString(t HandshakeType) string {
 }
 
 func (c *Client) processServerCertificate(data []byte) error {
-	fmt.Println("=== Processing Server Certificate ===")
+	c.logger.Debug("Processing Server Certificate")
 	// data is the entire handshake message, including its 4-byte header.
 	payload := data[4:]
 
@@ -886,7 +919,7 @@ func (c *Client) processServerCertificate(data []byte) error {
 	}
 	// For server-sent certificates, this should be zero.
 	if contextLen != 0 {
-		fmt.Printf(" Warning: server sent non-empty certificate request context (%d bytes)\n", contextLen)
+		c.logger.Warn("Server sent non-empty certificate request context", zap.Int("bytes", contextLen))
 	}
 	// Advance payload past the context
 	payload = payload[1+contextLen:]
@@ -945,19 +978,25 @@ func (c *Client) processServerCertificate(data []byte) error {
 
 	// --- Print Server's Common Name and Validate Chain ---
 	leafCert := certs[0]
-	fmt.Printf(" Received %d certificates. Server's Common Name: %s\n", len(certs), leafCert.Subject.CommonName)
+	c.logger.Debug("Received certificates",
+		zap.Int("count", len(certs)),
+		zap.String("common_name", leafCert.Subject.CommonName))
 
 	// Basic chain validation
 	if len(certs) > 1 {
 		for i := 0; i < len(certs)-1; i++ {
 			issuer := certs[i+1]
 			subject := certs[i]
-			fmt.Printf(" - Validating cert #%d (%s) against issuer #%d (%s)\n", i, subject.Subject.CommonName, i+1, issuer.Subject.CommonName)
+			c.logger.Debug("Validating certificate chain",
+				zap.Int("cert_index", i),
+				zap.String("subject", subject.Subject.CommonName),
+				zap.Int("issuer_index", i+1),
+				zap.String("issuer", issuer.Subject.CommonName))
 			if err := subject.CheckSignatureFrom(issuer); err != nil {
 				return fmt.Errorf("certificate chain validation failed: cert #%d not signed by #%d: %v", i, i+1, err)
 			}
 		}
-		fmt.Println(" Certificate chain signatures are valid.")
+		c.logger.Debug("Certificate chain signatures are valid")
 	}
 
 	return nil
@@ -1159,7 +1198,11 @@ func (c *Client) readApplicationDataWithCorrectAEAD() ([]byte, error) {
 					descStr = "decode_error"
 				}
 
-				fmt.Printf("TLS Alert received: %s - %s (level=%d, desc=%d)\n", levelStr, descStr, alertLevel, alertDescription)
+				c.logger.Debug("TLS Alert received",
+					zap.String("level", levelStr),
+					zap.String("description", descStr),
+					zap.Uint8("level_code", alertLevel),
+					zap.Uint8("desc_code", alertDescription))
 
 				if alertLevel == 2 { // Fatal alert
 					return nil, fmt.Errorf("received fatal TLS alert: %s", descStr)
@@ -1321,7 +1364,7 @@ func (c *Client) parseResponseRecords(serverAEAD *AEAD) (appData []byte, consume
 				// Try to decrypt the alert
 				plaintext, decryptErr := serverAEAD.Decrypt(ciphertext, header)
 				if decryptErr != nil {
-					fmt.Printf("Failed to decrypt alert record: %v\n", decryptErr)
+					c.logger.Error("Failed to decrypt alert record", zap.Error(decryptErr))
 				} else {
 					// Find the content type byte by stripping trailing padding zeros
 					i := len(plaintext) - 1
@@ -1337,7 +1380,9 @@ func (c *Client) parseResponseRecords(serverAEAD *AEAD) (appData []byte, consume
 							if alertLevel == 2 {
 								levelStr = "Fatal"
 							}
-							fmt.Printf("TLS Alert: %s - %s\n", levelStr, alertDescriptionString(alertDescription))
+							c.logger.Debug("TLS Alert",
+								zap.String("level", levelStr),
+								zap.String("description", alertDescriptionString(alertDescription)))
 
 							// In strict fail-fast mode, ANY alert should terminate connection
 							if alertLevel == 2 { // Fatal alert
