@@ -144,9 +144,8 @@ type Client struct {
 	teetTranscriptPackets [][]byte // Packets from TEE_T signed transcript for validation
 
 	// Library interface fields
-	requestRedactions []RedactionSpec  // Request redactions from config
-	responseCallback  ResponseCallback // Response callback for redactions
-	clientMode        ClientMode       // Client operational mode (enclave vs standalone)
+	responseCallback ResponseCallback // Response callback for redactions
+	clientMode       ClientMode       // Client operational mode (enclave vs standalone)
 
 	// 2-phase operation support
 	twoPhaseMode     bool          // Whether to operate in 2-phase mode
@@ -226,14 +225,14 @@ func NewClient(teekURL string) *Client {
 		teetTranscriptPublicKey:      nil,
 
 		// 2-phase operation support
-		twoPhaseMode:                 false,
-		phase1Completed:              false,
-		phase1Completion:             make(chan struct{}),
-		attestationVerified:          false,
-		publicKeyComparisonDone:      false,
-		teekTranscriptPackets:        nil,
-		teetTranscriptPackets:        nil,
-		requestRedactions:            nil,
+		twoPhaseMode:            false,
+		phase1Completed:         false,
+		phase1Completion:        make(chan struct{}),
+		attestationVerified:     false,
+		publicKeyComparisonDone: false,
+		teekTranscriptPackets:   nil,
+		teetTranscriptPackets:   nil,
+
 		responseCallback:             nil,
 		clientMode:                   ModeAuto, // Default to auto-detect
 		protocolStartTime:            time.Now(),
@@ -299,15 +298,12 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 		zap.Int("request_data_length", len(c.requestData)),
 		zap.Int("http_request_length", len(httpRequest)))
 
-	// Use the stored request data if available, otherwise use provided request or test request
+	// Use the stored request data if available, otherwise use provided request
 	if len(c.requestData) > 0 {
 		c.logger.Info("Using stored request data")
 		httpRequest = c.requestData
 	} else if len(httpRequest) == 0 {
-		c.logger.Info("Using test request")
-		// Create HTTP request with test sensitive data
-		testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", c.targetHost)
-		httpRequest = []byte(testRequest)
+		return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("no request data provided")
 	} else {
 		c.logger.Info("Using provided HTTP request")
 	}
@@ -322,37 +318,10 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 		zap.String("request", string(httpRequest)),
 		zap.Int("total_length", len(httpRequest)))
 
-	// Use redaction ranges directly if set, otherwise apply redaction specifications from config
-	var ranges []shared.RequestRedactionRange
-	var err error
-
-	if len(c.requestRedactionRanges) > 0 {
-		// Use ranges set directly (for libreclaim compatibility)
-		ranges = c.requestRedactionRanges
-		c.logger.Info("Using direct redaction ranges", zap.Int("count", len(ranges)))
-	} else {
-		// Apply redaction specifications from config
-		ranges, err = c.applyRedactionSpecs(httpRequest)
-		if err != nil {
-			return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("failed to apply redaction specs: %v", err)
-		}
-
-		// If no redaction specs configured, add default ones for the test request
-		if len(ranges) == 0 && len(c.requestRedactions) == 0 {
-			c.logger.Info("No redaction specs configured, adding default redaction specs for test request")
-			// Add default redaction specs for the test request
-			defaultSpecs := []RedactionSpec{
-				{Pattern: "Authorization: Bearer", Type: shared.RedactionTypeSensitiveProof},
-				{Pattern: "X-Account-ID:", Type: shared.RedactionTypeSensitive},
-			}
-			c.requestRedactions = defaultSpecs
-
-			// Re-apply redaction specs with defaults
-			ranges, err = c.applyRedactionSpecs(httpRequest)
-			if err != nil {
-				return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("failed to apply default redaction specs: %v", err)
-			}
-		}
+	// Use only the redaction ranges provided by the user
+	ranges := c.requestRedactionRanges
+	if len(ranges) == 0 {
+		return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("no redaction ranges provided - library requires explicit redaction ranges")
 	}
 
 	c.logger.Info("Redaction configuration",
@@ -501,183 +470,6 @@ func (c *Client) validateRedactionRanges(ranges []shared.RequestRedactionRange, 
 }
 
 // applyRedactionSpecs applies redaction specifications from config to find redaction ranges
-func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]shared.RequestRedactionRange, error) {
-	var ranges []shared.RequestRedactionRange
-	requestStr := string(httpRequest)
-
-	c.logger.Debug("Checking redaction specs", zap.Int("specs_count", len(c.requestRedactions)))
-
-	// If no redaction specs configured, return empty ranges
-	if len(c.requestRedactions) == 0 {
-		c.logger.Debug("No redaction specs configured")
-		return ranges, nil
-	}
-
-	// Apply configured redaction specs
-	for i, spec := range c.requestRedactions {
-		c.logger.Debug("Checking redaction spec",
-			zap.Int("index", i),
-			zap.String("pattern", spec.Pattern),
-			zap.String("type", spec.Type))
-		matches := c.findPatternMatches(requestStr, spec.Pattern)
-		c.logger.Debug("Found pattern matches",
-			zap.Int("matches_count", len(matches)),
-			zap.String("pattern", spec.Pattern))
-		for _, match := range matches {
-			ranges = append(ranges, shared.RequestRedactionRange{
-				Start:  match.Start,
-				Length: match.Length,
-				Type:   spec.Type,
-			})
-		}
-	}
-
-	return ranges, nil
-}
-
-// PatternMatch represents a pattern match result
-type PatternMatch struct {
-	Start  int
-	Length int
-	Value  string
-}
-
-// findPatternMatches finds all matches for a pattern in the request string
-func (c *Client) findPatternMatches(request, pattern string) []PatternMatch {
-	var matches []PatternMatch
-	c.logger.Debug("Searching for pattern in request", zap.String("pattern", pattern))
-
-	// For now, implement simple literal matching
-	// In a full implementation, this would use regex
-	c.logger.Debug("Pattern contains Authorization Bearer check", zap.Bool("contains", strings.Contains(pattern, "Authorization: Bearer")))
-	if strings.Contains(pattern, "Authorization: Bearer") {
-		// Handle Authorization header pattern
-		c.logger.Debug("Handling Authorization pattern")
-		start := strings.Index(request, "Authorization: Bearer ")
-		c.logger.Debug("Authorization start index", zap.Int("index", start))
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			c.logger.Debug("Authorization line end index", zap.Int("index", lineEnd))
-			if lineEnd != -1 {
-				// Extract just the token part
-				tokenStart := start + len("Authorization: Bearer ")
-				tokenEnd := start + lineEnd
-				c.logger.Debug("Authorization match found",
-					zap.Int("start", tokenStart),
-					zap.Int("length", tokenEnd-tokenStart),
-					zap.String("value", request[tokenStart:tokenEnd]))
-				matches = append(matches, PatternMatch{
-					Start:  tokenStart,
-					Length: tokenEnd - tokenStart,
-					Value:  request[tokenStart:tokenEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "X-Account-ID:") {
-		// Handle X-Account-ID header pattern
-		c.logger.Debug("Handling X-Account-ID pattern")
-		start := strings.Index(request, "X-Account-ID: ")
-		c.logger.Debug("X-Account-ID start index", zap.Int("index", start))
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			c.logger.Debug("X-Account-ID line end index", zap.Int("index", lineEnd))
-			if lineEnd != -1 {
-				// Extract just the account ID part
-				idStart := start + len("X-Account-ID: ")
-				idEnd := start + lineEnd
-				c.logger.Debug("X-Account-ID match found",
-					zap.Int("start", idStart),
-					zap.Int("length", idEnd-idStart),
-					zap.String("value", request[idStart:idEnd]))
-				matches = append(matches, PatternMatch{
-					Start:  idStart,
-					Length: idEnd - idStart,
-					Value:  request[idStart:idEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "User-Agent") {
-		// Handle User-Agent header pattern
-		c.logger.Debug("Handling User-Agent pattern")
-		start := strings.Index(request, "User-Agent: ")
-		c.logger.Debug("User-Agent start index", zap.Int("index", start))
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			c.logger.Debug("User-Agent line end index", zap.Int("index", lineEnd))
-			if lineEnd != -1 {
-				// Extract just the user agent part
-				uaStart := start + len("User-Agent: ")
-				uaEnd := start + lineEnd
-				c.logger.Debug("User-Agent match found",
-					zap.Int("start", uaStart),
-					zap.Int("length", uaEnd-uaStart),
-					zap.String("value", request[uaStart:uaEnd]))
-				matches = append(matches, PatternMatch{
-					Start:  uaStart,
-					Length: uaEnd - uaStart,
-					Value:  request[uaStart:uaEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "Accept:") {
-		// Handle Accept header pattern
-		c.logger.Debug("Handling Accept pattern")
-		start := strings.Index(request, "Accept: ")
-		c.logger.Debug("Accept start index", zap.Int("index", start))
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			c.logger.Debug("Accept line end index", zap.Int("index", lineEnd))
-			if lineEnd != -1 {
-				// Extract just the accept part
-				acceptStart := start + len("Accept: ")
-				acceptEnd := start + lineEnd
-				c.logger.Debug("Accept match found",
-					zap.Int("start", acceptStart),
-					zap.Int("length", acceptEnd-acceptStart),
-					zap.String("value", request[acceptStart:acceptEnd]))
-				matches = append(matches, PatternMatch{
-					Start:  acceptStart,
-					Length: acceptEnd - acceptStart,
-					Value:  request[acceptStart:acceptEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "Accept:") {
-		// Handle Accept header pattern
-		start := strings.Index(request, "Accept: ")
-		if start != -1 {
-			// Try both \r\n and \n for line endings
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			if lineEnd != -1 {
-				// Extract just the accept part
-				acceptStart := start + len("Accept: ")
-				acceptEnd := start + lineEnd
-				matches = append(matches, PatternMatch{
-					Start:  acceptStart,
-					Length: acceptEnd - acceptStart,
-					Value:  request[acceptStart:acceptEnd],
-				})
-			}
-		}
-	}
-
-	return matches
-}
 
 // triggerResponseCallback triggers the response callback if configured
 func (c *Client) triggerResponseCallback(responseData []byte) {
@@ -1060,7 +852,7 @@ func (c *Client) buildProtocolResult() (*ProtocolResult, error) {
 		ErrorMessage:      errorMessage,
 		RequestTarget:     c.targetHost,
 		RequestPort:       c.targetPort,
-		RequestRedactions: c.requestRedactions,
+		RequestRedactions: nil, // No longer used - ranges are set directly
 		Transcripts:       *transcripts,
 		Validation:        *validation,
 		Attestation:       *attestation,

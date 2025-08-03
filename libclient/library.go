@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"tee-mpc/shared"
 	"time"
-
-	"go.uber.org/zap"
 )
 
 // ReclaimClient is the public interface for the Reclaim TEE+MPC client library
@@ -115,21 +113,6 @@ func (r *ReclaimClientImpl) Connect() error {
 
 // RequestHTTP initiates an HTTP request through the TEE+MPC protocol
 func (r *ReclaimClientImpl) RequestHTTP(hostname string, port int) error {
-	// Apply request redactions from config to the client
-	if len(r.config.RequestRedactions) > 0 {
-		r.Client.requestRedactions = r.config.RequestRedactions
-		r.logger.Info("Applied redaction specs from config",
-			zap.Int("count", len(r.config.RequestRedactions)))
-		for i, spec := range r.config.RequestRedactions {
-			r.logger.Info("Redaction spec",
-				zap.Int("index", i),
-				zap.String("pattern", spec.Pattern),
-				zap.String("type", spec.Type))
-		}
-	} else {
-		r.logger.Info("No redaction specs in config")
-	}
-
 	// Set response callback if provided
 	if r.config.ResponseCallback != nil {
 		r.Client.responseCallback = r.config.ResponseCallback

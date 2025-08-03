@@ -69,16 +69,23 @@ func main() {
 	teetURL := autoDetectTEETURL(teekURL)
 	logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
 
-	// Create client configuration
+	// Create demo request and redaction ranges
+	demoRequest := createDemoRequest("github.com")
+	demoRanges := createDemoRedactionRanges(demoRequest)
+
+	logger.Info("Demo request created",
+		zap.Int("request_length", len(demoRequest)),
+		zap.Int("redaction_ranges", len(demoRanges)))
+
+	// Create client configuration (without RequestRedactions since we'll set ranges directly)
 	config := clientlib.ClientConfig{
-		TEEKURL:           teekURL,
-		TEETURL:           teetURL,
-		Timeout:           clientlib.DefaultConnectionTimeout,
-		Mode:              clientlib.ModeAuto,
-		RequestRedactions: getDemoRequestRedactions(),
-		ResponseCallback:  &DemoResponseCallback{},
-		ForceTLSVersion:   forceTLSVersion,
-		ForceCipherSuite:  forceCipherSuite,
+		TEEKURL:          teekURL,
+		TEETURL:          teetURL,
+		Timeout:          clientlib.DefaultConnectionTimeout,
+		Mode:             clientlib.ModeAuto,
+		ResponseCallback: &DemoResponseCallback{},
+		ForceTLSVersion:  forceTLSVersion,
+		ForceCipherSuite: forceCipherSuite,
 	}
 
 	// Create client using library interface
@@ -91,6 +98,10 @@ func main() {
 		fmt.Printf("❌ Failed to connect: %v\n", err)
 		return
 	}
+
+	// Set the demo request data and redaction ranges directly
+	client.SetRequestData(demoRequest)
+	client.SetRequestRedactionRanges(demoRanges)
 
 	// Request HTTP to github.com (supports all cipher suites)
 	if err := client.RequestHTTP("github.com", 443); err != nil {
@@ -283,6 +294,135 @@ func convertRangesToSpecs(ranges []shared.RequestRedactionRange) []clientlib.Red
 	}
 
 	return specs
+}
+
+// PatternMatch represents a pattern match result (moved from libclient)
+type PatternMatch struct {
+	Start  int
+	Length int
+	Value  string
+}
+
+// findPatternMatches finds all matches for a pattern in the request string (moved from libclient)
+// This is demo-specific pattern matching logic
+func findPatternMatches(request, pattern string) []PatternMatch {
+	var matches []PatternMatch
+
+	// For now, implement simple literal matching
+	// In a full implementation, this would use regex
+	if strings.Contains(pattern, "Authorization: Bearer") {
+		// Handle Authorization header pattern
+		start := strings.Index(request, "Authorization: Bearer ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the token part
+				tokenStart := start + len("Authorization: Bearer ")
+				tokenEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  tokenStart,
+					Length: tokenEnd - tokenStart,
+					Value:  request[tokenStart:tokenEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "X-Account-ID:") {
+		// Handle X-Account-ID header pattern
+		start := strings.Index(request, "X-Account-ID: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the account ID part
+				idStart := start + len("X-Account-ID: ")
+				idEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  idStart,
+					Length: idEnd - idStart,
+					Value:  request[idStart:idEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "User-Agent") {
+		// Handle User-Agent header pattern
+		start := strings.Index(request, "User-Agent: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the user agent part
+				uaStart := start + len("User-Agent: ")
+				uaEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  uaStart,
+					Length: uaEnd - uaStart,
+					Value:  request[uaStart:uaEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "Accept:") {
+		// Handle Accept header pattern
+		start := strings.Index(request, "Accept: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the accept part
+				acceptStart := start + len("Accept: ")
+				acceptEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  acceptStart,
+					Length: acceptEnd - acceptStart,
+					Value:  request[acceptStart:acceptEnd],
+				})
+			}
+		}
+	}
+
+	return matches
+}
+
+// createDemoRedactionRanges creates redaction ranges for the demo request
+// This function applies demo-specific redaction specifications to create ranges
+func createDemoRedactionRanges(httpRequest []byte) []shared.RequestRedactionRange {
+	var ranges []shared.RequestRedactionRange
+	requestStr := string(httpRequest)
+
+	// Demo redaction specifications
+	demoSpecs := []clientlib.RedactionSpec{
+		{Pattern: "Authorization: Bearer", Type: shared.RedactionTypeSensitiveProof},
+		{Pattern: "X-Account-ID:", Type: shared.RedactionTypeSensitive},
+	}
+
+	// Apply demo redaction specifications
+	for _, spec := range demoSpecs {
+		matches := findPatternMatches(requestStr, spec.Pattern)
+		for _, match := range matches {
+			ranges = append(ranges, shared.RequestRedactionRange{
+				Start:  match.Start,
+				Length: match.Length,
+				Type:   spec.Type,
+			})
+		}
+	}
+
+	return ranges
+}
+
+// createDemoRequest creates the demo HTTP request
+func createDemoRequest(host string) []byte {
+	// Create HTTP request with test sensitive data
+	testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", host)
+	return []byte(testRequest)
 }
 
 // DemoResponseCallback provides a demo implementation showing response redaction

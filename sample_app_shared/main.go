@@ -44,25 +44,19 @@ import (
 func main() {
 	fmt.Println("=== Sample Application using libreclaim Shared Library ===")
 
-	// Example host and HTTP request (same format as original client)
+	// Create demo request and redaction ranges using demo functions
 	host := "github.com:443"
-	rawRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", "github.com")
+	rawRequest := createDemoRequest("github.com")
+	demoRanges := createDemoRedactionRanges(rawRequest)
 
-	// Example request redaction ranges (redact Authorization and add proof)
-	authStart := strings.Index(rawRequest, "Authorization: Bearer ")
-	accountIdStart := strings.Index(rawRequest, "X-Account-ID: ")
-
-	requestRanges := []map[string]interface{}{
-		{
-			"start":  authStart + len("Authorization: Bearer "),
-			"length": len("secret_auth_token_12345"),
-			"type":   shared.RedactionTypeSensitive,
-		},
-		{
-			"start":  accountIdStart + len("X-Account-ID: "),
-			"length": len("ACC987654321"),
-			"type":   shared.RedactionTypeSensitiveProof,
-		},
+	// Convert demo ranges to the format expected by the C library
+	requestRanges := make([]map[string]interface{}, len(demoRanges))
+	for i, r := range demoRanges {
+		requestRanges[i] = map[string]interface{}{
+			"start":  r.Start,
+			"length": r.Length,
+			"type":   r.Type,
+		}
 	}
 
 	// Create request JSON
@@ -217,6 +211,138 @@ func convertRangesToSpecs(ranges []shared.RequestRedactionRange) []map[string]in
 	}
 
 	return specs
+}
+
+// PatternMatch represents a pattern match result (moved from libclient)
+type PatternMatch struct {
+	Start  int
+	Length int
+	Value  string
+}
+
+// findPatternMatches finds all matches for a pattern in the request string (moved from libclient)
+// This is demo-specific pattern matching logic
+func findPatternMatches(request, pattern string) []PatternMatch {
+	var matches []PatternMatch
+
+	// For now, implement simple literal matching
+	// In a full implementation, this would use regex
+	if strings.Contains(pattern, "Authorization: Bearer") {
+		// Handle Authorization header pattern
+		start := strings.Index(request, "Authorization: Bearer ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the token part
+				tokenStart := start + len("Authorization: Bearer ")
+				tokenEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  tokenStart,
+					Length: tokenEnd - tokenStart,
+					Value:  request[tokenStart:tokenEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "X-Account-ID:") {
+		// Handle X-Account-ID header pattern
+		start := strings.Index(request, "X-Account-ID: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the account ID part
+				idStart := start + len("X-Account-ID: ")
+				idEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  idStart,
+					Length: idEnd - idStart,
+					Value:  request[idStart:idEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "User-Agent") {
+		// Handle User-Agent header pattern
+		start := strings.Index(request, "User-Agent: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the user agent part
+				uaStart := start + len("User-Agent: ")
+				uaEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  uaStart,
+					Length: uaEnd - uaStart,
+					Value:  request[uaStart:uaEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "Accept:") {
+		// Handle Accept header pattern
+		start := strings.Index(request, "Accept: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the accept part
+				acceptStart := start + len("Accept: ")
+				acceptEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  acceptStart,
+					Length: acceptEnd - acceptStart,
+					Value:  request[acceptStart:acceptEnd],
+				})
+			}
+		}
+	}
+
+	return matches
+}
+
+// createDemoRedactionRanges creates redaction ranges for the demo request
+// This function applies demo-specific redaction specifications to create ranges
+func createDemoRedactionRanges(httpRequest []byte) []shared.RequestRedactionRange {
+	var ranges []shared.RequestRedactionRange
+	requestStr := string(httpRequest)
+
+	// Demo redaction specifications
+	demoSpecs := []struct {
+		Pattern string
+		Type    string
+	}{
+		{Pattern: "Authorization: Bearer", Type: shared.RedactionTypeSensitiveProof},
+		{Pattern: "X-Account-ID:", Type: shared.RedactionTypeSensitive},
+	}
+
+	// Apply demo redaction specifications
+	for _, spec := range demoSpecs {
+		matches := findPatternMatches(requestStr, spec.Pattern)
+		for _, match := range matches {
+			ranges = append(ranges, shared.RequestRedactionRange{
+				Start:  match.Start,
+				Length: match.Length,
+				Type:   spec.Type,
+			})
+		}
+	}
+
+	return ranges
+}
+
+// createDemoRequest creates the demo HTTP request
+func createDemoRequest(host string) []byte {
+	// Create HTTP request with test sensitive data
+	testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", host)
+	return []byte(testRequest)
 }
 
 // calculateResponseRedactionRanges calculates redaction ranges for the response
