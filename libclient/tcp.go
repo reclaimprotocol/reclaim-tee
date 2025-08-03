@@ -8,6 +8,8 @@ import (
 	"strings"
 	"tee-mpc/shared"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // handleConnectionReady processes connection ready messages from TEE_K
@@ -65,8 +67,8 @@ func (c *Client) handleSendTCPData(msg *shared.Message) {
 	rawTCPData := make([]byte, len(tcpData.Data))
 	copy(rawTCPData, tcpData.Data)
 	c.capturedTraffic = append(c.capturedTraffic, rawTCPData)
-	fmt.Printf("[Client] Captured outgoing raw TCP chunk: %d bytes\n", len(rawTCPData))
-	fmt.Printf("[Client] Total captured chunks now: %d\n", len(c.capturedTraffic))
+	c.logger.Info("Captured outgoing raw TCP chunk", zap.Int("bytes", len(rawTCPData)))
+	c.logger.Info("Total captured chunks now", zap.Int("count", len(c.capturedTraffic)))
 
 	// Forward TLS data from TEE_K to website via our TCP connection
 	conn := c.tcpConn
@@ -111,14 +113,14 @@ func (c *Client) tcpToWebsocket() {
 		eofReceived := false
 		if err != nil {
 			if err == io.EOF {
-				fmt.Printf("[Client] TCP connection closed by server (EOF)\n")
+				c.logger.Info("TCP connection closed by server (EOF)")
 				c.setBatchCollectionComplete()
-				fmt.Printf("[Client] EOF reached, but checking for final data first...\n")
+				c.logger.Info("EOF reached, but checking for final data first...")
 				eofReceived = true // Mark EOF but continue to process any final data
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			} else if !isClientNetworkShutdownError(err) {
-				fmt.Printf("[Client] TCP read error: %v\n", err)
+				c.logger.Error("TCP read error", zap.Error(err))
 
 				break
 			} else {
@@ -183,18 +185,18 @@ func (c *Client) tcpToWebsocket() {
 
 		// After processing any final data, break if EOF was received
 		if eofReceived {
-			fmt.Printf("[Client] EOF reached, checking for protocol completion...\n")
+			c.logger.Info("EOF reached, checking for protocol completion...")
 
 			// Send batched responses if any were collected
 			if err := c.sendBatchedResponses(); err != nil {
-				log.Printf("[Client] Failed to send batched responses on EOF: %v", err)
+				c.logger.Error("Failed to send batched responses on EOF", zap.Error(err))
 			}
 
 			break
 		}
 	}
 
-	log.Printf("[Client] TCP read loop finished, performing final completion check...")
+	c.logger.Info("TCP read loop finished, performing final completion check...")
 	c.checkProtocolCompletion("TCP connection closed")
 }
 

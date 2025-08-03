@@ -2,7 +2,10 @@ package clientlib
 
 import (
 	"fmt"
+	"tee-mpc/shared"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // ReclaimClient is the public interface for the Reclaim TEE+MPC client library
@@ -41,6 +44,7 @@ const (
 type ReclaimClientImpl struct {
 	Client *Client
 	config ClientConfig
+	logger *shared.Logger
 }
 
 // NewReclaimClient creates a new ReclaimClient with the given configuration
@@ -66,9 +70,21 @@ func NewReclaimClient(config ClientConfig) ReclaimClient {
 	client.forceCipherSuite = config.ForceCipherSuite
 	client.SetMode(config.Mode)
 
+	// Initialize logger
+	logger, err := shared.NewLoggerFromEnv("client")
+	if err != nil {
+		// Fallback to basic logger if initialization fails
+		logger, _ = shared.NewLogger(shared.LoggerConfig{
+			ServiceName: "client",
+			EnclaveMode: false,
+			Development: true,
+		})
+	}
+
 	return &ReclaimClientImpl{
 		Client: client,
 		config: config,
+		logger: logger,
 	}
 }
 
@@ -90,7 +106,7 @@ func (r *ReclaimClientImpl) Connect() error {
 			return NewAttestationError(err)
 		}
 	} else {
-		fmt.Printf("[Client] Skipping attestation verification in standalone mode\n")
+		r.logger.Info("Skipping attestation verification in standalone mode")
 	}
 
 	return nil
@@ -101,12 +117,16 @@ func (r *ReclaimClientImpl) RequestHTTP(hostname string, port int) error {
 	// Apply request redactions from config to the client
 	if len(r.config.RequestRedactions) > 0 {
 		r.Client.requestRedactions = r.config.RequestRedactions
-		fmt.Printf("[Client] Applied %d redaction specs from config\n", len(r.config.RequestRedactions))
+		r.logger.Info("Applied redaction specs from config",
+			zap.Int("count", len(r.config.RequestRedactions)))
 		for i, spec := range r.config.RequestRedactions {
-			fmt.Printf("[Client] Redaction spec %d: pattern='%s', type='%s'\n", i, spec.Pattern, spec.Type)
+			r.logger.Info("Redaction spec",
+				zap.Int("index", i),
+				zap.String("pattern", spec.Pattern),
+				zap.String("type", spec.Type))
 		}
 	} else {
-		fmt.Printf("[Client] No redaction specs in config\n")
+		r.logger.Info("No redaction specs in config")
 	}
 
 	// Set response callback if provided

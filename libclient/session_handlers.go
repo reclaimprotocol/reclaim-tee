@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"tee-mpc/shared"
+
+	"go.uber.org/zap"
 )
 
 // handleSessionReady processes session ready messages from TEE_K
@@ -15,7 +17,7 @@ func (c *Client) handleSessionReady(msg *shared.Message) {
 	}
 
 	c.sessionID = sessionData.SessionID
-	fmt.Printf("[Client] Received session ID: %s\n", c.sessionID)
+	c.logger.Info("Received session ID", zap.String("session_id", c.sessionID))
 
 	// Send pending connection request if we have one
 	if c.connectionRequestPending && c.pendingConnectionRequest != nil {

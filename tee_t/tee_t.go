@@ -106,30 +106,6 @@ type TEET struct {
 	enclaveManager *shared.EnclaveManager
 }
 
-func NewTEET(port int) *TEET {
-	return NewTEETWithEnclaveManager(port, nil)
-}
-
-func NewTEETWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) *TEET {
-	// Generate ECDSA signing key pair
-	signingKeyPair, err := shared.GenerateSigningKeyPair()
-	if err != nil {
-		// Critical failure - cannot operate without signing capability
-		shared.GetTEETLogger().Critical("CRITICAL: Failed to generate signing key pair", zap.Error(err))
-		log.Fatalf("[TEE_T] CRITICAL: Failed to generate signing key pair: %v", err)
-	}
-	shared.GetTEETLogger().InfoIf("Generated ECDSA signing key pair (P-256 curve)")
-
-	return &TEET{
-		port:              port,
-		sessionManager:    NewTEETSessionManager(),
-		logger:            shared.GetTEETLogger(),
-		sessionTerminator: shared.NewSessionTerminator(shared.GetTEETLogger()),
-		signingKeyPair:    signingKeyPair,
-		enclaveManager:    enclaveManager,
-	}
-}
-
 // NewTEETWithLogger creates a TEET with a specific logger
 func NewTEETWithLogger(port int, logger *shared.Logger) *TEET {
 	return NewTEETWithEnclaveManagerAndLogger(port, nil, logger)
@@ -144,8 +120,9 @@ func NewTEETWithEnclaveManagerAndLogger(port int, enclaveManager *shared.Enclave
 	if err != nil {
 		// Critical failure - cannot operate without signing capability
 		if logger != nil {
-			logger.Critical("CRITICAL: Failed to generate signing key pair", zap.Error(err))
+			logger.Fatal("CRITICAL: Failed to generate signing key pair", zap.Error(err))
 		}
+		// Fallback if logger is nil
 		log.Fatalf("[TEE_T] CRITICAL: Failed to generate signing key pair: %v", err)
 	}
 	if logger != nil {
@@ -157,33 +134,6 @@ func NewTEETWithEnclaveManagerAndLogger(port int, enclaveManager *shared.Enclave
 		sessionManager:    NewTEETSessionManager(),
 		logger:            logger,
 		sessionTerminator: sessionTerminator,
-		signingKeyPair:    signingKeyPair,
-		enclaveManager:    enclaveManager,
-	}
-}
-
-// NewTEETWithSessionManager creates a TEET with a specific session manager
-func NewTEETWithSessionManager(port int, sessionManager *TEETSessionManager) *TEET {
-	return NewTEETWithSessionManagerAndEnclaveManager(port, sessionManager, nil)
-}
-
-func NewTEETWithSessionManagerAndEnclaveManager(port int, sessionManager *TEETSessionManager, enclaveManager *shared.EnclaveManager) *TEET {
-	// Generate ECDSA signing key pair
-	signingKeyPair, err := shared.GenerateSigningKeyPair()
-	if err != nil {
-		// Critical failure - cannot operate without signing capability
-		shared.GetTEETLogger().Critical("CRITICAL: Failed to generate signing key pair", zap.Error(err))
-		log.Fatalf("[TEE_T] CRITICAL: Failed to generate signing key pair: %v", err)
-	}
-	shared.GetTEETLogger().InfoIf("Generated ECDSA signing key pair (P-256 curve)")
-
-	logger := shared.GetTEETLogger()
-
-	return &TEET{
-		port:              port,
-		sessionManager:    sessionManager,
-		logger:            logger,
-		sessionTerminator: shared.NewSessionTerminator(logger),
 		signingKeyPair:    signingKeyPair,
 		enclaveManager:    enclaveManager,
 	}
@@ -457,7 +407,7 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func (t *TEET) handleTEETReadySession(sessionID string, msg *shared.Message) {
 	if sessionID == "" {
-		if t.sessionTerminator.ProtocolError("", shared.ReasonMissingSessionID,
+		if t.sessionTerminator.ProtocolViolation("", shared.ReasonMissingSessionID,
 			fmt.Errorf("TEE_T ready message missing session ID")) {
 			return
 		}
@@ -469,7 +419,7 @@ func (t *TEET) handleTEETReadySession(sessionID string, msg *shared.Message) {
 	// Delegate to handler with the client connection
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
+		if t.sessionTerminator.ZeroToleranceError(sessionID, shared.ReasonSessionNotFound, err) {
 			return
 		}
 		return
@@ -481,7 +431,7 @@ func (t *TEET) handleTEETReadySession(sessionID string, msg *shared.Message) {
 
 func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Message) {
 	if sessionID == "" {
-		if t.sessionTerminator.ProtocolError("", shared.ReasonMissingSessionID,
+		if t.sessionTerminator.ProtocolViolation("", shared.ReasonMissingSessionID,
 			fmt.Errorf("redaction streams message missing session ID")) {
 			return
 		}
@@ -492,7 +442,7 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 
 	var streamsData shared.RedactionStreamsData
 	if err := msg.UnmarshalData(&streamsData); err != nil {
-		if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
+		if t.sessionTerminator.ProtocolViolation(sessionID, shared.ReasonMessageParsingFailed, err,
 			zap.String("data_type", "redaction_streams")) {
 			return
 		}
@@ -507,7 +457,7 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 	// Get session to store streams and keys (defer commitment verification)
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
+		if t.sessionTerminator.ZeroToleranceError(sessionID, shared.ReasonSessionNotFound, err) {
 			return
 		}
 		return
@@ -1422,6 +1372,7 @@ func (t *TEET) verifyCommitmentsIfReady(sessionID string) error {
 }
 
 // verifyCommitments verifies that HMAC(stream, key) matches the expected commitments
+// This is a critical security function - any failure must terminate the session
 func (t *TEET) verifyCommitments(streams, keys, expectedCommitments [][]byte) error {
 	if len(streams) != len(keys) {
 		return fmt.Errorf("streams and keys length mismatch: %d vs %d", len(streams), len(keys))

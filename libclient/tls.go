@@ -5,6 +5,8 @@ import (
 	"log"
 	"strings"
 	"tee-mpc/shared"
+
+	"go.uber.org/zap"
 )
 
 // collapseAsterisks reduces consecutive asterisks to a maximum of 100 followed by "..." if more exist
@@ -70,7 +72,9 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 		return
 	}
 
-	fmt.Printf("[Client] Handshake complete: %s, cipher 0x%04x\n", disclosureData.Algorithm, disclosureData.CipherSuite)
+	c.logger.Info("Handshake complete",
+		zap.String("algorithm", disclosureData.Algorithm),
+		zap.Uint16("cipher_suite", disclosureData.CipherSuite))
 
 	// Mark handshake as complete for response handling
 	c.handshakeComplete = true
@@ -92,25 +96,25 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 		return
 	}
 
-	fmt.Printf("[Client] Sending redacted HTTP request to TEE_K\n")
+	c.logger.Info("Sending redacted HTTP request to TEE_K")
 
 	// Send redacted request to TEE_K for validation and encryption
 	redactedMsg := shared.CreateMessage(shared.MsgRedactedRequest, redactedData)
 
 	if err := c.sendMessage(redactedMsg); err != nil {
-		log.Printf("[Client] Failed to send redacted request to TEE_K: %v", err)
+		c.logger.Error("Failed to send redacted request to TEE_K", zap.Error(err))
 		return
 	}
 
 	// Send redaction streams to TEE_T for stream application
-	fmt.Printf("[Client] Sending redaction streams to TEE_T\n")
+	c.logger.Info("Sending redaction streams to TEE_T")
 
-	fmt.Printf("[Client] EXPECTING redaction verification result from TEE_T\n")
+	c.logger.Info("EXPECTING redaction verification result from TEE_T")
 
 	streamsMsg := shared.CreateMessage(shared.MsgRedactionStreams, streamsData)
 
 	if err := c.sendMessageToTEET(streamsMsg); err != nil {
-		log.Printf("[Client] Failed to send redaction streams to TEE_T: %v", err)
+		c.logger.Error("Failed to send redaction streams to TEE_T", zap.Error(err))
 		return
 	}
 }
@@ -127,21 +131,21 @@ func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLe
 		c.processTLSRecord(record)
 
 	case 0x14: // ChangeCipherSpec
-		fmt.Printf("[Client] → ChangeCipherSpec record (maintenance)\n")
+		c.logger.Info("→ ChangeCipherSpec record (maintenance)")
 
 	case 0x15: // Alert
-		fmt.Printf("[Client] → Processing alert record with split AEAD\n")
+		c.logger.Info("→ Processing alert record with split AEAD")
 		c.processTLSRecord(record)
 
 	case 0x16: // Handshake
-		fmt.Printf("[Client] → Handshake record (post-handshake message)\n")
+		c.logger.Info("→ Handshake record (post-handshake message)")
 		if recordLength >= 1 {
 			handshakeType := record[5]
-			fmt.Printf("[Client] Handshake type: %d\n", handshakeType)
+			c.logger.Info("Handshake type", zap.Int("type", int(handshakeType)))
 		}
 
 	default:
-		fmt.Printf("[Client] → Unknown record type: 0x%02x\n", recordType)
+		c.logger.Info("→ Unknown record type", zap.Int("type", int(recordType)))
 	}
 }
 
@@ -152,7 +156,9 @@ func (c *Client) processTLSRecord(record []byte) {
 
 	// For AES-GCM, tag is last 16 bytes of encrypted payload
 	if len(encryptedPayload) < 16 {
-		log.Printf("[Client] Invalid TLS record: payload too short (%d bytes)", len(encryptedPayload))
+		log.Printf("[Client] CRITICAL: Invalid TLS record: payload too short (%d bytes) - terminating session", len(encryptedPayload))
+		// This is a protocol violation - should terminate the session
+		c.isClosing = true
 		return
 	}
 
@@ -170,7 +176,9 @@ func (c *Client) processTLSRecord(record []byte) {
 	if isTLS12AESGCMResponse {
 		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)
 		if len(encryptedPayload) < 8+tagSize {
-			log.Printf("[Client] Invalid TLS 1.2 AES-GCM record: payload too short for explicit IV (%d bytes)", len(encryptedPayload))
+			log.Printf("[Client] CRITICAL: Invalid TLS 1.2 AES-GCM record: payload too short for explicit IV (%d bytes) - terminating session", len(encryptedPayload))
+			// This is a protocol violation - should terminate the session
+			c.isClosing = true
 			return
 		}
 
@@ -189,13 +197,13 @@ func (c *Client) processTLSRecord(record []byte) {
 	}
 
 	if c.isClosing {
-		fmt.Printf("[Client] System is shutting down, storing record but skipping split AEAD processing\n")
+		c.logger.Info("System is shutting down, storing record but skipping split AEAD processing")
 		return
 	}
 
 	teetConnState := c.teetConn != nil
 	if !teetConnState {
-		fmt.Printf("[Client] TEE_T connection closed, storing record but skipping split AEAD processing\n")
+		c.logger.Info("TEE_T connection closed, storing record but skipping split AEAD processing")
 		return
 	}
 
@@ -236,16 +244,18 @@ func (c *Client) processTLSRecord(record []byte) {
 	}
 
 	// If EOF already reached, send packet immediately (shouldn't happen)
-	log.Printf("[Client] EOF already reached, sending packet immediately")
+	c.logger.Info("EOF already reached, sending packet immediately")
 
 	responseMsg := shared.CreateMessage(shared.MsgEncryptedResponse, encryptedResponseData)
 
 	if err := c.sendMessageToTEET(responseMsg); err != nil {
 
 		if c.isClosing {
-			fmt.Printf("[Client] Send failed during shutdown - this is expected, continuing\n")
+			c.logger.Info("Send failed during shutdown - this is expected, continuing")
 		} else {
-			log.Printf("[Client] Failed to send encrypted response to TEE_T: %v", err)
+			c.logger.Error("CRITICAL: Failed to send encrypted response to TEE_T - terminating session", zap.Error(err))
+			// This is a protocol violation - should terminate the session
+			c.isClosing = true
 		}
 		return
 	}
@@ -258,11 +268,12 @@ func (c *Client) processTLSRecord(record []byte) {
 func (c *Client) sendBatchedResponses() error {
 
 	if len(c.batchedResponses) == 0 {
-		log.Printf("[Client] No response packets to send")
+		c.logger.Info("No response packets to send")
 		return nil
 	}
 
-	log.Printf("[Client] Sending batch of %d response packets to TEE_T", len(c.batchedResponses))
+	c.logger.Info("Sending batch of response packets to TEE_T",
+		zap.Int("count", len(c.batchedResponses)))
 
 	// Create batched message using new data structure
 	batchedData := shared.BatchedEncryptedResponseData{
@@ -310,33 +321,33 @@ func (c *Client) handleResponseTagVerification(msg *shared.Message) {
 // analyzeNewSessionTicket provides details about session ticket content
 func (c *Client) analyzeNewSessionTicket(data []byte) {
 	if len(data) < 8 {
-		fmt.Printf("[Client] NewSessionTicket too short\n")
+		c.logger.Info("NewSessionTicket too short")
 		return
 	}
 
 	ticketLifetime := uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
 	ticketAgeAdd := uint32(data[4])<<24 | uint32(data[5])<<16 | uint32(data[6])<<8 | uint32(data[7])
 
-	fmt.Printf("[Client] Ticket lifetime: %d seconds\n", ticketLifetime)
-	fmt.Printf("[Client] Age add: 0x%08x\n", ticketAgeAdd)
+	c.logger.Info("Ticket lifetime", zap.Uint32("seconds", ticketLifetime))
+	c.logger.Info("Age add", zap.Uint32("value", ticketAgeAdd))
 
 	if len(data) > 8 {
 		nonceLen := int(data[8])
-		fmt.Printf("[Client] Nonce length: %d bytes\n", nonceLen)
+		c.logger.Info("Nonce length", zap.Int("bytes", nonceLen))
 
 		if len(data) > 9+nonceLen+2 {
 			ticketLen := int(data[9+nonceLen])<<8 | int(data[10+nonceLen])
-			fmt.Printf("[Client] Ticket length: %d bytes\n", ticketLen)
+			c.logger.Info("Ticket length", zap.Int("bytes", ticketLen))
 		}
 	}
 
-	fmt.Printf("[Client] This is likely a session resumption ticket, not HTTP content\n")
+	c.logger.Info("This is likely a session resumption ticket, not HTTP content")
 }
 
 // analyzeAlertMessage analyzes TLS alert messages
 func (c *Client) analyzeAlertMessage(data []byte) {
 	if len(data) < 2 {
-		fmt.Printf("[Client] Alert message too short\n")
+		c.logger.Info("Alert message too short")
 		return
 	}
 
@@ -349,7 +360,11 @@ func (c *Client) analyzeAlertMessage(data []byte) {
 	}
 
 	descStr := getClientAlertDescription(alertDescription)
-	fmt.Printf("[Client] Alert: %s (%d) - %s (%d)\n", levelStr, alertLevel, descStr, alertDescription)
+	c.logger.Info("Alert",
+		zap.String("level", levelStr),
+		zap.Int("level_code", int(alertLevel)),
+		zap.String("description", descStr),
+		zap.Int("description_code", int(alertDescription)))
 
 	// Note: We don't signal completion on CLOSE_NOTIFY since TEEs may still be processing
 }
@@ -359,16 +374,22 @@ func (c *Client) parseDecryptedAlert(seqNum uint64, decryptedData []byte) {
 	if len(decryptedData) >= 2 {
 		alertLevel := decryptedData[0]
 		alertDescription := decryptedData[1]
-		fmt.Printf("[Client] Alert (seq %d): level=%d, description=%d (%s)\n",
-			seqNum, alertLevel, alertDescription, getClientAlertDescription(alertDescription))
+		c.logger.Info("Alert",
+			zap.Uint64("sequence", seqNum),
+			zap.Int("level", int(alertLevel)),
+			zap.Int("description", int(alertDescription)),
+			zap.String("description_name", getClientAlertDescription(alertDescription)))
 
 		if alertDescription == 0 {
-			fmt.Printf("[Client] *** CLOSE_NOTIFY ALERT DETECTED (seq %d) ***\n", seqNum)
+			c.logger.Info("*** CLOSE_NOTIFY ALERT DETECTED ***",
+				zap.Uint64("sequence", seqNum))
 		}
 
 		c.analyzeAlertMessage(decryptedData)
 	} else {
-		log.Printf("[Client] Alert record (seq %d) too short for parsing: %d bytes", seqNum, len(decryptedData))
+		c.logger.Error("Alert record too short for parsing",
+			zap.Uint64("sequence", seqNum),
+			zap.Int("bytes", len(decryptedData)))
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 func main() {
 	// Initialize global loggers first
 	if err := shared.InitializeGlobalLoggers(); err != nil {
+		// Cannot use logger here since it failed to initialize
 		fmt.Printf("FATAL: Failed to initialize loggers: %v\n", err)
 		os.Exit(1)
 	}

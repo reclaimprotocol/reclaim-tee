@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 
 	"github.com/anjuna-security/go-nitro-attestation/verifier"
 )
@@ -72,6 +73,9 @@ type Client struct {
 	wsConn   *websocket.Conn
 	teetConn *websocket.Conn
 	tcpConn  net.Conn
+
+	// Logging
+	logger *shared.Logger
 
 	// Session management
 	sessionID string // Session ID received from TEE_K
@@ -178,7 +182,19 @@ type Client struct {
 }
 
 func NewClient(teekURL string) *Client {
+	// Initialize logger for client
+	logger, err := shared.NewLoggerFromEnv("client")
+	if err != nil {
+		// Fallback to basic logger if initialization fails
+		logger, _ = shared.NewLogger(shared.LoggerConfig{
+			ServiceName: "client",
+			EnclaveMode: false,
+			Development: true,
+		})
+	}
+
 	return &Client{
+		logger:               logger,
 		teekURL:              teekURL,
 		teetURL:              "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
 		pendingResponsesData: make(map[uint64][]byte),
@@ -247,7 +263,9 @@ func (c *Client) RequestHTTP(hostname string, port int) error {
 	c.targetHost = hostname
 	c.targetPort = port
 
-	fmt.Printf("[Client] Requesting connection to %s:%d\n", hostname, port)
+	c.logger.Info("Requesting connection",
+		zap.String("hostname", hostname),
+		zap.Int("port", port))
 
 	// Store connection request data to be sent once session ID is received
 	c.pendingConnectionRequest = &shared.RequestConnectionData{
@@ -273,7 +291,9 @@ func (c *Client) RequestHTTP(hostname string, port int) error {
 
 // createRedactedRequest creates a redacted HTTP request with XOR streams and commitments
 func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedRequestData, shared.RedactionStreamsData, error) {
-	fmt.Printf("[Client] createRedactedRequest: requestData length=%d, httpRequest length=%d\n", len(c.requestData), len(httpRequest))
+	c.logger.Info("Creating redacted request",
+		zap.Int("request_data_length", len(c.requestData)),
+		zap.Int("http_request_length", len(httpRequest)))
 
 	// Use the stored request data if available, otherwise use provided request or test request
 	if len(c.requestData) > 0 {

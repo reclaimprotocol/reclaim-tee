@@ -4,27 +4,41 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"tee-mpc/shared"
+
+	"go.uber.org/zap"
 )
 
 func main() {
+	// Initialize global loggers first
+	if err := shared.InitializeGlobalLoggers(); err != nil {
+		// Cannot use logger here since it failed to initialize
+		fmt.Printf("FATAL: Failed to initialize loggers: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Get the TEE_K logger for this service
+	logger := shared.GetTEEKLogger()
+	defer logger.Sync()
+
 	config := LoadTEEKConfig()
 
 	if config.EnclaveMode {
-		fmt.Println("=== TEE_K Enclave Mode ===")
-		startEnclaveMode(config)
+		logger.Info("=== TEE_K Enclave Mode ===")
+		startEnclaveMode(config, logger)
 	} else {
-		fmt.Println("=== TEE_K Standalone Mode ===")
-		startStandaloneMode(config)
+		logger.Info("=== TEE_K Standalone Mode ===")
+		startStandaloneMode(config, logger)
 	}
 }
 
-func startStandaloneMode(config *TEEKConfig) {
+func startStandaloneMode(config *TEEKConfig, logger *shared.Logger) {
 	teek := NewTEEKWithConfig(config)
 
 	server := &http.Server{
@@ -36,9 +50,9 @@ func startStandaloneMode(config *TEEKConfig) {
 
 	// Start server in goroutine
 	go func() {
-		log.Printf("[TEE_K] Starting standalone server on port %d", config.Port)
+		logger.Info("Starting standalone server", zap.Int("port", config.Port))
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("[TEE_K] CRITICAL ERROR: Server failed: %v", err)
+			logger.Critical("Server failed", zap.Error(err))
 			// Signal shutdown instead of crashing
 			sigChan := make(chan os.Signal, 1)
 			signal.Notify(sigChan, syscall.SIGTERM)
@@ -52,27 +66,26 @@ func startStandaloneMode(config *TEEKConfig) {
 	}()
 
 	// TEE_T URL and TLS configuration already set via NewTEEKWithConfig
-	log.Printf("[TEE_K] Standalone mode: TEE_T URL set to %s, will create per-session connections", config.TEETURL)
-	if config.ForceTLSVersion != "" {
-		log.Printf("[TEE_K] TLS version forced to: %s", config.ForceTLSVersion)
-	}
+	logger.Info("Standalone mode configuration",
+		zap.String("teet_url", config.TEETURL),
+		zap.String("tls_version", config.ForceTLSVersion))
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("[TEE_K] Shutting down...")
+	logger.Info("Shutting down...")
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("[TEE_K] Shutdown error: %v", err)
+		logger.Error("Shutdown error", zap.Error(err))
 	}
 
-	log.Println("[TEE_K] Shutdown complete")
+	logger.Info("Shutdown complete")
 }
 
 func setupRoutes(teek *TEEK) *http.ServeMux {

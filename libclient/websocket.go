@@ -8,6 +8,8 @@ import (
 	"strings"
 	"tee-mpc/shared"
 
+	"go.uber.org/zap"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -18,28 +20,29 @@ func (c *Client) ConnectToTEEK() error {
 		return fmt.Errorf("failed to parse TEE_K URL: %v", err)
 	}
 
-	log.Printf("[Client] Attempting WebSocket connection to TEE_K at: %s", c.teekURL)
+	c.logger.Info("Attempting WebSocket connection to TEE_K",
+		zap.String("url", c.teekURL))
 
 	// Determine connection mode and use appropriate dialer
 	var conn *websocket.Conn
 	if strings.HasPrefix(c.teekURL, "wss://") && strings.Contains(c.teekURL, "reclaimprotocol.org") {
 		// Enclave mode: use custom dialer with TLS config
-		log.Printf("[Client] Enclave mode detected for TEE_K - using custom dialer")
+		c.logger.Info("Enclave mode detected for TEE_K - using custom dialer")
 		dialer := createEnclaveWebSocketDialer()
 		conn, _, err = dialer.Dial(u.String(), nil)
 	} else {
 		// Standalone mode: use default dialer
-		log.Printf("[Client] Standalone mode detected for TEE_K - using default dialer")
+		c.logger.Info("Standalone mode detected for TEE_K - using default dialer")
 		conn, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
 	}
 
 	if err != nil {
-		log.Printf("[Client] WebSocket dial failed for TEE_K %s: %v", c.teekURL, err)
+		c.logger.Error("WebSocket dial failed for TEE_K", zap.String("url", c.teekURL), zap.Error(err))
 		return fmt.Errorf("failed to connect to TEE_K: %v", err)
 	}
 
 	c.wsConn = conn
-	log.Printf("[Client] WebSocket connection to TEE_K established successfully")
+	c.logger.Info("WebSocket connection to TEE_K established successfully")
 
 	// Start message handling goroutine
 	go c.handleMessages()
@@ -54,28 +57,29 @@ func (c *Client) ConnectToTEET() error {
 		return fmt.Errorf("failed to parse TEE_T URL: %v", err)
 	}
 
-	log.Printf("[Client] Attempting WebSocket connection to TEE_T at: %s", c.teetURL)
+	c.logger.Info("Attempting WebSocket connection to TEE_T",
+		zap.String("url", c.teetURL))
 
 	// Determine connection mode and use appropriate dialer
 	var conn *websocket.Conn
 	if strings.HasPrefix(c.teetURL, "wss://") && strings.Contains(c.teetURL, "reclaimprotocol.org") {
 		// Enclave mode: use custom dialer with TLS config
-		log.Printf("[Client] Enclave mode detected for TEE_T - using custom dialer")
+		c.logger.Info("Enclave mode detected for TEE_T - using custom dialer")
 		dialer := createEnclaveWebSocketDialer()
 		conn, _, err = dialer.Dial(u.String(), nil)
 	} else {
 		// Standalone mode: use default dialer
-		log.Printf("[Client] Standalone mode detected for TEE_T - using default dialer")
+		c.logger.Info("Standalone mode detected for TEE_T - using default dialer")
 		conn, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
 	}
 
 	if err != nil {
-		log.Printf("[Client] WebSocket dial failed for TEE_T %s: %v", c.teetURL, err)
+		c.logger.Error("WebSocket dial failed for TEE_T", zap.String("url", c.teetURL), zap.Error(err))
 		return fmt.Errorf("failed to connect to TEE_T: %v", err)
 	}
 
 	c.teetConn = conn
-	log.Printf("[Client] WebSocket connection to TEE_T established successfully")
+	c.logger.Info("WebSocket connection to TEE_T established successfully")
 
 	// Start message handling goroutine for TEE_T
 	go c.handleTEETMessages()
@@ -300,18 +304,20 @@ func (c *Client) sendPendingConnectionRequest() error {
 func (c *Client) handleEncryptedData(msg *shared.Message) {
 	var encData shared.EncryptedDataResponse
 	if err := msg.UnmarshalData(&encData); err != nil {
-		log.Printf("[Client] Failed to unmarshal encrypted data: %v", err)
+		c.logger.Error("Failed to unmarshal encrypted data", zap.Error(err))
 		return
 	}
 
 	if !encData.Success {
-		log.Printf("[Client] TEE_T reported failure in encrypted data")
+		c.logger.Error("TEE_T reported failure in encrypted data")
 		return
 	}
 
-	fmt.Printf("[Client] Received encrypted data (%d bytes) + tag (%d bytes)\n", len(encData.EncryptedData), len(encData.AuthTag))
+	c.logger.Info("Received encrypted data",
+		zap.Int("encrypted_bytes", len(encData.EncryptedData)),
+		zap.Int("tag_bytes", len(encData.AuthTag)))
 
-	fmt.Printf("[Client] RECEIVED redaction verification result from TEE_T\n")
+	c.logger.Info("RECEIVED redaction verification result from TEE_T")
 
 	// Create TLS record with encrypted data and authentication tag
 	// Format depends on TLS version and cipher suite
@@ -355,29 +361,31 @@ func (c *Client) handleEncryptedData(msg *shared.Message) {
 	tlsRecord[4] = byte(recordLength & 0xFF) // Length low byte
 	copy(tlsRecord[5:], payload)             // Complete payload
 
-	fmt.Printf("[Client] Sending TLS record (%d bytes)\n", len(tlsRecord))
+	c.logger.Info("Sending TLS record", zap.Int("bytes", len(tlsRecord)))
 
 	// TEE_T expects individual TLS records for application data, not raw TCP chunks
 	c.capturedTraffic = append(c.capturedTraffic, tlsRecord)
-	fmt.Printf("[Client] Captured outgoing application data record: type 0x%02x, %d bytes\n", tlsRecord[0], len(tlsRecord))
-	fmt.Printf("[Client] Total captured records now: %d\n", len(c.capturedTraffic))
+	c.logger.Info("Captured outgoing application data record",
+		zap.Int("type", int(tlsRecord[0])),
+		zap.Int("bytes", len(tlsRecord)))
+	c.logger.Info("Total captured records now", zap.Int("count", len(c.capturedTraffic)))
 
 	// Send to website via TCP connection
 	if c.tcpConn != nil {
 		n, err := c.tcpConn.Write(tlsRecord)
 		if err != nil {
-			log.Printf("[Client] Failed to write to TCP connection: %v", err)
+			c.logger.Error("Failed to write to TCP connection", zap.Error(err))
 			return
 		}
-		fmt.Printf("[Client] Sent %d bytes to website\n", n)
+		c.logger.Info("Sent bytes to website", zap.Int("bytes", n))
 
 		// Mark that HTTP request has been sent and we're expecting a response
 		c.httpRequestSent = true
 		c.httpResponseExpected = true
-		fmt.Printf("[Client] HTTP request sent, now expecting HTTP response...\n")
+		c.logger.Info("HTTP request sent, now expecting HTTP response...")
 
 	} else {
-		log.Printf("[Client] No TCP connection available")
+		c.logger.Error("No TCP connection available")
 	}
 }
 

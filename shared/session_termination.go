@@ -12,11 +12,13 @@ type TerminationReason string
 
 const (
 	// Critical cryptographic failures that compromise protocol integrity
-	ReasonCryptoTagVerificationFailed TerminationReason = "crypto_tag_verification_failed"
-	ReasonCryptoCommitmentFailed      TerminationReason = "crypto_commitment_verification_failed"
-	ReasonCryptoKeyGenerationFailed   TerminationReason = "crypto_key_generation_failed"
-	ReasonCryptoTagComputationFailed  TerminationReason = "crypto_tag_computation_failed"
-	ReasonCryptoSigningFailed         TerminationReason = "crypto_signing_failed"
+	ReasonCryptoTagVerificationFailed  TerminationReason = "crypto_tag_verification_failed"
+	ReasonCryptoCommitmentFailed       TerminationReason = "crypto_commitment_verification_failed"
+	ReasonCryptoKeyGenerationFailed    TerminationReason = "crypto_key_generation_failed"
+	ReasonCryptoTagComputationFailed   TerminationReason = "crypto_tag_computation_failed"
+	ReasonCryptoSigningFailed          TerminationReason = "crypto_signing_failed"
+	ReasonCryptoStreamGenerationFailed TerminationReason = "crypto_stream_generation_failed"
+	ReasonCryptoHMACVerificationFailed TerminationReason = "crypto_hmac_verification_failed"
 
 	// Session state corruption
 	ReasonSessionStateCorrupted TerminationReason = "session_state_corrupted"
@@ -24,27 +26,43 @@ const (
 	ReasonSessionIDMismatch     TerminationReason = "session_id_mismatch"
 	ReasonSessionNotFound       TerminationReason = "session_not_found"
 
-	// Protocol violations
+	// Protocol violations - ZERO TOLERANCE
 	ReasonMessageParsingFailed  TerminationReason = "message_parsing_failed"
 	ReasonUnknownMessageType    TerminationReason = "unknown_message_type"
 	ReasonMissingSessionID      TerminationReason = "missing_session_id"
 	ReasonProtocolViolation     TerminationReason = "protocol_violation"
 	ReasonTooManyProtocolErrors TerminationReason = "too_many_protocol_errors"
+	ReasonInvalidMessageOrder   TerminationReason = "invalid_message_order"
+	ReasonUnexpectedMessageType TerminationReason = "unexpected_message_type"
+	ReasonMissingRequiredData   TerminationReason = "missing_required_data"
+	ReasonInvalidDataFormat     TerminationReason = "invalid_data_format"
 
 	// Network and connectivity failures
 	ReasonNetworkFailure   TerminationReason = "network_failure"
 	ReasonConnectionLost   TerminationReason = "connection_lost"
 	ReasonWebSocketFailure TerminationReason = "websocket_failure"
 
-	// Security violations
-	ReasonSecurityViolation    TerminationReason = "security_violation"
-	ReasonAuthenticationFailed TerminationReason = "authentication_failed"
-	ReasonUnauthorizedAccess   TerminationReason = "unauthorized_access"
+	// Security violations - ZERO TOLERANCE
+	ReasonSecurityViolation      TerminationReason = "security_violation"
+	ReasonAuthenticationFailed   TerminationReason = "authentication_failed"
+	ReasonUnauthorizedAccess     TerminationReason = "unauthorized_access"
+	ReasonDataIntegrityViolation TerminationReason = "data_integrity_violation"
+	ReasonReplayAttackDetected   TerminationReason = "replay_attack_detected"
 
 	// Operational failures
 	ReasonInternalError      TerminationReason = "internal_error"
 	ReasonResourceExhaustion TerminationReason = "resource_exhaustion"
 	ReasonTimeoutExceeded    TerminationReason = "timeout_exceeded"
+
+	// TEE+MPC Protocol Specific Errors - ZERO TOLERANCE
+	ReasonHandshakeVerificationFailed   TerminationReason = "handshake_verification_failed"
+	ReasonRequestValidationFailed       TerminationReason = "request_validation_failed"
+	ReasonResponseValidationFailed      TerminationReason = "response_validation_failed"
+	ReasonTranscriptGenerationFailed    TerminationReason = "transcript_generation_failed"
+	ReasonAttestationVerificationFailed TerminationReason = "attestation_verification_failed"
+	ReasonRedactionVerificationFailed   TerminationReason = "redaction_verification_failed"
+	ReasonTagComputationFailed          TerminationReason = "tag_computation_failed"
+	ReasonStreamReconstructionFailed    TerminationReason = "stream_reconstruction_failed"
 )
 
 // TerminationSeverity indicates how critical the termination reason is
@@ -68,7 +86,9 @@ func (r TerminationReason) GetSeverity() TerminationSeverity {
 	case ReasonCryptoTagVerificationFailed,
 		ReasonCryptoCommitmentFailed,
 		ReasonCryptoTagComputationFailed,
-		ReasonCryptoSigningFailed:
+		ReasonCryptoSigningFailed,
+		ReasonCryptoStreamGenerationFailed,
+		ReasonCryptoHMACVerificationFailed:
 		return SeverityHigh
 
 	// Key generation failure - critical in enclave mode, medium in dev mode
@@ -82,21 +102,27 @@ func (r TerminationReason) GetSeverity() TerminationSeverity {
 		ReasonSessionNotFound:
 		return SeverityMedium
 
-	// Protocol violations - start low but escalate with repeated failures
+	// Protocol violations - ZERO TOLERANCE: All protocol violations are high severity
 	case ReasonMessageParsingFailed,
 		ReasonUnknownMessageType,
 		ReasonMissingSessionID,
-		ReasonProtocolViolation:
-		return SeverityLow
+		ReasonProtocolViolation,
+		ReasonInvalidMessageOrder,
+		ReasonUnexpectedMessageType,
+		ReasonMissingRequiredData,
+		ReasonInvalidDataFormat:
+		return SeverityHigh
 
-	// Too many protocol errors - medium severity
+	// Too many protocol errors - high severity (escalated from low)
 	case ReasonTooManyProtocolErrors:
-		return SeverityMedium
+		return SeverityHigh
 
-	// Security violations - always high severity
+	// Security violations - ZERO TOLERANCE: All security violations are high severity
 	case ReasonSecurityViolation,
 		ReasonAuthenticationFailed,
-		ReasonUnauthorizedAccess:
+		ReasonUnauthorizedAccess,
+		ReasonDataIntegrityViolation,
+		ReasonReplayAttackDetected:
 		return SeverityHigh
 
 	// Network errors - usually low severity unless repeated
@@ -110,6 +136,17 @@ func (r TerminationReason) GetSeverity() TerminationSeverity {
 		ReasonResourceExhaustion,
 		ReasonTimeoutExceeded:
 		return SeverityMedium
+
+	// TEE+MPC Protocol Specific Errors - ZERO TOLERANCE: All are high severity
+	case ReasonHandshakeVerificationFailed,
+		ReasonRequestValidationFailed,
+		ReasonResponseValidationFailed,
+		ReasonTranscriptGenerationFailed,
+		ReasonAttestationVerificationFailed,
+		ReasonRedactionVerificationFailed,
+		ReasonTagComputationFailed,
+		ReasonStreamReconstructionFailed:
+		return SeverityHigh
 
 	default:
 		return SeverityMedium
@@ -156,10 +193,11 @@ func (st *SessionTerminator) ShouldTerminate(sessionID string, reason Terminatio
 		os.Exit(1)
 	}
 
-	// Always terminate for high severity (but continue process)
+	// ZERO TOLERANCE POLICY: Always terminate for high severity (protocol violations, security violations, crypto failures)
 	if severity == SeverityHigh {
 		st.logger.SessionTerminated(sessionID, string(reason),
 			zap.String("severity", "high"),
+			zap.String("policy", "zero_tolerance"),
 			zap.Error(err))
 		return true
 	}
@@ -172,7 +210,7 @@ func (st *SessionTerminator) ShouldTerminate(sessionID string, reason Terminatio
 		return true
 	}
 
-	// For low severity, track error count and terminate if threshold exceeded
+	// For low severity (network errors), track error count and terminate if threshold exceeded
 	if severity == SeverityLow {
 		st.errorMutex.Lock()
 		st.errorCounts[sessionID]++
@@ -189,7 +227,7 @@ func (st *SessionTerminator) ShouldTerminate(sessionID string, reason Terminatio
 		}
 
 		// Log the error but don't terminate yet
-		st.logger.WithSession(sessionID).Warn("Protocol error (counted)",
+		st.logger.WithSession(sessionID).Warn("Network error (counted)",
 			zap.String("reason", string(reason)),
 			zap.Int("count", count),
 			zap.Int("max_errors", st.maxErrors),
@@ -231,9 +269,10 @@ func (st *SessionTerminator) SecurityViolation(sessionID string, reason Terminat
 	allFields := append(fields,
 		zap.String("session_id", sessionID),
 		zap.String("reason", string(reason)),
+		zap.String("policy", "zero_tolerance"),
 		zap.Error(err))
 
-	st.logger.Security("Security violation detected", allFields...)
+	st.logger.Security("Security violation detected - terminating session", allFields...)
 	return st.ShouldTerminate(sessionID, reason, err)
 }
 
@@ -263,7 +302,9 @@ func (r TerminationReason) IsCryptoError() bool {
 		ReasonCryptoCommitmentFailed,
 		ReasonCryptoKeyGenerationFailed,
 		ReasonCryptoTagComputationFailed,
-		ReasonCryptoSigningFailed:
+		ReasonCryptoSigningFailed,
+		ReasonCryptoStreamGenerationFailed,
+		ReasonCryptoHMACVerificationFailed:
 		return true
 	default:
 		return false
@@ -293,4 +334,63 @@ func (r TerminationReason) IsSecurityError() bool {
 	default:
 		return false
 	}
+}
+
+// IsProtocolError checks if the termination reason is related to protocol violations
+func (r TerminationReason) IsProtocolError() bool {
+	switch r {
+	case ReasonMessageParsingFailed,
+		ReasonUnknownMessageType,
+		ReasonMissingSessionID,
+		ReasonProtocolViolation,
+		ReasonInvalidMessageOrder,
+		ReasonUnexpectedMessageType,
+		ReasonMissingRequiredData,
+		ReasonInvalidDataFormat,
+		ReasonTooManyProtocolErrors:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsTEEProtocolError checks if the termination reason is related to TEE+MPC protocol violations
+func (r TerminationReason) IsTEEProtocolError() bool {
+	switch r {
+	case ReasonHandshakeVerificationFailed,
+		ReasonRequestValidationFailed,
+		ReasonResponseValidationFailed,
+		ReasonTranscriptGenerationFailed,
+		ReasonAttestationVerificationFailed,
+		ReasonRedactionVerificationFailed,
+		ReasonTagComputationFailed,
+		ReasonStreamReconstructionFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ZeroToleranceError logs a zero-tolerance error and always terminates the session
+func (st *SessionTerminator) ZeroToleranceError(sessionID string, reason TerminationReason, err error, fields ...zap.Field) bool {
+	allFields := append(fields,
+		zap.String("session_id", sessionID),
+		zap.String("reason", string(reason)),
+		zap.String("policy", "zero_tolerance"),
+		zap.Error(err))
+
+	st.logger.Critical("Zero-tolerance policy violation - terminating session", allFields...)
+	return st.ShouldTerminate(sessionID, reason, err)
+}
+
+// ProtocolViolation logs a protocol violation and always terminates the session
+func (st *SessionTerminator) ProtocolViolation(sessionID string, reason TerminationReason, err error, fields ...zap.Field) bool {
+	allFields := append(fields,
+		zap.String("session_id", sessionID),
+		zap.String("reason", string(reason)),
+		zap.String("policy", "zero_tolerance"),
+		zap.Error(err))
+
+	st.logger.Security("Protocol violation detected - terminating session", allFields...)
+	return st.ShouldTerminate(sessionID, reason, err)
 }

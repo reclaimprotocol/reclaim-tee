@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,9 +12,11 @@ import (
 	"time"
 
 	"tee-mpc/shared"
+
+	"go.uber.org/zap"
 )
 
-func startEnclaveMode(config *TEEKConfig) {
+func startEnclaveMode(config *TEEKConfig, logger *shared.Logger) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -32,7 +33,7 @@ func startEnclaveMode(config *TEEKConfig) {
 
 	enclaveManager, err := shared.NewEnclaveManager(ctx, enclaveConfig, config.KMSKey)
 	if err != nil {
-		log.Printf("[TEE_K] CRITICAL ERROR: Failed to initialize enclave manager: %v", err)
+		logger.Critical("Failed to initialize enclave manager", zap.Error(err))
 		// Return gracefully instead of crashing enclave
 		return
 	}
@@ -40,7 +41,7 @@ func startEnclaveMode(config *TEEKConfig) {
 
 	// Phase 1: Bootstrap certificates via ACME
 	if err := enclaveManager.BootstrapCertificates(ctx); err != nil {
-		log.Printf("[TEE_K] CRITICAL ERROR: Certificate bootstrap failed: %v", err)
+		logger.Critical("Certificate bootstrap failed", zap.Error(err))
 		// Return gracefully instead of crashing enclave
 		return
 	}
@@ -53,14 +54,14 @@ func startEnclaveMode(config *TEEKConfig) {
 	teek.SetForceCipherSuite(config.ForceCipherSuite)
 
 	// Create HTTPS server with integrated WebSocket handler
-	httpsHandler := setupEnclaveRoutes(teek, enclaveManager)
+	httpsHandler := setupEnclaveRoutes(teek, enclaveManager, logger)
 	httpsServer := enclaveManager.CreateHTTPSServer(httpsHandler)
 
 	// Start HTTPS server in background
 	go func() {
-		log.Printf("[TEE_K] Starting production HTTPS server on port %d", enclaveConfig.HTTPSPort)
+		logger.Info("Starting production HTTPS server", zap.Int("port", int(enclaveConfig.HTTPSPort)))
 		if err := httpsServer.ListenAndServeTLS(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("[TEE_K] CRITICAL ERROR: HTTPS server failed: %v", err)
+			logger.Critical("HTTPS server failed", zap.Error(err))
 			// Signal main goroutine to shut down gracefully
 			cancel()
 		}
@@ -68,31 +69,32 @@ func startEnclaveMode(config *TEEKConfig) {
 
 	// Set TEE_T URL for per-session connections
 	teek.SetTEETURL(config.TEETURL)
-	log.Printf("[TEE_K] Enclave mode: TEE_T URL set to %s, will create per-session connections", config.TEETURL)
+	logger.Info("Enclave mode configuration", zap.String("teet_url", config.TEETURL))
 
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	log.Printf("[TEE_K] Enclave mode started successfully - Domain: %s, HTTPS Port: %d",
-		config.Domain, enclaveConfig.HTTPSPort)
+	logger.Info("Enclave mode started successfully",
+		zap.String("domain", config.Domain),
+		zap.Int("https_port", int(enclaveConfig.HTTPSPort)))
 
 	<-sigChan
-	log.Printf("[TEE_K] Shutting down enclave mode...")
+	logger.Info("Shutting down enclave mode...")
 
 	// Graceful shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
 	if err := httpsServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[TEE_K] HTTPS server shutdown error: %v", err)
+		logger.Error("HTTPS server shutdown error", zap.Error(err))
 	}
 
 	cancel() // Cancel main context
-	log.Printf("[TEE_K] Enclave mode shutdown complete")
+	logger.Info("Enclave mode shutdown complete")
 }
 
-func setupEnclaveRoutes(teek *TEEK, enclaveManager *shared.EnclaveManager) http.Handler {
+func setupEnclaveRoutes(teek *TEEK, enclaveManager *shared.EnclaveManager, logger *shared.Logger) http.Handler {
 	mux := http.NewServeMux()
 
 	// WebSocket upgrade endpoint (main TEE protocol)
@@ -110,37 +112,38 @@ func setupEnclaveRoutes(teek *TEEK, enclaveManager *shared.EnclaveManager) http.
 
 	// Attestation endpoint with ECDSA public key in user data
 	mux.HandleFunc("/attest", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[TEE_K] Attestation request from %s", r.RemoteAddr)
+		logger.Info("Attestation request received", zap.String("remote_addr", r.RemoteAddr))
 
 		// Get the ECDSA public key from the TEEK signing key pair
 		if teek.signingKeyPair == nil {
-			log.Printf("[TEE_K] No signing key pair available for attestation")
+			logger.Error("No signing key pair available for attestation")
 			http.Error(w, "No signing key pair available", http.StatusInternalServerError)
 			return
 		}
 
 		publicKeyDER, err := teek.signingKeyPair.GetPublicKeyDER()
 		if err != nil {
-			log.Printf("[TEE_K] Failed to get public key DER: %v", err)
+			logger.Error("Failed to get public key DER", zap.Error(err))
 			http.Error(w, "Failed to get public key", http.StatusInternalServerError)
 			return
 		}
 
 		// Create user data containing the hex-encoded ECDSA public key
 		userData := fmt.Sprintf("tee_k_public_key:%x", publicKeyDER)
-		log.Printf("[TEE_K] Including ECDSA public key in attestation (DER: %d bytes)", len(publicKeyDER))
+		logger.Info("Including ECDSA public key in attestation", zap.Int("der_bytes", len(publicKeyDER)))
 
 		attestationDoc, err := enclaveManager.GenerateAttestation(r.Context(), []byte(userData))
 		if err != nil {
-			log.Printf("[TEE_K] Attestation generation failed: %v", err)
+			logger.Error("Attestation generation failed", zap.Error(err))
 			http.Error(w, "Failed to generate attestation", http.StatusInternalServerError)
 			return
 		}
 
 		// Encode attestation document as base64
 		attestationBase64 := base64.StdEncoding.EncodeToString(attestationDoc)
-		log.Printf("[TEE_K] Generated attestation document (%d bytes, base64: %d chars)",
-			len(attestationDoc), len(attestationBase64))
+		logger.Info("Generated attestation document",
+			zap.Int("bytes", len(attestationDoc)),
+			zap.Int("base64_chars", len(attestationBase64)))
 
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("X-Enclave-Service", "tee_k")
@@ -150,7 +153,10 @@ func setupEnclaveRoutes(teek *TEEK, enclaveManager *shared.EnclaveManager) http.
 
 	// Default handler for the root
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[TEE_K] Received %s request for %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		logger.Info("Received request",
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.String("remote_addr", r.RemoteAddr))
 
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("X-Enclave-Service", "tee_k")
