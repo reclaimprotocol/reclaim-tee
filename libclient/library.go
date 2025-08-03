@@ -13,6 +13,7 @@ type ReclaimClient interface {
 	Connect() error
 	RequestHTTP(hostname string, port int) error
 	SetRequestData(requestData []byte) error
+	SetRequestRedactionRanges(ranges []shared.RequestRedactionRange)
 	WaitForCompletion() <-chan struct{}
 	Close() error
 	SetResponseCallback(callback ResponseCallback)
@@ -215,6 +216,10 @@ func (r *ReclaimClientImpl) SetRequestData(requestData []byte) error {
 	// Store the request data in the client for later use
 	r.Client.requestData = requestData
 	return nil
+}
+
+func (r *ReclaimClientImpl) SetRequestRedactionRanges(ranges []shared.RequestRedactionRange) {
+	r.Client.SetRequestRedactionRanges(ranges)
 }
 
 // detectMode automatically detects the client mode based on URLs

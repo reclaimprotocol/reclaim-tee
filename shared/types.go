@@ -224,11 +224,17 @@ type ResponseSessionState struct {
 
 // Protocol data structures
 
+// Request redaction type constants
+const (
+	RedactionTypeSensitive      = "sensitive"       // R_S: Sensitive data not used in proofs
+	RedactionTypeSensitiveProof = "sensitive_proof" // R_SP: Sensitive data used in proofs
+)
+
 // RequestRedactionRange is used for request redaction (needs types for proof verification)
 type RequestRedactionRange struct {
 	Start          int    `json:"start"`                     // Start position in the decryption stream
 	Length         int    `json:"length"`                    // Length of the range to redact
-	Type           string `json:"type"`                      // "sensitive" or "sensitive_proof"
+	Type           string `json:"type"`                      // Use RedactionTypeSensitive or RedactionTypeSensitiveProof
 	RedactionBytes []byte `json:"redaction_bytes,omitempty"` // Bytes to use in redacted stream (calculated to produce '*' when XORed with ciphertext)
 }
 

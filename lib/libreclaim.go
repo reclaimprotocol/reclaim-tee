@@ -191,7 +191,7 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 		TEETURL:           "wss://tee-t.reclaimprotocol.org/ws",
 		Timeout:           30 * time.Second,
 		Mode:              clientlib.ModeEnclave,
-		RequestRedactions: convertRangesToSpecs(requestData.RequestRedactionRanges),
+		RequestRedactions: []clientlib.RedactionSpec{}, // Empty - ranges will be set directly
 	}
 
 	// Create client
@@ -215,6 +215,9 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 		sessionMutex.Unlock()
 		return C.RECLAIM_ERROR_PROTOCOL_FAILED
 	}
+
+	// Set redaction ranges directly
+	session.Client.SetRequestRedactionRanges(requestData.RequestRedactionRanges)
 
 	// Extract hostname and port from host string
 	hostname, portStr := parseHost(requestData.Host)
@@ -477,38 +480,6 @@ func reclaim_get_version() *C.char {
 }
 
 // Helper functions
-
-// convertRangesToSpecs converts RequestRedactionRange to RedactionSpec
-func convertRangesToSpecs(ranges []shared.RequestRedactionRange) []clientlib.RedactionSpec {
-	var specs []clientlib.RedactionSpec
-
-	// Convert the ranges to patterns that the clientlib can understand
-	for _, r := range ranges {
-		// Create a pattern based on the range type and position
-		var pattern string
-		switch r.Type {
-		case "sensitive":
-			// For sensitive data, we'll use a pattern that matches common sensitive headers
-			if r.Start > 0 {
-				pattern = "Authorization: Bearer"
-			} else {
-				pattern = "X-Account-ID:"
-			}
-		case "sensitive_proof":
-			// For sensitive_proof data, we'll use a pattern that matches the X-Account-ID field
-			pattern = "X-Account-ID:"
-		default:
-			pattern = fmt.Sprintf("range_%d_%d", r.Start, r.Length)
-		}
-
-		specs = append(specs, clientlib.RedactionSpec{
-			Pattern: pattern,
-			Type:    r.Type,
-		})
-	}
-
-	return specs
-}
 
 // parseHost extracts hostname and port from host string
 func parseHost(host string) (string, string) {

@@ -970,7 +970,7 @@ func (t *TEEK) validateRedactionPositions(ranges []shared.RequestRedactionRange,
 		}
 
 		// Check for valid type
-		if r.Type != "sensitive" && r.Type != "sensitive_proof" {
+		if r.Type != shared.RedactionTypeSensitive && r.Type != shared.RedactionTypeSensitiveProof {
 			return fmt.Errorf("range %d has invalid type: %s", i, r.Type)
 		}
 

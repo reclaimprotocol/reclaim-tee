@@ -258,6 +258,11 @@ func (c *Client) SetMode(mode ClientMode) {
 	c.clientMode = mode
 }
 
+// SetRequestRedactionRanges sets the redaction ranges directly (for libreclaim compatibility)
+func (c *Client) SetRequestRedactionRanges(ranges []shared.RequestRedactionRange) {
+	c.requestRedactionRanges = ranges
+}
+
 func (c *Client) RequestHTTP(hostname string, port int) error {
 	c.targetHost = hostname
 	c.targetPort = port
@@ -317,26 +322,36 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 		zap.String("request", string(httpRequest)),
 		zap.Int("total_length", len(httpRequest)))
 
-	// Apply redaction specifications from config
-	ranges, err := c.applyRedactionSpecs(httpRequest)
-	if err != nil {
-		return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("failed to apply redaction specs: %v", err)
-	}
+	// Use redaction ranges directly if set, otherwise apply redaction specifications from config
+	var ranges []shared.RequestRedactionRange
+	var err error
 
-	// If no redaction specs configured, add default ones for the test request
-	if len(ranges) == 0 && len(c.requestRedactions) == 0 {
-		c.logger.Info("No redaction specs configured, adding default redaction specs for test request")
-		// Add default redaction specs for the test request
-		defaultSpecs := []RedactionSpec{
-			{Pattern: "Authorization: Bearer", Type: "sensitive_proof"},
-			{Pattern: "X-Account-ID:", Type: "sensitive"},
-		}
-		c.requestRedactions = defaultSpecs
-
-		// Re-apply redaction specs with defaults
+	if len(c.requestRedactionRanges) > 0 {
+		// Use ranges set directly (for libreclaim compatibility)
+		ranges = c.requestRedactionRanges
+		c.logger.Info("Using direct redaction ranges", zap.Int("count", len(ranges)))
+	} else {
+		// Apply redaction specifications from config
 		ranges, err = c.applyRedactionSpecs(httpRequest)
 		if err != nil {
-			return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("failed to apply default redaction specs: %v", err)
+			return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("failed to apply redaction specs: %v", err)
+		}
+
+		// If no redaction specs configured, add default ones for the test request
+		if len(ranges) == 0 && len(c.requestRedactions) == 0 {
+			c.logger.Info("No redaction specs configured, adding default redaction specs for test request")
+			// Add default redaction specs for the test request
+			defaultSpecs := []RedactionSpec{
+				{Pattern: "Authorization: Bearer", Type: shared.RedactionTypeSensitiveProof},
+				{Pattern: "X-Account-ID:", Type: shared.RedactionTypeSensitive},
+			}
+			c.requestRedactions = defaultSpecs
+
+			// Re-apply redaction specs with defaults
+			ranges, err = c.applyRedactionSpecs(httpRequest)
+			if err != nil {
+				return shared.RedactedRequestData{}, shared.RedactionStreamsData{}, fmt.Errorf("failed to apply default redaction specs: %v", err)
+			}
 		}
 	}
 
@@ -393,7 +408,7 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 
 	// Store proof stream/key (first range with type containing "proof")
 	for idx, r := range ranges {
-		if strings.Contains(r.Type, "proof") {
+		if r.Type == shared.RedactionTypeSensitiveProof {
 			c.proofStream = streams[idx]
 			c.proofKey = keys[idx]
 			break

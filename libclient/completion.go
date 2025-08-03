@@ -22,8 +22,6 @@ func (c *Client) checkProtocolCompletion(reason string) {
 
 	// For debugging: show where we are in the process
 	switch currentPhase {
-	case PhaseHandshaking:
-		c.logger.Info("Still in handshaking phase")
 	case PhaseCollectingResponses:
 		collectionComplete, _, _ := c.getBatchState()
 		if collectionComplete {

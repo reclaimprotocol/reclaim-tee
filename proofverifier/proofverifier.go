@@ -323,7 +323,7 @@ func verifyAndRevealProofData(bundle shared.VerificationBundle) error {
 
 	for _, r := range redactionRanges {
 		// Only reveal ranges marked as proof-relevant (sensitive_proof)
-		if strings.Contains(r.Type, "proof") {
+		if r.Type == shared.RedactionTypeSensitiveProof {
 			// Check bounds
 			if r.Start+r.Length > len(revealedRequest) {
 				return fmt.Errorf("proof range [%d:%d] exceeds request length %d", r.Start, r.Start+r.Length, len(revealedRequest))

@@ -19,6 +19,6 @@ type ClientConfig struct {
 // RedactionSpec defines a redaction specification for request data
 type RedactionSpec struct {
 	Pattern     string `json:"pattern"`     // Regex or literal pattern to match
-	Type        string `json:"type"`        // "sensitive" or "sensitive_proof"
+	Type        string `json:"type"`        // Use shared.RedactionTypeSensitive or shared.RedactionTypeSensitiveProof
 	Replacement string `json:"replacement"` // Optional replacement value
 }
