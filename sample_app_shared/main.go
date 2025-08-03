@@ -303,6 +303,63 @@ func findPatternMatches(request, pattern string) []PatternMatch {
 				})
 			}
 		}
+	} else if strings.Contains(pattern, "X-Session-Token:") {
+		// Handle X-Session-Token header pattern
+		start := strings.Index(request, "X-Session-Token: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the session token part
+				tokenStart := start + len("X-Session-Token: ")
+				tokenEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  tokenStart,
+					Length: tokenEnd - tokenStart,
+					Value:  request[tokenStart:tokenEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "X-API-Key:") {
+		// Handle X-API-Key header pattern
+		start := strings.Index(request, "X-API-Key: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the API key part
+				keyStart := start + len("X-API-Key: ")
+				keyEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  keyStart,
+					Length: keyEnd - keyStart,
+					Value:  request[keyStart:keyEnd],
+				})
+			}
+		}
+	} else if strings.Contains(pattern, "X-User-ID:") {
+		// Handle X-User-ID header pattern
+		start := strings.Index(request, "X-User-ID: ")
+		if start != -1 {
+			lineEnd := strings.Index(request[start:], "\r\n")
+			if lineEnd == -1 {
+				lineEnd = strings.Index(request[start:], "\n")
+			}
+			if lineEnd != -1 {
+				// Extract just the user ID part
+				userIdStart := start + len("X-User-ID: ")
+				userIdEnd := start + lineEnd
+				matches = append(matches, PatternMatch{
+					Start:  userIdStart,
+					Length: userIdEnd - userIdStart,
+					Value:  request[userIdStart:userIdEnd],
+				})
+			}
+		}
 	}
 
 	return matches
@@ -321,6 +378,9 @@ func createDemoRedactionRanges(httpRequest []byte) []shared.RequestRedactionRang
 	}{
 		{Pattern: "Authorization: Bearer", Type: shared.RedactionTypeSensitiveProof},
 		{Pattern: "X-Account-ID:", Type: shared.RedactionTypeSensitive},
+		{Pattern: "X-Session-Token:", Type: shared.RedactionTypeSensitiveProof},
+		{Pattern: "X-API-Key:", Type: shared.RedactionTypeSensitiveProof},
+		{Pattern: "X-User-ID:", Type: shared.RedactionTypeSensitiveProof},
 	}
 
 	// Apply demo redaction specifications
@@ -340,8 +400,8 @@ func createDemoRedactionRanges(httpRequest []byte) []shared.RequestRedactionRang
 
 // createDemoRequest creates the demo HTTP request
 func createDemoRequest(host string) []byte {
-	// Create HTTP request with test sensitive data
-	testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", host)
+	// Create HTTP request with test sensitive data including multiple R_SP headers
+	testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nX-Session-Token: sess_abc123def456\r\nX-API-Key: api_key_xyz789uvw012\r\nX-User-ID: user_987654321\r\nConnection: close\r\n\r\n", host)
 	return []byte(testRequest)
 }
 

@@ -97,6 +97,38 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 
 	c.logger.Info("Sending redacted HTTP request to TEE_K")
 
+	// Log what TEE_K will see (the redacted request)
+	c.logger.Info("TEE_K will receive redacted request",
+		zap.Int("redacted_request_length", len(redactedData.RedactedRequest)),
+		zap.Int("redaction_ranges_count", len(redactedData.RedactionRanges)),
+		zap.Int("commitments_count", len(redactedData.Commitments)))
+
+	// Show the redacted request content that TEE_K will see
+	prettyRedactedRequest := make([]byte, len(redactedData.RedactedRequest))
+	copy(prettyRedactedRequest, redactedData.RedactedRequest)
+
+	// Overlay '*' over redacted ranges for display
+	for _, r := range redactedData.RedactionRanges {
+		end := r.Start + r.Length
+		if r.Start >= 0 && end <= len(prettyRedactedRequest) {
+			for i := r.Start; i < end; i++ {
+				prettyRedactedRequest[i] = '*'
+			}
+		}
+	}
+
+	c.logger.Info("TEE_K redacted request content",
+		zap.String("redacted_request", string(prettyRedactedRequest)))
+
+	// Log redaction ranges details
+	for i, r := range redactedData.RedactionRanges {
+		c.logger.Info("Redaction range for TEE_K",
+			zap.Int("index", i),
+			zap.Int("start", r.Start),
+			zap.Int("length", r.Length),
+			zap.String("type", r.Type))
+	}
+
 	// Send redacted request to TEE_K for validation and encryption
 	redactedMsg := shared.CreateMessage(shared.MsgRedactedRequest, redactedData)
 

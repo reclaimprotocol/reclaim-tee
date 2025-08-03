@@ -52,7 +52,7 @@ NOTE: due to the need to divide AEAD into two processes (encryption and MAC comp
         - **Hostname/IP address**
         - **Port number** (usually 443 for HTTPS/TLS)
         - **SNI (Server Name Indication)**
-        - **ALPN (Application-Layer Protocol Negotiation)** - What protocols you support after TLS (like HTTP/2, HTTP/1.1)
+        - **ALPN (Application-Layer Protocol Negotiation)—**What protocols you support after TLS (like HTTP/2, HTTP/1.1)
     2. TEE_K conducts the TLS handshake with the Website through the User (i.e. the User is a proxy that sends data back and forth) on behalf of the User, establishing TLS session keys (further referred to as TLS keys). Note that the User learns nothing about the session keys at this stage.
     3. TEE_K discloses to the User the key used for Handshake, thus proving the validity of the connection (to avoid phishing) and, especially, the chain of certificates that appeared in the TLS handshake (this key is never used in the Record phase!). 
     In the case of TLS 1.2 this step can be avoided due to the lack of encryption in the Handshake
@@ -78,7 +78,7 @@ NOTE: due to the need to divide AEAD into two processes (encryption and MAC comp
     6. The User sends previously generated streams Str_S, Str_SP, and two commitment keys: K_S, K_SP to TEE_T.
     7. TEE_T verifies the correctness of commitments and then applies streams Str_S and Str_SP to the corresponding parts of R_red_Enc, thus getting R_Enc.
     8. TEE_T computes the authentication tag T and sends R_Enc and T to the User.
-    9. The fully encrypted request (R_Enc and T) is transmitted to the Website by the User.
+    9. The User transmits the fully encrypted request (R_Enc and T) to the Website.
 - **Flow scheme**
 1. User → TEE_K: redacted TLS request, commitments
 2. TEE_K → User: “all verifications passed”

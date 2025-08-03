@@ -171,9 +171,9 @@ type Client struct {
 	fullRedactedResponse    []byte                                  // final redacted HTTP response (concatenated)
 	expectedRedactedStreams int                                     // expected number of redacted streams from response sequences
 
-	// commitment opening for proof
-	proofStream []byte
-	proofKey    []byte
+	// commitment opening for proof (R_SP streams only, as per protocol)
+	proofStream []byte // Concatenated R_SP streams
+	proofKey    []byte // First R_SP key (protocol assumes single K_SP)
 
 	// Request data from libreclaim library
 	requestData []byte
@@ -375,13 +375,35 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 	// Compute commitments
 	commitments := c.computeCommitments(streams, keys)
 
-	// Store proof stream/key (first range with type containing "proof")
+	// Collect proof streams and keys for R_SP ranges (only these are needed for verification)
+	var proofStreams [][]byte
+	var proofKeys [][]byte
+
 	for idx, r := range ranges {
 		if r.Type == shared.RedactionTypeSensitiveProof {
-			c.proofStream = streams[idx]
-			c.proofKey = keys[idx]
-			break
+			proofStreams = append(proofStreams, streams[idx])
+			proofKeys = append(proofKeys, keys[idx])
 		}
+	}
+
+	// Concatenate all R_SP streams and keys
+	if len(proofStreams) > 0 {
+		totalStreamLen := 0
+		for _, stream := range proofStreams {
+			totalStreamLen += len(stream)
+		}
+		c.proofStream = make([]byte, totalStreamLen)
+		offset := 0
+		for _, stream := range proofStreams {
+			copy(c.proofStream[offset:], stream)
+			offset += len(stream)
+		}
+		c.proofKey = proofKeys[0] // Use first R_SP key (protocol assumes single K_SP)
+
+		c.logger.Info("R_SP streams concatenated",
+			zap.Int("r_sp_ranges", len(proofStreams)),
+			zap.Int("total_proof_stream_length", len(c.proofStream)),
+			zap.Int("proof_key_length", len(c.proofKey)))
 	}
 
 	c.logger.Info("Redaction summary",

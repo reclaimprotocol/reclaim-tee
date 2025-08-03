@@ -921,8 +921,36 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 
 // validateHTTPRequestFormat validates that the redacted request maintains proper HTTP format
 func (t *TEEK) validateHTTPRequestFormat(redactedRequest []byte, ranges []shared.RequestRedactionRange) error {
+	// Create a pretty version with asterisks for redacted ranges
+	prettyRequest := make([]byte, len(redactedRequest))
+	copy(prettyRequest, redactedRequest)
+
+	// Replace redacted ranges with asterisks for display
+	for _, r := range ranges {
+		end := r.Start + r.Length
+		if r.Start >= 0 && end <= len(prettyRequest) {
+			for i := r.Start; i < end; i++ {
+				prettyRequest[i] = '*'
+			}
+		}
+	}
+
+	// Log the pretty version that TEE_K sees
+	t.logger.Info("TEE_K sees redacted request with asterisks",
+		zap.String("redacted_request", string(prettyRequest)),
+		zap.Int("redaction_ranges", len(ranges)))
+
+	// Log details of each redaction range
+	for i, r := range ranges {
+		t.logger.Info("Redaction range for TEE_K",
+			zap.Int("index", i),
+			zap.Int("start", r.Start),
+			zap.Int("length", r.Length),
+			zap.String("type", r.Type))
+	}
+
 	// Convert to string for easier parsing
-	reqStr := string(redactedRequest)
+	reqStr := string(prettyRequest)
 
 	// Check basic HTTP request format
 	if !strings.HasPrefix(reqStr, "GET ") && !strings.HasPrefix(reqStr, "POST ") {
