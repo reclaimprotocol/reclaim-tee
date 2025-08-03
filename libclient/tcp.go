@@ -3,7 +3,6 @@ package clientlib
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strings"
 	"tee-mpc/shared"
@@ -16,7 +15,7 @@ import (
 func (c *Client) handleConnectionReady(msg *shared.Message) {
 	var readyData shared.ConnectionReadyData
 	if err := msg.UnmarshalData(&readyData); err != nil {
-		log.Printf("[Client] Failed to unmarshal connection ready data: %v", err)
+		c.logger.Error("Failed to unmarshal connection ready data", zap.Error(err))
 		return
 	}
 
@@ -38,7 +37,7 @@ func (c *Client) sendTCPReady(success bool) {
 
 		tcpConn, err := net.Dial("tcp", tcpAddr)
 		if err != nil {
-			log.Printf("[Client] Failed to establish TCP connection to website: %v", err)
+			c.logger.Error("Failed to establish TCP connection to website", zap.Error(err))
 			success = false
 		} else {
 			c.tcpConn = tcpConn
@@ -51,7 +50,7 @@ func (c *Client) sendTCPReady(success bool) {
 	tcpReadyMsg := shared.CreateMessage(shared.MsgTCPReady, shared.TCPReadyData{Success: success})
 
 	if err := c.sendMessage(tcpReadyMsg); err != nil {
-		log.Printf("[Client] Failed to send TCP ready message: %v", err)
+		c.logger.Error("Failed to send TCP ready message", zap.Error(err))
 	}
 }
 
@@ -59,7 +58,7 @@ func (c *Client) sendTCPReady(success bool) {
 func (c *Client) handleSendTCPData(msg *shared.Message) {
 	var tcpData shared.TCPData
 	if err := msg.UnmarshalData(&tcpData); err != nil {
-		log.Printf("[Client] Failed to unmarshal TCP data: %v", err)
+		c.logger.Error("Failed to unmarshal TCP data", zap.Error(err))
 		return
 	}
 
@@ -74,14 +73,14 @@ func (c *Client) handleSendTCPData(msg *shared.Message) {
 	conn := c.tcpConn
 
 	if conn == nil {
-		log.Printf("[Client] No TCP connection to website available")
+		c.logger.Error("No TCP connection to website available")
 		return
 	}
 
 	// Forward TLS data to website
 	_, err := conn.Write(tcpData.Data)
 	if err != nil {
-		log.Printf("[Client] Failed to forward TLS data to website: %v", err)
+		c.logger.Error("Failed to forward TLS data to website", zap.Error(err))
 		return
 	}
 }
@@ -170,7 +169,7 @@ func (c *Client) tcpToWebsocket() {
 
 					if err := c.sendMessage(tcpDataMsg); err != nil {
 						if !isClientNetworkShutdownError(err) {
-							log.Printf("[Client] Failed to send TCP data to TEE_K: %v", err)
+							c.logger.Error("Failed to send TCP data to TEE_K", zap.Error(err))
 						}
 						break
 					}

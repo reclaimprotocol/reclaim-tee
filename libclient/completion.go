@@ -1,7 +1,7 @@
 package clientlib
 
 import (
-	"log"
+	"go.uber.org/zap"
 )
 
 // WaitForCompletion returns a channel that closes when the protocol is complete
@@ -13,35 +13,35 @@ func (c *Client) WaitForCompletion() <-chan struct{} {
 func (c *Client) checkProtocolCompletion(reason string) {
 	currentPhase := c.getCurrentPhase()
 
-	log.Printf("[Client] Checking completion: %s (current phase: %s)", reason, currentPhase)
+	c.logger.Info("Checking completion", zap.String("reason", reason), zap.String("current_phase", currentPhase.String()))
 
 	if currentPhase == PhaseComplete {
-		log.Printf("[Client] Protocol already complete")
+		c.logger.Info("Protocol already complete")
 		return
 	}
 
 	// For debugging: show where we are in the process
 	switch currentPhase {
 	case PhaseHandshaking:
-		log.Printf("[Client] Still in handshaking phase")
+		c.logger.Info("Still in handshaking phase")
 	case PhaseCollectingResponses:
 		collectionComplete, _, _ := c.getBatchState()
 		if collectionComplete {
-			log.Printf("[Client] Responses collected, batch will be sent automatically")
+			c.logger.Info("Responses collected, batch will be sent automatically")
 		} else {
-			log.Printf("[Client] Still collecting responses")
+			c.logger.Info("Still collecting responses")
 		}
 	case PhaseReceivingDecryption:
-		log.Printf("[Client] Waiting for batched decryption streams")
+		c.logger.Info("Waiting for batched decryption streams")
 	case PhaseWaitingForRedactionRanges:
-		log.Printf("[Client] Waiting for response redaction ranges from application")
+		c.logger.Info("Waiting for response redaction ranges from application")
 	case PhaseSendingRedaction:
-		log.Printf("[Client] Redaction phase - specs will be sent automatically")
+		c.logger.Info("Redaction phase - specs will be sent automatically")
 	case PhaseReceivingRedacted:
-		log.Printf("[Client] Waiting for redacted streams")
+		c.logger.Info("Waiting for redacted streams")
 	case PhaseReceivingTranscripts:
 		phase, count := c.getProtocolState()
-		log.Printf("[Client] Waiting for transcripts: %d/2 received (phase: %s)", count, phase)
+		c.logger.Info("Waiting for transcripts", zap.Int("received", count), zap.String("phase", phase.String()))
 	default:
 		panic("unhandled default case")
 	}

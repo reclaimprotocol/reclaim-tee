@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -297,24 +296,26 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 
 	// Use the stored request data if available, otherwise use provided request or test request
 	if len(c.requestData) > 0 {
-		fmt.Printf("[Client] createRedactedRequest: using stored requestData\n")
+		c.logger.Info("Using stored request data")
 		httpRequest = c.requestData
 	} else if len(httpRequest) == 0 {
-		fmt.Printf("[Client] createRedactedRequest: using test request\n")
+		c.logger.Info("Using test request")
 		// Create HTTP request with test sensitive data
 		testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nConnection: close\r\n\r\n", c.targetHost)
 		httpRequest = []byte(testRequest)
 	} else {
-		fmt.Printf("[Client] createRedactedRequest: using provided httpRequest\n")
+		c.logger.Info("Using provided HTTP request")
 	}
 
-	fmt.Printf("[Client] ORIGINAL REQUEST (length=%d):\n%s\n", len(httpRequest), string(httpRequest))
-	fmt.Printf("[Client] TARGET HOST: '%s' (length=%d)\n", c.targetHost, len(c.targetHost))
+	c.logger.Debug("Original request details",
+		zap.Int("length", len(httpRequest)),
+		zap.String("target_host", c.targetHost),
+		zap.Int("host_length", len(c.targetHost)))
 
 	// Show the complete HTTP request with sensitive data before redaction
-	fmt.Printf("[Client] COMPLETE HTTP REQUEST (before redaction):\n%s\n", string(httpRequest))
-	fmt.Printf("[Client] Request analysis:\n")
-	fmt.Printf(" Total length: %d bytes\n", len(httpRequest))
+	c.logger.Debug("Complete HTTP request before redaction",
+		zap.String("request", string(httpRequest)),
+		zap.Int("total_length", len(httpRequest)))
 
 	// Apply redaction specifications from config
 	ranges, err := c.applyRedactionSpecs(httpRequest)
@@ -324,7 +325,7 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 
 	// If no redaction specs configured, add default ones for the test request
 	if len(ranges) == 0 && len(c.requestRedactions) == 0 {
-		fmt.Printf("[Client] No redaction specs configured, adding default redaction specs for test request\n")
+		c.logger.Info("No redaction specs configured, adding default redaction specs for test request")
 		// Add default redaction specs for the test request
 		defaultSpecs := []RedactionSpec{
 			{Pattern: "Authorization: Bearer", Type: "sensitive_proof"},
@@ -339,10 +340,14 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 		}
 	}
 
-	fmt.Printf("[Client] REDACTION CONFIGURATION:\n")
-	fmt.Printf(" Found %d redaction ranges\n", len(ranges))
+	c.logger.Info("Redaction configuration",
+		zap.Int("ranges_count", len(ranges)))
 	for i, r := range ranges {
-		fmt.Printf(" Range %d: [%d:%d] type=%s\n", i, r.Start, r.Start+r.Length, r.Type)
+		c.logger.Debug("Redaction range",
+			zap.Int("index", i),
+			zap.Int("start", r.Start),
+			zap.Int("end", r.Start+r.Length),
+			zap.String("type", r.Type))
 	}
 
 	// Validate redaction ranges
@@ -370,15 +375,16 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 			prettyReq[i] = '*'
 		}
 	}
-	fmt.Printf("[Client] REDACTED REQUEST (pretty):\n%s\n", string(prettyReq))
+	c.logger.Debug("Redacted request (pretty)",
+		zap.String("request", string(prettyReq)))
 
 	// Show non-sensitive parts remain unchanged
-	fmt.Printf("[Client] NON-SENSITIVE PARTS (unchanged):\n")
+	c.logger.Debug("Non-sensitive parts (unchanged)")
 	lines := strings.Split(string(httpRequest), "\r\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "GET ") || strings.HasPrefix(line, "Host: ") ||
 			strings.HasPrefix(line, "Connection: ") || line == "" {
-			fmt.Printf(" R_NS: %s\n", line)
+			c.logger.Debug("Non-sensitive line", zap.String("line", line))
 		}
 	}
 
@@ -394,10 +400,10 @@ func (c *Client) createRedactedRequest(httpRequest []byte) (shared.RedactedReque
 		}
 	}
 
-	fmt.Printf("[Client] REDACTION SUMMARY:\n")
-	fmt.Printf(" Original length: %d bytes\n", len(httpRequest))
-	fmt.Printf(" Redacted length: %d bytes (same, redaction via XOR)\n", len(redactedRequest))
-	fmt.Printf(" Redaction ranges: %d\n", len(ranges))
+	c.logger.Info("Redaction summary",
+		zap.Int("original_length", len(httpRequest)),
+		zap.Int("redacted_length", len(redactedRequest)),
+		zap.Int("redaction_ranges", len(ranges)))
 
 	c.redactedRequestPlain = redactedRequest
 	c.requestRedactionRanges = ranges // Save redaction ranges
@@ -484,19 +490,24 @@ func (c *Client) applyRedactionSpecs(httpRequest []byte) ([]shared.RequestRedact
 	var ranges []shared.RequestRedactionRange
 	requestStr := string(httpRequest)
 
-	fmt.Printf("[Client] applyRedactionSpecs: checking %d redaction specs\n", len(c.requestRedactions))
+	c.logger.Debug("Checking redaction specs", zap.Int("specs_count", len(c.requestRedactions)))
 
 	// If no redaction specs configured, return empty ranges
 	if len(c.requestRedactions) == 0 {
-		fmt.Printf("[Client] applyRedactionSpecs: no redaction specs configured\n")
+		c.logger.Debug("No redaction specs configured")
 		return ranges, nil
 	}
 
 	// Apply configured redaction specs
 	for i, spec := range c.requestRedactions {
-		fmt.Printf("[Client] applyRedactionSpecs: checking spec %d: pattern='%s', type='%s'\n", i, spec.Pattern, spec.Type)
-		matches := findPatternMatches(requestStr, spec.Pattern)
-		fmt.Printf("[Client] applyRedactionSpecs: found %d matches for pattern '%s'\n", len(matches), spec.Pattern)
+		c.logger.Debug("Checking redaction spec",
+			zap.Int("index", i),
+			zap.String("pattern", spec.Pattern),
+			zap.String("type", spec.Type))
+		matches := c.findPatternMatches(requestStr, spec.Pattern)
+		c.logger.Debug("Found pattern matches",
+			zap.Int("matches_count", len(matches)),
+			zap.String("pattern", spec.Pattern))
 		for _, match := range matches {
 			ranges = append(ranges, shared.RequestRedactionRange{
 				Start:  match.Start,
@@ -517,29 +528,32 @@ type PatternMatch struct {
 }
 
 // findPatternMatches finds all matches for a pattern in the request string
-func findPatternMatches(request, pattern string) []PatternMatch {
+func (c *Client) findPatternMatches(request, pattern string) []PatternMatch {
 	var matches []PatternMatch
-	fmt.Printf("[Client] findPatternMatches: searching for pattern '%s' in request\n", pattern)
+	c.logger.Debug("Searching for pattern in request", zap.String("pattern", pattern))
 
 	// For now, implement simple literal matching
 	// In a full implementation, this would use regex
-	fmt.Printf("[Client] findPatternMatches: pattern contains check for 'Authorization: Bearer': %v\n", strings.Contains(pattern, "Authorization: Bearer"))
+	c.logger.Debug("Pattern contains Authorization Bearer check", zap.Bool("contains", strings.Contains(pattern, "Authorization: Bearer")))
 	if strings.Contains(pattern, "Authorization: Bearer") {
 		// Handle Authorization header pattern
-		fmt.Printf("[Client] findPatternMatches: handling Authorization pattern\n")
+		c.logger.Debug("Handling Authorization pattern")
 		start := strings.Index(request, "Authorization: Bearer ")
-		fmt.Printf("[Client] findPatternMatches: Authorization start index: %d\n", start)
+		c.logger.Debug("Authorization start index", zap.Int("index", start))
 		if start != -1 {
 			lineEnd := strings.Index(request[start:], "\r\n")
 			if lineEnd == -1 {
 				lineEnd = strings.Index(request[start:], "\n")
 			}
-			fmt.Printf("[Client] findPatternMatches: Authorization line end index: %d\n", lineEnd)
+			c.logger.Debug("Authorization line end index", zap.Int("index", lineEnd))
 			if lineEnd != -1 {
 				// Extract just the token part
 				tokenStart := start + len("Authorization: Bearer ")
 				tokenEnd := start + lineEnd
-				fmt.Printf("[Client] findPatternMatches: Authorization match found: start=%d, length=%d, value='%s'\n", tokenStart, tokenEnd-tokenStart, request[tokenStart:tokenEnd])
+				c.logger.Debug("Authorization match found",
+					zap.Int("start", tokenStart),
+					zap.Int("length", tokenEnd-tokenStart),
+					zap.String("value", request[tokenStart:tokenEnd]))
 				matches = append(matches, PatternMatch{
 					Start:  tokenStart,
 					Length: tokenEnd - tokenStart,
@@ -549,20 +563,23 @@ func findPatternMatches(request, pattern string) []PatternMatch {
 		}
 	} else if strings.Contains(pattern, "X-Account-ID:") {
 		// Handle X-Account-ID header pattern
-		fmt.Printf("[Client] findPatternMatches: handling X-Account-ID pattern\n")
+		c.logger.Debug("Handling X-Account-ID pattern")
 		start := strings.Index(request, "X-Account-ID: ")
-		fmt.Printf("[Client] findPatternMatches: X-Account-ID start index: %d\n", start)
+		c.logger.Debug("X-Account-ID start index", zap.Int("index", start))
 		if start != -1 {
 			lineEnd := strings.Index(request[start:], "\r\n")
 			if lineEnd == -1 {
 				lineEnd = strings.Index(request[start:], "\n")
 			}
-			fmt.Printf("[Client] findPatternMatches: X-Account-ID line end index: %d\n", lineEnd)
+			c.logger.Debug("X-Account-ID line end index", zap.Int("index", lineEnd))
 			if lineEnd != -1 {
 				// Extract just the account ID part
 				idStart := start + len("X-Account-ID: ")
 				idEnd := start + lineEnd
-				fmt.Printf("[Client] findPatternMatches: X-Account-ID match found: start=%d, length=%d, value='%s'\n", idStart, idEnd-idStart, request[idStart:idEnd])
+				c.logger.Debug("X-Account-ID match found",
+					zap.Int("start", idStart),
+					zap.Int("length", idEnd-idStart),
+					zap.String("value", request[idStart:idEnd]))
 				matches = append(matches, PatternMatch{
 					Start:  idStart,
 					Length: idEnd - idStart,
@@ -572,20 +589,23 @@ func findPatternMatches(request, pattern string) []PatternMatch {
 		}
 	} else if strings.Contains(pattern, "User-Agent") {
 		// Handle User-Agent header pattern
-		fmt.Printf("[Client] findPatternMatches: handling User-Agent pattern\n")
+		c.logger.Debug("Handling User-Agent pattern")
 		start := strings.Index(request, "User-Agent: ")
-		fmt.Printf("[Client] findPatternMatches: User-Agent start index: %d\n", start)
+		c.logger.Debug("User-Agent start index", zap.Int("index", start))
 		if start != -1 {
 			lineEnd := strings.Index(request[start:], "\r\n")
 			if lineEnd == -1 {
 				lineEnd = strings.Index(request[start:], "\n")
 			}
-			fmt.Printf("[Client] findPatternMatches: User-Agent line end index: %d\n", lineEnd)
+			c.logger.Debug("User-Agent line end index", zap.Int("index", lineEnd))
 			if lineEnd != -1 {
 				// Extract just the user agent part
 				uaStart := start + len("User-Agent: ")
 				uaEnd := start + lineEnd
-				fmt.Printf("[Client] findPatternMatches: User-Agent match found: start=%d, length=%d, value='%s'\n", uaStart, uaEnd-uaStart, request[uaStart:uaEnd])
+				c.logger.Debug("User-Agent match found",
+					zap.Int("start", uaStart),
+					zap.Int("length", uaEnd-uaStart),
+					zap.String("value", request[uaStart:uaEnd]))
 				matches = append(matches, PatternMatch{
 					Start:  uaStart,
 					Length: uaEnd - uaStart,
@@ -595,20 +615,23 @@ func findPatternMatches(request, pattern string) []PatternMatch {
 		}
 	} else if strings.Contains(pattern, "Accept:") {
 		// Handle Accept header pattern
-		fmt.Printf("[Client] findPatternMatches: handling Accept pattern\n")
+		c.logger.Debug("Handling Accept pattern")
 		start := strings.Index(request, "Accept: ")
-		fmt.Printf("[Client] findPatternMatches: Accept start index: %d\n", start)
+		c.logger.Debug("Accept start index", zap.Int("index", start))
 		if start != -1 {
 			lineEnd := strings.Index(request[start:], "\r\n")
 			if lineEnd == -1 {
 				lineEnd = strings.Index(request[start:], "\n")
 			}
-			fmt.Printf("[Client] findPatternMatches: Accept line end index: %d\n", lineEnd)
+			c.logger.Debug("Accept line end index", zap.Int("index", lineEnd))
 			if lineEnd != -1 {
 				// Extract just the accept part
 				acceptStart := start + len("Accept: ")
 				acceptEnd := start + lineEnd
-				fmt.Printf("[Client] findPatternMatches: Accept match found: start=%d, length=%d, value='%s'\n", acceptStart, acceptEnd-acceptStart, request[acceptStart:acceptEnd])
+				c.logger.Debug("Accept match found",
+					zap.Int("start", acceptStart),
+					zap.Int("length", acceptEnd-acceptStart),
+					zap.String("value", request[acceptStart:acceptEnd]))
 				matches = append(matches, PatternMatch{
 					Start:  acceptStart,
 					Length: acceptEnd - acceptStart,
@@ -650,7 +673,7 @@ func (c *Client) triggerResponseCallback(responseData []byte) {
 	// Parse HTTP response to extract status code and headers
 	response := c.parseHTTPResponse(responseData)
 
-	fmt.Printf("[Client] Triggering response callback with %d bytes of data\n", len(responseData))
+	c.logger.Info("Triggering response callback", zap.Int("data_bytes", len(responseData)))
 
 	// Store the response data for library access
 	c.lastResponseData = response
@@ -658,30 +681,38 @@ func (c *Client) triggerResponseCallback(responseData []byte) {
 	// Call the user-provided callback
 	result, err := c.responseCallback.OnResponseReceived(response)
 	if err != nil {
-		fmt.Printf("[Client] Response callback error: %v\n", err)
+		c.logger.Error("Response callback error", zap.Error(err))
 		return
 	}
 
 	if result != nil {
-		fmt.Printf("[Client] Response callback completed with %d redaction ranges and %d proof claims\n",
-			len(result.RedactionRanges), len(result.ProofClaims))
+		c.logger.Info("Response callback completed",
+			zap.Int("redaction_ranges", len(result.RedactionRanges)),
+			zap.Int("proof_claims", len(result.ProofClaims)))
 
 		// Store proof claims
 		c.lastProofClaims = result.ProofClaims
-		log.Printf("[Client] Stored %d proof claims from callback", len(result.ProofClaims))
+		c.logger.Info("Stored proof claims from callback", zap.Int("count", len(result.ProofClaims)))
 
 		// Store redaction ranges
 		c.lastRedactionRanges = result.RedactionRanges
-		log.Printf("[Client] Stored %d redaction ranges from callback", len(result.RedactionRanges))
+		c.logger.Info("Stored redaction ranges from callback", zap.Int("count", len(result.RedactionRanges)))
 
 		// Log proof claims
 		for i, claim := range result.ProofClaims {
-			log.Printf("[Client] Proof claim %d: %s = %s (%s)", i+1, claim.Type, claim.Value, claim.Description)
+			c.logger.Debug("Proof claim",
+				zap.Int("index", i+1),
+				zap.String("type", claim.Type),
+				zap.String("value", claim.Value),
+				zap.String("description", claim.Description))
 		}
 
 		// Log redaction ranges
 		for i, r := range result.RedactionRanges {
-			log.Printf("[Client] Redaction range %d: [%d:%d]", i+1, r.Start, r.Start+r.Length-1)
+			c.logger.Debug("Redaction range",
+				zap.Int("index", i+1),
+				zap.Int("start", r.Start),
+				zap.Int("end", r.Start+r.Length-1))
 		}
 	}
 }
@@ -817,12 +848,12 @@ func (c *Client) advanceToPhase(newPhase ProtocolPhase) {
 	c.protocolPhase = newPhase
 	c.protocolStateMutex.Unlock()
 
-	log.Printf("[Client] PHASE TRANSITION: %s → %s", oldPhase, newPhase)
+	c.logger.Info("Phase transition", zap.String("from", oldPhase.String()), zap.String("to", newPhase.String()))
 
 	// Signal completion when protocol is complete
 	if newPhase == PhaseComplete {
 		c.completionOnce.Do(func() {
-			log.Printf("[Client] Protocol complete - closing completion channel")
+			c.logger.Info("Protocol complete - closing completion channel")
 			close(c.completionChan)
 		})
 	}
@@ -835,15 +866,15 @@ func (c *Client) incrementTranscriptCount() {
 	count := c.transcriptsReceived
 	c.protocolStateMutex.Unlock()
 
-	log.Printf("[Client] Transcript received: %d/2", count)
+	c.logger.Info("Transcript received", zap.Int("count", count), zap.Int("total", 2))
 
 	if count >= 2 {
 		// Check if comprehensive signature verification is also complete
 		if c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
-			log.Printf("[Client] Both transcripts received AND redacted streams processed - completing protocol")
+			c.logger.Info("Both transcripts received AND redacted streams processed - completing protocol")
 			c.advanceToPhase(PhaseComplete)
 		} else {
-			log.Printf("[Client] Both transcripts received but waiting for redacted streams processing...")
+			c.logger.Info("Both transcripts received but waiting for redacted streams processing...")
 		}
 	}
 }
@@ -866,11 +897,11 @@ func (c *Client) getProtocolState() (ProtocolPhase, int) {
 func (c *Client) fetchAndVerifyAttestations() error {
 	// Skip attestations entirely in standalone mode
 	if c.clientMode == ModeStandalone {
-		fmt.Printf("[Client] Skipping attestation in standalone mode - public keys will be extracted from signed transcripts\n")
+		c.logger.Info("Skipping attestation in standalone mode - public keys will be extracted from signed transcripts")
 		return nil
 	}
 
-	fmt.Printf("[Client] Requesting attestations from both TEE_K and TEE_T via WebSocket\n")
+	c.logger.Info("Requesting attestations from both TEE_K and TEE_T via WebSocket")
 
 	// Wait for session ID from TEE_K (indicates successful session coordination)
 	// This is a simple polling approach for now
@@ -884,7 +915,7 @@ func (c *Client) fetchAndVerifyAttestations() error {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	fmt.Printf("[Client] Session coordinated (%s), proceeding with attestation requests\n", c.sessionID)
+	c.logger.Info("Session coordinated, proceeding with attestation requests", zap.String("session_id", c.sessionID))
 
 	// Create attestation request (no request ID needed)
 	attestReq := shared.AttestationRequestData{}
@@ -895,7 +926,7 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	if err := c.sendMessage(teekMsg); err != nil {
 		return fmt.Errorf("failed to send TEE_K attestation request: %v", err)
 	}
-	fmt.Printf("[Client] Sent attestation request to TEE_K\n")
+	c.logger.Info("Sent attestation request to TEE_K")
 
 	// Send to TEE_T
 	teetMsg := shared.CreateMessage(shared.MsgAttestationRequest, attestReq)
@@ -903,10 +934,10 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	if err := c.sendMessageToTEET(teetMsg); err != nil {
 		return fmt.Errorf("failed to send TEE_T attestation request: %v", err)
 	}
-	fmt.Printf("[Client] Sent attestation request to TEE_T\n")
+	c.logger.Info("Sent attestation request to TEE_T")
 
 	// Responses will be handled asynchronously by handleAttestationResponse
-	fmt.Printf("[Client] Waiting for attestation responses from both TEE_K and TEE_T...\n")
+	c.logger.Info("Waiting for attestation responses from both TEE_K and TEE_T")
 	return nil
 }
 
@@ -923,7 +954,7 @@ func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string)
 		return nil, fmt.Errorf("attestation validation failed: %v", err)
 	}
 
-	fmt.Printf("[Client] Attestation root of trust validation passed for %s\n", expectedSource)
+	c.logger.Info("Attestation root of trust validation passed", zap.String("source", expectedSource))
 
 	// Extract user data from the attestation
 	userData := signedReport.Document.UserData
@@ -946,7 +977,7 @@ func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string)
 		return nil, fmt.Errorf("failed to decode hex public key: %v", err)
 	}
 
-	fmt.Printf("[Client] Extracted public key from %s attestation: %d bytes\n", expectedSource, len(publicKey))
+	c.logger.Info("Extracted public key from attestation", zap.String("source", expectedSource), zap.Int("bytes", len(publicKey)))
 	return publicKey, nil
 }
 
@@ -975,9 +1006,9 @@ func (c *Client) verifyAttestationPublicKeys() error {
 			c.teetAttestationPublicKey[:16], c.teetTranscriptPublicKey[:16])
 	}
 
-	fmt.Printf("[Client] Public key verification SUCCESS!\n")
-	fmt.Printf("[Client] TEE_K: attestation and transcript public keys match\n")
-	fmt.Printf("[Client] TEE_T: attestation and transcript public keys match\n")
+	c.logger.Info("Public key verification SUCCESS!")
+	c.logger.Info("TEE_K: attestation and transcript public keys match")
+	c.logger.Info("TEE_T: attestation and transcript public keys match")
 
 	c.publicKeyComparisonDone = true
 	return nil
@@ -1282,7 +1313,7 @@ func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) Tran
 // EnableTwoPhaseMode enables 2-phase operation mode
 func (c *Client) EnableTwoPhaseMode() {
 	c.twoPhaseMode = true
-	log.Printf("[Client] 2-phase mode enabled")
+	c.logger.Info("2-phase mode enabled")
 }
 
 // WaitForPhase1Completion returns a channel that closes when phase 1 (response decryption) is complete
@@ -1299,16 +1330,16 @@ func (c *Client) ContinueToPhase2() error {
 		return fmt.Errorf("phase 1 not completed yet")
 	}
 
-	log.Printf("[Client] Continuing to phase 2 (redaction and completion)")
+	c.logger.Info("Continuing to phase 2 (redaction and completion)")
 
 	// If we have a response callback and response data, call it to get redaction ranges
 	if c.responseCallback != nil && c.lastResponseData != nil {
-		log.Printf("[Client] Calling response callback to get redaction ranges")
+		c.logger.Info("Calling response callback to get redaction ranges")
 		result, err := c.responseCallback.OnResponseReceived(c.lastResponseData)
 		if err != nil {
-			log.Printf("[Client] Response callback error: %v", err)
+			c.logger.Error("Response callback error", zap.Error(err))
 		} else if result != nil {
-			log.Printf("[Client] Response callback returned %d redaction ranges", len(result.RedactionRanges))
+			c.logger.Info("Response callback returned redaction ranges", zap.Int("count", len(result.RedactionRanges)))
 			c.lastRedactionRanges = result.RedactionRanges
 			c.lastProofClaims = result.ProofClaims
 			if result.RedactedBody != nil {
@@ -1321,7 +1352,7 @@ func (c *Client) ContinueToPhase2() error {
 	c.advanceToPhase(PhaseSendingRedaction)
 
 	// Send redaction specification
-	log.Printf("[Client] Sending redaction specification")
+	c.logger.Info("Sending redaction specification")
 	if err := c.sendRedactionSpec(); err != nil {
 		return fmt.Errorf("failed to send redaction spec: %v", err)
 	}

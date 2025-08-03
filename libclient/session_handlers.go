@@ -2,7 +2,6 @@ package clientlib
 
 import (
 	"fmt"
-	"log"
 	"tee-mpc/shared"
 
 	"go.uber.org/zap"
@@ -12,7 +11,7 @@ import (
 func (c *Client) handleSessionReady(msg *shared.Message) {
 	var sessionData shared.SessionReadyData
 	if err := msg.UnmarshalData(&sessionData); err != nil {
-		log.Printf("[Client] Failed to unmarshal session ready data: %v", err)
+		c.logger.Error("Failed to unmarshal session ready data", zap.Error(err))
 		return
 	}
 
@@ -22,7 +21,7 @@ func (c *Client) handleSessionReady(msg *shared.Message) {
 	// Send pending connection request if we have one
 	if c.connectionRequestPending && c.pendingConnectionRequest != nil {
 		if err := c.sendPendingConnectionRequest(); err != nil {
-			log.Printf("[Client] Failed to send pending connection request: %v", err)
+			c.logger.Error("Failed to send pending connection request", zap.Error(err))
 		}
 	}
 }
@@ -43,7 +42,7 @@ func (c *Client) handleError(msg *shared.Message) {
 func (c *Client) handleHTTPResponse(msg *shared.Message) {
 	var responseData shared.HTTPResponseData
 	if err := msg.UnmarshalData(&responseData); err != nil {
-		log.Printf("[Client] Failed to unmarshal HTTP response data: %v", err)
+		c.logger.Error("Failed to unmarshal HTTP response data", zap.Error(err))
 		return
 	}
 
@@ -57,7 +56,7 @@ func (c *Client) handleHTTPResponse(msg *shared.Message) {
 func (c *Client) handleTEETReady(msg *shared.Message) {
 	var readyData shared.TEETReadyData
 	if err := msg.UnmarshalData(&readyData); err != nil {
-		log.Printf("[Client] Failed to unmarshal TEE_T ready data: %v", err)
+		c.logger.Error("Failed to unmarshal TEE_T ready data", zap.Error(err))
 		return
 	}
 

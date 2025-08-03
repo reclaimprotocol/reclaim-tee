@@ -2,7 +2,6 @@ package clientlib
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"tee-mpc/shared"
 
@@ -53,14 +52,14 @@ func collapseAsterisks(data string) string {
 func (c *Client) handleHandshakeComplete(msg *shared.Message) {
 	var completeData shared.HandshakeCompleteData
 	if err := msg.UnmarshalData(&completeData); err != nil {
-		log.Printf("[Client] Failed to unmarshal handshake complete data: %v", err)
+		c.logger.Error("Failed to unmarshal handshake complete data", zap.Error(err))
 		return
 	}
 
 	if completeData.Success {
-		log.Printf("[Client] Handshake completed successfully")
+		c.logger.Info("Handshake completed successfully")
 	} else {
-		log.Printf("[Client] Handshake completed with errors")
+		c.logger.Error("Handshake completed with errors")
 	}
 }
 
@@ -68,7 +67,7 @@ func (c *Client) handleHandshakeComplete(msg *shared.Message) {
 func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 	var disclosureData shared.HandshakeKeyDisclosureData
 	if err := msg.UnmarshalData(&disclosureData); err != nil {
-		log.Printf("[Client] Failed to unmarshal handshake key disclosure data: %v", err)
+		c.logger.Error("Failed to unmarshal handshake key disclosure data", zap.Error(err))
 		return
 	}
 
@@ -92,7 +91,7 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 	// Create redacted HTTP request using the redaction system
 	redactedData, streamsData, err := c.createRedactedRequest(nil)
 	if err != nil {
-		log.Printf("[Client] Failed to create redacted request: %v", err)
+		c.logger.Error("Failed to create redacted request", zap.Error(err))
 		return
 	}
 
@@ -156,7 +155,7 @@ func (c *Client) processTLSRecord(record []byte) {
 
 	// For AES-GCM, tag is last 16 bytes of encrypted payload
 	if len(encryptedPayload) < 16 {
-		log.Printf("[Client] CRITICAL: Invalid TLS record: payload too short (%d bytes) - terminating session", len(encryptedPayload))
+		c.logger.Error("CRITICAL: Invalid TLS record - payload too short", zap.Int("payload_length", len(encryptedPayload)))
 		// This is a protocol violation - should terminate the session
 		c.isClosing = true
 		return
@@ -176,7 +175,7 @@ func (c *Client) processTLSRecord(record []byte) {
 	if isTLS12AESGCMResponse {
 		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)
 		if len(encryptedPayload) < 8+tagSize {
-			log.Printf("[Client] CRITICAL: Invalid TLS 1.2 AES-GCM record: payload too short for explicit IV (%d bytes) - terminating session", len(encryptedPayload))
+			c.logger.Error("CRITICAL: Invalid TLS 1.2 AES-GCM record - payload too short for explicit IV", zap.Int("payload_length", len(encryptedPayload)))
 			// This is a protocol violation - should terminate the session
 			c.isClosing = true
 			return
@@ -289,12 +288,12 @@ func (c *Client) sendBatchedResponses() error {
 		return fmt.Errorf("failed to send batched responses to TEE_T: %v", err)
 	}
 
-	log.Printf("[Client] Successfully sent batch of %d packets to TEE_T", len(c.batchedResponses))
+	c.logger.Info("Successfully sent batch to TEE_T", zap.Int("packets", len(c.batchedResponses)))
 
 	c.setBatchSentToTEET()
 
 	c.expectedRedactedStreams = len(c.batchedResponses)
-	log.Printf("[Client] Expecting %d redacted streams based on batch size", c.expectedRedactedStreams)
+	c.logger.Info("Expecting redacted streams based on batch size", zap.Int("expected_streams", c.expectedRedactedStreams))
 
 	c.advanceToPhase(PhaseReceivingDecryption)
 
@@ -307,14 +306,14 @@ func (c *Client) sendBatchedResponses() error {
 func (c *Client) handleResponseTagVerification(msg *shared.Message) {
 	var verificationData shared.ResponseTagVerificationData
 	if err := msg.UnmarshalData(&verificationData); err != nil {
-		log.Printf("[Client] Failed to unmarshal response tag verification: %v", err)
+		c.logger.Error("Failed to unmarshal response tag verification", zap.Error(err))
 		return
 	}
 
 	if verificationData.Success {
 		// Phase advances to PhaseSendingRedaction automatically after batch processing
 	} else {
-		log.Printf("[Client] Tag verification failed for seq %d: %s", verificationData.SeqNum, verificationData.Message)
+		c.logger.Error("Tag verification failed", zap.Uint64("sequence", verificationData.SeqNum), zap.String("message", verificationData.Message))
 	}
 }
 

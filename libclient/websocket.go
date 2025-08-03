@@ -3,7 +3,6 @@ package clientlib
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/url"
 	"strings"
 	"tee-mpc/shared"
@@ -104,7 +103,7 @@ func (c *Client) handleMessages() {
 				// Check for normal close conditions or network errors during shutdown
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				} else if !isClientNetworkShutdownError(err) {
-					log.Printf("[Client] Failed to read websocket message: %v", err)
+					c.logger.Error("Failed to read websocket message", zap.Error(err))
 				}
 			}
 			break
@@ -150,7 +149,7 @@ func (c *Client) handleMessages() {
 
 		default:
 			if !closing {
-				log.Printf("[Client] Unknown message type: %s", msg.Type)
+				c.logger.Error("Unknown message type", zap.String("type", string(msg.Type)))
 			}
 		}
 	}
@@ -171,7 +170,7 @@ func (c *Client) handleTEETMessages() {
 			if !closing {
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				} else if !isClientNetworkShutdownError(err) {
-					log.Printf("[Client] Failed to read TEE_T websocket message: %v", err)
+					c.logger.Error("Failed to read TEE_T websocket message", zap.Error(err))
 				}
 			}
 			break
@@ -209,7 +208,7 @@ func (c *Client) handleTEETMessages() {
 
 		default:
 			if !closing {
-				log.Printf("[Client] Unknown TEE_T message type: %s", msg.Type)
+				c.logger.Error("Unknown TEE_T message type", zap.String("type", string(msg.Type)))
 			}
 		}
 	}
@@ -420,7 +419,7 @@ func (c *Client) Close() {
 // This implements strict fail-fast behavior - no error continuation is allowed
 func (c *Client) terminateConnectionWithError(reason string, err error) {
 	// Log the critical error
-	log.Printf("[Client] CRITICAL ERROR - terminating connection: %s: %v", reason, err)
+	c.logger.Error("CRITICAL ERROR - terminating connection", zap.String("reason", reason), zap.Error(err))
 
 	// Perform immediate cleanup and termination
 	c.Close()
