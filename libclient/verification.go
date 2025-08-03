@@ -2,31 +2,34 @@ package clientlib
 
 import (
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"tee-mpc/shared"
+
+	"go.uber.org/zap"
 )
 
 // handleBatchedTagVerifications handles batched tag verification results
 func (c *Client) handleBatchedTagVerifications(msg *shared.Message) {
 	var batchedVerification shared.BatchedTagVerificationData
 	if err := msg.UnmarshalData(&batchedVerification); err != nil {
-		log.Printf("[Client] Failed to unmarshal batched tag verification: %v", err)
+		c.logger.Error("Failed to unmarshal batched tag verification", zap.Error(err))
 		return
 	}
 
 	if batchedVerification.AllSuccessful {
 		// All verifications passed - simple success message
-		log.Printf("[Client] All %d tag verifications successful", batchedVerification.TotalCount)
+		c.logger.Info("All tag verifications successful", zap.Int("total_count", batchedVerification.TotalCount))
 	} else {
 		// Some failures - process detailed results
-		log.Printf("[Client] Tag verification batch: %d total, %d failed",
-			batchedVerification.TotalCount, len(batchedVerification.Verifications))
+		c.logger.Warn("Tag verification batch has failures",
+			zap.Int("total_count", batchedVerification.TotalCount),
+			zap.Int("failed_count", len(batchedVerification.Verifications)))
 
 		for _, verification := range batchedVerification.Verifications {
-			log.Printf("[Client] Response tag verification failed (seq=%d): %s",
-				verification.SeqNum, verification.Message)
+			c.logger.Error("Response tag verification failed",
+				zap.Uint64("seq_num", verification.SeqNum),
+				zap.String("message", verification.Message))
 		}
 	}
 }
@@ -35,15 +38,14 @@ func (c *Client) handleBatchedTagVerifications(msg *shared.Message) {
 func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 	var batchedStreams shared.BatchedDecryptionStreamData
 	if err := msg.UnmarshalData(&batchedStreams); err != nil {
-		log.Printf("[Client] Failed to unmarshal batched decryption streams: %v", err)
+		c.logger.Error("Failed to unmarshal batched decryption streams", zap.Error(err))
 		return
 	}
 
-	log.Printf("[Client] Processing batch of %d decryption streams", len(batchedStreams.DecryptionStreams))
+	c.logger.Info("Processing batch of decryption streams", zap.Int("streams_count", len(batchedStreams.DecryptionStreams)))
 
 	if len(batchedStreams.DecryptionStreams) == 0 {
-		log.Printf("[Client] No batched decryption streams to process")
-
+		c.logger.Info("No batched decryption streams to process")
 		return
 	}
 
@@ -88,21 +90,21 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 
 			// Processing complete for this stream
 		} else {
-			log.Printf("[Client] No ciphertext found for seq=%d", streamData.SeqNum)
+			c.logger.Error("No ciphertext found for sequence", zap.Uint64("seq_num", streamData.SeqNum))
 		}
 	}
 
 	// Reconstruct HTTP response if we haven't already
 	if !c.responseReconstructed {
 		c.reconstructHTTPResponseFromDecryptedData()
-		log.Printf("[Client] HTTP response reconstruction completed, callback executed")
+		c.logger.Info("HTTP response reconstruction completed, callback executed")
 	}
 
 	c.setBatchDecryptionReceived()
 
 	// Check if we're in 2-phase mode
 	if c.twoPhaseMode {
-		log.Printf("[Client] 2-phase mode: Pausing after response decryption, waiting for redaction ranges")
+		c.logger.Info("2-phase mode: Pausing after response decryption, waiting for redaction ranges")
 		c.advanceToPhase(PhaseWaitingForRedactionRanges)
 		c.phase1Completed = true
 		close(c.phase1Completion)
@@ -112,9 +114,9 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 	// Normal single-phase mode: continue to redaction
 	c.advanceToPhase(PhaseSendingRedaction)
 
-	log.Printf("[Client] Entering redaction phase - automatically sending redaction specification")
+	c.logger.Info("Entering redaction phase - automatically sending redaction specification")
 	if err := c.sendRedactionSpec(); err != nil {
-		log.Printf("[Client] Failed to send redaction spec: %v", err)
+		c.logger.Error("Failed to send redaction spec", zap.Error(err))
 	}
 
 }
@@ -125,7 +127,7 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 	defer c.responseContentMutex.Unlock()
 
 	if len(c.redactedPlaintextBySeq) == 0 {
-		fmt.Printf("[Client] No decrypted response data to reconstruct\n")
+		c.logger.Warn("No decrypted response data to reconstruct")
 		return
 	}
 
@@ -172,7 +174,7 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 		}
 	}
 
-	log.Printf("[Client] Reconstructed HTTP response (%d bytes total)", len(fullResponse))
+	c.logger.Info("Reconstructed HTTP response", zap.Int("total_bytes", len(fullResponse)))
 
 	// Parse HTTP response and set success flags
 	if len(fullResponse) > 0 {
@@ -189,7 +191,7 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 		}
 
 		if httpIndex != -1 {
-			log.Printf("[Client] HTTP response reconstruction successful at offset %d", httpIndex)
+			c.logger.Info("HTTP response reconstruction successful", zap.Int("offset", httpIndex))
 
 			// Extract the actual HTTP response
 			actualHTTPResponse := responseStr[httpIndex:]
@@ -198,8 +200,9 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			if httpIndex > 0 {
 				prefixData := responseStr[:httpIndex]
 				previewData := prefixData[:min(100, len(prefixData))] // Show more data but collapse asterisks
-				log.Printf("[Client] Found %d bytes before HTTP response (likely redacted session tickets): %q",
-					httpIndex, collapseAsterisks(previewData))
+				c.logger.Info("Found bytes before HTTP response (likely redacted session tickets)",
+					zap.Int("bytes_count", httpIndex),
+					zap.String("preview", collapseAsterisks(previewData)))
 			}
 
 			// Set success flags for results reporting
@@ -212,23 +215,26 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 
 			// Call response callback now that we have complete HTTP response
 			if c.responseCallback != nil && len(c.lastRedactionRanges) == 0 {
-				log.Printf("[Client] Calling response callback with complete HTTP response (%d bytes)", len(actualHTTPResponse))
+				c.logger.Info("Calling response callback with complete HTTP response", zap.Int("response_bytes", len(actualHTTPResponse)))
 
 				result, err := c.responseCallback.OnResponseReceived(httpResponse)
 
 				if err != nil {
-					fmt.Printf("[Client] Response callback error: %v\n", err)
+					c.logger.Error("Response callback error", zap.Error(err))
 				} else if result != nil {
-					fmt.Printf("[Client] Response callback completed with %d redaction ranges and %d proof claims\n",
-						len(result.RedactionRanges), len(result.ProofClaims))
+					c.logger.Info("Response callback completed",
+						zap.Int("redaction_ranges", len(result.RedactionRanges)),
+						zap.Int("proof_claims", len(result.ProofClaims)))
 
 					// Store results for use in redaction spec generation
 					c.lastProofClaims = result.ProofClaims
 					c.lastRedactionRanges = result.RedactionRanges
 					c.lastRedactedResponse = result.RedactedBody
 
-					fmt.Printf("[Client] Stored callback results: %d ranges, %d claims, %d bytes redacted response\n",
-						len(result.RedactionRanges), len(result.ProofClaims), len(result.RedactedBody))
+					c.logger.Info("Stored callback results",
+						zap.Int("ranges_count", len(result.RedactionRanges)),
+						zap.Int("claims_count", len(result.ProofClaims)),
+						zap.Int("redacted_response_bytes", len(result.RedactedBody)))
 
 					// Log redaction ranges
 					// for i, r := range result.RedactionRanges {
@@ -238,10 +244,10 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 
 				}
 			} else if c.responseCallback != nil {
-				fmt.Printf("[Client] Response callback already executed (cached ranges: %d)\n", len(c.lastRedactionRanges))
+				c.logger.Info("Response callback already executed", zap.Int("cached_ranges", len(c.lastRedactionRanges)))
 			} else {
 				// In 2-phase mode, store the response data for later retrieval
-				fmt.Printf("[Client] 2-phase mode: Response data stored for later retrieval (%d bytes)", len(actualHTTPResponse))
+				c.logger.Info("2-phase mode: Response data stored for later retrieval", zap.Int("response_bytes", len(actualHTTPResponse)))
 			}
 
 			// Display the raw HTTP response (redaction will be handled at TLS record level)
@@ -249,16 +255,18 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			if len(actualHTTPResponse) < previewLen {
 				previewLen = len(actualHTTPResponse)
 			}
-			fmt.Printf("[Client] Raw HTTP response (%d bytes) preview: %s\n", len(actualHTTPResponse), actualHTTPResponse[:previewLen])
+			c.logger.Info("Raw HTTP response preview",
+				zap.Int("total_bytes", len(actualHTTPResponse)),
+				zap.String("preview", string(actualHTTPResponse[:previewLen])))
 
 			// Set success flags
-			log.Printf("[Client] Response processing successful (%d bytes)", len(actualHTTPResponse))
+			c.logger.Info("Response processing successful", zap.Int("response_bytes", len(actualHTTPResponse)))
 		} else {
 			previewLen := 100
 			if len(responseStr) < previewLen {
 				previewLen = len(responseStr)
 			}
-			log.Printf("[Client] Warning - reconstructed response doesn't look like HTTP: %q", responseStr[:previewLen])
+			c.logger.Warn("Reconstructed response doesn't look like HTTP", zap.String("preview", responseStr[:previewLen]))
 		}
 	}
 }

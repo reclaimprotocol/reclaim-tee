@@ -6,15 +6,17 @@ import (
 	"sort"
 	"strings"
 	"tee-mpc/shared"
+
+	"go.uber.org/zap"
 )
 
 // handleRedactionVerification handles redaction verification responses from TEE_T
 func (c *Client) handleRedactionVerification(msg *shared.Message) {
-	log.Printf("[Client] Received redaction verification message")
+	c.logger.Info("Received redaction verification message")
 
 	var verificationData shared.RedactionVerificationData
 	if err := msg.UnmarshalData(&verificationData); err != nil {
-		log.Printf("[Client] Failed to unmarshal redaction verification data: %v", err)
+		c.logger.Error("Failed to unmarshal redaction verification data", zap.Error(err))
 		return
 	}
 
@@ -34,7 +36,7 @@ func (c *Client) analyzeHTTPResponseRedactionWithBytes(httpData []byte, baseOffs
 
 // analyzeResponseRedaction analyzes all response content to identify redaction ranges and calculate redaction bytes
 func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
-	log.Printf("[Client] Analyzing response content for redaction ranges...")
+	c.logger.Info("Analyzing response content for redaction ranges")
 
 	c.responseContentMutex.Lock()
 	defer c.responseContentMutex.Unlock()
@@ -69,7 +71,7 @@ func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 		// Get corresponding ciphertext for redaction byte calculation
 		ciphertext, ciphertextExists := c.ciphertextBySeq[seqNum]
 		if !ciphertextExists {
-			log.Printf("[Client] Warning: No ciphertext found for seq %d", seqNum)
+			c.logger.Warn("No ciphertext found for sequence", zap.Uint64("sequence", seqNum))
 			totalOffset += len(content)
 			continue
 		}
@@ -81,14 +83,16 @@ func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 		switch contentType {
 		case 0x16: // Handshake message - likely NewSessionTicket
 			if len(actualContent) >= 4 && actualContent[0] == 0x04 { // NewSessionTicket
-				log.Printf("[Client] Redacting NewSessionTicket at offset %d-%d", totalOffset, totalOffset+len(actualContent)-1)
+				c.logger.Info("Redacting NewSessionTicket",
+					zap.Int("start_offset", totalOffset),
+					zap.Int("end_offset", totalOffset+len(actualContent)-1))
 
 				redactionRanges = append(redactionRanges, shared.ResponseRedactionRange{
 					Start:  totalOffset,
 					Length: len(content), // Cover full record including padding
 				})
 
-				log.Printf("[Client] Session ticket redaction: length=%d", len(actualContent))
+				c.logger.Info("Session ticket redaction", zap.Int("length", len(actualContent)))
 			}
 
 		case 0x17: // ApplicationData - HTTP response
@@ -111,7 +115,7 @@ func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 			allHTTPContent = append(allHTTPContent, actualContent...)
 
 		case 0x15: // TLS Alert - keep visible
-			log.Printf("[Client] Found TLS alert at offset %d (seq %d) - keeping visible", totalOffset, seqNum)
+			c.logger.Info("Found TLS alert - keeping visible", zap.Int("offset", totalOffset), zap.Uint64("sequence", seqNum))
 
 		default:
 			// Unknown content type - no specific handling needed
@@ -122,18 +126,18 @@ func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 
 	// Analyze all HTTP content as a single unit if we collected any
 	if len(allHTTPContent) > 0 && len(httpContentMappings) > 0 {
-		log.Printf("[Client] Analyzing combined HTTP content (%d bytes) from %d TLS records", len(allHTTPContent), len(httpContentMappings))
+		c.logger.Info("Analyzing combined HTTP content", zap.Int("content_bytes", len(allHTTPContent)), zap.Int("tls_records", len(httpContentMappings)))
 
 		var combinedHTTPRanges []shared.ResponseRedactionRange
 
 		if len(c.lastRedactionRanges) > 0 {
-			log.Printf("[Client] Using cached redaction ranges from response callback (%d ranges)", len(c.lastRedactionRanges))
+			c.logger.Info("Using cached redaction ranges from response callback", zap.Int("ranges_count", len(c.lastRedactionRanges)))
 
 			// Use cached ResponseRedactionRange directly
 			combinedHTTPRanges = c.lastRedactionRanges
 			// log.Printf("[Client] Using cached range: [%d:%d]", r.Start, r.Start+r.Length-1)
 		} else {
-			log.Printf("[Client] No cached redaction ranges available, using automatic analysis")
+			c.logger.Info("No cached redaction ranges available, using automatic analysis")
 
 			// Use response-specific redaction analysis (no Type field needed)
 			combinedHTTPRanges = c.analyzeHTTPResponseRedactionWithBytes(allHTTPContent, 0, nil)
@@ -228,7 +232,7 @@ func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 		AlwaysRedactSessionTickets: true,
 	}
 
-	log.Printf("[Client] Generated redaction spec with %d ranges (after gap filling)", len(redactionRanges))
+	c.logger.Info("Generated redaction spec", zap.Int("ranges_count", len(redactionRanges)))
 	// for i, r := range redactionRanges {
 	// 	log.Printf("[Client] Range %d: [%d:%d] (%d redaction bytes)", i+1, r.Start, r.Start+r.Length-1, len(r.RedactionBytes))
 	// }
@@ -267,7 +271,7 @@ func (c *Client) applyRedactionRangesToContent(content []byte, baseOffset int, r
 
 // sendRedactionSpec sends redaction specification to TEE_K
 func (c *Client) sendRedactionSpec() error {
-	log.Printf("[Client] Generating and sending redaction specification to TEE_K...")
+	c.logger.Info("Generating and sending redaction specification to TEE_K")
 
 	// Analyze response content to identify redaction ranges
 	redactionSpec := c.analyzeResponseRedaction()
@@ -277,8 +281,10 @@ func (c *Client) sendRedactionSpec() error {
 	redactionSpec.Ranges = shared.ConsolidateResponseRedactionRanges(redactionSpec.Ranges)
 	consolidatedCount := len(redactionSpec.Ranges)
 
-	log.Printf("[Client] Consolidated redaction ranges: %d → %d (%.1f%% reduction)",
-		originalCount, consolidatedCount, float64(originalCount-consolidatedCount)/float64(originalCount)*100)
+	c.logger.Info("Consolidated redaction ranges",
+		zap.Int("original_count", originalCount),
+		zap.Int("consolidated_count", consolidatedCount),
+		zap.Float64("reduction_percent", float64(originalCount-consolidatedCount)/float64(originalCount)*100))
 
 	// Send redaction spec to TEE_K
 	msg := shared.CreateSessionMessage(shared.MsgRedactionSpec, c.sessionID, redactionSpec)
@@ -286,15 +292,15 @@ func (c *Client) sendRedactionSpec() error {
 		return fmt.Errorf("failed to send redaction spec to TEE_K: %v", err)
 	}
 
-	log.Printf("[Client] Sent redaction specification to TEE_K with %d consolidated ranges", len(redactionSpec.Ranges))
+	c.logger.Info("Sent redaction specification to TEE_K", zap.Int("consolidated_ranges", len(redactionSpec.Ranges)))
 
-	log.Printf("[Client] Redaction specification sent successfully")
+	c.logger.Info("Redaction specification sent successfully")
 
 	c.advanceToPhase(PhaseReceivingRedacted)
 
 	// Protocol specification: TEE_K will send 'finished' to TEE_T after processing redaction specification
 	// No client finished messages are required in single session mode
-	log.Printf("[Client] Entering redacted receiving phase - waiting for TEE_K to send 'finished' to TEE_T")
+	c.logger.Info("Entering redacted receiving phase - waiting for TEE_K to send 'finished' to TEE_T")
 
 	return nil
 }
@@ -306,7 +312,7 @@ func (c *Client) displayRedactedResponseFromRanges(ranges []shared.ResponseRedac
 
 	// Guard against multiple displays
 	if c.fullRedactedResponse != nil {
-		log.Printf("[Client] Redacted response already displayed, skipping...")
+		c.logger.Info("Redacted response already displayed, skipping")
 		return
 	}
 
@@ -339,10 +345,11 @@ func (c *Client) displayRedactedResponseFromRanges(ranges []shared.ResponseRedac
 	c.fullRedactedResponse = []byte(redactedResponse)
 
 	// Display the redacted response immediately with collapsed asterisks
+	c.logger.Info("Displaying final redacted response from ranges")
 	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE (FROM RANGES) ---\n%s\n--- END REDACTED RESPONSE ---\n\n",
 		collapseAsterisks(string(c.fullRedactedResponse)))
 
-	log.Printf("[Client] Displayed redacted response from ranges (%d bytes)", len(redactedResponse))
+	c.logger.Info("Displayed redacted response from ranges", zap.Int("bytes", len(redactedResponse)))
 }
 
 // displayRedactedResponseFromRandomGarbage displays the redacted response by replacing random garbage with asterisks
@@ -352,7 +359,7 @@ func (c *Client) displayRedactedResponseFromRandomGarbage(ranges []shared.Respon
 
 	// Guard against multiple displays
 	if c.fullRedactedResponse != nil {
-		log.Printf("[Client] Redacted response already displayed, skipping...")
+		c.logger.Info("Redacted response already displayed, skipping")
 		return
 	}
 
@@ -385,10 +392,11 @@ func (c *Client) displayRedactedResponseFromRandomGarbage(ranges []shared.Respon
 	c.fullRedactedResponse = []byte(redactedResponse)
 
 	// Display the redacted response immediately with collapsed asterisks
+	c.logger.Info("Displaying final redacted response from random garbage")
 	fmt.Printf("\n\n--- FINAL REDACTED RESPONSE (FROM RANDOM GARBAGE) ---\n%s\n--- END REDACTED RESPONSE ---\n\n",
 		collapseAsterisks(string(c.fullRedactedResponse)))
 
-	log.Printf("[Client] Displayed redacted response from random garbage (%d bytes)", len(redactedResponse))
+	c.logger.Info("Displayed redacted response from random garbage", zap.Int("bytes", len(redactedResponse)))
 }
 
 // replaceRandomGarbageWithAsterisks replaces random garbage in redacted plaintext with asterisks
@@ -425,11 +433,11 @@ func (c *Client) replaceRandomGarbageWithAsterisks(content []byte, baseOffset in
 func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Message) {
 	var batchedStreams shared.BatchedSignedRedactedDecryptionStreamData
 	if err := msg.UnmarshalData(&batchedStreams); err != nil {
-		log.Printf("[Client] Failed to unmarshal batched signed redacted decryption streams: %v", err)
+		c.logger.Error("Failed to unmarshal batched signed redacted decryption streams", zap.Error(err))
 		return
 	}
 
-	log.Printf("[Client] Received batch of %d signed redacted decryption streams", len(batchedStreams.SignedRedactedStreams))
+	c.logger.Info("Received batch of signed redacted decryption streams", zap.Int("streams_count", len(batchedStreams.SignedRedactedStreams)))
 
 	// Process ALL streams from batch at once
 	for _, redactedStream := range batchedStreams.SignedRedactedStreams {
@@ -474,25 +482,23 @@ func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Messag
 	// Check completion condition - triggers immediately since all streams received at once
 	if c.teekSignedTranscript != nil && !c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
 		if len(c.signedRedactedStreams) >= c.expectedRedactedStreams {
-			log.Printf("[Client] Received all %d expected redacted streams from batch, attempting TEE_K comprehensive signature verification", c.expectedRedactedStreams)
+			c.logger.Info("Received all expected redacted streams from batch, attempting TEE_K comprehensive signature verification", zap.Int("expected_streams", c.expectedRedactedStreams))
 			verificationErr := shared.VerifyComprehensiveSignature(c.teekSignedTranscript, c.signedRedactedStreams)
 			if verificationErr != nil {
-				log.Printf("[Client] TEE_K signature verification FAILED: %v", verificationErr)
-				fmt.Printf("[Client] TEE_K signature verification FAILED: %v\n", verificationErr)
+				c.logger.Error("TEE_K signature verification FAILED", zap.Error(verificationErr))
 			} else {
-				log.Printf("[Client] TEE_K signature verification SUCCESS")
-				fmt.Printf("[Client] TEE_K signature verification SUCCESS\n")
+				c.logger.Info("TEE_K signature verification SUCCESS")
 				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
 
 				_, transcriptCount := c.getProtocolState()
 				if transcriptCount >= 2 {
-					log.Printf("[Client] Redacted streams processed AND both transcripts received - completing protocol")
+					c.logger.Info("Redacted streams processed AND both transcripts received - completing protocol")
 					c.advanceToPhase(PhaseComplete)
 				} else {
-					log.Printf("[Client] Redacted streams processed but waiting for remaining transcripts...")
+					c.logger.Info("Redacted streams processed but waiting for remaining transcripts")
 				}
 
-				log.Printf("[Client] All redacted streams received - displaying final redacted response")
+				c.logger.Info("All redacted streams received - displaying final redacted response")
 				redactionSpec := c.analyzeResponseRedaction()
 				// Consolidate ranges for display (same as verifier)
 				consolidatedRanges := shared.ConsolidateResponseRedactionRanges(redactionSpec.Ranges)
@@ -503,13 +509,13 @@ func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Messag
 				signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
 				if transcriptsComplete && signaturesValid {
-					log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")
+					c.logger.Info("Both transcripts received with valid signatures - performing transcript validation")
 					c.validateTranscriptsAgainstCapturedTraffic()
-					fmt.Printf("[Client] Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+					c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
 				}
 			}
 		}
 	}
 
-	log.Printf("[Client] Completed processing batch of %d signed redacted decryption streams", len(batchedStreams.SignedRedactedStreams))
+	c.logger.Info("Completed processing batch of signed redacted decryption streams", zap.Int("streams_count", len(batchedStreams.SignedRedactedStreams)))
 }

@@ -3,16 +3,17 @@ package clientlib
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"tee-mpc/shared"
+
+	"go.uber.org/zap"
 )
 
 // validateTranscriptsAgainstCapturedTraffic validates both TEE transcripts
 // against the client's captured TLS traffic to ensure integrity and completeness
 func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
-	fmt.Printf("\n===== TRANSCRIPT VALIDATION REPORT =====\n")
+	c.logger.Info("===== TRANSCRIPT VALIDATION REPORT =====")
 
-	log.Printf("[Client] Validating transcripts against %d captured TLS records", len(c.capturedTraffic))
+	c.logger.Info("Validating transcripts against captured TLS records", zap.Int("records_count", len(c.capturedTraffic)))
 
 	// Since we now capture raw TCP chunks exactly as TEE_K sees them,
 	// we should compare them directly without trying to categorize by TLS record type
@@ -32,12 +33,12 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 		totalCapturedSize += len(chunk)
 	}
 
-	fmt.Printf("[Client] Client captured traffic analysis:\n")
-	fmt.Printf("[Client]   Total chunks: %d\n", len(c.capturedTraffic))
-	fmt.Printf("[Client]   Total captured size: %d bytes\n", totalCapturedSize)
+	c.logger.Info("Client captured traffic analysis",
+		zap.Int("total_chunks", len(c.capturedTraffic)),
+		zap.Int("total_captured_size", totalCapturedSize))
 
 	// Perform detailed comparison with TEE transcripts
-	fmt.Printf("\n[Client] Detailed transcript comparison:\n")
+	c.logger.Info("Detailed transcript comparison")
 
 	// Validate TEE_K transcript (should contain raw TCP chunks - bidirectional)
 	teekValidation := c.validateTEEKTranscriptRaw()
@@ -46,33 +47,32 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 	teetValidation := c.validateTEETTranscriptRaw()
 
 	// Summary
-	fmt.Printf("\n[Client] VALIDATION RESULTS:\n")
-	fmt.Printf("[Client]   Both TEE_K and TEE_T transcripts received\n")
-	fmt.Printf("[Client]   Both transcript signatures verified successfully\n")
-	fmt.Printf("[Client]   Client captured %d TCP chunks during session (bidirectional)\n", len(c.capturedTraffic))
+	c.logger.Info("VALIDATION RESULTS",
+		zap.Bool("both_transcripts_received", true),
+		zap.Bool("both_signatures_verified", true),
+		zap.Int("tcp_chunks_captured", len(c.capturedTraffic)))
 
 	if teekValidation && teetValidation {
-		fmt.Printf("[Client]   TRANSCRIPT VALIDATION PASSED - All packets match!\n")
+		c.logger.Info("TRANSCRIPT VALIDATION PASSED - All packets match!")
 	} else {
-		fmt.Printf("[Client]   TRANSCRIPT VALIDATION FAILED - Packet mismatches detected!\n")
+		c.logger.Error("TRANSCRIPT VALIDATION FAILED - Packet mismatches detected!")
 	}
 
-	fmt.Printf("===== VALIDATION COMPLETE =====\n\n")
+	c.logger.Info("===== VALIDATION COMPLETE =====")
 }
 
 // validateTEEKTranscriptRaw validates TEE_K transcript against client raw TCP chunks
 func (c *Client) validateTEEKTranscriptRaw() bool {
-	fmt.Printf("[Client] Validating TEE_K transcript (%d packets) against client captures\n",
-		len(c.teekTranscriptPackets))
+	c.logger.Info("Validating TEE_K transcript against client captures", zap.Int("packets_count", len(c.teekTranscriptPackets)))
 
 	if c.teekTranscriptPackets == nil {
-		fmt.Printf("[Client] TEE_K transcript packets not available\n")
+		c.logger.Error("TEE_K transcript packets not available")
 		return false
 	}
 
 	// TEE_K captures raw TCP chunks during handshake, so we should compare against
 	// the raw TCP chunks we captured (not the individual TLS records from application phase)
-	fmt.Printf("[Client] TEE_K transcript analysis:\n")
+	c.logger.Info("TEE_K transcript analysis")
 
 	handshakePacketsMatched := 0
 	totalCompared := 0 // number of transcript packets that we actually compared against captures
@@ -92,27 +92,25 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 		}
 
 		if !found {
-			fmt.Printf("[Client]     NOT found in client captures\n")
+			c.logger.Debug("Packet NOT found in client captures")
 		}
 	}
 
-	fmt.Printf("[Client] TEE_K validation result: %d/%d packets matched exactly\n",
-		handshakePacketsMatched, totalCompared)
+	c.logger.Info("TEE_K validation result", zap.Int("packets_matched", handshakePacketsMatched), zap.Int("total_compared", totalCompared))
 
 	return handshakePacketsMatched == totalCompared
 }
 
 // validateTEETTranscriptRaw validates TEE_T transcript against client application data records
 func (c *Client) validateTEETTranscriptRaw() bool {
-	fmt.Printf("[Client] Validating TEE_T transcript (%d packets) against client captures\n",
-		len(c.teetTranscriptPackets))
+	c.logger.Info("Validating TEE_T transcript against client captures", zap.Int("packets_count", len(c.teetTranscriptPackets)))
 
 	if c.teetTranscriptPackets == nil {
-		fmt.Printf("[Client] TEE_T transcript packets not available\n")
+		c.logger.Error("TEE_T transcript packets not available")
 		return false
 	}
 
-	fmt.Printf("[Client] TEE_T transcript analysis:\n")
+	c.logger.Info("TEE_T transcript analysis")
 
 	packetsMatched := 0
 	for _, teetPacket := range c.teetTranscriptPackets {
@@ -130,12 +128,11 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 		}
 
 		if !found {
-			fmt.Printf("[Client]     NOT found in client captures\n")
+			c.logger.Debug("Packet NOT found in client captures")
 		}
 	}
 
-	fmt.Printf("[Client] TEE_T validation result: %d/%d packets matched exactly\n",
-		packetsMatched, len(c.teetTranscriptPackets))
+	c.logger.Info("TEE_T validation result", zap.Int("packets_matched", packetsMatched), zap.Int("total_packets", len(c.teetTranscriptPackets)))
 
 	return packetsMatched == len(c.teetTranscriptPackets)
 }
@@ -144,14 +141,14 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 func (c *Client) handleSignedTranscript(msg *shared.Message) {
 	var signedTranscript shared.SignedTranscript
 	if err := msg.UnmarshalData(&signedTranscript); err != nil {
-		log.Printf("[Client] Failed to unmarshal signed transcript: %v", err)
+		c.logger.Error("Failed to unmarshal signed transcript", zap.Error(err))
 		return
 	}
 
-	log.Printf("[Client] Received signed transcript")
-	log.Printf("[Client] Transcript contains %d packets", len(signedTranscript.Packets))
-	log.Printf("[Client] Comprehensive signature: %d bytes", len(signedTranscript.Signature))
-	log.Printf("[Client] Public Key: %d bytes (DER format)", len(signedTranscript.PublicKey))
+	c.logger.Info("Received signed transcript",
+		zap.Int("packets_count", len(signedTranscript.Packets)),
+		zap.Int("signature_bytes", len(signedTranscript.Signature)),
+		zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
 
 	// Store the public key for attestation verification
 	// Determine source based on transcript structure: TEE_K has RequestMetadata, TEE_T doesn't
@@ -173,7 +170,7 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		totalSize += len(packet)
 	}
 
-	log.Printf("[Client] Total transcript size: %d bytes", totalSize)
+	c.logger.Info("Total transcript size", zap.Int("bytes", totalSize))
 
 	// Determine source name for logging
 	sourceName := "TEE_T"
@@ -183,33 +180,33 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 
 	// Display signature and public key info for verification
 	if len(signedTranscript.Signature) > 0 {
-		fmt.Printf("[Client] %s signature: %d bytes\n", sourceName, len(signedTranscript.Signature))
+		c.logger.Info("Signature info", zap.String("source", sourceName), zap.Int("signature_bytes", len(signedTranscript.Signature)))
 	}
 
 	if len(signedTranscript.PublicKey) > 0 {
-		fmt.Printf("[Client] %s public key: %d bytes\n", sourceName, len(signedTranscript.PublicKey))
+		c.logger.Info("Public key info", zap.String("source", sourceName), zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
 	}
 
 	// Verify signature
-	log.Printf("[Client] Verifying signature for %s transcript...", sourceName)
+	c.logger.Info("Verifying signature for transcript", zap.String("source", sourceName))
 	var verificationErr error
 	if signedTranscript.RequestMetadata != nil {
 		// This is TEE_K - check if we have all expected redacted streams before verification
-		log.Printf("[Client] TEE_K transcript received, checking if all expected redacted streams are available...")
+		c.logger.Info("TEE_K transcript received, checking if all expected redacted streams are available")
 		if len(c.signedRedactedStreams) < c.expectedRedactedStreams {
-			log.Printf("[Client] TEE_K comprehensive verification deferred - waiting for redacted streams (%d/%d)", len(c.signedRedactedStreams), c.expectedRedactedStreams)
+			c.logger.Info("TEE_K comprehensive verification deferred - waiting for redacted streams",
+				zap.Int("current_streams", len(c.signedRedactedStreams)),
+				zap.Int("expected_streams", c.expectedRedactedStreams))
 			// Increment transcript count (parallel to existing logic)
 			c.incrementTranscriptCount()
 			// Don't set signature valid flag yet - will be set after successful verification
 		} else {
-			log.Printf("[Client] TEE_K comprehensive verification: have all %d expected redacted streams", c.expectedRedactedStreams)
+			c.logger.Info("TEE_K comprehensive verification: have all expected redacted streams", zap.Int("streams_count", c.expectedRedactedStreams))
 			verificationErr = shared.VerifyComprehensiveSignature(&signedTranscript, c.signedRedactedStreams)
 			if verificationErr != nil {
-				log.Printf("[Client] Signature verification FAILED for %s: %v", sourceName, verificationErr)
-				fmt.Printf("[Client] %s signature verification FAILED: %v\n", sourceName, verificationErr)
+				c.logger.Error("Signature verification FAILED", zap.String("source", sourceName), zap.Error(verificationErr))
 			} else {
-				log.Printf("[Client] Signature verification SUCCESS for %s", sourceName)
-				fmt.Printf("[Client] %s signature verification SUCCESS\n", sourceName)
+				c.logger.Info("Signature verification SUCCESS", zap.String("source", sourceName))
 			}
 
 			// Increment transcript count (parallel to existing logic)
@@ -222,38 +219,34 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		// This is TEE_T - use regular TLS packet verification
 		verificationErr = shared.VerifyTranscriptSignature(&signedTranscript)
 		if verificationErr != nil {
-			log.Printf("[Client] Signature verification FAILED for %s: %v", sourceName, verificationErr)
-			fmt.Printf("[Client] %s signature verification FAILED: %v\n", sourceName, verificationErr)
+			c.logger.Error("Signature verification FAILED", zap.String("source", sourceName), zap.Error(verificationErr))
 		} else {
-			log.Printf("[Client] Signature verification SUCCESS for %s", sourceName)
-			fmt.Printf("[Client] %s signature verification SUCCESS\n", sourceName)
+			c.logger.Info("Signature verification SUCCESS", zap.String("source", sourceName))
 		}
 
 		// Increment transcript count (parallel to existing logic)
 		c.incrementTranscriptCount()
 	}
 
-	log.Printf("[Client] Marked %s transcript as received (signature valid: %v)", sourceName, verificationErr == nil)
+	c.logger.Info("Marked transcript as received", zap.String("source", sourceName), zap.Bool("signature_valid", verificationErr == nil))
 
 	// Check if we now have both transcript public keys and can verify against attestations
 	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
-		log.Printf("[Client] Both transcript public keys received - verifying against attestations...")
+		c.logger.Info("Both transcript public keys received - verifying against attestations")
 		if err := c.verifyAttestationPublicKeys(); err != nil {
-			log.Printf("[Client] Attestation public key verification failed: %v", err)
-			fmt.Printf("[Client] ATTESTATION VERIFICATION FAILED: %v\n", err)
+			c.logger.Error("Attestation public key verification failed", zap.Error(err))
 		} else {
-			log.Printf("[Client] Attestation public key verification successful")
-			fmt.Printf("[Client] ATTESTATION VERIFICATION SUCCESSFUL - transcripts are from verified enclaves\n")
+			c.logger.Info("Attestation public key verification successful - transcripts are from verified enclaves")
 		}
 	}
 
 	transcriptsComplete := c.transcriptsReceived >= 2
 	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
-	log.Printf("[Client] Signed transcript from %s processed successfully", sourceName)
+	c.logger.Info("Signed transcript processed successfully", zap.String("source", sourceName))
 
 	// Show packet summary
-	fmt.Printf("[Client] %s transcript summary:\n", sourceName)
+	c.logger.Info("Transcript summary", zap.String("source", sourceName))
 	// if len(signedTranscript.Packets) > 0 {
 	// 	// Display packet information
 	// 	for i, packet := range signedTranscript.Packets {
@@ -269,15 +262,15 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 	// }
 
 	if transcriptsComplete && signaturesValid {
-		log.Printf("[Client] Both transcripts received with valid signatures - performing transcript validation...")
+		c.logger.Info("Both transcripts received with valid signatures - performing transcript validation")
 		c.validateTranscriptsAgainstCapturedTraffic()
 	}
 
 	if transcriptsComplete {
 		if signaturesValid {
-			log.Println("[Client] Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+			c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
 		} else {
-			log.Println("[Client] Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
+			c.logger.Error("Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
 		}
 	}
 
