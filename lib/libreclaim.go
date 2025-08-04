@@ -57,7 +57,7 @@ type ProtocolSession struct {
 // RequestData represents the JSON structure for request data
 type RequestData struct {
 	Host                   string                         `json:"host"`
-	RawRequest             string                         `json:"raw_request"`
+	RawRequest             []byte                         `json:"raw_request"`
 	RequestRedactionRanges []shared.RequestRedactionRange `json:"request_redaction_ranges"`
 }
 
@@ -209,7 +209,7 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 	}
 
 	// Set request data
-	if err := session.Client.SetRequestData([]byte(requestData.RawRequest)); err != nil {
+	if err := session.Client.SetRequestData(requestData.RawRequest); err != nil {
 		sessionMutex.Lock()
 		delete(sessions, handle)
 		sessionMutex.Unlock()
