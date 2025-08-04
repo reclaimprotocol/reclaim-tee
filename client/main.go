@@ -15,7 +15,7 @@ import (
 
 func main() {
 	// Initialize logger
-	logger, err := zap.NewDevelopment()
+	logger, err := shared.NewLoggerFromEnv("demo")
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
