@@ -8,7 +8,6 @@ import (
 	clientlib "tee-mpc/libclient"
 	proofverifier "tee-mpc/proofverifier" // add new import
 	"tee-mpc/shared"
-	"time"
 
 	"go.uber.org/zap"
 )
@@ -114,13 +113,9 @@ func main() {
 	logger.Info("⏳ Waiting for all processing to complete...")
 	logger.Info(" (decryption streams + redaction verification)")
 
-	select {
-	case <-client.WaitForCompletion():
-		logger.Info(" Split AEAD protocol completed successfully!")
-	case <-time.After(clientlib.DefaultProcessingTimeout): // Configurable processing timeout
-		logger.Warn("⏰ Processing timeout - operation may still be in progress")
-		logger.Warn("⚠️  Continuing with partial results...")
-	}
+	// Wait for actual protocol completion without timeout
+	<-client.WaitForCompletion()
+	logger.Info(" Split AEAD protocol completed successfully!")
 
 	// Demonstrate accessing protocol results
 	fmt.Println("\n===== PROTOCOL RESULTS =====")

@@ -105,12 +105,12 @@ const (
 )
 
 const (
-	MsgBatchedEncryptedResponses              MessageType = "batched_encrypted_responses"
-	MsgBatchedResponseLengths                 MessageType = "batched_response_lengths"
-	MsgBatchedTagSecrets                      MessageType = "batched_tag_secrets"
-	MsgBatchedTagVerifications                MessageType = "batched_tag_verifications"
-	MsgBatchedDecryptionStreams               MessageType = "batched_decryption_streams"
-	MsgBatchedSignedRedactedDecryptionStreams MessageType = "batched_signed_redacted_decryption_streams"
+	MsgBatchedEncryptedResponses    MessageType = "batched_encrypted_responses"
+	MsgBatchedResponseLengths       MessageType = "batched_response_lengths"
+	MsgBatchedTagSecrets            MessageType = "batched_tag_secrets"
+	MsgBatchedTagVerifications      MessageType = "batched_tag_verifications"
+	MsgBatchedDecryptionStreams     MessageType = "batched_decryption_streams"
+	MsgRedactedTranscriptAndStreams MessageType = "redacted_transcript_and_streams"
 )
 
 // Message represents a protocol message with session context
@@ -524,11 +524,11 @@ type BatchedDecryptionStreamData struct {
 	TotalCount        int                            `json:"total_count"`        // Total number of streams in batch
 }
 
-// BatchedSignedRedactedDecryptionStreamData contains multiple signed redacted decryption streams for batch processing
-type BatchedSignedRedactedDecryptionStreamData struct {
-	SignedRedactedStreams []SignedRedactedDecryptionStream `json:"signed_redacted_streams"` // Array of signed redacted decryption streams
-	SessionID             string                           `json:"session_id"`              // Session identifier
-	TotalCount            int                              `json:"total_count"`             // Total number of streams in batch
+// RedactedTranscriptData represents the combined message containing both signed transcript and redacted streams
+type RedactedTranscriptData struct {
+	SignedTranscript SignedTranscript                 `json:"signed_transcript"` // Complete signed transcript
+	RedactedStreams  []SignedRedactedDecryptionStream `json:"redacted_streams"`  // Array of redacted streams
+	TotalStreams     int                              `json:"total_streams"`     // Total number of streams
 }
 
 // Helper functions

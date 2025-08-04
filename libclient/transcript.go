@@ -137,7 +137,8 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 	return packetsMatched == len(c.teetTranscriptPackets)
 }
 
-// handleSignedTranscript processes signed transcript messages from TEE_K and TEE_T
+// handleSignedTranscript processes signed transcript messages from TEE_T
+// Note: TEE_K now sends combined messages via handleRedactedTranscriptAndStreams
 func (c *Client) handleSignedTranscript(msg *shared.Message) {
 	var signedTranscript shared.SignedTranscript
 	if err := msg.UnmarshalData(&signedTranscript); err != nil {
@@ -145,24 +146,15 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		return
 	}
 
-	c.logger.Info("Received signed transcript",
+	c.logger.Info("Received signed transcript from TEE_T",
 		zap.Int("packets_count", len(signedTranscript.Packets)),
 		zap.Int("signature_bytes", len(signedTranscript.Signature)),
 		zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
 
 	// Store the public key for attestation verification
-	// Determine source based on transcript structure: TEE_K has RequestMetadata, TEE_T doesn't
-	if signedTranscript.RequestMetadata != nil {
-		// This is from TEE_K
-		c.teekTranscriptPublicKey = signedTranscript.PublicKey
-		c.teekSignedTranscript = &signedTranscript
-		c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
-	} else {
-		// This is from TEE_T
-		c.teetTranscriptPublicKey = signedTranscript.PublicKey
-		c.teetSignedTranscript = &signedTranscript
-		c.teetTranscriptPackets = signedTranscript.Packets // Store packets for validation
-	}
+	c.teetTranscriptPublicKey = signedTranscript.PublicKey
+	c.teetSignedTranscript = &signedTranscript
+	c.teetTranscriptPackets = signedTranscript.Packets // Store packets for validation
 
 	// Calculate total size of all packets
 	totalSize := 0
@@ -172,63 +164,28 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 
 	c.logger.Info("Total transcript size", zap.Int("bytes", totalSize))
 
-	// Determine source name for logging
-	sourceName := "TEE_T"
-	if signedTranscript.RequestMetadata != nil {
-		sourceName = "TEE_K"
-	}
-
 	// Display signature and public key info for verification
 	if len(signedTranscript.Signature) > 0 {
-		c.logger.Info("Signature info", zap.String("source", sourceName), zap.Int("signature_bytes", len(signedTranscript.Signature)))
+		c.logger.Info("Signature info", zap.String("source", "TEE_T"), zap.Int("signature_bytes", len(signedTranscript.Signature)))
 	}
 
 	if len(signedTranscript.PublicKey) > 0 {
-		c.logger.Info("Public key info", zap.String("source", sourceName), zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
+		c.logger.Info("Public key info", zap.String("source", "TEE_T"), zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
 	}
 
-	// Verify signature
-	c.logger.Info("Verifying signature for transcript", zap.String("source", sourceName))
-	var verificationErr error
-	if signedTranscript.RequestMetadata != nil {
-		// This is TEE_K - check if we have all expected redacted streams before verification
-		c.logger.Info("TEE_K transcript received, checking if all expected redacted streams are available")
-		if len(c.signedRedactedStreams) < c.expectedRedactedStreams {
-			c.logger.Info("TEE_K comprehensive verification deferred - waiting for redacted streams",
-				zap.Int("current_streams", len(c.signedRedactedStreams)),
-				zap.Int("expected_streams", c.expectedRedactedStreams))
-			// Increment transcript count (parallel to existing logic)
-			c.incrementTranscriptCount()
-			// Don't set signature valid flag yet - will be set after successful verification
-		} else {
-			c.logger.Info("TEE_K comprehensive verification: have all expected redacted streams", zap.Int("streams_count", c.expectedRedactedStreams))
-			verificationErr = shared.VerifyComprehensiveSignature(&signedTranscript, c.signedRedactedStreams)
-			if verificationErr != nil {
-				c.logger.Error("Signature verification FAILED", zap.String("source", sourceName), zap.Error(verificationErr))
-			} else {
-				c.logger.Info("Signature verification SUCCESS", zap.String("source", sourceName))
-			}
-
-			// Increment transcript count (parallel to existing logic)
-			c.incrementTranscriptCount()
-			if verificationErr == nil {
-				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
-			}
-		}
+	// Verify signature using regular TLS packet verification
+	c.logger.Info("Verifying signature for transcript", zap.String("source", "TEE_T"))
+	verificationErr := shared.VerifyTranscriptSignature(&signedTranscript)
+	if verificationErr != nil {
+		c.logger.Error("Signature verification FAILED", zap.String("source", "TEE_T"), zap.Error(verificationErr))
 	} else {
-		// This is TEE_T - use regular TLS packet verification
-		verificationErr = shared.VerifyTranscriptSignature(&signedTranscript)
-		if verificationErr != nil {
-			c.logger.Error("Signature verification FAILED", zap.String("source", sourceName), zap.Error(verificationErr))
-		} else {
-			c.logger.Info("Signature verification SUCCESS", zap.String("source", sourceName))
-		}
-
-		// Increment transcript count (parallel to existing logic)
-		c.incrementTranscriptCount()
+		c.logger.Info("Signature verification SUCCESS", zap.String("source", "TEE_T"))
 	}
 
-	c.logger.Info("Marked transcript as received", zap.String("source", sourceName), zap.Bool("signature_valid", verificationErr == nil))
+	// Increment transcript count
+	c.incrementTranscriptCount()
+
+	c.logger.Info("Marked transcript as received", zap.String("source", "TEE_T"), zap.Bool("signature_valid", verificationErr == nil))
 
 	// Check if we now have both transcript public keys and can verify against attestations
 	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
@@ -242,28 +199,32 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 
 	transcriptsComplete := c.transcriptsReceived >= 2
 	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
+	currentPhase, _ := c.getProtocolState()
 
-	c.logger.Info("Signed transcript processed successfully", zap.String("source", sourceName))
+	c.logger.Info("Signed transcript processed successfully", zap.String("source", "TEE_T"))
 
 	// Show packet summary
-	c.logger.Info("Transcript summary", zap.String("source", sourceName))
-	// if len(signedTranscript.Packets) > 0 {
-	// 	// Display packet information
-	// 	for i, packet := range signedTranscript.Packets {
-	// 		fmt.Printf("[Client] TEE_K packet %d: %d bytes\n", i+1, len(packet))
-	// 	}
-	// }
+	c.logger.Info("Transcript summary", zap.String("source", "TEE_T"))
 
-	// if len(signedTranscript.Packets) > 0 {
-	// 	// Display packet information
-	// 	for i, packet := range signedTranscript.Packets {
-	// 		fmt.Printf("[Client] TEE_T packet %d: %d bytes\n", i+1, len(packet))
-	// 	}[Client]   TEE_T packet 1
-	// }
-
-	if transcriptsComplete && signaturesValid {
-		c.logger.Info("Both transcripts received with valid signatures - performing transcript validation")
+	// Perform final validation and display BEFORE advancing to PhaseComplete
+	if transcriptsComplete && signaturesValid && currentPhase != PhaseComplete {
+		c.logger.Info("Both transcripts received with valid signatures - performing final validation and display")
 		c.validateTranscriptsAgainstCapturedTraffic()
+
+		// Display final redacted response BEFORE protocol completion
+		c.logger.Info("Protocol ready for completion - displaying final redacted response")
+		redactionSpec := c.analyzeResponseRedaction()
+		// Consolidate ranges for display (same as verifier)
+		consolidatedRanges := shared.ConsolidateResponseRedactionRanges(redactionSpec.Ranges)
+		c.displayRedactedResponseFromRandomGarbage(consolidatedRanges)
+
+		// Now advance to PhaseComplete (which will signal completion)
+		c.logger.Info("Final display complete - advancing to PhaseComplete")
+		c.advanceToPhase(PhaseComplete)
+	} else if transcriptsComplete && signaturesValid && currentPhase == PhaseComplete {
+		c.logger.Info("Protocol already complete - final validation and display already performed")
+	} else if transcriptsComplete && signaturesValid {
+		c.logger.Info("Both transcripts received with valid signatures, but protocol not yet complete - waiting for PhaseComplete")
 	}
 
 	if transcriptsComplete {

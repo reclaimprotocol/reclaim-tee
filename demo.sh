@@ -34,7 +34,7 @@ cleanup() {
 # Set up signal handlers
 trap cleanup SIGINT SIGTERM
 
-export DEVELOPMENT=true
+#export DEVELOPMENT=true
 
 # Start TEE_K service
 echo "Starting TEE_K service (port 8080)..."
