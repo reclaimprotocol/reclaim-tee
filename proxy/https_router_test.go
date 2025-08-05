@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -130,7 +131,7 @@ func TestHTTPSRouter_SNIExtraction(t *testing.T) {
 	cancel()
 	select {
 	case err := <-routerDone:
-		if err != nil && err != context.Canceled {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Errorf("Router error: %v", err)
 		}
 	case <-time.After(5 * time.Second):

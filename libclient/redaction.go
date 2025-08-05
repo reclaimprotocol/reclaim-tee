@@ -428,51 +428,22 @@ func (c *Client) replaceRandomGarbageWithAsterisks(content []byte, baseOffset in
 	return result
 }
 
-// handleRedactedTranscriptAndStreams handles the combined message containing both signed transcript and redacted streams
-func (c *Client) handleRedactedTranscriptAndStreams(msg *shared.Message) {
-	var combinedData shared.RedactedTranscriptData
-	if err := msg.UnmarshalData(&combinedData); err != nil {
-		c.logger.Error("Failed to unmarshal combined transcript and streams data", zap.Error(err))
+// handleBatchedSignedRedactedDecryptionStreams handles batched signed redacted decryption streams
+// while preserving exact same state machine behavior as individual messages
+func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Message) {
+	var batchedStreams shared.BatchedSignedRedactedDecryptionStreamData
+	if err := msg.UnmarshalData(&batchedStreams); err != nil {
+		c.logger.Error("Failed to unmarshal batched signed redacted decryption streams", zap.Error(err))
 		return
 	}
 
-	c.logger.Info("Received combined transcript and streams message",
-		zap.Int("streams_count", len(combinedData.RedactedStreams)),
-		zap.Int("total_streams", combinedData.TotalStreams))
+	c.logger.Info("Received batch of signed redacted decryption streams", zap.Int("streams_count", len(batchedStreams.SignedRedactedStreams)))
 
-	// Process the signed transcript first (same logic as handleSignedTranscript)
-	c.logger.Info("Processing signed transcript from combined message",
-		zap.Int("packets_count", len(combinedData.SignedTranscript.Packets)),
-		zap.Int("signature_bytes", len(combinedData.SignedTranscript.Signature)))
+	// Process ALL streams from batch at once
+	for _, redactedStream := range batchedStreams.SignedRedactedStreams {
+		// log.Printf("[Client] Processing redacted decryption stream for seq %d (%d bytes)",
+		// 	redactedStream.SeqNum, len(redactedStream.RedactedStream))
 
-	// Store the public key for attestation verification
-	// This is from TEE_K (has RequestMetadata)
-	c.teekTranscriptPublicKey = combinedData.SignedTranscript.PublicKey
-	c.teekSignedTranscript = &combinedData.SignedTranscript
-	c.teekTranscriptPackets = combinedData.SignedTranscript.Packets
-
-	// Calculate total size of all packets
-	totalSize := 0
-	for _, packet := range combinedData.SignedTranscript.Packets {
-		totalSize += len(packet)
-	}
-
-	c.logger.Info("Total transcript size", zap.Int("bytes", totalSize))
-
-	// Display signature and public key info for verification
-	if len(combinedData.SignedTranscript.Signature) > 0 {
-		c.logger.Info("Signature info", zap.String("source", "TEE_K"), zap.Int("signature_bytes", len(combinedData.SignedTranscript.Signature)))
-	}
-
-	if len(combinedData.SignedTranscript.PublicKey) > 0 {
-		c.logger.Info("Public key info", zap.String("source", "TEE_K"), zap.Int("public_key_bytes", len(combinedData.SignedTranscript.PublicKey)))
-	}
-
-	// Process the redacted streams (same logic as the deprecated handleBatchedSignedRedactedDecryptionStreams)
-	c.logger.Info("Processing redacted streams from combined message", zap.Int("streams_count", len(combinedData.RedactedStreams)))
-
-	// Process ALL streams from combined message
-	for _, redactedStream := range combinedData.RedactedStreams {
 		// Add to collection for verification bundle
 		c.signedRedactedStreams = append(c.signedRedactedStreams, redactedStream)
 
@@ -483,6 +454,7 @@ func (c *Client) handleRedactedTranscriptAndStreams(msg *shared.Message) {
 
 		if !exists {
 			log.Fatalf("[Client] No ciphertext found for seq %d", redactedStream.SeqNum)
+
 		}
 
 		if len(redactedStream.RedactedStream) != len(ciphertext) {
@@ -503,47 +475,47 @@ func (c *Client) handleRedactedTranscriptAndStreams(msg *shared.Message) {
 		}
 		c.redactedPlaintextBySeq[redactedStream.SeqNum] = redactedPlaintext
 		c.responseContentMutex.Unlock()
+
+		// log.Printf("[Client] Applied redacted stream to seq %d successfully", redactedStream.SeqNum)
 	}
 
-	// Now verify the signature since we have both transcript and streams
-	c.logger.Info("TEE_K comprehensive verification: have all expected redacted streams", zap.Int("streams_count", len(combinedData.RedactedStreams)))
-	verificationErr := shared.VerifyComprehensiveSignature(&combinedData.SignedTranscript, combinedData.RedactedStreams)
-	if verificationErr != nil {
-		c.logger.Error("Signature verification FAILED", zap.String("source", "TEE_K"), zap.Error(verificationErr))
-	} else {
-		c.logger.Info("Signature verification SUCCESS", zap.String("source", "TEE_K"))
+	// Check completion condition - triggers immediately since all streams received at once
+	if c.teekSignedTranscript != nil && !c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
+		if len(c.signedRedactedStreams) >= c.expectedRedactedStreams {
+			c.logger.Info("Received all expected redacted streams from batch, attempting TEE_K comprehensive signature verification", zap.Int("expected_streams", c.expectedRedactedStreams))
+			verificationErr := shared.VerifyComprehensiveSignature(c.teekSignedTranscript, c.signedRedactedStreams)
+			if verificationErr != nil {
+				c.logger.Error("TEE_K signature verification FAILED", zap.Error(verificationErr))
+			} else {
+				c.logger.Info("TEE_K signature verification SUCCESS")
+				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+
+				_, transcriptCount := c.getProtocolState()
+				if transcriptCount >= 2 {
+					c.logger.Info("Redacted streams processed AND both transcripts received - completing protocol")
+					c.advanceToPhase(PhaseComplete)
+				} else {
+					c.logger.Info("Redacted streams processed but waiting for remaining transcripts")
+				}
+
+				c.logger.Info("All redacted streams received - displaying final redacted response")
+				redactionSpec := c.analyzeResponseRedaction()
+				// Consolidate ranges for display (same as verifier)
+				consolidatedRanges := shared.ConsolidateResponseRedactionRanges(redactionSpec.Ranges)
+				c.displayRedactedResponseFromRandomGarbage(consolidatedRanges)
+
+				// Check if we can now proceed with full protocol completion
+				transcriptsComplete := c.transcriptsReceived >= 2
+				signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
+
+				if transcriptsComplete && signaturesValid {
+					c.logger.Info("Both transcripts received with valid signatures - performing transcript validation")
+					c.validateTranscriptsAgainstCapturedTraffic()
+					c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+				}
+			}
+		}
 	}
 
-	// Set completion flag for TEE_K signature validation
-	if verificationErr == nil {
-		c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
-	}
-
-	// Note: We do NOT increment transcript count here because this is TEE_K's transcript
-	// The transcript count should only be incremented when actual signed transcripts are received
-	// Redacted streams are part of TEE_K's transcript, not a separate transcript
-
-	// Increment transcript count for TEE_K's signed transcript
-	c.incrementTranscriptCount()
-
-	c.logger.Info("Marked transcript as received", zap.String("source", "TEE_K"), zap.Bool("signature_valid", verificationErr == nil))
-
-	// Check completion condition
-	_, transcriptCount := c.getProtocolState()
-	if transcriptCount >= 2 {
-		c.logger.Info("Combined message processed AND both transcripts received - protocol ready for completion")
-		// Note: Phase advancement to PhaseComplete will be handled in handleSignedTranscript
-		// to ensure proper sequencing of final validation and display
-	} else {
-		c.logger.Info("Combined message processed but waiting for remaining transcripts")
-	}
-
-	// Note: Final redacted response display will be handled in handleSignedTranscript when both transcripts are received
-	// to ensure it only happens after protocol completion
-
-	// Check if we can now proceed with full protocol completion
-	// Note: Final validation will be handled in handleSignedTranscript when both transcripts are received
-	// to avoid duplicate validation calls
-
-	c.logger.Info("Completed processing combined transcript and streams message", zap.Int("streams_count", len(combinedData.RedactedStreams)))
+	c.logger.Info("Completed processing batch of signed redacted decryption streams", zap.Int("streams_count", len(batchedStreams.SignedRedactedStreams)))
 }

@@ -6,8 +6,9 @@ import (
 	"os"
 	"strings"
 	clientlib "tee-mpc/libclient"
-	proofverifier "tee-mpc/proofverifier" // add new import
+	"tee-mpc/proofverifier" // add new import
 	"tee-mpc/shared"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -113,9 +114,13 @@ func main() {
 	logger.Info("⏳ Waiting for all processing to complete...")
 	logger.Info(" (decryption streams + redaction verification)")
 
-	// Wait for actual protocol completion without timeout
-	<-client.WaitForCompletion()
-	logger.Info(" Split AEAD protocol completed successfully!")
+	select {
+	case <-client.WaitForCompletion():
+		logger.Info(" Split AEAD protocol completed successfully!")
+	case <-time.After(clientlib.DefaultProcessingTimeout): // Configurable processing timeout
+		logger.Warn("⏰ Processing timeout - operation may still be in progress")
+		logger.Warn("⚠️  Continuing with partial results...")
+	}
 
 	// Demonstrate accessing protocol results
 	fmt.Println("\n===== PROTOCOL RESULTS =====")
@@ -226,69 +231,6 @@ func autoDetectTEETURL(teekURL string) string {
 			return "ws://localhost:8081/ws"
 		}
 	}
-}
-
-// getDemoRequestRedactions returns demo request redaction specifications
-func getDemoRequestRedactions() []clientlib.RedactionSpec {
-	return []clientlib.RedactionSpec{
-		{
-			Pattern: "Authorization: Bearer [^\\r\\n]+",
-			Type:    shared.RedactionTypeSensitive,
-		},
-		{
-			Pattern: "X-Account-ID: [^\\r\\n]+",
-			Type:    shared.RedactionTypeSensitive,
-		},
-		{
-			Pattern: "X-API-Key: [^\\r\\n]+",
-			Type:    shared.RedactionTypeSensitive,
-		},
-		{
-			Pattern: "X-Session-Token: [^\\r\\n]+",
-			Type:    shared.RedactionTypeSensitive,
-		},
-		{
-			Pattern: "X-User-ID: [^\\r\\n]+",
-			Type:    shared.RedactionTypeSensitive,
-		},
-		{
-			Pattern: "X-Client-Secret: [^\\r\\n]+",
-			Type:    shared.RedactionTypeSensitive,
-		},
-	}
-}
-
-// convertRangesToSpecs converts RequestRedactionRange to RedactionSpec for demo purposes
-// This is demo-specific and should not be in the library
-func convertRangesToSpecs(ranges []shared.RequestRedactionRange) []clientlib.RedactionSpec {
-	var specs []clientlib.RedactionSpec
-
-	// Convert the ranges to patterns that the clientlib can understand
-	for _, r := range ranges {
-		// Create a pattern based on the range type and position
-		var pattern string
-		switch r.Type {
-		case shared.RedactionTypeSensitive:
-			// For sensitive data, we'll use a pattern that matches common sensitive headers
-			if r.Start > 0 {
-				pattern = "Authorization: Bearer"
-			} else {
-				pattern = "X-Account-ID:"
-			}
-		case shared.RedactionTypeSensitiveProof:
-			// For sensitive_proof data, we'll use a pattern that matches the X-Account-ID field
-			pattern = "X-Account-ID:"
-		default:
-			pattern = fmt.Sprintf("range_%d_%d", r.Start, r.Length)
-		}
-
-		specs = append(specs, clientlib.RedactionSpec{
-			Pattern: pattern,
-			Type:    r.Type,
-		})
-	}
-
-	return specs
 }
 
 // PatternMatch represents a pattern match result (moved from libclient)

@@ -64,34 +64,10 @@ type ProtocolError struct {
 	Phase string `json:"phase"` // Which protocol phase failed
 }
 
-// NewProtocolError creates a new protocol error
-func NewProtocolError(phase string, message string, cause error) *ProtocolError {
-	return &ProtocolError{
-		ReclaimError: &ReclaimError{
-			Type:    "protocol_error",
-			Message: fmt.Sprintf("Protocol error in %s: %s", phase, message),
-			Cause:   cause,
-		},
-		Phase: phase,
-	}
-}
-
 // RedactionError represents redaction-related errors
 type RedactionError struct {
 	*ReclaimError
 	RedactionType string `json:"redaction_type"` // "request" or "response"
-}
-
-// NewRedactionError creates a new redaction error
-func NewRedactionError(redactionType string, message string, cause error) *RedactionError {
-	return &RedactionError{
-		ReclaimError: &ReclaimError{
-			Type:    "redaction_error",
-			Message: fmt.Sprintf("Redaction error (%s): %s", redactionType, message),
-			Cause:   cause,
-		},
-		RedactionType: redactionType,
-	}
 }
 
 // ConfigurationError represents configuration-related errors
@@ -100,32 +76,9 @@ type ConfigurationError struct {
 	Field string `json:"field"` // Which configuration field is invalid
 }
 
-// NewConfigurationError creates a new configuration error
-func NewConfigurationError(field string, message string) *ConfigurationError {
-	return &ConfigurationError{
-		ReclaimError: &ReclaimError{
-			Type:    "configuration_error",
-			Message: fmt.Sprintf("Configuration error in field '%s': %s", field, message),
-		},
-		Field: field,
-	}
-}
-
 // ValidationError represents validation errors
 type ValidationError struct {
 	*ReclaimError
 	Field string      `json:"field"` // Field that failed validation
 	Value interface{} `json:"value"` // Invalid value
-}
-
-// NewValidationError creates a new validation error
-func NewValidationError(field string, value interface{}, message string) *ValidationError {
-	return &ValidationError{
-		ReclaimError: &ReclaimError{
-			Type:    "validation_error",
-			Message: fmt.Sprintf("Validation error for field '%s': %s", field, message),
-		},
-		Field: field,
-		Value: value,
-	}
 }

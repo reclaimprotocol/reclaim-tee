@@ -2,7 +2,6 @@ package minitls
 
 import (
 	"bytes"
-	"io"
 	"testing"
 )
 
@@ -178,26 +177,4 @@ func TestTLS12RecordMultiple(t *testing.T) {
 	}
 
 	t.Logf("Successfully read/wrote %d TLS 1.2 records", len(records))
-}
-
-// slowReader simulates a slow network connection by returning 1 byte at a time
-type slowReader struct {
-	data []byte
-	pos  int
-}
-
-func (sr *slowReader) Read(p []byte) (n int, err error) {
-	if sr.pos >= len(sr.data) {
-		return 0, io.EOF
-	}
-
-	// Return at most 1 byte
-	n = 1
-	if len(p) == 0 {
-		return 0, nil
-	}
-
-	p[0] = sr.data[sr.pos]
-	sr.pos++
-	return n, nil
 }

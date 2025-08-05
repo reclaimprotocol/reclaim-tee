@@ -1,6 +1,7 @@
 package clientlib
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -116,15 +117,17 @@ func (c *Client) tcpToWebsocket() {
 				c.setBatchCollectionComplete()
 				c.logger.Info("EOF reached, but checking for final data first...")
 				eofReceived = true // Mark EOF but continue to process any final data
-			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
-			} else if !isClientNetworkShutdownError(err) {
-				c.logger.Error("TCP read error", zap.Error(err))
-
-				break
 			} else {
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					continue
+				} else if !isClientNetworkShutdownError(err) {
+					c.logger.Error("TCP read error", zap.Error(err))
 
-				break
+					break
+				} else {
+					break
+				}
 			}
 		}
 

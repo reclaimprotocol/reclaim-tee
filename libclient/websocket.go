@@ -134,10 +134,10 @@ func (c *Client) handleMessages() {
 			c.handleSessionReady(msg)
 		case shared.MsgError:
 			c.handleError(msg)
+		case shared.MsgBatchedSignedRedactedDecryptionStreams:
+			c.handleBatchedSignedRedactedDecryptionStreams(msg)
 		case shared.MsgSignedTranscript:
 			c.handleSignedTranscript(msg)
-		case shared.MsgRedactedTranscriptAndStreams:
-			c.handleRedactedTranscriptAndStreams(msg)
 		case shared.MsgAttestationResponse:
 			c.handleAttestationResponse(msg)
 

@@ -244,17 +244,6 @@ func GetSupportedCipherSuites(tlsVersion string) []CipherSuiteInfo {
 	return suites
 }
 
-// GetCipherSuiteIDs returns just the IDs for a TLS version (for use in TLS config)
-func GetCipherSuiteIDs(tlsVersion string) []uint16 {
-	var ids []uint16
-
-	for _, info := range GetSupportedCipherSuites(tlsVersion) {
-		ids = append(ids, info.ID)
-	}
-
-	return ids
-}
-
 // GetAlgorithmName returns the algorithm name for a cipher suite
 func GetAlgorithmName(cipherSuite uint16) string {
 	if info, found := CipherSuiteInfoMap[cipherSuite]; found {
@@ -303,22 +292,4 @@ func IsTLS12ChaCha20Poly1305CipherSuite(cipherSuite uint16) bool {
 	default:
 		return false
 	}
-}
-
-// IsTLS13CipherSuite checks if a cipher suite belongs to TLS 1.3
-func IsTLS13CipherSuite(cipherSuite uint16) bool {
-	info, found := CipherSuiteInfoMap[cipherSuite]
-	if !found {
-		return false
-	}
-	return info.TLSVersion == VersionTLS13
-}
-
-// GetTLSVersion returns the TLS version for a cipher suite
-func GetTLSVersion(cipherSuite uint16) uint16 {
-	info, found := CipherSuiteInfoMap[cipherSuite]
-	if !found {
-		return 0 // Unknown
-	}
-	return info.TLSVersion
 }

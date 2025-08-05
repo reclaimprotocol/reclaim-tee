@@ -180,39 +180,6 @@ func main() {
 	fmt.Println("Sample application completed successfully!")
 }
 
-// convertRangesToSpecs converts RequestRedactionRange to RedactionSpec for demo purposes
-// This is demo-specific and should not be in the library
-func convertRangesToSpecs(ranges []shared.RequestRedactionRange) []map[string]interface{} {
-	var specs []map[string]interface{}
-
-	// Convert the ranges to patterns that the clientlib can understand
-	for _, r := range ranges {
-		// Create a pattern based on the range type and position
-		var pattern string
-		switch r.Type {
-		case shared.RedactionTypeSensitive:
-			// For sensitive data, we'll use a pattern that matches common sensitive headers
-			if r.Start > 0 {
-				pattern = "Authorization: Bearer"
-			} else {
-				pattern = "X-Account-ID:"
-			}
-		case shared.RedactionTypeSensitiveProof:
-			// For sensitive_proof data, we'll use a pattern that matches the X-Account-ID field
-			pattern = "X-Account-ID:"
-		default:
-			pattern = fmt.Sprintf("range_%d_%d", r.Start, r.Length)
-		}
-
-		specs = append(specs, map[string]interface{}{
-			"pattern": pattern,
-			"type":    r.Type,
-		})
-	}
-
-	return specs
-}
-
 // PatternMatch represents a pattern match result (moved from libclient)
 type PatternMatch struct {
 	Start  int

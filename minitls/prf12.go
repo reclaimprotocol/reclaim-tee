@@ -67,7 +67,7 @@ func prf12(cipherSuite uint16, secret []byte, label string, seed []byte, length 
 
 	// Construct the seed: label + seed
 	labelSeed := make([]byte, len(label)+len(seed))
-	copy(labelSeed, []byte(label))
+	copy(labelSeed, label)
 	copy(labelSeed[len(label):], seed)
 
 	return pHash(hashFunc, secret, labelSeed, length)

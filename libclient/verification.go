@@ -257,7 +257,7 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			}
 			c.logger.Info("Raw HTTP response preview",
 				zap.Int("total_bytes", len(actualHTTPResponse)),
-				zap.String("preview", string(actualHTTPResponse[:previewLen])))
+				zap.String("preview", actualHTTPResponse[:previewLen]))
 
 			// Set success flags
 			c.logger.Info("Response processing successful", zap.Int("response_bytes", len(actualHTTPResponse)))

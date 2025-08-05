@@ -1,11 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -48,7 +47,7 @@ type ServiceCache map[string]*CacheItem
 // CacheData represents the entire cache structure grouped by service
 type CacheData struct {
 	Services map[string]ServiceCache `json:"services"`
-	mutex    sync.RWMutex            `json:"-"`
+	mutex    sync.RWMutex
 }
 
 // NewCacheData creates a new cache data structure
@@ -163,56 +162,6 @@ func (cd *CacheData) DeleteItem(serviceName, filename string) error {
 	}
 
 	return cd.saveToFile()
-}
-
-// LoggingHTTPTransport wraps http.Transport to log all requests and responses
-type LoggingHTTPTransport struct {
-	Transport http.RoundTripper
-	Logger    *zap.Logger
-}
-
-// RoundTrip implements http.RoundTripper interface with simple request/response logging
-func (t *LoggingHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Log simple request
-	var body []byte
-	if req.Body != nil {
-		body, _ = io.ReadAll(req.Body)
-		req.Body = io.NopCloser(bytes.NewReader(body)) // Reset body
-	}
-
-	t.Logger.Info("KMS Request",
-		zap.String("method", req.Method),
-		zap.String("url", req.URL.String()),
-		zap.String("body", string(body)),
-	)
-
-	// Execute request
-	start := time.Now()
-	resp, err := t.Transport.RoundTrip(req)
-	duration := time.Since(start)
-
-	if err != nil {
-		t.Logger.Error("KMS Request failed",
-			zap.Error(err),
-			zap.Duration("duration", duration),
-		)
-		return resp, err
-	}
-
-	// Log simple response
-	var respBody []byte
-	if resp.Body != nil {
-		respBody, _ = io.ReadAll(resp.Body)
-		resp.Body = io.NopCloser(bytes.NewReader(respBody)) // Reset body
-	}
-
-	t.Logger.Info("KMS Response",
-		zap.Int("status", resp.StatusCode),
-		zap.Duration("duration", duration),
-		zap.String("body", string(respBody)),
-	)
-
-	return resp, err
 }
 
 type KMSProxy struct {
@@ -404,10 +353,9 @@ func (p *KMSProxy) handleConnection(ctx context.Context, conn net.Conn) {
 			buf := make([]byte, 64*1024) // 64KB buffer for KMS requests
 			n, err := conn.Read(buf)
 			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
 					p.logger.Info("KMS connection idle timeout")
-				} else {
-					p.logger.Info("KMS connection closed", zap.Error(err))
 				}
 				return
 			}

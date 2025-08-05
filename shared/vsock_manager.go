@@ -36,7 +36,6 @@ type VSockConfig struct {
 
 	// Cache configurations
 	AttestationCacheTTL time.Duration
-	MemoryCacheTTL      time.Duration
 }
 
 // NewVSockConnectionManager creates a new connection manager
@@ -47,7 +46,6 @@ func NewVSockConnectionManager(config *VSockConfig) *VSockConnectionManager {
 			KMSPort:             5000,
 			InternetPort:        8444,
 			AttestationCacheTTL: 4 * time.Minute,
-			MemoryCacheTTL:      10 * time.Minute,
 		}
 	}
 
@@ -55,6 +53,7 @@ func NewVSockConnectionManager(config *VSockConfig) *VSockConnectionManager {
 		parentCID:    config.ParentCID,
 		kmsPort:      config.KMSPort,
 		internetPort: config.InternetPort,
+		memoryCache:  NewSmartMemoryCache(nil),
 	}
 
 	// Initialize attestation cache using global singleton handle

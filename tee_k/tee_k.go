@@ -141,10 +141,6 @@ type WebSocketConn struct {
 	sessionID   string // Session ID for per-session transcript collection
 }
 
-func NewTEEK(port int) *TEEK {
-	return NewTEEKWithEnclaveManager(port, nil)
-}
-
 func NewTEEKWithConfig(config *TEEKConfig) *TEEK {
 	teek := NewTEEKWithEnclaveManager(config.Port, nil)
 	teek.SetTEETURL(config.TEETURL)
@@ -1964,21 +1960,30 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	t.logger.WithSession(sessionID).Debug("Sending transcript with comprehensive signature",
 		zap.Int("signature_bytes", len(signedTranscript.Signature)))
 
-	// Create combined message with signed transcript and redacted streams
-	combinedData := shared.RedactedTranscriptData{
-		SignedTranscript: signedTranscript,
-		RedactedStreams:  session.RedactedStreams,
-		TotalStreams:     len(session.RedactedStreams),
+	// Send signed transcript to client
+	transcriptMsg := shared.CreateSessionMessage(shared.MsgSignedTranscript, sessionID, signedTranscript)
+	if err := session.ClientConn.WriteJSON(transcriptMsg); err != nil {
+		return fmt.Errorf("failed to send signed transcript: %v", err)
 	}
 
-	// Send combined message to client
-	combinedMsg := shared.CreateSessionMessage(shared.MsgRedactedTranscriptAndStreams, sessionID, combinedData)
-	if err := session.ClientConn.WriteJSON(combinedMsg); err != nil {
-		return fmt.Errorf("failed to send combined transcript and streams: %v", err)
-	}
+	// Send batched redacted streams to client (constant message count, not data-dependent)
+	if len(session.RedactedStreams) > 0 {
+		batchedRedactedStreams := shared.BatchedSignedRedactedDecryptionStreamData{
+			SignedRedactedStreams: session.RedactedStreams,
+			SessionID:             sessionID,
+			TotalCount:            len(session.RedactedStreams),
+		}
 
-	t.logger.WithSession(sessionID).Info("Sent combined transcript and streams to client",
-		zap.Int("streams", len(session.RedactedStreams)))
+		batchedStreamMsg := shared.CreateSessionMessage(shared.MsgBatchedSignedRedactedDecryptionStreams, sessionID, batchedRedactedStreams)
+		if err := session.ClientConn.WriteJSON(batchedStreamMsg); err != nil {
+			return fmt.Errorf("failed to send batched redacted streams: %v", err)
+		}
+
+		t.logger.WithSession(sessionID).Info("Sent signed transcript and batched redacted streams to client",
+			zap.Int("streams", len(session.RedactedStreams)))
+	} else {
+		t.logger.WithSession(sessionID).Info("Sent signed transcript (no redacted streams to send)")
+	}
 	return nil
 }
 

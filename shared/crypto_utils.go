@@ -179,11 +179,3 @@ func RetryWithBackoff(config *RetryConfig, operation func() error) error {
 	// Return the last error if all attempts failed
 	return lastErr
 }
-
-// SecureWait implements a secure wait that's resistant to timing attacks
-func SecureWait(duration time.Duration) {
-	// Add small random jitter to prevent timing analysis
-	jitter := cryptoJitter(float64(duration) * 0.05) // 5% jitter
-	actualDuration := duration + jitter
-	time.Sleep(actualDuration)
-}

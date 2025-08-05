@@ -21,12 +21,3 @@ func GetEnvIntOrDefault(key string, defaultValue int) int {
 	}
 	return defaultValue
 }
-
-func GetEnvUint32OrDefault(key string, defaultValue uint32) uint32 {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.ParseUint(value, 10, 32); err == nil {
-			return uint32(intValue)
-		}
-	}
-	return defaultValue
-}

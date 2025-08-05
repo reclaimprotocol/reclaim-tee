@@ -67,22 +67,6 @@ func (e *EnclaveHandle) initialize() error {
 	return nil
 }
 
-// SafeCloseEnclaveHandle safely closes the enclave handle and cleans up resources
-func SafeCloseEnclaveHandle() error {
-	initMutex.Lock()
-	defer initMutex.Unlock()
-
-	if globalHandle != nil {
-		if globalHandle.nsm != nil {
-			globalHandle.nsm.Close()
-		}
-		globalHandle = nil
-	}
-
-	initializationError = nil
-	return nil
-}
-
 // PublicKey returns the enclave's public key safely
 func (e *EnclaveHandle) PublicKey() *rsa.PublicKey {
 	if e == nil || e.key == nil {

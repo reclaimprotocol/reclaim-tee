@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -334,7 +335,8 @@ func (p *InternetProxy) handleLocalDomainConnection(ctx context.Context, enclave
 
 // Helper functions for error handling
 func isTimeoutError(err error) bool {
-	if netErr, ok := err.(net.Error); ok {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
 		return netErr.Timeout()
 	}
 	return false
@@ -344,7 +346,8 @@ func isConnectionClosed(err error) bool {
 	if err == io.EOF {
 		return true
 	}
-	if netErr, ok := err.(net.Error); ok {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
 		return !netErr.Temporary()
 	}
 	return false
