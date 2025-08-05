@@ -182,11 +182,6 @@ func main() {
 		fmt.Printf("   Callback Executed: %v\n", response.CallbackExecuted)
 		fmt.Printf("   Decryption Successful: %v\n", response.DecryptionSuccessful)
 		fmt.Printf("   Data Size: %d bytes\n", response.DecryptedDataSize)
-		fmt.Printf("   Proof Claims: %d\n", len(response.ProofClaims))
-
-		for i, claim := range response.ProofClaims {
-			fmt.Printf("     %d. %s: %s\n", i+1, claim.Type, claim.Description)
-		}
 	}
 
 	fmt.Println("\n Client processing completed!")
@@ -438,47 +433,9 @@ func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPRespon
 	// Calculate redaction ranges based on differences between original and redacted
 	redactionRanges := d.calculateRedactionRanges(fullHTTPResponse, redactedResponse)
 
-	var proofClaims []clientlib.ProofClaim
-
-	// Example: If this is an HTTP response, create some demo proof claims
-	if response.StatusCode == 200 {
-		proofClaims = append(proofClaims, clientlib.ProofClaim{
-			Type:        "status_code",
-			Field:       "status_code",
-			Value:       "200",
-			Description: "Response status code is 200 OK",
-		})
-	}
-
-	// Example: Create a claim about the server name
-	if response.Metadata.ServerName != "" {
-		proofClaims = append(proofClaims, clientlib.ProofClaim{
-			Type:        "server_name",
-			Field:       "server_name",
-			Value:       response.Metadata.ServerName,
-			Description: "Connected to the specified server",
-		})
-	}
-
-	// Example: Create proof claim about title content preservation
-	if !strings.Contains(redactedResponse, "<title>") && !strings.Contains(redactedResponse, "</title>") {
-		// Count how many title texts we preserved
-		titleStartTag := "<title>"
-		titleCount := strings.Count(string(response.FullResponse), titleStartTag)
-		if titleCount > 0 {
-			proofClaims = append(proofClaims, clientlib.ProofClaim{
-				Type:        "content_preservation",
-				Field:       "html_title_texts",
-				Value:       fmt.Sprintf("%d", titleCount),
-				Description: fmt.Sprintf("HTML title text content from %d title tags is preserved and verifiable (tags redacted)", titleCount),
-			})
-		}
-	}
-
 	return &clientlib.RedactionResult{
 		RedactedBody:    []byte(redactedResponse),
 		RedactionRanges: redactionRanges,
-		ProofClaims:     proofClaims,
 	}, nil
 }
 

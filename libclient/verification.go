@@ -223,17 +223,14 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 					c.logger.Error("Response callback error", zap.Error(err))
 				} else if result != nil {
 					c.logger.Info("Response callback completed",
-						zap.Int("redaction_ranges", len(result.RedactionRanges)),
-						zap.Int("proof_claims", len(result.ProofClaims)))
+						zap.Int("redaction_ranges", len(result.RedactionRanges)))
 
 					// Store results for use in redaction spec generation
-					c.lastProofClaims = result.ProofClaims
 					c.lastRedactionRanges = result.RedactionRanges
 					c.lastRedactedResponse = result.RedactedBody
 
 					c.logger.Info("Stored callback results",
 						zap.Int("ranges_count", len(result.RedactionRanges)),
-						zap.Int("claims_count", len(result.ProofClaims)),
 						zap.Int("redacted_response_bytes", len(result.RedactedBody)))
 
 					// Log redaction ranges

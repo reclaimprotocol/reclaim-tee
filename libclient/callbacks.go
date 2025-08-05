@@ -31,15 +31,6 @@ type ResponseMetadata struct {
 type RedactionResult struct {
 	RedactedBody    []byte                          `json:"redacted_body"`
 	RedactionRanges []shared.ResponseRedactionRange `json:"redaction_ranges"`
-	ProofClaims     []ProofClaim                    `json:"proof_claims"`
-}
-
-// ProofClaim defines a claim to be proven about the response
-type ProofClaim struct {
-	Type        string `json:"type"`        // Type of claim (e.g., "contains", "equals", "range")
-	Field       string `json:"field"`       // Field being claimed (e.g., "body", "header.authorization")
-	Value       string `json:"value"`       // Expected value or pattern
-	Description string `json:"description"` // Human-readable description
 }
 
 // DefaultResponseCallback provides a simple default implementation
@@ -50,6 +41,5 @@ func (d *DefaultResponseCallback) OnResponseReceived(response *HTTPResponse) (*R
 	return &RedactionResult{
 		RedactedBody:    response.Body,
 		RedactionRanges: []shared.ResponseRedactionRange{},
-		ProofClaims:     []ProofClaim{},
 	}, nil
 }

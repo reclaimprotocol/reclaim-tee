@@ -155,7 +155,6 @@ type Client struct {
 	// Result tracking fields
 	protocolStartTime            time.Time                       // When protocol started
 	lastResponseData             *HTTPResponse                   // Last received HTTP response
-	lastProofClaims              []ProofClaim                    // Last generated proof claims
 	lastRedactionRanges          []shared.ResponseRedactionRange // Last redaction ranges from callback
 	lastRedactedResponse         []byte                          // Last redacted response from callback
 	responseReconstructed        bool                            // Flag to prevent multiple response reconstruction
@@ -237,7 +236,6 @@ func NewClient(teekURL string) *Client {
 		clientMode:                   ModeAuto, // Default to auto-detect
 		protocolStartTime:            time.Now(),
 		lastResponseData:             nil,
-		lastProofClaims:              nil,
 		transcriptValidationResults:  nil,
 		attestationValidationResults: nil,
 		signedRedactedStreams:        make([]shared.SignedRedactedDecryptionStream, 0),
@@ -516,25 +514,11 @@ func (c *Client) triggerResponseCallback(responseData []byte) {
 
 	if result != nil {
 		c.logger.Info("Response callback completed",
-			zap.Int("redaction_ranges", len(result.RedactionRanges)),
-			zap.Int("proof_claims", len(result.ProofClaims)))
-
-		// Store proof claims
-		c.lastProofClaims = result.ProofClaims
-		c.logger.Info("Stored proof claims from callback", zap.Int("count", len(result.ProofClaims)))
+			zap.Int("redaction_ranges", len(result.RedactionRanges)))
 
 		// Store redaction ranges
 		c.lastRedactionRanges = result.RedactionRanges
 		c.logger.Info("Stored redaction ranges from callback", zap.Int("count", len(result.RedactionRanges)))
-
-		// Log proof claims
-		for i, claim := range result.ProofClaims {
-			c.logger.Debug("Proof claim",
-				zap.Int("index", i+1),
-				zap.String("type", claim.Type),
-				zap.String("value", claim.Value),
-				zap.String("description", claim.Description))
-		}
 
 		// Log redaction ranges
 		for i, r := range result.RedactionRanges {
@@ -714,12 +698,6 @@ func (c *Client) getProtocolState() (ProtocolPhase, int) {
 	defer c.protocolStateMutex.RUnlock()
 	return c.protocolPhase, c.transcriptsReceived
 }
-
-// Phase 4: Response handling methods
-
-// processResponseRecords processes accumulated response data for complete TLS records
-
-// handleSessionReady processes session ready messages from TEE_K
 
 // fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T via WebSocket
 // Now waits for session coordination before sending requests
@@ -975,7 +953,6 @@ func (c *Client) buildResponseResults() (*ResponseResults, error) {
 
 	return &ResponseResults{
 		HTTPResponse:         c.lastResponseData,
-		ProofClaims:          c.lastProofClaims,
 		ResponseReceived:     batchedSuccess || c.httpResponseReceived,
 		CallbackExecuted:     batchedSuccess || (c.responseCallback != nil && c.httpResponseReceived),
 		DecryptionSuccessful: batchedSuccess || (finalDataSize > 0),
@@ -1170,7 +1147,6 @@ func (c *Client) ContinueToPhase2() error {
 		} else if result != nil {
 			c.logger.Info("Response callback returned redaction ranges", zap.Int("count", len(result.RedactionRanges)))
 			c.lastRedactionRanges = result.RedactionRanges
-			c.lastProofClaims = result.ProofClaims
 			if result.RedactedBody != nil {
 				c.lastRedactedResponse = result.RedactedBody
 			}

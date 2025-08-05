@@ -134,8 +134,6 @@ type AttestationResults struct {
 // ResponseResults contains the HTTP response data and proof claims
 type ResponseResults struct {
 	HTTPResponse *HTTPResponse `json:"http_response,omitempty"`
-	ProofClaims  []ProofClaim  `json:"proof_claims"`
-
 	// Response processing metadata
 	ResponseReceived  bool      `json:"response_received"`
 	CallbackExecuted  bool      `json:"callback_executed"`

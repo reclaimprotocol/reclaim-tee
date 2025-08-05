@@ -13,7 +13,7 @@ echo "  Building TEE_T..."
 cd tee_t && go build -o ../bin/tee_t . && cd ..
 
 echo "  Building Client..."
-cd client && go build -o ../bin/client . && cd ..
+cd demo && go build -o ../bin/client . && cd ..
 
 echo "  Building Proxy..."
 cd proxy && go mod download && go build -o ../bin/proxy . && cd ..
