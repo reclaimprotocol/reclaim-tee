@@ -118,6 +118,10 @@ type TEEK struct {
 	// TEE_T connection settings
 	teetURL string
 
+	// Shared persistent connection to TEE_T
+	sharedTEETConn *websocket.Conn
+	teetConnMutex  sync.RWMutex
+
 	// TLS configuration
 	forceTLSVersion  string // Force specific TLS version: "1.2", "1.3", or "" for auto
 	forceCipherSuite string // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
@@ -218,119 +222,168 @@ func createVSockWebSocketDialer(logger *shared.Logger) *websocket.Dialer {
 	}
 }
 
-// connectToTEETForSession establishes a per-session connection to TEE_T with retry logic
-func (t *TEEK) connectToTEETForSession(sessionID string) (*websocket.Conn, error) {
-	const maxRetries = 3
+// establishSharedTEETConnection establishes the single persistent connection to TEE_T
+func (t *TEEK) establishSharedTEETConnection() {
+	t.logger.Info("Establishing shared persistent connection to TEE_T", zap.String("teet_url", t.teetURL))
 
-	t.logger.WithSession(sessionID).Info("Attempting WebSocket connection to TEE_T",
-		zap.String("teet_url", t.teetURL),
-		zap.Int("max_retries", maxRetries))
-
-	var lastErr error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		t.logger.WithSession(sessionID).Info("Connection attempt",
-			zap.Int("attempt", attempt),
-			zap.Int("max_retries", maxRetries))
-
-		// Check if using TLS (wss://)
-		if strings.HasPrefix(t.teetURL, "wss://") {
-			t.logger.WithSession(sessionID).Debug("Using secure WebSocket (WSS) connection")
-		} else if strings.HasPrefix(t.teetURL, "ws://") {
-			t.logger.WithSession(sessionID).Debug("Using plain WebSocket (WS) connection")
-		}
-
-		// Determine if we're in enclave mode based on the URL
-		var conn *websocket.Conn
-		var err error
-
-		if strings.HasPrefix(t.teetURL, "wss://") && strings.Contains(t.teetURL, "reclaimprotocol.org") {
-			// Enclave mode: use custom vsock dialer
-			t.logger.Debug("Enclave mode detected - using VSock dialer via internet proxy")
-			dialer := createVSockWebSocketDialer(t.logger)
-			conn, _, err = dialer.Dial(t.teetURL, nil)
-		} else {
-			// Standalone mode: use default dialer
-			t.logger.Debug("Standalone mode detected - using default WebSocket dialer")
-			conn, _, err = websocket.DefaultDialer.Dial(t.teetURL, nil)
-		}
-
-		if err == nil {
-			t.logger.WithSession(sessionID).Info("WebSocket connection established successfully",
-				zap.String("teet_url", t.teetURL),
-				zap.Int("attempt", attempt))
-			return conn, nil
-		}
-
-		lastErr = err
-		t.logger.WithSession(sessionID).Warn("WebSocket dial failed",
-			zap.Int("attempt", attempt),
-			zap.Int("max_retries", maxRetries),
-			zap.String("teet_url", t.teetURL),
-			zap.Error(err))
-
-		// Wait 1 second before retry (except for the last attempt)
-		if attempt < maxRetries {
+	for {
+		conn, err := t.attemptTEETConnection("shared", 1)
+		if err != nil {
+			t.logger.Error("Failed to establish shared TEE_T connection, retrying immediately", zap.Error(err))
 			time.Sleep(1 * time.Second)
+			continue
 		}
+
+		t.teetConnMutex.Lock()
+		t.sharedTEETConn = conn
+		t.teetConnMutex.Unlock()
+
+		t.logger.Info("Shared persistent connection to TEE_T established successfully")
+
+		// Start monitoring the connection and auto-reconnect on failure
+		go t.monitorSharedTEETConnection()
+		break
 	}
-
-	t.logger.WithSession(sessionID).Error("All connection attempts failed",
-		zap.String("teet_url", t.teetURL),
-		zap.Int("max_retries", maxRetries),
-		zap.Error(lastErr))
-
-	return nil, fmt.Errorf("failed to connect to TEE_T after %d attempts: %v", maxRetries, lastErr)
 }
 
-// handleTEETMessagesForSession handles messages from TEE_T for a specific session
-func (t *TEEK) handleTEETMessagesForSession(sessionID string, conn *websocket.Conn) {
-	defer conn.Close()
+// monitorSharedTEETConnection monitors the shared connection and handles all incoming messages
+func (t *TEEK) monitorSharedTEETConnection() {
+	t.teetConnMutex.RLock()
+	conn := t.sharedTEETConn
+	t.teetConnMutex.RUnlock()
 
+	t.logger.Info("Starting shared TEE_T connection message handler")
+
+	// Handle all incoming messages from TEE_T
 	for {
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				t.logger.WithSession(sessionID).Info("TEE_T disconnected normally")
-			} else if !isNetworkShutdownError(err) {
-				t.logger.WithSession(sessionID).Error("Failed to read TEE_T message", zap.Error(err))
+				t.logger.Info("Shared TEE_T connection closed normally")
+			} else {
+				t.logger.Error("Shared TEE_T connection lost, reconnecting", zap.Error(err))
 			}
+
+			// Clear the broken connection
+			t.teetConnMutex.Lock()
+			t.sharedTEETConn = nil
+			t.teetConnMutex.Unlock()
+
+			// Reconnect
+			t.establishSharedTEETConnection()
 			break
 		}
 
-		msg, err := shared.ParseMessage(msgBytes)
-		if err != nil {
-			t.logger.WithSession(sessionID).Error("Failed to parse TEE_T message", zap.Error(err))
-			continue
-		}
+		// Parse and route the message to the appropriate session
+		t.handleSharedTEETMessage(msgBytes)
+	}
+}
 
-		// Ensure message has the correct session ID
-		if msg.SessionID != sessionID {
-			t.logger.WithSession(sessionID).Error("Message has wrong session ID",
-				zap.String("expected_session_id", sessionID),
-				zap.String("received_session_id", msg.SessionID))
-			continue
-		}
-
-		// Route session-aware messages
-		switch msg.Type {
-		case shared.MsgFinished:
-			// Protocol specification: TEE_T no longer sends finished responses to TEE_K
-			t.logger.WithSession(sessionID).Info("Ignoring finished message from TEE_T (not needed in single session mode)")
-
-		case shared.MsgBatchedResponseLengths:
-			t.handleBatchedResponseLengthsSession(msg.SessionID, msg)
-
-		case shared.MsgBatchedTagVerifications:
-			t.handleBatchedTagVerificationsSession(msg.SessionID, msg)
-
-		default:
-			t.logger.WithSession(sessionID).Error("Unknown TEE_T message type",
-				zap.String("message_type", string(msg.Type)))
-		}
+// handleSharedTEETMessage processes messages from TEE_T and routes them to sessions
+func (t *TEEK) handleSharedTEETMessage(msgBytes []byte) {
+	msg, err := shared.ParseMessage(msgBytes)
+	if err != nil {
+		t.logger.Error("Failed to parse TEE_T message", zap.Error(err))
+		return
 	}
 
-	t.logger.WithSession(sessionID).Info("TEE_T message handler stopped")
+	sessionID := msg.SessionID
+	if sessionID == "" {
+		t.logger.Error("Received TEE_T message without session ID", zap.String("message_type", string(msg.Type)))
+		return
+	}
+
+	// Route session-aware messages
+	switch msg.Type {
+	case shared.MsgFinished:
+		// Protocol specification: TEE_T no longer sends finished responses to TEE_K
+		t.logger.WithSession(sessionID).Info("Ignoring finished message from TEE_T (not needed in single session mode)")
+
+	case shared.MsgBatchedResponseLengths:
+		t.handleBatchedResponseLengthsSession(msg.SessionID, msg)
+
+	case shared.MsgBatchedTagVerifications:
+		t.handleBatchedTagVerificationsSession(msg.SessionID, msg)
+
+	default:
+		t.logger.WithSession(sessionID).Error("Unknown TEE_T message type",
+			zap.String("message_type", string(msg.Type)))
+	}
 }
+
+// getSharedTEETConnection returns the shared connection, establishing it if needed
+func (t *TEEK) getSharedTEETConnection() *websocket.Conn {
+	t.teetConnMutex.RLock()
+	conn := t.sharedTEETConn
+	t.teetConnMutex.RUnlock()
+
+	if conn == nil {
+		t.logger.Warn("Shared TEE_T connection not available, this should not happen in normal operation")
+		return nil
+	}
+
+	return conn
+}
+
+// attemptTEETConnection performs a single connection attempt to TEE_T
+func (t *TEEK) attemptTEETConnection(sessionID string, attempt int) (*websocket.Conn, error) {
+	logger := t.logger.WithSession(sessionID)
+
+	logger.Info("Starting connection attempt",
+		zap.Int("attempt", attempt),
+		zap.String("teet_url", t.teetURL))
+
+	// Check if using TLS (wss://)
+	if strings.HasPrefix(t.teetURL, "wss://") {
+		logger.Debug("Using secure WebSocket (WSS) connection")
+	} else if strings.HasPrefix(t.teetURL, "ws://") {
+		logger.Debug("Using plain WebSocket (WS) connection")
+	}
+
+	// Determine if we're in enclave mode based on the URL
+	var conn *websocket.Conn
+	var err error
+
+	if strings.HasPrefix(t.teetURL, "wss://") && strings.Contains(t.teetURL, "reclaimprotocol.org") {
+		// Enclave mode: use custom vsock dialer
+		logger.Debug("Enclave mode detected - using VSock dialer via internet proxy")
+		dialer := createVSockWebSocketDialer(t.logger)
+		conn, _, err = dialer.Dial(t.teetURL, nil)
+	} else {
+		// Standalone mode: use default dialer
+		logger.Debug("Standalone mode detected - using default WebSocket dialer")
+		conn, _, err = websocket.DefaultDialer.Dial(t.teetURL, nil)
+	}
+
+	if err != nil {
+		logger.Debug("WebSocket dial failed for attempt",
+			zap.Int("attempt", attempt),
+			zap.String("teet_url", t.teetURL),
+			zap.Error(err))
+		return nil, err
+	}
+
+	logger.Debug("WebSocket connection attempt successful",
+		zap.Int("attempt", attempt),
+		zap.String("teet_url", t.teetURL))
+
+	return conn, nil
+}
+
+// connectToTEETForSession now uses the shared connection instead of creating new ones
+func (t *TEEK) connectToTEETForSession(sessionID string) (*websocket.Conn, error) {
+	t.logger.WithSession(sessionID).Debug("Using shared persistent connection to TEE_T")
+
+	conn := t.getSharedTEETConnection()
+	if conn == nil {
+		return nil, fmt.Errorf("shared TEE_T connection not available")
+	}
+
+	t.logger.WithSession(sessionID).Debug("Shared connection to TEE_T available for session")
+	return conn, nil
+}
+
+// Note: handleTEETMessagesForSession removed - replaced by centralized handleSharedTEETMessage
 
 // sendMessageToTEETForSession sends a message to TEE_T for a specific session
 func (t *TEEK) sendMessageToTEETForSession(sessionID string, msg *shared.Message) error {
@@ -450,23 +503,22 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 // notifyTEETNewSession creates per-session connection and sends session registration to TEE_T
 func (t *TEEK) notifyTEETNewSession(sessionID string) error {
-	// Create per-session connection to TEE_T
+	// Get shared connection to TEE_T
 	teetConn, err := t.connectToTEETForSession(sessionID)
 	if err != nil {
-		return fmt.Errorf("failed to create TEE_T connection for session %s: %v", sessionID, err)
+		return fmt.Errorf("failed to get shared TEE_T connection for session %s: %v", sessionID, err)
 	}
 
-	// Store the connection in the session
+	// Store the shared connection in the session
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		teetConn.Close()
+		// Don't close shared connection on session error
 		return fmt.Errorf("session %s not found: %v", sessionID, err)
 	}
 
 	session.TEETConn = shared.NewWSConnection(teetConn)
 
-	// Start message handler for this session
-	go t.handleTEETMessagesForSession(sessionID, teetConn)
+	// No per-session message handler needed - shared connection is monitored centrally
 
 	// Send session registration to TEE_T
 	msg := shared.CreateSessionMessage(shared.MsgSessionCreated, sessionID, map[string]interface{}{

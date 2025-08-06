@@ -65,6 +65,10 @@ func startStandaloneMode(config *TEEKConfig, logger *shared.Logger) {
 		}
 	}()
 
+	// Establish shared persistent connection to TEE_T after server is ready
+	logger.Info("Server started, establishing shared connection to TEE_T")
+	teek.establishSharedTEETConnection()
+
 	// TEE_T URL and TLS configuration already set via NewTEEKWithConfig
 	logger.Info("Standalone mode configuration",
 		zap.String("teet_url", config.TEETURL),

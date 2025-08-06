@@ -71,6 +71,10 @@ func startEnclaveMode(config *TEEKConfig, logger *shared.Logger) {
 	teek.SetTEETURL(config.TEETURL)
 	logger.Info("Enclave mode configuration", zap.String("teet_url", config.TEETURL))
 
+	// Establish shared persistent connection to TEE_T after server is ready
+	logger.Info("HTTPS server started, establishing shared connection to TEE_T")
+	teek.establishSharedTEETConnection()
+
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
