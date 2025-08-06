@@ -205,8 +205,8 @@ func (c *Client) handleTEETMessages() {
 			c.handleTEETError(msg)
 
 		// Handle batched response messages from TEE_T
-		case shared.MsgBatchedTagVerifications:
-			c.handleBatchedTagVerifications(msg)
+		// Note: MsgBatchedTagVerifications no longer sent from TEE_T to client
+		// Success is implied when decryption streams arrive from TEE_K
 
 		default:
 			if !closing {

@@ -962,15 +962,8 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 
 	verificationMsg := shared.CreateSessionMessage(shared.MsgBatchedTagVerifications, sessionID, batchedVerification)
 
-	if err := t.sendMessageToClientSession(sessionID, verificationMsg); err != nil {
-		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonNetworkFailure, err,
-			zap.String("target", "client")) {
-			return
-		}
-		return
-	}
-
-	// Also send batched verification results to TEE_K for decryption stream generation
+	// Send batched verification results to TEE_K for decryption stream generation
+	// Note: Client no longer receives this redundant message - success is implied when decryption streams arrive
 	if err := t.sendMessageToTEEKForSession(sessionID, verificationMsg); err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonNetworkFailure, err,
 			zap.String("target", "tee_k")) {

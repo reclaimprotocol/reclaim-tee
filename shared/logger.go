@@ -2,6 +2,7 @@ package shared
 
 import (
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // LoggerConfig holds the configuration for the logger
@@ -32,14 +33,20 @@ func NewLogger(config LoggerConfig) (*Logger, error) {
 		zapConfig.DisableStacktrace = true
 		zapLogger, err = zapConfig.Build()
 	} else if config.Development {
-		// Development mode: console logging with debug level
+		// Development mode: console logging with debug level and human-readable timestamps
 		zapConfig := zap.NewDevelopmentConfig()
 		zapConfig.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+		// Use human-readable timestamp format
+		zapConfig.EncoderConfig.TimeKey = "timestamp"
+		zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 		zapLogger, err = zapConfig.Build()
 	} else {
-		// Standalone production mode: structured JSON logging
+		// Standalone production mode: structured JSON logging with human-readable timestamps
 		zapConfig := zap.NewProductionConfig()
 		zapConfig.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+		// Use human-readable timestamp format
+		zapConfig.EncoderConfig.TimeKey = "timestamp"
+		zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 		zapLogger, err = zapConfig.Build()
 	}
 
