@@ -163,6 +163,9 @@ func (c *Client) handleSignedTranscriptWithStreams(msg *shared.Message) {
 
 	// Process the transcript part AFTER streams are available
 	c.processSignedTranscriptDataWithStreams(&combinedData.SignedTranscript)
+
+	// Final completion check for combined messages to address race conditions
+	c.checkFinalCompletion("combined message processed")
 }
 
 // handleSignedTranscript processes signed transcript messages from TEE_K and TEE_T
@@ -179,6 +182,9 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
 
 	c.processSignedTranscriptData(&signedTranscript)
+
+	// Add completion check for regular transcript messages as well for robustness
+	c.checkFinalCompletion("individual transcript processed")
 }
 
 // processSignedTranscriptDataWithStreams processes transcript data when streams are already available (combined message)
@@ -245,10 +251,7 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 	// Show packet summary
 	c.logger.Info("Transcript summary", zap.String("source", sourceName))
 
-	if transcriptsComplete && signaturesValid {
-		c.logger.Info("Both transcripts received with valid signatures - performing transcript validation")
-		c.validateTranscriptsAgainstCapturedTraffic()
-	}
+	// Validation is now handled centrally by checkValidationAndCompletion()
 
 	if transcriptsComplete {
 		if signaturesValid {
@@ -373,10 +376,7 @@ func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTran
 	// 	}[Client]   TEE_T packet 1
 	// }
 
-	if transcriptsComplete && signaturesValid {
-		c.logger.Info("Both transcripts received with valid signatures - performing transcript validation")
-		c.validateTranscriptsAgainstCapturedTraffic()
-	}
+	// Validation is now handled centrally by checkValidationAndCompletion()
 
 	if transcriptsComplete {
 		if signaturesValid {

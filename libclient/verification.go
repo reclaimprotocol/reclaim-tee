@@ -208,6 +208,7 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			// Set success flags for results reporting
 			c.responseProcessingSuccessful = true
 			c.reconstructedResponseSize = len(actualHTTPResponse)
+			c.httpResponseReceived = true
 
 			// Parse the HTTP response and store it for later use
 			httpResponse := c.parseHTTPResponse([]byte(actualHTTPResponse))

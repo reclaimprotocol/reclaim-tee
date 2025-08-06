@@ -440,6 +440,9 @@ func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Messag
 	c.logger.Info("Received batch of signed redacted decryption streams", zap.Int("streams_count", len(batchedStreams.SignedRedactedStreams)))
 
 	c.processBatchedSignedRedactedDecryptionStreamsData(&batchedStreams)
+
+	// Add completion check for standalone stream messages as well for robustness
+	c.checkFinalCompletion("individual batched streams processed")
 }
 
 // processBatchedSignedRedactedDecryptionStreamsData contains the shared logic for processing batched streams
@@ -514,9 +517,8 @@ func (c *Client) processBatchedSignedRedactedDecryptionStreamsData(batchedStream
 				transcriptsComplete := c.transcriptsReceived >= 2
 				signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
+				// Validation is now handled centrally by checkValidationAndCompletion()
 				if transcriptsComplete && signaturesValid {
-					c.logger.Info("Both transcripts received with valid signatures - performing transcript validation")
-					c.validateTranscriptsAgainstCapturedTraffic()
 					c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
 				}
 			}

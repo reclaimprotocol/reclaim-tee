@@ -111,6 +111,10 @@ type Client struct {
 	transcriptsReceived int           // Count of transcripts received (0, 1, 2)
 	protocolStateMutex  sync.RWMutex  // Protect simple state
 
+	// Validation tracking to ensure validation runs exactly once
+	validationExecuted bool       // Track if transcript validation has been executed
+	validationMutex    sync.Mutex // Protect validation state
+
 	// Track HTTP request/response lifecycle
 	httpRequestSent        bool              // Track if HTTP request has been sent
 	httpResponseExpected   bool              // Track if we should expect HTTP response
@@ -202,6 +206,8 @@ func NewClient(teekURL string) *Client {
 		protocolPhase:          PhaseHandshaking,
 		transcriptsReceived:    0,
 		protocolStateMutex:     sync.RWMutex{},
+		validationExecuted:     false,
+		validationMutex:        sync.Mutex{},
 		httpRequestSent:        false,
 		httpResponseExpected:   false,
 		httpResponseReceived:   false,
@@ -690,6 +696,77 @@ func (c *Client) incrementTranscriptCount() {
 			c.logger.Info("Both transcripts received but waiting for redacted streams processing...")
 		}
 	}
+}
+
+// checkValidationAndCompletion performs centralized validation and completion check
+// This ensures validation runs exactly once when both transcripts are ready, before completion
+func (c *Client) checkValidationAndCompletion(reason string) {
+	c.protocolStateMutex.Lock()
+	transcriptCount := c.transcriptsReceived
+	currentPhase := c.protocolPhase
+	c.protocolStateMutex.Unlock()
+
+	hasValidSignature := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
+	transcriptsComplete := transcriptCount >= 2
+	signaturesValid := hasValidSignature
+
+	c.logger.Info("Checking validation and completion",
+		zap.String("reason", reason),
+		zap.Int("transcript_count", transcriptCount),
+		zap.Bool("has_valid_signature", hasValidSignature),
+		zap.String("current_phase", currentPhase.String()))
+
+	// First, check if we need to run validation
+	if transcriptsComplete && signaturesValid && !c.hasValidationRun() {
+		c.logger.Info("Both transcripts received with valid signatures - performing transcript validation")
+		c.runValidationOnce()
+	}
+
+	// Then, check for completion (validation must be complete)
+	if transcriptsComplete && signaturesValid && c.hasValidationRun() && currentPhase != PhaseComplete {
+		c.logger.Info("All completion conditions met (including validation) - advancing to complete phase")
+		c.advanceToPhase(PhaseComplete)
+	} else if transcriptCount < 2 {
+		c.logger.Debug("Completion pending: waiting for more transcripts",
+			zap.Int("current", transcriptCount), zap.Int("needed", 2))
+	} else if !hasValidSignature {
+		c.logger.Debug("Completion pending: waiting for valid TEE_K signature")
+	} else if !c.hasValidationRun() {
+		c.logger.Debug("Completion pending: validation not yet complete")
+	} else if currentPhase == PhaseComplete {
+		c.logger.Debug("Already in complete phase")
+	}
+}
+
+// Legacy function for backward compatibility - now delegates to the centralized function
+func (c *Client) checkFinalCompletion(reason string) {
+	c.checkValidationAndCompletion(reason)
+}
+
+// hasValidationRun checks if transcript validation has been executed (thread-safe)
+func (c *Client) hasValidationRun() bool {
+	c.validationMutex.Lock()
+	defer c.validationMutex.Unlock()
+	return c.validationExecuted
+}
+
+// runValidationOnce executes transcript validation exactly once (thread-safe)
+func (c *Client) runValidationOnce() {
+	c.validationMutex.Lock()
+	defer c.validationMutex.Unlock()
+
+	if c.validationExecuted {
+		c.logger.Debug("Validation already executed, skipping duplicate call")
+		return
+	}
+
+	c.logger.Info("Starting transcript validation (first and only execution)")
+	c.validationExecuted = true
+
+	// Run the actual validation
+	c.validateTranscriptsAgainstCapturedTraffic()
+
+	c.logger.Info("Transcript validation completed")
 }
 
 // getProtocolState returns current phase and transcript count (thread-safe)
