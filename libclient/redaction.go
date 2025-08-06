@@ -439,6 +439,12 @@ func (c *Client) handleBatchedSignedRedactedDecryptionStreams(msg *shared.Messag
 
 	c.logger.Info("Received batch of signed redacted decryption streams", zap.Int("streams_count", len(batchedStreams.SignedRedactedStreams)))
 
+	c.processBatchedSignedRedactedDecryptionStreamsData(&batchedStreams)
+}
+
+// processBatchedSignedRedactedDecryptionStreamsData contains the shared logic for processing batched streams
+func (c *Client) processBatchedSignedRedactedDecryptionStreamsData(batchedStreams *shared.BatchedSignedRedactedDecryptionStreamData) {
+
 	// Process ALL streams from batch at once
 	for _, redactedStream := range batchedStreams.SignedRedactedStreams {
 		// log.Printf("[Client] Processing redacted decryption stream for seq %d (%d bytes)",

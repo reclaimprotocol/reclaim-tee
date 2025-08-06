@@ -137,6 +137,34 @@ func (c *Client) validateTEETTranscriptRaw() bool {
 	return packetsMatched == len(c.teetTranscriptPackets)
 }
 
+// handleSignedTranscriptWithStreams processes combined transcript and streams from TEE_K
+func (c *Client) handleSignedTranscriptWithStreams(msg *shared.Message) {
+	var combinedData shared.SignedTranscriptWithStreams
+	if err := msg.UnmarshalData(&combinedData); err != nil {
+		c.logger.Error("Failed to unmarshal signed transcript with streams", zap.Error(err))
+		return
+	}
+
+	c.logger.Info("Received combined signed transcript with streams",
+		zap.Int("packets_count", len(combinedData.SignedTranscript.Packets)),
+		zap.Int("signature_bytes", len(combinedData.SignedTranscript.Signature)),
+		zap.Int("public_key_bytes", len(combinedData.SignedTranscript.PublicKey)),
+		zap.Int("streams_count", len(combinedData.SignedRedactedStreams)))
+
+	// Process the streams part FIRST if present
+	if len(combinedData.SignedRedactedStreams) > 0 {
+		batchedData := shared.BatchedSignedRedactedDecryptionStreamData{
+			SignedRedactedStreams: combinedData.SignedRedactedStreams,
+			SessionID:             msg.SessionID,
+			TotalCount:            combinedData.TotalStreamsCount,
+		}
+		c.processBatchedSignedRedactedDecryptionStreamsData(&batchedData)
+	}
+
+	// Process the transcript part AFTER streams are available
+	c.processSignedTranscriptDataWithStreams(&combinedData.SignedTranscript)
+}
+
 // handleSignedTranscript processes signed transcript messages from TEE_K and TEE_T
 func (c *Client) handleSignedTranscript(msg *shared.Message) {
 	var signedTranscript shared.SignedTranscript
@@ -150,17 +178,101 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		zap.Int("signature_bytes", len(signedTranscript.Signature)),
 		zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
 
+	c.processSignedTranscriptData(&signedTranscript)
+}
+
+// processSignedTranscriptDataWithStreams processes transcript data when streams are already available (combined message)
+func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared.SignedTranscript) {
+	// Store the public key for attestation verification
+	// For combined messages, this is always from TEE_K
+	c.teekTranscriptPublicKey = signedTranscript.PublicKey
+	c.teekSignedTranscript = signedTranscript
+	c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
+
+	// Calculate total size of all packets
+	totalSize := 0
+	for _, packet := range signedTranscript.Packets {
+		totalSize += len(packet)
+	}
+
+	c.logger.Info("Total transcript size", zap.Int("bytes", totalSize))
+
+	// Determine source name for logging
+	sourceName := "TEE_K"
+
+	// Display signature and public key info for verification
+	if len(signedTranscript.Signature) > 0 {
+		c.logger.Info("Signature info", zap.String("source", sourceName), zap.Int("signature_bytes", len(signedTranscript.Signature)))
+	}
+
+	if len(signedTranscript.PublicKey) > 0 {
+		c.logger.Info("Public key info", zap.String("source", sourceName), zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
+	}
+
+	// Verify signature immediately - streams are already available from combined message
+	c.logger.Info("Verifying signature for transcript", zap.String("source", sourceName))
+	c.logger.Info("TEE_K comprehensive verification: have all expected redacted streams from combined message", zap.Int("streams_count", c.expectedRedactedStreams))
+	verificationErr := shared.VerifyComprehensiveSignature(signedTranscript, c.signedRedactedStreams)
+	if verificationErr != nil {
+		c.logger.Error("Signature verification FAILED", zap.String("source", sourceName), zap.Error(verificationErr))
+	} else {
+		c.logger.Info("Signature verification SUCCESS", zap.String("source", sourceName))
+	}
+
+	// Increment transcript count (parallel to existing logic)
+	c.incrementTranscriptCount()
+	if verificationErr == nil {
+		c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+	}
+
+	c.logger.Info("Marked transcript as received", zap.String("source", sourceName), zap.Bool("signature_valid", verificationErr == nil))
+
+	// Check if we now have both transcript public keys and can verify against attestations
+	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
+		c.logger.Info("Both transcript public keys received - verifying against attestations")
+		if err := c.verifyAttestationPublicKeys(); err != nil {
+			c.logger.Error("Attestation public key verification failed", zap.Error(err))
+		} else {
+			c.logger.Info("Attestation public key verification successful - transcripts are from verified enclaves")
+		}
+	}
+
+	transcriptsComplete := c.transcriptsReceived >= 2
+	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
+
+	c.logger.Info("Signed transcript processed successfully", zap.String("source", sourceName))
+
+	// Show packet summary
+	c.logger.Info("Transcript summary", zap.String("source", sourceName))
+
+	if transcriptsComplete && signaturesValid {
+		c.logger.Info("Both transcripts received with valid signatures - performing transcript validation")
+		c.validateTranscriptsAgainstCapturedTraffic()
+	}
+
+	if transcriptsComplete {
+		if signaturesValid {
+			c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
+		} else {
+			c.logger.Error("Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
+		}
+	}
+}
+
+// processSignedTranscriptData contains the shared logic for processing SignedTranscript data
+func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTranscript) {
+
 	// Store the public key for attestation verification
 	// Determine source based on transcript structure: TEE_K has RequestMetadata, TEE_T doesn't
 	if signedTranscript.RequestMetadata != nil {
 		// This is from TEE_K
 		c.teekTranscriptPublicKey = signedTranscript.PublicKey
-		c.teekSignedTranscript = &signedTranscript
+		c.teekSignedTranscript = signedTranscript
 		c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
 	} else {
 		// This is from TEE_T
 		c.teetTranscriptPublicKey = signedTranscript.PublicKey
-		c.teetSignedTranscript = &signedTranscript
+		c.teetSignedTranscript = signedTranscript
 		c.teetTranscriptPackets = signedTranscript.Packets // Store packets for validation
 	}
 
@@ -202,7 +314,7 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 			// Don't set signature valid flag yet - will be set after successful verification
 		} else {
 			c.logger.Info("TEE_K comprehensive verification: have all expected redacted streams", zap.Int("streams_count", c.expectedRedactedStreams))
-			verificationErr = shared.VerifyComprehensiveSignature(&signedTranscript, c.signedRedactedStreams)
+			verificationErr = shared.VerifyComprehensiveSignature(signedTranscript, c.signedRedactedStreams)
 			if verificationErr != nil {
 				c.logger.Error("Signature verification FAILED", zap.String("source", sourceName), zap.Error(verificationErr))
 			} else {
@@ -217,7 +329,7 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 		}
 	} else {
 		// This is TEE_T - use regular TLS packet verification
-		verificationErr = shared.VerifyTranscriptSignature(&signedTranscript)
+		verificationErr = shared.VerifyTranscriptSignature(signedTranscript)
 		if verificationErr != nil {
 			c.logger.Error("Signature verification FAILED", zap.String("source", sourceName), zap.Error(verificationErr))
 		} else {

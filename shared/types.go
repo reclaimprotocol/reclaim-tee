@@ -99,9 +99,10 @@ const (
 	MsgAttestationResponse MessageType = "attestation_response"
 
 	// Single Session Mode message types
-	MsgFinished         MessageType = "finished"
-	MsgSignedTranscript MessageType = "signed_transcript"
-	MsgRedactionSpec    MessageType = "redaction_spec"
+	MsgFinished                    MessageType = "finished"
+	MsgSignedTranscript            MessageType = "signed_transcript"
+	MsgSignedTranscriptWithStreams MessageType = "signed_transcript_with_streams"
+	MsgRedactionSpec               MessageType = "redaction_spec"
 )
 
 const (
@@ -529,6 +530,13 @@ type BatchedSignedRedactedDecryptionStreamData struct {
 	SignedRedactedStreams []SignedRedactedDecryptionStream `json:"signed_redacted_streams"` // Array of signed redacted decryption streams
 	SessionID             string                           `json:"session_id"`              // Session identifier
 	TotalCount            int                              `json:"total_count"`             // Total number of streams in batch
+}
+
+// SignedTranscriptWithStreams combines SignedTranscript and SignedRedactedStreams for efficient TEE_K messaging
+type SignedTranscriptWithStreams struct {
+	SignedTranscript                                       // Embed the existing SignedTranscript structure
+	SignedRedactedStreams []SignedRedactedDecryptionStream `json:"signed_redacted_streams,omitempty"` // Optional redacted streams
+	TotalStreamsCount     int                              `json:"total_streams_count"`               // Total number of streams included
 }
 
 // Helper functions

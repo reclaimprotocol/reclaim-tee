@@ -1985,29 +1985,23 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	t.logger.WithSession(sessionID).Debug("Sending transcript with comprehensive signature",
 		zap.Int("signature_bytes", len(signedTranscript.Signature)))
 
-	// Send signed transcript to client
-	transcriptMsg := shared.CreateSessionMessage(shared.MsgSignedTranscript, sessionID, signedTranscript)
-	if err := session.ClientConn.WriteJSON(transcriptMsg); err != nil {
-		return fmt.Errorf("failed to send signed transcript: %v", err)
+	// Send combined signed transcript with streams to client (single message)
+	combinedData := shared.SignedTranscriptWithStreams{
+		SignedTranscript:      signedTranscript,
+		SignedRedactedStreams: session.RedactedStreams,
+		TotalStreamsCount:     len(session.RedactedStreams),
 	}
 
-	// Send batched redacted streams to client (constant message count, not data-dependent)
+	combinedMsg := shared.CreateSessionMessage(shared.MsgSignedTranscriptWithStreams, sessionID, combinedData)
+	if err := session.ClientConn.WriteJSON(combinedMsg); err != nil {
+		return fmt.Errorf("failed to send signed transcript with streams: %v", err)
+	}
+
 	if len(session.RedactedStreams) > 0 {
-		batchedRedactedStreams := shared.BatchedSignedRedactedDecryptionStreamData{
-			SignedRedactedStreams: session.RedactedStreams,
-			SessionID:             sessionID,
-			TotalCount:            len(session.RedactedStreams),
-		}
-
-		batchedStreamMsg := shared.CreateSessionMessage(shared.MsgBatchedSignedRedactedDecryptionStreams, sessionID, batchedRedactedStreams)
-		if err := session.ClientConn.WriteJSON(batchedStreamMsg); err != nil {
-			return fmt.Errorf("failed to send batched redacted streams: %v", err)
-		}
-
-		t.logger.WithSession(sessionID).Info("Sent signed transcript and batched redacted streams to client",
+		t.logger.WithSession(sessionID).Info("Sent combined signed transcript and redacted streams to client",
 			zap.Int("streams", len(session.RedactedStreams)))
 	} else {
-		t.logger.WithSession(sessionID).Info("Sent signed transcript (no redacted streams to send)")
+		t.logger.WithSession(sessionID).Info("Sent signed transcript (no redacted streams)")
 	}
 	return nil
 }

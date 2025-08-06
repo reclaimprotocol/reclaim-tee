@@ -138,6 +138,8 @@ func (c *Client) handleMessages() {
 			c.handleBatchedSignedRedactedDecryptionStreams(msg)
 		case shared.MsgSignedTranscript:
 			c.handleSignedTranscript(msg)
+		case shared.MsgSignedTranscriptWithStreams:
+			c.handleSignedTranscriptWithStreams(msg)
 		case shared.MsgAttestationResponse:
 			c.handleAttestationResponse(msg)
 
@@ -195,7 +197,7 @@ func (c *Client) handleTEETMessages() {
 			c.handleRedactionVerification(msg)
 		case shared.MsgResponseTagVerification:
 			c.handleResponseTagVerification(msg)
-		case "signed_transcript":
+		case shared.MsgSignedTranscript:
 			c.handleSignedTranscript(msg)
 		case shared.MsgAttestationResponse:
 			c.handleAttestationResponse(msg)
