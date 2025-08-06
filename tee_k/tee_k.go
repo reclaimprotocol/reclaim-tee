@@ -218,43 +218,68 @@ func createVSockWebSocketDialer(logger *shared.Logger) *websocket.Dialer {
 	}
 }
 
-// connectToTEETForSession establishes a per-session connection to TEE_T
+// connectToTEETForSession establishes a per-session connection to TEE_T with retry logic
 func (t *TEEK) connectToTEETForSession(sessionID string) (*websocket.Conn, error) {
+	const maxRetries = 3
+
 	t.logger.WithSession(sessionID).Info("Attempting WebSocket connection to TEE_T",
-		zap.String("teet_url", t.teetURL))
+		zap.String("teet_url", t.teetURL),
+		zap.Int("max_retries", maxRetries))
 
-	// Check if using TLS (wss://)
-	if strings.HasPrefix(t.teetURL, "wss://") {
-		t.logger.WithSession(sessionID).Info("Using secure WebSocket (WSS) connection")
-	} else if strings.HasPrefix(t.teetURL, "ws://") {
-		t.logger.WithSession(sessionID).Info("Using plain WebSocket (WS) connection")
-	}
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		t.logger.WithSession(sessionID).Info("Connection attempt",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries))
 
-	// Determine if we're in enclave mode based on the URL
-	var conn *websocket.Conn
-	var err error
+		// Check if using TLS (wss://)
+		if strings.HasPrefix(t.teetURL, "wss://") {
+			t.logger.WithSession(sessionID).Debug("Using secure WebSocket (WSS) connection")
+		} else if strings.HasPrefix(t.teetURL, "ws://") {
+			t.logger.WithSession(sessionID).Debug("Using plain WebSocket (WS) connection")
+		}
 
-	if strings.HasPrefix(t.teetURL, "wss://") && strings.Contains(t.teetURL, "reclaimprotocol.org") {
-		// Enclave mode: use custom vsock dialer
-		t.logger.Info("Enclave mode detected - using VSock dialer via internet proxy")
-		dialer := createVSockWebSocketDialer(t.logger)
-		conn, _, err = dialer.Dial(t.teetURL, nil)
-	} else {
-		// Standalone mode: use default dialer
-		t.logger.Info("Standalone mode detected - using default WebSocket dialer")
-		conn, _, err = websocket.DefaultDialer.Dial(t.teetURL, nil)
-	}
+		// Determine if we're in enclave mode based on the URL
+		var conn *websocket.Conn
+		var err error
 
-	if err != nil {
-		t.logger.WithSession(sessionID).Error("WebSocket dial failed",
+		if strings.HasPrefix(t.teetURL, "wss://") && strings.Contains(t.teetURL, "reclaimprotocol.org") {
+			// Enclave mode: use custom vsock dialer
+			t.logger.Debug("Enclave mode detected - using VSock dialer via internet proxy")
+			dialer := createVSockWebSocketDialer(t.logger)
+			conn, _, err = dialer.Dial(t.teetURL, nil)
+		} else {
+			// Standalone mode: use default dialer
+			t.logger.Debug("Standalone mode detected - using default WebSocket dialer")
+			conn, _, err = websocket.DefaultDialer.Dial(t.teetURL, nil)
+		}
+
+		if err == nil {
+			t.logger.WithSession(sessionID).Info("WebSocket connection established successfully",
+				zap.String("teet_url", t.teetURL),
+				zap.Int("attempt", attempt))
+			return conn, nil
+		}
+
+		lastErr = err
+		t.logger.WithSession(sessionID).Warn("WebSocket dial failed",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries),
 			zap.String("teet_url", t.teetURL),
 			zap.Error(err))
-		return nil, fmt.Errorf("failed to connect to TEE_T: %v", err)
+
+		// Wait 1 second before retry (except for the last attempt)
+		if attempt < maxRetries {
+			time.Sleep(1 * time.Second)
+		}
 	}
 
-	t.logger.WithSession(sessionID).Info("WebSocket connection established successfully",
-		zap.String("teet_url", t.teetURL))
-	return conn, nil
+	t.logger.WithSession(sessionID).Error("All connection attempts failed",
+		zap.String("teet_url", t.teetURL),
+		zap.Int("max_retries", maxRetries),
+		zap.Error(lastErr))
+
+	return nil, fmt.Errorf("failed to connect to TEE_T after %d attempts: %v", maxRetries, lastErr)
 }
 
 // handleTEETMessagesForSession handles messages from TEE_T for a specific session

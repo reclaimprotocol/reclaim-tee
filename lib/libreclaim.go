@@ -516,7 +516,6 @@ func (r *ResponseCallbackImpl) OnResponseReceived(response *clientlib.HTTPRespon
 	return &clientlib.RedactionResult{
 		RedactedBody:    response.FullResponse,
 		RedactionRanges: consolidatedRanges,
-		ProofClaims:     []clientlib.ProofClaim{},
 	}, nil
 }
 
