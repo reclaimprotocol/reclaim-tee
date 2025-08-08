@@ -1527,6 +1527,35 @@ func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 		return
 	}
 
+	// Switch on platform to decide attestation format
+	platform := "nitro"
+	// If we have config available in enclave manager, read domain only; platform sourced via env in config
+	if envPlatform := shared.GetEnvOrDefault("PLATFORM", ""); envPlatform != "" {
+		platform = envPlatform
+	}
+
+	if platform == "google_cvm" {
+		// In GCP mode, return structured AttestationReport with signing key
+		// Get raw GCP attestation token from enclave attestor if available in future; placeholder uses Nitro doc as Report
+		raw, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
+		if err != nil {
+			t.logger.Error("Failed to generate GCP attestation",
+				zap.String("session_id", actualSessionID),
+				zap.Error(err))
+			t.sendAttestationResponseToClient(actualSessionID, nil, false, fmt.Sprintf("Failed to generate attestation: %v", err))
+			return
+		}
+		report := shared.AttestationReport{
+			Type:       "gcp",
+			Report:     raw,
+			SigningKey: publicKeyDER,
+		}
+		payload, _ := json.Marshal(report)
+		t.sendAttestationResponseToClient(actualSessionID, payload, true, "")
+		return
+	}
+
+	// Default Nitro path (existing behavior)
 	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
 	if err != nil {
 		t.logger.Error("Failed to generate attestation document",
@@ -1550,6 +1579,7 @@ func (t *TEET) sendAttestationResponseToClient(sessionID string, attestationDoc 
 		AttestationDoc: attestationDoc,
 		Success:        success,
 		ErrorMessage:   errorMessage,
+		Source:         "tee_t",
 	}
 
 	msg := shared.CreateSessionMessage(shared.MsgAttestationResponse, sessionID, response)

@@ -26,6 +26,7 @@ type EnclaveManager struct {
 	connectionMgr *VSockConnectionManager
 	certManager   *VSockLegoManager
 	cache         *EnclaveCache
+	kmsProvider   KMSProvider
 }
 
 type EnclaveConfig struct {
@@ -191,8 +192,33 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 		return nil, fmt.Errorf("failed to start VSockConnectionManager: %v", err)
 	}
 
-	// Initialize encrypted cache with service-specific KMS key and service name prefix
-	cache := NewEnclaveCache(connectionMgr, kmsKeyID, config.ServiceName)
+	// Select KMS provider (default: aws)
+	providerChoice := GetEnvOrDefault("KMS_PROVIDER", "aws")
+	var provider KMSProvider
+	if providerChoice == "google" {
+		// Build Google KMS provider from env
+		project := GetEnvOrDefault("GOOGLE_PROJECT_ID", "")
+		location := GetEnvOrDefault("GOOGLE_KMS_LOCATION", "")
+		keyRing := GetEnvOrDefault("GOOGLE_KMS_KEYRING", "")
+		keyName := GetEnvOrDefault("GOOGLE_KMS_KEY", "")
+		gcpProvider, err := NewGoogleKMSProvider(ctx, project, location, keyRing, keyName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to init Google KMS provider: %v", err)
+		}
+		provider = gcpProvider
+	} else {
+		// Wrap existing VSock KMS proxy flow as AWS provider
+		provider = NewAWSKMSProvider(connectionMgr, config.ServiceName)
+	}
+
+	// Initialize encrypted cache (AWS path keeps existing behavior). For Google provider,
+	// use provider-backed cache; Secret Manager integration comes in Phase 2.
+	var cache *EnclaveCache
+	if providerChoice == "google" {
+		cache = NewEnclaveCacheWithProvider(provider, connectionMgr, config.ServiceName)
+	} else {
+		cache = NewEnclaveCache(connectionMgr, kmsKeyID, config.ServiceName)
+	}
 
 	// Get ACME directory URL from environment
 	acmeDirectoryURL := GetEnvOrDefault("ACME_DIRECTORY_URL", ZeroSSLProduction)
@@ -219,6 +245,7 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 		connectionMgr: connectionMgr,
 		certManager:   certManager,
 		cache:         cache,
+		kmsProvider:   provider,
 	}, nil
 }
 

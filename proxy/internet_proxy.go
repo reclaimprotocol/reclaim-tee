@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -106,9 +107,15 @@ func (p *InternetProxy) handleConnection(ctx context.Context, enclaveConn net.Co
 		return
 	}
 
-	// Check if this is a local domain that should route back to the proxy
+	// Check if this is a local domain that should route back to the proxy or to network (TEET network mode)
 	if p.isLocalDomain(target) {
 		p.logger.Info("Routing to local domain", zap.String("target", target))
+		// If local domain is TEE_T and TEETMode == network, route to configured network URL
+		if p.shouldRouteTEETOverNetwork(target) {
+			p.logger.Info("TEET network mode enabled - routing over network", zap.String("target", target))
+			p.handleTEETNetworkRouting(ctx, enclaveConn, target)
+			return
+		}
 		p.handleLocalDomainConnection(ctx, enclaveConn, target)
 		return
 	}
@@ -331,6 +338,97 @@ func (p *InternetProxy) handleLocalDomainConnection(ctx context.Context, enclave
 			zap.String("hostname", hostname),
 			zap.Uint32("target_cid", targetConfig.CID))
 	}
+}
+
+// shouldRouteTEETOverNetwork determines if the target is TEE_T domain and network mode is enabled
+func (p *InternetProxy) shouldRouteTEETOverNetwork(target string) bool {
+	if p.config == nil || strings.ToLower(p.config.TEETMode) != "network" {
+		return false
+	}
+	// Extract hostname
+	hostname := target
+	if idx := strings.LastIndex(target, ":"); idx != -1 {
+		hostname = target[:idx]
+	}
+	// Heuristic: treat domains containing "tee-t" as TEE_T
+	if _, exists := p.config.Domains[hostname]; exists && strings.Contains(strings.ToLower(hostname), "tee-t") {
+		return true
+	}
+	return false
+}
+
+// handleTEETNetworkRouting routes local TEE_T domain over network to configured TEETNetworkURL
+func (p *InternetProxy) handleTEETNetworkRouting(ctx context.Context, enclaveConn net.Conn, originalTarget string) {
+	// Determine destination host:port
+	destHostPort := p.resolveTEETNetworkHostPort(originalTarget)
+	if destHostPort == "" {
+		p.logger.Error("TEET network URL not configured; cannot route over network")
+		return
+	}
+
+	// Make outbound connection to destination
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	targetConn, err := dialer.DialContext(ctx, "tcp", destHostPort)
+	if err != nil {
+		p.logger.Error("Failed to connect to TEET network destination", zap.String("dest", destHostPort), zap.Error(err))
+		return
+	}
+	defer targetConn.Close()
+
+	// Clear deadlines
+	enclaveConn.SetReadDeadline(time.Time{})
+	enclaveConn.SetWriteDeadline(time.Time{})
+	targetConn.SetReadDeadline(time.Time{})
+	targetConn.SetWriteDeadline(time.Time{})
+
+	// Proxy data bidirectionally
+	copyCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 2)
+
+	go func() {
+		written, err := io.Copy(targetConn, enclaveConn)
+		if err != nil && !isConnectionClosed(err) {
+			p.logger.Debug("Enclave->TEET copy ended", zap.String("dest", destHostPort), zap.Int64("bytes", written), zap.Error(err))
+		}
+		done <- err
+		cancel()
+	}()
+
+	go func() {
+		written, err := io.Copy(enclaveConn, targetConn)
+		if err != nil && !isConnectionClosed(err) {
+			p.logger.Debug("TEET->Enclave copy ended", zap.String("dest", destHostPort), zap.Int64("bytes", written), zap.Error(err))
+		}
+		done <- err
+		cancel()
+	}()
+
+	select {
+	case <-done:
+	case <-copyCtx.Done():
+	case <-time.After(24 * time.Hour):
+		p.logger.Info("TEET network connection maximum lifetime reached", zap.String("dest", destHostPort))
+	}
+}
+
+// resolveTEETNetworkHostPort parses TEETNetworkURL or falls back to original target host:port
+func (p *InternetProxy) resolveTEETNetworkHostPort(originalTarget string) string {
+	if p.config != nil && p.config.TEETNetworkURL != "" {
+		if u, err := url.Parse(p.config.TEETNetworkURL); err == nil {
+			host := u.Host
+			if !strings.Contains(host, ":") {
+				// default port
+				if u.Scheme == "wss" || u.Scheme == "https" {
+					host = host + ":443"
+				} else if u.Scheme == "ws" || u.Scheme == "http" {
+					host = host + ":80"
+				}
+			}
+			return host
+		}
+	}
+	return originalTarget
 }
 
 // Helper functions for error handling

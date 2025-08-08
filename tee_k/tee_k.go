@@ -2104,8 +2104,16 @@ func (t *TEEK) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 
 	t.logger.WithSession(sessionID).Info("Generated attestation document", zap.Int("bytes", len(attestationDoc)))
 
+	// Wrap in structured report for unified client handling (Nitro)
+	report := shared.AttestationReport{
+		Type:       "nitro",
+		Report:     attestationDoc,
+		SigningKey: publicKeyDER,
+	}
+	payload, _ := json.Marshal(report)
+
 	// Send successful response
-	t.sendAttestationResponse(sessionID, attestationDoc, true, "")
+	t.sendAttestationResponse(sessionID, payload, true, "")
 }
 
 // sendAttestationResponse sends attestation response to client (request ID removed)
@@ -2114,6 +2122,7 @@ func (t *TEEK) sendAttestationResponse(sessionID string, attestationDoc []byte, 
 		AttestationDoc: attestationDoc,
 		Success:        success,
 		ErrorMessage:   errorMessage,
+		Source:         "tee_k",
 	}
 
 	msg := shared.CreateSessionMessage(shared.MsgAttestationResponse, sessionID, response)

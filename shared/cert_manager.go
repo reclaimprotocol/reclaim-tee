@@ -30,6 +30,7 @@ type VSockLegoManager struct {
 	challengeServer *VSockChallengeServer
 	mu              sync.RWMutex
 	certificates    map[string]*tls.Certificate
+	storage         CertificateStorage
 }
 
 type LegoVSockConfig struct {
@@ -134,6 +135,7 @@ func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLe
 						client:       nil, // No ACME client needed for cached certificates
 						cache:        config.Cache,
 						certificates: make(map[string]*tls.Certificate),
+						storage:      NewEnclaveCacheStorage(config.Cache),
 					}
 
 					// Store the valid certificate in memory
@@ -198,6 +200,7 @@ func NewVSockLegoManager(ctx context.Context, config *LegoVSockConfig) (*VSockLe
 		client:       legoClient,
 		cache:        config.Cache,
 		certificates: make(map[string]*tls.Certificate),
+		storage:      NewEnclaveCacheStorage(config.Cache),
 	}
 
 	// Setup VSock-compatible HTTP-01 challenge solver
@@ -364,8 +367,8 @@ func (m *VSockLegoManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Cert
 	}
 	m.mu.RUnlock()
 
-	// Then try persistent cache
-	cert, err := m.getCachedCertificate(context.Background(), domain)
+	// Then try persistent cache via storage
+	cert, err := m.storage.RetrieveCertificate(domain)
 	if err == nil && m.IsValidCertificate(cert) {
 		m.mu.Lock()
 		m.certificates[domain] = cert
@@ -391,7 +394,7 @@ func (m *VSockLegoManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Cert
 		return nil, fmt.Errorf("failed to renew certificate: %v", err)
 	}
 
-	// Store in persistent cache
+	// Store in persistent storage
 	err = m.storeCertificate(context.Background(), domain, certificates)
 	if err != nil {
 		log.Printf("[%s] Warning: failed to cache renewed certificate: %v", m.config.ServiceName, err)
@@ -423,19 +426,9 @@ func (m *VSockLegoManager) CreateTLSConfig() *tls.Config {
 }
 
 // getCachedCertificate retrieves a certificate from cache
+// Deprecated: kept for compatibility (no-op)
 func (m *VSockLegoManager) getCachedCertificate(ctx context.Context, domain string) (*tls.Certificate, error) {
-	cacheKey := domain
-	data, err := m.cache.Get(ctx, cacheKey)
-	if err != nil {
-		return nil, fmt.Errorf("certificate cache miss: %v", err)
-	}
-
-	cert, err := tls.X509KeyPair(data, data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse cached certificate: %v", err)
-	}
-
-	return &cert, nil
+	return m.storage.RetrieveCertificate(domain)
 }
 
 // storeCertificate stores a certificate in cache
@@ -443,10 +436,12 @@ func (m *VSockLegoManager) storeCertificate(ctx context.Context, domain string, 
 	// Combine certificate and private key like autocert does
 	certPEM := certificates.Certificate
 	keyPEM := certificates.PrivateKey
-	combined := append(certPEM, keyPEM...)
-
-	cacheKey := domain
-	return m.cache.Put(ctx, cacheKey, combined)
+	// Store via configured storage
+	parsed, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return fmt.Errorf("failed to parse certificate for storage: %v", err)
+	}
+	return m.storage.StoreCertificate(domain, &parsed)
 }
 
 // IsValidCertificate checks if a certificate is valid and not expiring soon

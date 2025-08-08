@@ -17,6 +17,9 @@ type ProxyConfig struct {
 	Domains map[string]EnclaveTarget `json:"domains"`
 	AWS     AWSConfig                `json:"aws"`
 	Ports   PortConfig               `json:"ports"`
+	// TEE_T routing mode: "vsock" (default) or "network"
+	TEETMode       string `json:"teet_mode,omitempty"`
+	TEETNetworkURL string `json:"teet_network_url,omitempty"`
 }
 
 type EnclaveTarget struct {
@@ -204,6 +207,8 @@ func loadConfig() (*ProxyConfig, error) {
 			KMS:      5000,
 			Internet: 8444,
 		},
+		TEETMode:       getEnvOrDefault("TEET_MODE", "vsock"),
+		TEETNetworkURL: getEnvOrDefault("TEET_NETWORK_URL", ""),
 	}, nil
 }
 

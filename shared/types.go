@@ -362,6 +362,7 @@ type AttestationResponseData struct {
 	AttestationDoc []byte `json:"attestation_doc,omitempty"`
 	Success        bool   `json:"success"`
 	ErrorMessage   string `json:"error_message,omitempty"`
+	Source         string `json:"source,omitempty"` // "tee_k" or "tee_t"
 }
 
 // Client to TEE_K: Send plaintext data for encryption

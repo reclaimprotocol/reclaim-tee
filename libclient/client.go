@@ -2,10 +2,11 @@ package clientlib
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -827,42 +828,38 @@ func (c *Client) fetchAndVerifyAttestations() error {
 
 // verifyAttestation verifies an attestation document and extracts the public key from user data
 func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string) ([]byte, error) {
-	// Parse the attestation document
-	signedReport, err := verifier.NewSignedAttestationReport(strings.NewReader(string(attestationDoc)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse attestation document: %v", err)
+	// Structured AttestationReport (nitro or gcp)
+	var report shared.AttestationReport
+	if jsonErr := json.Unmarshal(attestationDoc, &report); jsonErr == nil && report.Type != "" {
+		switch report.Type {
+		case "nitro":
+			sr, err := verifier.NewSignedAttestationReport(strings.NewReader(string(report.Report)))
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse nitro report: %v", err)
+			}
+			if err := verifier.Validate(sr, nil); err != nil {
+				return nil, fmt.Errorf("nitro validation failed: %v", err)
+			}
+			if len(report.SigningKey) == 0 {
+				return nil, fmt.Errorf("missing signing key in nitro attestation report")
+			}
+			return report.SigningKey, nil
+		case "gcp":
+			att, err := shared.NewGoogleAttestor()
+			if err != nil {
+				return nil, fmt.Errorf("failed to init google attestor: %v", err)
+			}
+			if err := att.Validate(context.Background(), report.Report); err != nil {
+				return nil, fmt.Errorf("google attestation validation failed: %v", err)
+			}
+			if len(report.SigningKey) == 0 {
+				return nil, fmt.Errorf("missing signing key in gcp attestation report")
+			}
+			return report.SigningKey, nil
+		}
 	}
 
-	// Verify the attestation (root of trust validation)
-	if err := verifier.Validate(signedReport, nil); err != nil {
-		return nil, fmt.Errorf("attestation validation failed: %v", err)
-	}
-
-	c.logger.Info("Attestation root of trust validation passed", zap.String("source", expectedSource))
-
-	// Extract user data from the attestation
-	userData := signedReport.Document.UserData
-	if len(userData) == 0 {
-		return nil, fmt.Errorf("no user data found in attestation")
-	}
-
-	// Parse the user data to extract the public key
-	userDataStr := string(userData)
-	expectedPrefix := fmt.Sprintf("%s_public_key:", expectedSource)
-
-	if !strings.HasPrefix(userDataStr, expectedPrefix) {
-		return nil, fmt.Errorf("user data does not have expected prefix '%s', got: %s", expectedPrefix, userDataStr)
-	}
-
-	// Extract the hex-encoded public key
-	hexPublicKey := strings.TrimPrefix(userDataStr, expectedPrefix)
-	publicKey, err := hex.DecodeString(hexPublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode hex public key: %v", err)
-	}
-
-	c.logger.Info("Extracted public key from attestation", zap.String("source", expectedSource), zap.Int("bytes", len(publicKey)))
-	return publicKey, nil
+	return nil, fmt.Errorf("unsupported attestation format")
 }
 
 // verifyAttestationPublicKeys compares the public keys from attestations with those from signed transcripts
@@ -1018,7 +1015,7 @@ func (c *Client) buildAttestationResults() (*AttestationResults, error) {
 func (c *Client) buildResponseResults() (*ResponseResults, error) {
 	var responseTimestamp time.Time
 	if c.httpResponseReceived {
-		responseTimestamp = time.Now() // TODO: Track actual timestamp
+		responseTimestamp = time.Now()
 	}
 
 	// Use batched response processing success flags

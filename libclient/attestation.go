@@ -23,27 +23,32 @@ func (c *Client) handleAttestationResponse(msg *shared.Message) {
 		return
 	}
 
-	// Try to verify as TEE_K first
+	// Single-path verification using Source
 	var sourceTEE string
 	var publicKey []byte
 	var err error
-
-	publicKey, err = c.verifyAttestation(attestResp.AttestationDoc, "tee_k")
-	if err == nil {
+	switch attestResp.Source {
+	case "tee_k":
+		publicKey, err = c.verifyAttestation(attestResp.AttestationDoc, "tee_k")
+		if err != nil {
+			c.logger.Error("TEE_K attestation verification failed", zap.Error(err))
+			return
+		}
 		sourceTEE = "TEE_K"
 		c.teekAttestationPublicKey = publicKey
 		c.logger.Info("TEE_K attestation verified successfully")
-	} else {
-		// Try as TEE_T
+	case "tee_t":
 		publicKey, err = c.verifyAttestation(attestResp.AttestationDoc, "tee_t")
-		if err == nil {
-			sourceTEE = "TEE_T"
-			c.teetAttestationPublicKey = publicKey
-			c.logger.Info("TEE_T attestation verified successfully")
-		} else {
-			c.logger.Error("Failed to verify attestation as either TEE_K or TEE_T", zap.Error(err))
+		if err != nil {
+			c.logger.Error("TEE_T attestation verification failed", zap.Error(err))
 			return
 		}
+		sourceTEE = "TEE_T"
+		c.teetAttestationPublicKey = publicKey
+		c.logger.Info("TEE_T attestation verified successfully")
+	default:
+		c.logger.Error("Unknown attestation source", zap.String("source", attestResp.Source))
+		return
 	}
 
 	c.logger.Info("Received successful attestation response", zap.String("source_tee", sourceTEE), zap.Int("attestation_bytes", len(attestResp.AttestationDoc)))
