@@ -681,10 +681,43 @@ func (t *TEEK) notifyTEETNewSession(sessionID string) error {
 
 // terminateSessionWithError terminates a session due to a critical error
 func (t *TEEK) terminateSessionWithError(sessionID string, reason shared.TerminationReason, err error, message string) {
+	// Send error message to client BEFORE terminating
+	t.sendErrorToClient(sessionID, message, err)
+
 	// Log the critical error and determine if session should terminate
 	if t.sessionTerminator.ZeroToleranceError(sessionID, reason, err) {
+		// Small delay to ensure error message is sent before connection closes
+		time.Sleep(50 * time.Millisecond)
 		// Cleanup session resources
 		t.cleanupSession(sessionID)
+	}
+}
+
+// sendErrorToClient sends an error message to the client before terminating
+func (t *TEEK) sendErrorToClient(sessionID string, message string, err error) {
+	errorMsg := message
+	if err != nil {
+		errorMsg = fmt.Sprintf("%s: %v", message, err)
+	}
+
+	env := &teeproto.Envelope{
+		SessionId:   sessionID,
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_Error{
+			Error: &teeproto.ErrorData{
+				Message: errorMsg,
+			},
+		},
+	}
+
+	// Best effort to send error - don't fail if routing fails
+	if routeErr := t.sessionManager.RouteToClient(sessionID, env); routeErr != nil {
+		t.logger.WithSession(sessionID).Warn("Failed to send error to client",
+			zap.String("error_message", errorMsg),
+			zap.Error(routeErr))
+	} else {
+		t.logger.WithSession(sessionID).Info("Sent error message to client",
+			zap.String("error_message", errorMsg))
 	}
 }
 
