@@ -2,6 +2,7 @@ package clientlib
 
 import (
 	"fmt"
+	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
 
 	"go.uber.org/zap"
@@ -55,13 +56,8 @@ func (c *Client) handleHTTPResponse(msg *shared.Message) {
 }
 
 // handleTEETReady handles TEE_T ready confirmation
-func (c *Client) handleTEETReady(msg *shared.Message) {
-	var readyData shared.TEETReadyData
-	if err := msg.UnmarshalData(&readyData); err != nil {
-		c.logger.Error("Failed to unmarshal TEE_T ready data", zap.Error(err))
-		return
-	}
-
+func (c *Client) handleTEETReady(sessionID string, readyData *teeproto.TEETReady) {
+	// TEE_T ready handler implementation
 }
 
 // handleTEETError handles error messages from TEE_T (fail-fast implementation)

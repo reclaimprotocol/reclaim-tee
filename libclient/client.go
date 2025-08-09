@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
 	"time"
 
@@ -168,8 +169,10 @@ type Client struct {
 
 	// Verification bundle tracking fields
 	handshakeDisclosure     *shared.HandshakeKeyDisclosureData      // store handshake keys
-	teekSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_K
-	teetSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_T
+	teekSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_K (legacy compatibility)
+	teetSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_T (legacy compatibility)
+	teekSignedMessage       *teeproto.SignedMessage                 // original protobuf SignedMessage from TEE_K
+	teetSignedMessage       *teeproto.SignedMessage                 // original protobuf SignedMessage from TEE_T
 	signedRedactedStreams   []shared.SignedRedactedDecryptionStream // ordered collection of redacted streams
 	redactedRequestPlain    []byte                                  // R_red plaintext sent to TEE_K
 	fullRedactedResponse    []byte                                  // final redacted HTTP response (concatenated)
@@ -803,20 +806,28 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	c.logger.Info("Session coordinated, proceeding with attestation requests", zap.String("session_id", c.sessionID))
 
 	// Create attestation request (no request ID needed)
-	attestReq := shared.AttestationRequestData{}
-
 	// Send to TEE_K
-	teekMsg := shared.CreateMessage(shared.MsgAttestationRequest, attestReq)
+	teekEnv := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_AttestationRequest{
+			AttestationRequest: &teeproto.AttestationRequestData{},
+		},
+	}
 
-	if err := c.sendMessage(teekMsg); err != nil {
+	if err := c.sendEnvelope(teekEnv); err != nil {
 		return fmt.Errorf("failed to send TEE_K attestation request: %v", err)
 	}
 	c.logger.Info("Sent attestation request to TEE_K")
 
 	// Send to TEE_T
-	teetMsg := shared.CreateMessage(shared.MsgAttestationRequest, attestReq)
+	teetEnv := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_AttestationRequest{
+			AttestationRequest: &teeproto.AttestationRequestData{},
+		},
+	}
 
-	if err := c.sendMessageToTEET(teetMsg); err != nil {
+	if err := c.sendEnvelopeToTEET(teetEnv); err != nil {
 		return fmt.Errorf("failed to send TEE_T attestation request: %v", err)
 	}
 	c.logger.Info("Sent attestation request to TEE_T")

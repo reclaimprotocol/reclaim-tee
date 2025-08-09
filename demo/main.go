@@ -114,12 +114,15 @@ func main() {
 	logger.Info("⏳ Waiting for all processing to complete...")
 	logger.Info(" (decryption streams + redaction verification)")
 
+	var protocolCompleted bool
 	select {
 	case <-client.WaitForCompletion():
 		logger.Info(" Split AEAD protocol completed successfully!")
+		protocolCompleted = true
 	case <-time.After(clientlib.DefaultProcessingTimeout): // Configurable processing timeout
-		logger.Warn("⏰ Processing timeout - operation may still be in progress")
-		logger.Warn("⚠️  Continuing with partial results...")
+		logger.Error("⏰ Processing timeout - protocol did not complete")
+		logger.Error("❌ SECURITY: Cannot generate verification bundle with incomplete data")
+		protocolCompleted = false
 	}
 
 	// Demonstrate accessing protocol results
@@ -186,10 +189,18 @@ func main() {
 
 	fmt.Println("\n Client processing completed!")
 
+	// SECURITY: Only build verification bundle if protocol completed successfully
+	if !protocolCompleted {
+		fmt.Printf("\n❌ SECURITY ERROR: Protocol did not complete - refusing to generate verification bundle\n")
+		fmt.Printf("❌ Incomplete data cannot be verified and would be a security risk\n")
+		log.Fatalf("Protocol incomplete - exiting for security")
+	}
+
 	// Build verification bundle and save to file
 	bundlePath := "verification_bundle.json"
 	if err := client.(*clientlib.ReclaimClientImpl).Client.BuildVerificationBundle(bundlePath); err != nil {
 		fmt.Printf("\n🔴 Failed to build verification bundle: %v\n", err)
+		log.Fatalf("Cannot create verification bundle: %v", err)
 	} else {
 		fmt.Printf("\n💾 Verification bundle written to %s\n", bundlePath)
 	}

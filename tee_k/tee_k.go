@@ -483,6 +483,30 @@ func (t *TEEK) sendMessageToTEETForSession(sessionID string, msg *shared.Message
 	return wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
 }
 
+// sendEnvelopeToTEETForSession sends a protobuf envelope directly to TEE_T for a specific session
+func (t *TEEK) sendEnvelopeToTEETForSession(sessionID string, env *teeproto.Envelope) error {
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("session %s not found: %v", sessionID, err)
+	}
+
+	if session.TEETConn == nil {
+		return fmt.Errorf("no TEE_T connection available for session %s", sessionID)
+	}
+
+	// Ensure session ID is set
+	if env.GetSessionId() == "" {
+		env.SessionId = sessionID
+	}
+
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return err
+	}
+	wsConn := session.TEETConn.(*shared.WSConnection)
+	return wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+}
+
 func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := teekUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -503,9 +527,9 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		zap.String("session_id", sessionID),
 		zap.String("remote_addr", conn.RemoteAddr().String()))
 
-	// Notify TEE_T about the new session
-	if err := t.notifyTEETNewSession(sessionID); err != nil {
-		t.logger.WithSession(sessionID).Error("Failed to notify TEE_T about session", zap.Error(err))
+	// Notify TEE_T about the new session (with retry for shared connection)
+	if err := t.notifyTEETNewSessionWithRetry(sessionID); err != nil {
+		t.logger.WithSession(sessionID).Error("Failed to notify TEE_T about session after retries", zap.Error(err))
 		t.sessionManager.CloseSession(sessionID)
 		return
 	}
@@ -591,6 +615,35 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Clean up session when connection closes
 	t.logger.WithSession(sessionID).Info("Cleaning up session")
 	t.sessionManager.CloseSession(sessionID)
+}
+
+// notifyTEETNewSessionWithRetry retries session notification if shared connection isn't ready
+func (t *TEEK) notifyTEETNewSessionWithRetry(sessionID string) error {
+	maxRetries := 5
+	retryDelay := 100 * time.Millisecond
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := t.notifyTEETNewSession(sessionID)
+		if err == nil {
+			return nil
+		}
+
+		// If it's a "connection not available" error and we have retries left, wait and retry
+		if strings.Contains(err.Error(), "shared TEE_T connection not available") && attempt < maxRetries {
+			t.logger.WithSession(sessionID).Warn("Shared TEE_T connection not ready, retrying...",
+				zap.Int("attempt", attempt),
+				zap.Int("max_retries", maxRetries),
+				zap.Duration("retry_delay", retryDelay))
+			time.Sleep(retryDelay)
+			retryDelay *= 2 // Exponential backoff
+			continue
+		}
+
+		// For other errors or final attempt, return the error
+		return err
+	}
+
+	return fmt.Errorf("failed to notify TEE_T after %d attempts", maxRetries)
 }
 
 // notifyTEETNewSession creates per-session connection and sends session registration to TEE_T
@@ -1200,8 +1253,18 @@ func (t *TEEK) sendMessage(conn *websocket.Conn, msg *shared.Message) error {
 }
 
 func (t *TEEK) sendError(conn *websocket.Conn, errMsg string) {
-	errorMsg := shared.CreateMessage(shared.MsgError, shared.ErrorData{Message: errMsg})
-	if err := t.sendMessage(conn, errorMsg); err != nil {
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_Error{
+			Error: &teeproto.ErrorData{Message: errMsg},
+		},
+	}
+	data, err := proto.Marshal(env)
+	if err != nil {
+		t.logger.Error("Failed to marshal error message", zap.Error(err))
+		return
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		t.logger.Error("Failed to send error message", zap.Error(err))
 	}
 }
@@ -1387,14 +1450,17 @@ func (t *TEEK) requestKeyShareFromTEET(cipherSuite uint16) error {
 	t.logger.Info("Requesting key share from TEE_T",
 		zap.Uint16("cipher_suite", cipherSuite))
 
-	keyReq := shared.KeyShareRequestData{
-		CipherSuite: cipherSuite,
-		KeyLength:   keyLen,
-		IVLength:    ivLen,
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_KeyShareRequest{
+			KeyShareRequest: &teeproto.KeyShareRequest{
+				CipherSuite: uint32(cipherSuite),
+				KeyLength:   int32(keyLen),
+				IvLength:    int32(ivLen),
+			},
+		},
 	}
-
-	msg := shared.CreateMessage(shared.MsgKeyShareRequest, keyReq)
-	return t.sendMessageToTEETForSession("", msg)
+	return t.sendEnvelopeToTEETForSession("", env)
 }
 
 // requestKeyShareFromTEETWithSession requests a key share from TEE_T for split AEAD with session ID
@@ -1407,14 +1473,18 @@ func (t *TEEK) requestKeyShareFromTEETWithSession(sessionID string, cipherSuite 
 	t.logger.WithSession(sessionID).Info("Requesting key share from TEE_T",
 		zap.Uint16("cipher_suite", cipherSuite))
 
-	keyReq := shared.KeyShareRequestData{
-		CipherSuite: cipherSuite,
-		KeyLength:   keyLen,
-		IVLength:    ivLen,
+	env := &teeproto.Envelope{
+		SessionId:   sessionID,
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_KeyShareRequest{
+			KeyShareRequest: &teeproto.KeyShareRequest{
+				CipherSuite: uint32(cipherSuite),
+				KeyLength:   int32(keyLen),
+				IvLength:    int32(ivLen),
+			},
+		},
 	}
-
-	msg := shared.CreateMessage(shared.MsgKeyShareRequest, keyReq)
-	return t.sendMessageToTEETForSession(sessionID, msg)
+	return t.sendEnvelopeToTEETForSession(sessionID, env)
 }
 
 func (t *TEEK) sendEncryptedRequestToTEET(encryptedData, tagSecrets []byte, cipherSuite uint16, seqNum uint64, redactionRanges []shared.RequestRedactionRange) error {
@@ -1422,16 +1492,30 @@ func (t *TEEK) sendEncryptedRequestToTEET(encryptedData, tagSecrets []byte, ciph
 		zap.Int("bytes", len(encryptedData)),
 		zap.Int("ranges", len(redactionRanges)))
 
-	encReq := shared.EncryptedRequestData{
-		EncryptedData:   encryptedData,
-		TagSecrets:      tagSecrets,
-		CipherSuite:     cipherSuite,
-		SeqNum:          seqNum,
-		RedactionRanges: redactionRanges,
+	// Convert redaction ranges to protobuf format
+	var pbRanges []*teeproto.RequestRedactionRange
+	for _, r := range redactionRanges {
+		pbRanges = append(pbRanges, &teeproto.RequestRedactionRange{
+			Start:          int32(r.Start),
+			Length:         int32(r.Length),
+			Type:           r.Type,
+			RedactionBytes: r.RedactionBytes,
+		})
 	}
 
-	msg := shared.CreateMessage(shared.MsgEncryptedRequest, encReq)
-	return t.sendMessageToTEETForSession("", msg)
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_EncryptedRequest{
+			EncryptedRequest: &teeproto.EncryptedRequest{
+				EncryptedData:   encryptedData,
+				TagSecrets:      tagSecrets,
+				CipherSuite:     uint32(cipherSuite),
+				SeqNum:          seqNum,
+				RedactionRanges: pbRanges,
+			},
+		},
+	}
+	return t.sendEnvelopeToTEETForSession("", env)
 }
 
 // sendEncryptedRequestToTEETWithSession sends encrypted request data and tag secrets to TEE_T with session ID
@@ -1441,17 +1525,32 @@ func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encrypted
 		zap.Int("ranges", len(redactionRanges)),
 		zap.Int("commitments", len(commitments)))
 
-	encReq := shared.EncryptedRequestData{
-		EncryptedData:   encryptedData,
-		TagSecrets:      tagSecrets,
-		Commitments:     commitments,
-		CipherSuite:     cipherSuite,
-		SeqNum:          seqNum,
-		RedactionRanges: redactionRanges,
+	// Convert redaction ranges to protobuf format
+	var pbRanges []*teeproto.RequestRedactionRange
+	for _, r := range redactionRanges {
+		pbRanges = append(pbRanges, &teeproto.RequestRedactionRange{
+			Start:          int32(r.Start),
+			Length:         int32(r.Length),
+			Type:           r.Type,
+			RedactionBytes: r.RedactionBytes,
+		})
 	}
 
-	msg := shared.CreateMessage(shared.MsgEncryptedRequest, encReq)
-	return t.sendMessageToTEETForSession(sessionID, msg)
+	env := &teeproto.Envelope{
+		SessionId:   sessionID,
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_EncryptedRequest{
+			EncryptedRequest: &teeproto.EncryptedRequest{
+				EncryptedData:   encryptedData,
+				TagSecrets:      tagSecrets,
+				Commitments:     commitments,
+				CipherSuite:     uint32(cipherSuite),
+				SeqNum:          seqNum,
+				RedactionRanges: pbRanges,
+			},
+		},
+	}
+	return t.sendEnvelopeToTEETForSession(sessionID, env)
 }
 
 // Session-aware response handling methods
@@ -1762,9 +1861,14 @@ func (t *TEEK) handleRedactionSpecSession(sessionID string, msg *shared.Message)
 	t.logger.WithSession(sessionID).Info("Successfully processed redaction specification")
 
 	// Send "finished" to TEE_T as per protocol specification
-	finishedMsg := shared.FinishedMessage{}
-	finishedMessage := shared.CreateSessionMessage(shared.MsgFinished, sessionID, finishedMsg)
-	if err := t.sendMessageToTEETForSession(sessionID, finishedMessage); err != nil {
+	env := &teeproto.Envelope{
+		SessionId:   sessionID,
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_Finished{
+			Finished: &teeproto.FinishedMessage{},
+		},
+	}
+	if err := t.sendEnvelopeToTEETForSession(sessionID, env); err != nil {
 		t.logger.WithSession(sessionID).Error("Failed to send finished message to TEE_T", zap.Error(err))
 		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to send finished message to TEE_T: %v", err))
 		return
@@ -2383,15 +2487,29 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 		zap.Int("count", len(tagSecrets)))
 
 	// Send all tag secrets as a batch to TEE_T
-	batchedTagSecrets := shared.BatchedTagSecretsData{
-		TagSecrets: tagSecrets,
-		SessionID:  sessionID,
-		TotalCount: len(tagSecrets),
+	// Convert tag secrets to protobuf format
+	var pbTagSecrets []*teeproto.BatchedTagSecrets_TagSecret
+	for _, ts := range tagSecrets {
+		pbTagSecrets = append(pbTagSecrets, &teeproto.BatchedTagSecrets_TagSecret{
+			TagSecrets:  ts.TagSecrets,
+			SeqNum:      ts.SeqNum,
+			CipherSuite: uint32(ts.CipherSuite),
+		})
 	}
 
-	tagSecretsMsg := shared.CreateSessionMessage(shared.MsgBatchedTagSecrets, sessionID, batchedTagSecrets)
+	env := &teeproto.Envelope{
+		SessionId:   sessionID,
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_BatchedTagSecrets{
+			BatchedTagSecrets: &teeproto.BatchedTagSecrets{
+				TagSecrets: pbTagSecrets,
+				SessionId:  sessionID,
+				TotalCount: int32(len(tagSecrets)),
+			},
+		},
+	}
 
-	if err := t.sendMessageToTEETForSession(sessionID, tagSecretsMsg); err != nil {
+	if err := t.sendEnvelopeToTEETForSession(sessionID, env); err != nil {
 		t.logger.WithSession(sessionID).Error("Failed to send batched tag secrets to TEE_T", zap.Error(err))
 		return
 	}

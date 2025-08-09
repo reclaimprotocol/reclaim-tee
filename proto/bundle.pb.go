@@ -235,7 +235,7 @@ var File_bundle_proto protoreflect.FileDescriptor
 
 const file_bundle_proto_rawDesc = "" +
 	"\n" +
-	"\fbundle.proto\x12\bteeproto\x1a\fcommon.proto\x1a\rsigning.proto\"\x9b\x01\n" +
+	"\fbundle.proto\x12\bteeproto\x1a\rsigning.proto\"\x9b\x01\n" +
 	"\x10HandshakeSecrets\x12#\n" +
 	"\rhandshake_key\x18\x01 \x01(\fR\fhandshakeKey\x12!\n" +
 	"\fhandshake_iv\x18\x02 \x01(\fR\vhandshakeIv\x12!\n" +
@@ -291,7 +291,6 @@ func file_bundle_proto_init() {
 	if File_bundle_proto != nil {
 		return
 	}
-	file_common_proto_init()
 	file_signing_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{

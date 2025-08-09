@@ -182,10 +182,10 @@ func (sm *SessionManager) CloseSession(sessionID string) error {
 		delete(sm.sessionsByConn, session.ClientConn)
 	}
 
-	// Close per-session TEE_T connection if it exists
-	if session.TEETConn != nil {
-		session.TEETConn.Close()
-	}
+	// Note: Do NOT close TEETConn here - it's a shared persistent connection
+	// managed by TEE_K, not a per-session connection. Closing it would break
+	// the shared connection for all other sessions.
+	// TEETConn reference is just cleared when session is deleted below.
 
 	delete(sm.sessions, sessionID)
 	return nil

@@ -158,6 +158,9 @@ func (c *Client) handleMessages() {
 				break
 			}
 			if sm.GetBodyType() == teeproto.BodyType_BODY_TYPE_K_OUTPUT {
+				// Store the original SignedMessage for verification bundle
+				c.teekSignedMessage = sm
+
 				var body teeproto.KOutputPayload
 				if err := proto.Unmarshal(sm.GetBody(), &body); err != nil {
 					c.logger.Error("Failed to unmarshal KOutputPayload", zap.Error(err))
@@ -246,11 +249,9 @@ func (c *Client) handleTEETMessages() {
 
 		switch p := env.Payload.(type) {
 		case *teeproto.Envelope_EncryptedData:
-			msg := &shared.Message{Type: shared.MsgEncryptedData, SessionID: env.GetSessionId(), Data: shared.EncryptedDataResponse{EncryptedData: p.EncryptedData.GetEncryptedData(), AuthTag: p.EncryptedData.GetAuthTag(), Success: p.EncryptedData.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
-			c.handleEncryptedData(msg)
+			c.handleEncryptedData(env.GetSessionId(), p.EncryptedData)
 		case *teeproto.Envelope_TeetReady:
-			msg := &shared.Message{Type: shared.MsgTEETReady, SessionID: env.GetSessionId(), Data: shared.TEETReadyData{Success: p.TeetReady.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
-			c.handleTEETReady(msg)
+			c.handleTEETReady(env.GetSessionId(), p.TeetReady)
 		case *teeproto.Envelope_RedactionVerification:
 			msg := &shared.Message{Type: shared.MsgRedactionVerification, SessionID: env.GetSessionId(), Data: shared.RedactionVerificationData{Success: p.RedactionVerification.GetSuccess(), Message: p.RedactionVerification.GetMessage()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleRedactionVerification(msg)
@@ -261,6 +262,9 @@ func (c *Client) handleTEETMessages() {
 				break
 			}
 			if sm.GetBodyType() == teeproto.BodyType_BODY_TYPE_T_OUTPUT {
+				// Store the original SignedMessage for verification bundle
+				c.teetSignedMessage = sm
+
 				var body teeproto.TOutputPayload
 				if err := proto.Unmarshal(sm.GetBody(), &body); err != nil {
 					c.logger.Error("Failed to unmarshal TOutputPayload", zap.Error(err))
@@ -353,6 +357,25 @@ func (c *Client) sendMessage(msg *shared.Message) error {
 	return conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
+// sendEnvelope sends a protobuf envelope directly to TEE_K
+func (c *Client) sendEnvelope(env *teeproto.Envelope) error {
+	conn := c.wsConn
+	if conn == nil {
+		return fmt.Errorf("no websocket connection")
+	}
+
+	// Add session ID if available and not already set
+	if c.sessionID != "" && env.GetSessionId() == "" {
+		env.SessionId = c.sessionID
+	}
+
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, data)
+}
+
 // isEnclaveMode checks if the client is running in enclave mode
 func (c *Client) isEnclaveMode() bool {
 	return c.clientMode == ModeEnclave
@@ -410,11 +433,38 @@ func (c *Client) sendMessageToTEET(msg *shared.Message) error {
 	return nil
 }
 
+// sendEnvelopeToTEET sends a protobuf envelope directly to TEE_T
+func (c *Client) sendEnvelopeToTEET(env *teeproto.Envelope) error {
+	conn := c.teetConn
+	if conn == nil {
+		return fmt.Errorf("no TEE_T websocket connection")
+	}
+
+	// Add session ID if available and not already set
+	if c.sessionID != "" && env.GetSessionId() == "" {
+		env.SessionId = c.sessionID
+	}
+
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return err
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return err
+	}
+	return nil
+}
+
 // sendError sends an error message to TEE_K (fail-fast implementation)
 func (c *Client) sendError(errMsg string) {
-	errorMsg := shared.CreateMessage(shared.MsgError, shared.ErrorData{Message: errMsg})
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_Error{
+			Error: &teeproto.ErrorData{Message: errMsg},
+		},
+	}
 
-	if err := c.sendMessage(errorMsg); err != nil {
+	if err := c.sendEnvelope(env); err != nil {
 		c.terminateConnectionWithError("Failed to send error message", err)
 		return
 	}
@@ -426,9 +476,21 @@ func (c *Client) sendPendingConnectionRequest() error {
 		return nil
 	}
 
-	msg := shared.CreateMessage(shared.MsgRequestConnection, *c.pendingConnectionRequest)
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_RequestConnection{
+			RequestConnection: &teeproto.RequestConnection{
+				Hostname:         c.pendingConnectionRequest.Hostname,
+				Port:             int32(c.pendingConnectionRequest.Port),
+				Sni:              c.pendingConnectionRequest.SNI,
+				Alpn:             c.pendingConnectionRequest.ALPN,
+				ForceTlsVersion:  c.pendingConnectionRequest.ForceTLSVersion,
+				ForceCipherSuite: c.pendingConnectionRequest.ForceCipherSuite,
+			},
+		},
+	}
 
-	if err := c.sendMessage(msg); err != nil {
+	if err := c.sendEnvelope(env); err != nil {
 		return fmt.Errorf("failed to send connection request: %v", err)
 	}
 
@@ -438,21 +500,16 @@ func (c *Client) sendPendingConnectionRequest() error {
 }
 
 // handleEncryptedData handles encrypted data from TEE_T
-func (c *Client) handleEncryptedData(msg *shared.Message) {
-	var encData shared.EncryptedDataResponse
-	if err := msg.UnmarshalData(&encData); err != nil {
-		c.logger.Error("Failed to unmarshal encrypted data", zap.Error(err))
-		return
-	}
+func (c *Client) handleEncryptedData(sessionID string, encData *teeproto.EncryptedDataResponse) {
 
-	if !encData.Success {
+	if !encData.GetSuccess() {
 		c.logger.Error("TEE_T reported failure in encrypted data")
 		return
 	}
 
 	c.logger.Info("Received encrypted data",
-		zap.Int("encrypted_bytes", len(encData.EncryptedData)),
-		zap.Int("tag_bytes", len(encData.AuthTag)))
+		zap.Int("encrypted_bytes", len(encData.GetEncryptedData())),
+		zap.Int("tag_bytes", len(encData.GetAuthTag())))
 
 	c.logger.Info("RECEIVED redaction verification result from TEE_T")
 
@@ -478,15 +535,15 @@ func (c *Client) handleEncryptedData(msg *shared.Message) {
 		explicitIV[6] = byte(seqNum >> 8)
 		explicitIV[7] = byte(seqNum)
 
-		payload = make([]byte, 8+len(encData.EncryptedData)+len(encData.AuthTag))
+		payload = make([]byte, 8+len(encData.GetEncryptedData())+len(encData.GetAuthTag()))
 		copy(payload[0:8], explicitIV)
-		copy(payload[8:8+len(encData.EncryptedData)], encData.EncryptedData)
-		copy(payload[8+len(encData.EncryptedData):], encData.AuthTag)
+		copy(payload[8:8+len(encData.GetEncryptedData())], encData.GetEncryptedData())
+		copy(payload[8+len(encData.GetEncryptedData()):], encData.GetAuthTag())
 	} else {
 		// TLS 1.3 or ChaCha20: encrypted_data + auth_tag
-		payload = make([]byte, len(encData.EncryptedData)+len(encData.AuthTag))
-		copy(payload, encData.EncryptedData)
-		copy(payload[len(encData.EncryptedData):], encData.AuthTag)
+		payload = make([]byte, len(encData.GetEncryptedData())+len(encData.GetAuthTag()))
+		copy(payload, encData.GetEncryptedData())
+		copy(payload[len(encData.GetEncryptedData()):], encData.GetAuthTag())
 	}
 
 	recordLength := len(payload)

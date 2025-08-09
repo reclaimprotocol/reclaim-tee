@@ -634,15 +634,31 @@ func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *sha
 		zap.Int("total_count", len(batchedResponses.Responses)))
 
 	// Send batched lengths to TEE_K
-	batchedLengths := shared.BatchedResponseLengthData{
-		Lengths:    responseLengths,
-		SessionID:  sessionID,
-		TotalCount: len(responseLengths),
+	// Convert lengths to protobuf format
+	var lengths []*teeproto.BatchedResponseLengths_Length
+	for _, l := range responseLengths {
+		lengths = append(lengths, &teeproto.BatchedResponseLengths_Length{
+			Length:       int32(l.Length),
+			RecordHeader: l.RecordHeader,
+			SeqNum:       l.SeqNum,
+			CipherSuite:  uint32(l.CipherSuite),
+			ExplicitIv:   l.ExplicitIV,
+		})
 	}
 
-	lengthsMsg := shared.CreateSessionMessage(shared.MsgBatchedResponseLengths, sessionID, batchedLengths)
+	env := &teeproto.Envelope{
+		SessionId:   sessionID,
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_BatchedResponseLengths{
+			BatchedResponseLengths: &teeproto.BatchedResponseLengths{
+				Lengths:    lengths,
+				SessionId:  sessionID,
+				TotalCount: int32(len(responseLengths)),
+			},
+		},
+	}
 
-	if err := t.sendMessageToTEEKForSession(sessionID, lengthsMsg); err != nil {
+	if err := t.sessionManager.RouteToTEEK(sessionID, env); err != nil {
 		t.logger.Error("Failed to send batched lengths to TEE_K",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
@@ -1000,18 +1016,32 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 		zap.Bool("all_successful", allSuccessful))
 
 	// Only include detailed verification results if there are failures
-	batchedVerification := shared.BatchedTagVerificationData{
-		Verifications: verifications, // Empty if all successful, contains only failures otherwise
-		SessionID:     sessionID,
-		TotalCount:    totalCount,
-		AllSuccessful: allSuccessful,
+	// Convert verifications to protobuf format
+	var pbVerifications []*teeproto.BatchedTagVerifications_Verification
+	for _, v := range verifications {
+		pbVerifications = append(pbVerifications, &teeproto.BatchedTagVerifications_Verification{
+			Success: v.Success,
+			SeqNum:  v.SeqNum,
+			Message: v.Message,
+		})
 	}
 
-	verificationMsg := shared.CreateSessionMessage(shared.MsgBatchedTagVerifications, sessionID, batchedVerification)
+	env := &teeproto.Envelope{
+		SessionId:   sessionID,
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_BatchedTagVerifications{
+			BatchedTagVerifications: &teeproto.BatchedTagVerifications{
+				Verifications: pbVerifications,
+				SessionId:     sessionID,
+				TotalCount:    int32(totalCount),
+				AllSuccessful: allSuccessful,
+			},
+		},
+	}
 
 	// Send batched verification results to TEE_K for decryption stream generation
 	// Note: Client no longer receives this redundant message - success is implied when decryption streams arrive
-	if err := t.sendMessageToTEEKForSession(sessionID, verificationMsg); err != nil {
+	if err := t.sessionManager.RouteToTEEK(sessionID, env); err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonNetworkFailure, err,
 			zap.String("target", "tee_k")) {
 			return

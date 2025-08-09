@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
 	"time"
 
@@ -48,9 +49,14 @@ func (c *Client) sendTCPReady(success bool) {
 		}
 	}
 
-	tcpReadyMsg := shared.CreateMessage(shared.MsgTCPReady, shared.TCPReadyData{Success: success})
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_TcpReady{
+			TcpReady: &teeproto.TCPReady{Success: success},
+		},
+	}
 
-	if err := c.sendMessage(tcpReadyMsg); err != nil {
+	if err := c.sendEnvelope(env); err != nil {
 		c.logger.Error("Failed to send TCP ready message", zap.Error(err))
 	}
 }
@@ -168,9 +174,14 @@ func (c *Client) tcpToWebsocket() {
 
 				if !c.handshakeComplete {
 					// During handshake: Forward to TEE_K
-					tcpDataMsg := shared.CreateMessage(shared.MsgTCPData, shared.TCPData{Data: packet})
+					env := &teeproto.Envelope{
+						TimestampMs: time.Now().UnixMilli(),
+						Payload: &teeproto.Envelope_TcpData{
+							TcpData: &teeproto.TCPData{Data: packet},
+						},
+					}
 
-					if err := c.sendMessage(tcpDataMsg); err != nil {
+					if err := c.sendEnvelope(env); err != nil {
 						if !isClientNetworkShutdownError(err) {
 							c.logger.Error("Failed to send TCP data to TEE_K", zap.Error(err))
 						}

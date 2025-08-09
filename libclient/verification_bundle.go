@@ -1,87 +1,65 @@
 package clientlib
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 
-	"tee-mpc/shared"
+	teeproto "tee-mpc/proto"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // BuildVerificationBundle collects all artefacts gathered during protocol
-// execution and serialises them to a JSON file. The function returns the
+// execution and serialises them to a protobuf file. The function returns the
 // path of the file written or an error.
+// SECURITY: This function validates that required data is present before creating bundle
 func (c *Client) BuildVerificationBundle(path string) error {
-	bundle := shared.VerificationBundle{}
+	bundle := &teeproto.VerificationBundlePB{}
+
+	// SECURITY: Validate that we have the required signed messages
+	if c.teekSignedMessage == nil {
+		return fmt.Errorf("SECURITY ERROR: missing TEE_K signed message - protocol incomplete")
+	}
+	if c.teetSignedMessage == nil {
+		return fmt.Errorf("SECURITY ERROR: missing TEE_T signed message - protocol incomplete")
+	}
 
 	// Handshake keys (may be nil in standalone mode until enclave support)
 	if c.handshakeDisclosure != nil {
-		// Convert to shared type (they share identical fields)
-		bundle.HandshakeKeys = shared.HandshakeSecrets{
+		bundle.HandshakeKeys = &teeproto.HandshakeSecrets{
 			HandshakeKey: c.handshakeDisclosure.HandshakeKey,
-			HandshakeIV:  c.handshakeDisclosure.HandshakeIV,
-			CipherSuite:  c.handshakeDisclosure.CipherSuite,
+			HandshakeIv:  c.handshakeDisclosure.HandshakeIV,
+			CipherSuite:  uint32(c.handshakeDisclosure.CipherSuite),
 			Algorithm:    c.handshakeDisclosure.Algorithm,
 		}
 	}
 
-	// TEE_K transcript – convert from SignedTranscript to TEEKTranscript
-	if c.teekSignedTranscript != nil {
-		// Order streams by seq for deterministic output
-		orderedStreams := make([]shared.SignedRedactedDecryptionStream, len(c.signedRedactedStreams))
-		copy(orderedStreams, c.signedRedactedStreams)
-		if len(orderedStreams) > 0 {
-			sort.Slice(orderedStreams, func(i, j int) bool {
-				return orderedStreams[i].SeqNum < orderedStreams[j].SeqNum
-			})
-		}
+	// TEE_K signed message (K_OUTPUT) - use original protobuf SignedMessage
+	bundle.TeekSigned = c.teekSignedMessage
 
-		// Use comprehensive signature (covers all data including redacted streams)
-		signature := c.teekSignedTranscript.Signature
-
-		bundle.Transcripts.TEEK = &shared.TEEKTranscript{
-			Packets:                 c.teekSignedTranscript.Packets,
-			RequestMetadata:         c.teekSignedTranscript.RequestMetadata,
-			ResponseRedactionRanges: c.teekSignedTranscript.ResponseRedactionRanges,
-			RedactedStreams:         orderedStreams,
-			Signature:               signature,
-			PublicKey:               c.teekSignedTranscript.PublicKey,
-		}
-	}
-
-	// TEE_T transcript – convert from SignedTranscript to TEETTranscript
-	if c.teetSignedTranscript != nil {
-		bundle.Transcripts.TEET = &shared.TEETTranscript{
-			Packets:   c.teetSignedTranscript.Packets,
-			Signature: c.teetSignedTranscript.Signature,
-			PublicKey: c.teetSignedTranscript.PublicKey,
-		}
-	}
+	// TEE_T signed message (T_OUTPUT) - use original protobuf SignedMessage
+	bundle.TeetSigned = c.teetSignedMessage
 
 	// Proof commitment opening
 	if c.proofStream != nil || c.proofKey != nil {
-		bundle.Opening = &shared.Opening{
+		bundle.Opening = &teeproto.Opening{
 			ProofStream: c.proofStream,
 			ProofKey:    c.proofKey,
 		}
 	}
 
 	// Attestations (if any; nil slices marshal as null, omit empty)
-	bundle.AttestationTEEK = c.teekAttestationPublicKey
-	bundle.AttestationTEET = c.teetAttestationPublicKey
+	bundle.AttestationTeeK = c.teekAttestationPublicKey
+	bundle.AttestationTeeT = c.teetAttestationPublicKey
 
-	// Write to file
-	f, err := os.Create(path)
+	// Write protobuf to file
+	data, err := proto.Marshal(bundle)
 	if err != nil {
-		return fmt.Errorf("failed to create bundle file: %v", err)
+		return fmt.Errorf("failed to marshal bundle: %v", err)
 	}
-	defer f.Close()
 
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(&bundle); err != nil {
-		return fmt.Errorf("failed to encode bundle: %v", err)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("failed to write bundle file: %v", err)
 	}
 
 	return nil

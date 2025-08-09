@@ -4,7 +4,6 @@ package teeproto;
 
 option go_package = "tee-mpc/proto;teeproto";
 
-import "common.proto";
 import "signing.proto";
 
 // Handshake secrets disclosed for verification/display

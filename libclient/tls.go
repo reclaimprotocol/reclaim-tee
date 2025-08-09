@@ -3,7 +3,9 @@ package clientlib
 import (
 	"fmt"
 	"strings"
+	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -130,9 +132,29 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 	}
 
 	// Send redacted request to TEE_K for validation and encryption
-	redactedMsg := shared.CreateMessage(shared.MsgRedactedRequest, redactedData)
+	// Convert redaction ranges to protobuf format
+	var pbRanges []*teeproto.RequestRedactionRange
+	for _, r := range redactedData.RedactionRanges {
+		pbRanges = append(pbRanges, &teeproto.RequestRedactionRange{
+			Start:          int32(r.Start),
+			Length:         int32(r.Length),
+			Type:           r.Type,
+			RedactionBytes: r.RedactionBytes,
+		})
+	}
 
-	if err := c.sendMessage(redactedMsg); err != nil {
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_RedactedRequest{
+			RedactedRequest: &teeproto.RedactedRequest{
+				RedactedRequest: redactedData.RedactedRequest,
+				Commitments:     redactedData.Commitments,
+				RedactionRanges: pbRanges,
+			},
+		},
+	}
+
+	if err := c.sendEnvelope(env); err != nil {
 		c.logger.Error("Failed to send redacted request to TEE_K", zap.Error(err))
 		return
 	}
@@ -142,9 +164,17 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 
 	c.logger.Info("EXPECTING redaction verification result from TEE_T")
 
-	streamsMsg := shared.CreateMessage(shared.MsgRedactionStreams, streamsData)
+	env = &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_RedactionStreams{
+			RedactionStreams: &teeproto.RedactionStreams{
+				Streams:        streamsData.Streams,
+				CommitmentKeys: streamsData.CommitmentKeys,
+			},
+		},
+	}
 
-	if err := c.sendMessageToTEET(streamsMsg); err != nil {
+	if err := c.sendEnvelopeToTEET(env); err != nil {
 		c.logger.Error("Failed to send redaction streams to TEE_T", zap.Error(err))
 		return
 	}
@@ -277,9 +307,21 @@ func (c *Client) processTLSRecord(record []byte) {
 	// If EOF already reached, send packet immediately (shouldn't happen)
 	c.logger.Info("EOF already reached, sending packet immediately")
 
-	responseMsg := shared.CreateMessage(shared.MsgEncryptedResponse, encryptedResponseData)
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_EncryptedResponse{
+			EncryptedResponse: &teeproto.EncryptedResponseData{
+				EncryptedData: encryptedResponseData.EncryptedData,
+				Tag:           encryptedResponseData.Tag,
+				RecordHeader:  encryptedResponseData.RecordHeader,
+				SeqNum:        encryptedResponseData.SeqNum,
+				CipherSuite:   uint32(encryptedResponseData.CipherSuite),
+				ExplicitIv:    encryptedResponseData.ExplicitIV,
+			},
+		},
+	}
 
-	if err := c.sendMessageToTEET(responseMsg); err != nil {
+	if err := c.sendEnvelopeToTEET(env); err != nil {
 
 		if c.isClosing {
 			c.logger.Info("Send failed during shutdown - this is expected, continuing")
@@ -314,9 +356,31 @@ func (c *Client) sendBatchedResponses() error {
 	}
 
 	// Send batch to TEE_T using new message type
-	batchMsg := shared.CreateMessage(shared.MsgBatchedEncryptedResponses, batchedData)
+	// Convert responses to protobuf format
+	var pbResponses []*teeproto.EncryptedResponseData
+	for _, r := range batchedData.Responses {
+		pbResponses = append(pbResponses, &teeproto.EncryptedResponseData{
+			EncryptedData: r.EncryptedData,
+			Tag:           r.Tag,
+			RecordHeader:  r.RecordHeader,
+			SeqNum:        r.SeqNum,
+			CipherSuite:   uint32(r.CipherSuite),
+			ExplicitIv:    r.ExplicitIV,
+		})
+	}
 
-	if err := c.sendMessageToTEET(batchMsg); err != nil {
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_BatchedEncryptedResponses{
+			BatchedEncryptedResponses: &teeproto.BatchedEncryptedResponses{
+				Responses:  pbResponses,
+				SessionId:  batchedData.SessionID,
+				TotalCount: int32(batchedData.TotalCount),
+			},
+		},
+	}
+
+	if err := c.sendEnvelopeToTEET(env); err != nil {
 		return fmt.Errorf("failed to send batched responses to TEE_T: %v", err)
 	}
 
