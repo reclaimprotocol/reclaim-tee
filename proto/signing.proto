@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package teeproto;
+
+option go_package = "tee-mpc/proto;teeproto";
+
+import "common.proto";
+
+// Deterministically serialized payloads to be signed by TEEs
+message KOutputPayload {
+  // For single request-response mode
+  bytes redacted_request = 1; // R_red
+  repeated RequestRedactionRange request_redaction_ranges = 2;
+  repeated SignedRedactedDecryptionStream redacted_streams = 3; // from TEE_K
+  repeated bytes packets = 4; // TLS handshake packets observed by TEE_K
+  repeated ResponseRedactionRange response_redaction_ranges = 5;
+}
+
+message TOutputPayload {
+  repeated bytes packets = 1; // TLS packets observed by TEE_T
+}
+
+// Signature wrapper used everywhere
+enum BodyType {
+  BODY_TYPE_UNSPECIFIED = 0;
+  BODY_TYPE_K_OUTPUT = 1;
+  BODY_TYPE_T_OUTPUT = 2;
+}
+
+message SignedMessage {
+  BodyType body_type = 1;
+  bytes body = 2; // serialized deterministic KOutputPayload or TOutputPayload
+  bytes public_key = 3; // DER-encoded public key
+  bytes signature = 4; // signature over body bytes
+}
+
+

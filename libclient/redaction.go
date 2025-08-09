@@ -5,9 +5,13 @@ import (
 	"log"
 	"sort"
 	"strings"
+	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // handleRedactionVerification handles redaction verification responses from TEE_T
@@ -286,22 +290,34 @@ func (c *Client) sendRedactionSpec() error {
 		zap.Int("consolidated_count", consolidatedCount),
 		zap.Float64("reduction_percent", float64(originalCount-consolidatedCount)/float64(originalCount)*100))
 
-	// Send redaction spec to TEE_K
-	msg := shared.CreateSessionMessage(shared.MsgRedactionSpec, c.sessionID, redactionSpec)
-	if err := c.wsConn.WriteJSON(msg); err != nil {
-		return fmt.Errorf("failed to send redaction spec to TEE_K: %v", err)
+	// Send redaction spec to TEE_K using protobuf envelope
+	if c.wsConn == nil {
+		return fmt.Errorf("no websocket connection to TEE_K")
+	}
+
+	// Map ranges
+	pr := make([]*teeproto.ResponseRedactionRange, 0, len(redactionSpec.Ranges))
+	for _, r := range redactionSpec.Ranges {
+		pr = append(pr, &teeproto.ResponseRedactionRange{Start: int32(r.Start), Length: int32(r.Length)})
+	}
+
+	env := &teeproto.Envelope{SessionId: c.sessionID, TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_ResponseRedactionSpec{ResponseRedactionSpec: &teeproto.ResponseRedactionSpec{Ranges: pr, AlwaysRedactSessionTickets: true}},
+	}
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("failed to marshal redaction spec envelope: %v", err)
+	}
+	if err := c.wsConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return fmt.Errorf("failed to send redaction spec: %v", err)
 	}
 
 	c.logger.Info("Sent redaction specification to TEE_K", zap.Int("consolidated_ranges", len(redactionSpec.Ranges)))
-
 	c.logger.Info("Redaction specification sent successfully")
 
 	c.advanceToPhase(PhaseReceivingRedacted)
 
-	// Protocol specification: TEE_K will send 'finished' to TEE_T after processing redaction specification
-	// No client finished messages are required in single session mode
 	c.logger.Info("Entering redacted receiving phase - waiting for TEE_K to send 'finished' to TEE_T")
-
 	return nil
 }
 

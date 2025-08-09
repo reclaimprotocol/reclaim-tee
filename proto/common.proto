@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package teeproto;
+
+option go_package = "tee-mpc/proto;teeproto";
+
+// Shared range types
+message RequestRedactionRange {
+  int32 start = 1;
+  int32 length = 2;
+  // Values: "sensitive" or "sensitive_proof"
+  string type = 3;
+  bytes redaction_bytes = 4; // Optional
+}
+
+message ResponseRedactionRange {
+  int32 start = 1;
+  int32 length = 2;
+}
+
+// Streams and small shared structures
+message ResponseDecryptionStreamData {
+  bytes decryption_stream = 1;
+  uint64 seq_num = 2;
+  int32 length = 3;
+}
+
+message SignedRedactedDecryptionStream {
+  bytes redacted_stream = 1;
+  uint64 seq_num = 2;
+}
+
+// Error wrapper
+message ErrorData {
+  string message = 1;
+}
+
+// Empty placeholders
+message FinishedMessage {}
+message AttestationRequestData {}
+
+

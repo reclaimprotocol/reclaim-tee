@@ -6,7 +6,11 @@ import (
 	"sync"
 	"time"
 
+	teeproto "tee-mpc/proto"
+
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/proto"
 )
 
 // SessionManagerInterface defines the interface for session management
@@ -17,9 +21,9 @@ type SessionManagerInterface interface {
 	CloseSession(sessionID string) error
 	GetSession(sessionID string) (*Session, error)
 	GetSessionByConnection(conn Connection) (*Session, error)
-	RouteToSession(sessionID string, msg *Message) error
-	RouteToTEEK(sessionID string, msg *Message) error
-	RouteToClient(sessionID string, msg *Message) error
+	RouteToSession(sessionID string, env *teeproto.Envelope) error
+	RouteToTEEK(sessionID string, env *teeproto.Envelope) error
+	RouteToClient(sessionID string, env *teeproto.Envelope) error
 	StartCleanupRoutine()
 	Stop()
 }
@@ -232,24 +236,30 @@ func (sm *SessionManager) cleanupExpiredSessions() {
 }
 
 // Message routing methods
-func (sm *SessionManager) RouteToSession(sessionID string, msg *Message) error {
+func (sm *SessionManager) RouteToSession(sessionID string, env *teeproto.Envelope) error {
 	session, err := sm.GetSession(sessionID)
 	if err != nil {
 		return err
 	}
-
-	// Set session ID in message
-	msg.SessionID = sessionID
-
 	// Route to client connection
 	if session.ClientConn != nil {
-		return session.ClientConn.WriteJSON(msg)
+		if ws, ok := session.ClientConn.(*WSConnection); ok {
+			// ensure session id is present
+			if env.GetSessionId() == "" {
+				env.SessionId = sessionID
+			}
+			data, err := proto.Marshal(env)
+			if err != nil {
+				return err
+			}
+			return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+		}
 	}
 
 	return fmt.Errorf("no client connection in session %s", sessionID)
 }
 
-func (sm *SessionManager) RouteToTEEK(sessionID string, msg *Message) error {
+func (sm *SessionManager) RouteToTEEK(sessionID string, env *teeproto.Envelope) error {
 	session, err := sm.GetSession(sessionID)
 	if err != nil {
 		return err
@@ -259,11 +269,20 @@ func (sm *SessionManager) RouteToTEEK(sessionID string, msg *Message) error {
 		return fmt.Errorf("no TEE_K connection in session %s", sessionID)
 	}
 
-	msg.SessionID = sessionID
-	return session.TEEKConn.WriteJSON(msg)
+	if ws, ok := session.TEEKConn.(*WSConnection); ok {
+		if env.GetSessionId() == "" {
+			env.SessionId = sessionID
+		}
+		data, err := proto.Marshal(env)
+		if err != nil {
+			return err
+		}
+		return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+	}
+	return fmt.Errorf("unsupported connection type for TEE_K")
 }
 
-func (sm *SessionManager) RouteToClient(sessionID string, msg *Message) error {
+func (sm *SessionManager) RouteToClient(sessionID string, env *teeproto.Envelope) error {
 	session, err := sm.GetSession(sessionID)
 	if err != nil {
 		return err
@@ -273,6 +292,15 @@ func (sm *SessionManager) RouteToClient(sessionID string, msg *Message) error {
 		return fmt.Errorf("no client connection in session %s", sessionID)
 	}
 
-	msg.SessionID = sessionID
-	return session.ClientConn.WriteJSON(msg)
+	if ws, ok := session.ClientConn.(*WSConnection); ok {
+		if env.GetSessionId() == "" {
+			env.SessionId = sessionID
+		}
+		data, err := proto.Marshal(env)
+		if err != nil {
+			return err
+		}
+		return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+	}
+	return fmt.Errorf("unsupported client connection type")
 }

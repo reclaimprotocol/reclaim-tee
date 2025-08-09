@@ -22,6 +22,8 @@ func (c *Client) checkProtocolCompletion(reason string) {
 
 	// For debugging: show where we are in the process
 	switch currentPhase {
+	case PhaseHandshaking:
+		c.logger.Info("Handshaking in progress")
 	case PhaseCollectingResponses:
 		collectionComplete, _, _ := c.getBatchState()
 		if collectionComplete {
@@ -29,6 +31,8 @@ func (c *Client) checkProtocolCompletion(reason string) {
 		} else {
 			c.logger.Info("Still collecting responses")
 		}
+	case PhaseSendingBatch:
+		c.logger.Info("Sending batch of responses to TEE_T")
 	case PhaseReceivingDecryption:
 		c.logger.Info("Waiting for batched decryption streams")
 	case PhaseWaitingForRedactionRanges:
@@ -41,6 +45,6 @@ func (c *Client) checkProtocolCompletion(reason string) {
 		phase, count := c.getProtocolState()
 		c.logger.Info("Waiting for transcripts", zap.Int("received", count), zap.String("phase", phase.String()))
 	default:
-		panic("unhandled default case")
+		c.logger.Info("No completion action for current phase")
 	}
 }

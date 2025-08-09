@@ -1,15 +1,17 @@
 package clientlib
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
+	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/proto"
 )
 
 // ConnectToTEEK establishes WebSocket connection to TEE_K
@@ -109,49 +111,104 @@ func (c *Client) handleMessages() {
 			break
 		}
 
-		msg, err := shared.ParseMessage(msgBytes)
-		if err != nil {
+		var env teeproto.Envelope
+		if err := proto.Unmarshal(msgBytes, &env); err != nil {
 			if !closing {
 				c.terminateConnectionWithError("Failed to parse message from TEE_K", err)
 				return
 			}
-			// Allow graceful shutdown during close
 			break
 		}
 
-		switch msg.Type {
-		case shared.MsgConnectionReady:
+		switch p := env.Payload.(type) {
+		case *teeproto.Envelope_ConnectionReady:
+			msg := &shared.Message{Type: shared.MsgConnectionReady, SessionID: env.GetSessionId(), Data: shared.ConnectionReadyData{Success: p.ConnectionReady.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleConnectionReady(msg)
-		case shared.MsgSendTCPData:
+		case *teeproto.Envelope_TcpData:
+			msg := &shared.Message{Type: shared.MsgSendTCPData, SessionID: env.GetSessionId(), Data: shared.TCPData{Data: p.TcpData.GetData()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleSendTCPData(msg)
-		case shared.MsgHandshakeComplete:
+		case *teeproto.Envelope_HandshakeComplete:
+			msg := &shared.Message{Type: shared.MsgHandshakeComplete, SessionID: env.GetSessionId(), Data: shared.HandshakeCompleteData{Success: p.HandshakeComplete.GetSuccess(), CertificateChain: p.HandshakeComplete.GetCertificateChain()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleHandshakeComplete(msg)
-		case shared.MsgHandshakeKeyDisclosure:
+		case *teeproto.Envelope_HandshakeKeyDisclosure:
+			hd := p.HandshakeKeyDisclosure
+			msg := &shared.Message{Type: shared.MsgHandshakeKeyDisclosure, SessionID: env.GetSessionId(), Data: shared.HandshakeKeyDisclosureData{HandshakeKey: hd.GetHandshakeKey(), HandshakeIV: hd.GetHandshakeIv(), CertificatePacket: hd.GetCertificatePacket(), CipherSuite: uint16(hd.GetCipherSuite()), Algorithm: hd.GetAlgorithm(), Success: hd.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleHandshakeKeyDisclosure(msg)
-		case shared.MsgHTTPResponse:
+		case *teeproto.Envelope_HttpResponse:
+			msg := &shared.Message{Type: shared.MsgHTTPResponse, SessionID: env.GetSessionId(), Data: shared.HTTPResponseData{Response: p.HttpResponse.GetResponse(), Success: p.HttpResponse.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleHTTPResponse(msg)
-		case shared.MsgSessionReady:
+		case *teeproto.Envelope_SessionReady:
+			msg := &shared.Message{Type: shared.MsgSessionReady, SessionID: env.GetSessionId(), Data: shared.SessionReadyData{SessionID: env.GetSessionId(), Ready: p.SessionReady.GetReady()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleSessionReady(msg)
-		case shared.MsgError:
+		case *teeproto.Envelope_Error:
+			msg := &shared.Message{Type: shared.MsgError, SessionID: env.GetSessionId(), Data: shared.ErrorData{Message: p.Error.GetMessage()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleError(msg)
-		case shared.MsgBatchedSignedRedactedDecryptionStreams:
+		case *teeproto.Envelope_BatchedSignedRedactedDecryptionStreams:
+			// Map to shared structure
+			var arr []shared.SignedRedactedDecryptionStream
+			for _, s := range p.BatchedSignedRedactedDecryptionStreams.GetSignedRedactedStreams() {
+				arr = append(arr, shared.SignedRedactedDecryptionStream{RedactedStream: s.GetRedactedStream(), SeqNum: s.GetSeqNum()})
+			}
+			msg := &shared.Message{Type: shared.MsgBatchedSignedRedactedDecryptionStreams, SessionID: env.GetSessionId(), Data: shared.BatchedSignedRedactedDecryptionStreamData{SignedRedactedStreams: arr, SessionID: env.GetSessionId(), TotalCount: int(p.BatchedSignedRedactedDecryptionStreams.GetTotalCount())}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleBatchedSignedRedactedDecryptionStreams(msg)
-		case shared.MsgSignedTranscript:
-			c.handleSignedTranscript(msg)
-		case shared.MsgSignedTranscriptWithStreams:
-			c.handleSignedTranscriptWithStreams(msg)
-		case shared.MsgAttestationResponse:
+		case *teeproto.Envelope_SignedMessage:
+			// Handle SignedMessage from TEE_K (K_OUTPUT)
+			sm := p.SignedMessage
+			if sm == nil {
+				break
+			}
+			if sm.GetBodyType() == teeproto.BodyType_BODY_TYPE_K_OUTPUT {
+				var body teeproto.KOutputPayload
+				if err := proto.Unmarshal(sm.GetBody(), &body); err != nil {
+					c.logger.Error("Failed to unmarshal KOutputPayload", zap.Error(err))
+					break
+				}
+				// Map redacted streams into client collection first
+				for _, s := range body.GetRedactedStreams() {
+					c.signedRedactedStreams = append(c.signedRedactedStreams, shared.SignedRedactedDecryptionStream{RedactedStream: s.GetRedactedStream(), SeqNum: s.GetSeqNum()})
+				}
+				// Build a shared.SignedTranscript compatible with existing client logic
+				var reqRanges []shared.RequestRedactionRange
+				for _, r := range body.GetRequestRedactionRanges() {
+					reqRanges = append(reqRanges, shared.RequestRedactionRange{Start: int(r.GetStart()), Length: int(r.GetLength()), Type: r.GetType(), RedactionBytes: r.GetRedactionBytes()})
+				}
+				var respRanges []shared.ResponseRedactionRange
+				for _, rr := range body.GetResponseRedactionRanges() {
+					respRanges = append(respRanges, shared.ResponseRedactionRange{Start: int(rr.GetStart()), Length: int(rr.GetLength())})
+				}
+				st := shared.SignedTranscript{
+					Packets: body.GetPackets(),
+					RequestMetadata: &shared.RequestMetadata{
+						RedactedRequest: body.GetRedactedRequest(),
+						RedactionRanges: reqRanges,
+					},
+					ResponseRedactionRanges: respRanges,
+					Signature:               sm.GetSignature(),
+					PublicKey:               sm.GetPublicKey(),
+				}
+				c.processSignedTranscriptDataWithStreams(&st)
+			}
+		case *teeproto.Envelope_AttestationResponse:
+			ar := p.AttestationResponse
+			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: ar.GetAttestationDoc(), Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleAttestationResponse(msg)
-
-		// Handle batched response messages
-		case shared.MsgBatchedTagVerifications:
+		case *teeproto.Envelope_BatchedTagVerifications:
+			var ver []shared.ResponseTagVerificationData
+			for _, v := range p.BatchedTagVerifications.GetVerifications() {
+				ver = append(ver, shared.ResponseTagVerificationData{Success: v.GetSuccess(), SeqNum: v.GetSeqNum(), Message: v.GetMessage()})
+			}
+			msg := &shared.Message{Type: shared.MsgBatchedTagVerifications, SessionID: env.GetSessionId(), Data: shared.BatchedTagVerificationData{Verifications: ver, SessionID: p.BatchedTagVerifications.GetSessionId(), TotalCount: int(p.BatchedTagVerifications.GetTotalCount()), AllSuccessful: p.BatchedTagVerifications.GetAllSuccessful()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleBatchedTagVerifications(msg)
-		case shared.MsgBatchedDecryptionStreams:
+		case *teeproto.Envelope_BatchedDecryptionStreams:
+			var ds []shared.ResponseDecryptionStreamData
+			for _, s := range p.BatchedDecryptionStreams.GetDecryptionStreams() {
+				ds = append(ds, shared.ResponseDecryptionStreamData{DecryptionStream: s.GetDecryptionStream(), SeqNum: s.GetSeqNum(), Length: int(s.GetLength())})
+			}
+			msg := &shared.Message{Type: shared.MsgBatchedDecryptionStreams, SessionID: env.GetSessionId(), Data: shared.BatchedDecryptionStreamData{DecryptionStreams: ds, SessionID: p.BatchedDecryptionStreams.GetSessionId(), TotalCount: int(p.BatchedDecryptionStreams.GetTotalCount())}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleBatchedDecryptionStreams(msg)
-
 		default:
 			if !closing {
-				c.logger.Error("Unknown message type", zap.String("type", string(msg.Type)))
+				c.logger.Error("Unknown message payload from TEE_K")
 			}
 		}
 	}
@@ -178,39 +235,54 @@ func (c *Client) handleTEETMessages() {
 			break
 		}
 
-		msg, err := shared.ParseMessage(msgBytes)
-		if err != nil {
+		var env teeproto.Envelope
+		if err := proto.Unmarshal(msgBytes, &env); err != nil {
 			if !closing {
 				c.terminateConnectionWithError("Failed to parse message from TEE_T", err)
 				return
 			}
-			// Allow graceful shutdown during close
 			break
 		}
 
-		switch msg.Type {
-		case shared.MsgEncryptedData:
+		switch p := env.Payload.(type) {
+		case *teeproto.Envelope_EncryptedData:
+			msg := &shared.Message{Type: shared.MsgEncryptedData, SessionID: env.GetSessionId(), Data: shared.EncryptedDataResponse{EncryptedData: p.EncryptedData.GetEncryptedData(), AuthTag: p.EncryptedData.GetAuthTag(), Success: p.EncryptedData.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleEncryptedData(msg)
-		case shared.MsgTEETReady:
+		case *teeproto.Envelope_TeetReady:
+			msg := &shared.Message{Type: shared.MsgTEETReady, SessionID: env.GetSessionId(), Data: shared.TEETReadyData{Success: p.TeetReady.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleTEETReady(msg)
-		case shared.MsgRedactionVerification:
+		case *teeproto.Envelope_RedactionVerification:
+			msg := &shared.Message{Type: shared.MsgRedactionVerification, SessionID: env.GetSessionId(), Data: shared.RedactionVerificationData{Success: p.RedactionVerification.GetSuccess(), Message: p.RedactionVerification.GetMessage()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleRedactionVerification(msg)
-		case shared.MsgResponseTagVerification:
-			c.handleResponseTagVerification(msg)
-		case shared.MsgSignedTranscript:
-			c.handleSignedTranscript(msg)
-		case shared.MsgAttestationResponse:
+		case *teeproto.Envelope_SignedMessage:
+			// Handle SignedMessage from TEE_T (T_OUTPUT)
+			sm := p.SignedMessage
+			if sm == nil {
+				break
+			}
+			if sm.GetBodyType() == teeproto.BodyType_BODY_TYPE_T_OUTPUT {
+				var body teeproto.TOutputPayload
+				if err := proto.Unmarshal(sm.GetBody(), &body); err != nil {
+					c.logger.Error("Failed to unmarshal TOutputPayload", zap.Error(err))
+					break
+				}
+				st := shared.SignedTranscript{
+					Packets:   body.GetPackets(),
+					Signature: sm.GetSignature(),
+					PublicKey: sm.GetPublicKey(),
+				}
+				c.processSignedTranscriptData(&st)
+			}
+		case *teeproto.Envelope_AttestationResponse:
+			ar := p.AttestationResponse
+			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: ar.GetAttestationDoc(), Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleAttestationResponse(msg)
-		case shared.MsgError:
+		case *teeproto.Envelope_Error:
+			msg := &shared.Message{Type: shared.MsgError, SessionID: env.GetSessionId(), Data: shared.ErrorData{Message: p.Error.GetMessage()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleTEETError(msg)
-
-		// Handle batched response messages from TEE_T
-		// Note: MsgBatchedTagVerifications no longer sent from TEE_T to client
-		// Success is implied when decryption streams arrive from TEE_K
-
 		default:
 			if !closing {
-				c.logger.Error("Unknown TEE_T message type", zap.String("type", string(msg.Type)))
+				c.logger.Error("Unknown TEE_T message payload")
 			}
 		}
 	}
@@ -229,12 +301,56 @@ func (c *Client) sendMessage(msg *shared.Message) error {
 		msg.SessionID = c.sessionID
 	}
 
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %v", err)
+	// Build protobuf envelope directly
+	env := &teeproto.Envelope{SessionId: msg.SessionID, TimestampMs: time.Now().UnixMilli()}
+	switch msg.Type {
+	case shared.MsgRequestConnection:
+		if d, ok := msg.Data.(shared.RequestConnectionData); ok {
+			env.Payload = &teeproto.Envelope_RequestConnection{RequestConnection: &teeproto.RequestConnection{
+				Hostname:         d.Hostname,
+				Port:             int32(d.Port),
+				Sni:              d.SNI,
+				Alpn:             d.ALPN,
+				ForceTlsVersion:  d.ForceTLSVersion,
+				ForceCipherSuite: d.ForceCipherSuite,
+			}}
+		}
+	case shared.MsgTCPReady:
+		if d, ok := msg.Data.(shared.TCPReadyData); ok {
+			env.Payload = &teeproto.Envelope_TcpReady{TcpReady: &teeproto.TCPReady{Success: d.Success}}
+		}
+	case shared.MsgTCPData, shared.MsgSendTCPData:
+		if d, ok := msg.Data.(shared.TCPData); ok {
+			env.Payload = &teeproto.Envelope_TcpData{TcpData: &teeproto.TCPData{Data: d.Data}}
+		}
+	case shared.MsgRedactedRequest:
+		if d, ok := msg.Data.(shared.RedactedRequestData); ok {
+			// Convert ranges
+			ranges := make([]*teeproto.RequestRedactionRange, 0, len(d.RedactionRanges))
+			for _, r := range d.RedactionRanges {
+				ranges = append(ranges, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type, RedactionBytes: r.RedactionBytes})
+			}
+			env.Payload = &teeproto.Envelope_RedactedRequest{RedactedRequest: &teeproto.RedactedRequest{
+				RedactedRequest: d.RedactedRequest,
+				Commitments:     d.Commitments,
+				RedactionRanges: ranges,
+			}}
+		}
+	case shared.MsgError:
+		if d, ok := msg.Data.(shared.ErrorData); ok {
+			env.Payload = &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: d.Message}}
+		}
+	case shared.MsgAttestationRequest:
+		env.Payload = &teeproto.Envelope_AttestationRequest{AttestationRequest: &teeproto.AttestationRequestData{}}
+	default:
+		// Unknown/unsupported send type
 	}
 
-	return conn.WriteMessage(websocket.TextMessage, msgBytes)
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 // isEnclaveMode checks if the client is running in enclave mode
@@ -256,19 +372,39 @@ func (c *Client) sendMessageToTEET(msg *shared.Message) error {
 		msg.SessionID = c.sessionID
 	}
 
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %v", err)
+	env := &teeproto.Envelope{SessionId: msg.SessionID, TimestampMs: time.Now().UnixMilli()}
+	switch msg.Type {
+	case shared.MsgRedactionStreams:
+		if d, ok := msg.Data.(shared.RedactionStreamsData); ok {
+			env.Payload = &teeproto.Envelope_RedactionStreams{RedactionStreams: &teeproto.RedactionStreams{Streams: d.Streams, CommitmentKeys: d.CommitmentKeys}}
+		}
+	case shared.MsgEncryptedResponse:
+		if d, ok := msg.Data.(shared.EncryptedResponseData); ok {
+			env.Payload = &teeproto.Envelope_EncryptedResponse{EncryptedResponse: &teeproto.EncryptedResponseData{EncryptedData: d.EncryptedData, Tag: d.Tag, RecordHeader: d.RecordHeader, SeqNum: d.SeqNum, CipherSuite: uint32(d.CipherSuite), ExplicitIv: d.ExplicitIV}}
+		}
+	case shared.MsgBatchedEncryptedResponses:
+		if d, ok := msg.Data.(shared.BatchedEncryptedResponseData); ok {
+			arr := make([]*teeproto.EncryptedResponseData, 0, len(d.Responses))
+			for _, r := range d.Responses {
+				arr = append(arr, &teeproto.EncryptedResponseData{EncryptedData: r.EncryptedData, Tag: r.Tag, RecordHeader: r.RecordHeader, SeqNum: r.SeqNum, CipherSuite: uint32(r.CipherSuite), ExplicitIv: r.ExplicitIV})
+			}
+			env.Payload = &teeproto.Envelope_BatchedEncryptedResponses{BatchedEncryptedResponses: &teeproto.BatchedEncryptedResponses{Responses: arr, SessionId: d.SessionID, TotalCount: int32(d.TotalCount)}}
+		}
+	case shared.MsgAttestationRequest:
+		env.Payload = &teeproto.Envelope_AttestationRequest{AttestationRequest: &teeproto.AttestationRequestData{}}
+	case shared.MsgError:
+		if d, ok := msg.Data.(shared.ErrorData); ok {
+			env.Payload = &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: d.Message}}
+		}
+	default:
+		// Unknown/unsupported type for TEET send
 	}
 
-	if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-
-		if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-
-		} else if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "connection reset") {
-
-		}
-
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return err
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		return err
 	}
 	return nil

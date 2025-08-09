@@ -1,9 +1,16 @@
 #!/bin/bash
 
+set -euo pipefail
+
 echo "🔨 Building TEE + MPC services..."
 
 # Create bin directory
 mkdir -p bin
+
+# Generate Go code from protobufs
+echo "  Generating Go protobufs..."
+export PATH="$(go env GOPATH)/bin:$PATH"
+protoc -I proto --go_out=. --go_opt=paths=source_relative proto/*.proto || { echo "protoc failed"; exit 1; }
 
 # Build all services
 echo "  Building TEE_K..."

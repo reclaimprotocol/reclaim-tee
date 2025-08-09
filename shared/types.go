@@ -2,7 +2,8 @@ package shared
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -12,8 +13,6 @@ import (
 
 // Connection abstraction for WebSocket connections
 type Connection interface {
-	WriteJSON(v interface{}) error
-	ReadJSON(v interface{}) error
 	Close() error
 	RemoteAddr() string
 }
@@ -26,16 +25,6 @@ type WSConnection struct {
 
 func NewWSConnection(conn *websocket.Conn) *WSConnection {
 	return &WSConnection{conn: conn}
-}
-
-func (w *WSConnection) WriteJSON(v interface{}) error {
-	w.mutex.Lock()
-	defer w.mutex.Unlock()
-	return w.conn.WriteJSON(v)
-}
-
-func (w *WSConnection) ReadJSON(v interface{}) error {
-	return w.conn.ReadJSON(v)
 }
 
 func (w *WSConnection) Close() error {
@@ -124,23 +113,27 @@ type Message struct {
 
 // UnmarshalData unmarshals the Data field into the provided interface
 func (m *Message) UnmarshalData(v interface{}) error {
-	// Convert Data to JSON bytes first if it's not already
-	var jsonData []byte
-	var err error
-
-	switch data := m.Data.(type) {
-	case []byte:
-		jsonData = data
-	case string:
-		jsonData = []byte(data)
-	default:
-		jsonData, err = json.Marshal(data)
-		if err != nil {
-			return err
-		}
+	if v == nil {
+		return fmt.Errorf("nil destination")
 	}
-
-	return json.Unmarshal(jsonData, v)
+	if m == nil {
+		return fmt.Errorf("nil message")
+	}
+	// Fast-path: if Data is nil
+	if m.Data == nil {
+		return fmt.Errorf("no data in message")
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return fmt.Errorf("destination must be non-nil pointer")
+	}
+	dv := reflect.ValueOf(m.Data)
+	// Allow assignment when types match or are assignable
+	if dv.Type().AssignableTo(rv.Elem().Type()) {
+		rv.Elem().Set(dv)
+		return nil
+	}
+	return fmt.Errorf("type mismatch: cannot assign %s to %s", dv.Type().String(), rv.Elem().Type().String())
 }
 
 // SessionState represents the current state of a session
@@ -559,11 +552,4 @@ func CreateMessage(msgType MessageType, data interface{}, sessionID ...string) *
 // CreateSessionMessage calls CreateMessage
 func CreateSessionMessage(msgType MessageType, sessionID string, data interface{}) *Message {
 	return CreateMessage(msgType, data, sessionID)
-}
-
-// Helper functions for message creation and parsing
-func ParseMessage(msgBytes []byte) (*Message, error) {
-	var msg Message
-	err := json.Unmarshal(msgBytes, &msg)
-	return &msg, err
 }
