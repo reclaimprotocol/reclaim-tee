@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -1010,8 +1008,8 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	// --- Add redacted request, comm_sp, and redaction ranges to transcript before encryption ---
 	t.addToTranscriptForSessionWithType(sessionID, redactedRequest.RedactedRequest, shared.TranscriptPacketTypeHTTPRequestRedacted)
 
-	// Store redaction ranges in transcript for signing
-	redactionRangesBytes, err := json.Marshal(redactedRequest.RedactionRanges)
+	// Store redaction ranges in transcript for signing using protobuf
+	redactionRangesBytes, err := shared.MarshalRequestRedactionRangesProtobuf(redactedRequest.RedactionRanges)
 	if err != nil {
 		t.logger.WithSession(sessionID).Error("Failed to marshal redaction ranges", zap.Error(err))
 		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, fmt.Sprintf("Failed to marshal redaction ranges: %v", err))
@@ -2187,9 +2185,9 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 			if requestMetadata == nil {
 				requestMetadata = &shared.RequestMetadata{}
 			}
-			// Unmarshal the redaction ranges from JSON
-			var ranges []shared.RequestRedactionRange
-			if err := json.Unmarshal(packet, &ranges); err != nil {
+			// Unmarshal the redaction ranges from protobuf
+			ranges, err := shared.UnmarshalRequestRedactionRangesProtobuf(packet)
+			if err != nil {
 				t.logger.WithSession(sessionID).Error("Failed to unmarshal redaction ranges from transcript", zap.Error(err))
 			} else {
 				requestMetadata.RedactionRanges = ranges
@@ -2201,48 +2199,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		}
 	}
 
-	// Generate master signature over: request metadata + redacted streams + TLS packets
-	var masterBuffer bytes.Buffer
-
-	// Add request metadata
-	if requestMetadata != nil {
-		masterBuffer.Write(requestMetadata.RedactedRequest)
-		// Note: Commitments are no longer included in signature
-		// TEE_T verifies commitments and signs the proof stream
-		// Include redaction ranges in signature to prevent manipulation
-		if len(requestMetadata.RedactionRanges) > 0 {
-			redactionRangesBytes, err := json.Marshal(requestMetadata.RedactionRanges)
-			if err != nil {
-				return fmt.Errorf("failed to marshal redaction ranges for signature: %v", err)
-			}
-			masterBuffer.Write(redactionRangesBytes)
-		}
-	}
-
-	// Add response redaction ranges to signature
-	if session.ResponseState != nil && len(session.ResponseState.ResponseRedactionRanges) > 0 {
-		responseRedactionRangesBytes, err := json.Marshal(session.ResponseState.ResponseRedactionRanges)
-		if err != nil {
-			return fmt.Errorf("failed to marshal response redaction ranges for signature: %v", err)
-		}
-		masterBuffer.Write(responseRedactionRangesBytes)
-		t.logger.WithSession(sessionID).Info("Included response redaction ranges in signature", zap.Int("ranges", len(session.ResponseState.ResponseRedactionRanges)))
-	}
-
-	// Add redacted streams
-	for _, stream := range session.RedactedStreams {
-		masterBuffer.Write(stream.RedactedStream)
-	}
-
-	// Add TLS packets
-	for _, packet := range tlsPackets {
-		masterBuffer.Write(packet)
-	}
-
-	comprehensiveSignature, err := t.signingKeyPair.SignData(masterBuffer.Bytes())
-	if err != nil {
-		return fmt.Errorf("failed to generate comprehensive signature: %v", err)
-	}
+	// SECURITY FIX: Sign protobuf body directly instead of reconstructing data
 
 	// Get public key in DER format
 	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
@@ -2250,61 +2207,52 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		return fmt.Errorf("failed to get public key DER: %v", err)
 	}
 
-	// Create signed transcript with comprehensive signature
-	signedTranscript := shared.SignedTranscript{
-		Packets:         tlsPackets,
-		RequestMetadata: requestMetadata,
-		Signature:       comprehensiveSignature,
-		PublicKey:       publicKeyDER,
-	}
-
-	// Add response redaction ranges to transcript if available
-	if session.ResponseState != nil && len(session.ResponseState.ResponseRedactionRanges) > 0 {
-		signedTranscript.ResponseRedactionRanges = session.ResponseState.ResponseRedactionRanges
-		t.logger.WithSession(sessionID).Info("Added response redaction ranges to transcript",
-			zap.Int("ranges", len(session.ResponseState.ResponseRedactionRanges)))
-	}
-
-	t.logger.WithSession(sessionID).Info("Generated comprehensive signature",
-		zap.Int("tls_packets", len(tlsPackets)),
-		zap.Int("redacted_streams", len(session.RedactedStreams)),
-		zap.Bool("metadata_present", requestMetadata != nil))
-
-	// Debug: Check what we're sending
-	t.logger.WithSession(sessionID).Debug("Sending transcript with comprehensive signature",
-		zap.Int("signature_bytes", len(signedTranscript.Signature)))
-
-	// Send combined signed transcript with streams to client via protobuf
-	// Map to teeproto SignedMessage (KOutputPayload)
-	// Build KOutputPayload deterministically
+	// SECURITY FIX: Build KOutputPayload and sign it directly
 	kPayload := &teeproto.KOutputPayload{}
-	if signedTranscript.RequestMetadata != nil {
-		kPayload.RedactedRequest = signedTranscript.RequestMetadata.RedactedRequest
-		for _, r := range signedTranscript.RequestMetadata.RedactionRanges {
+	if requestMetadata != nil {
+		kPayload.RedactedRequest = requestMetadata.RedactedRequest
+		for _, r := range requestMetadata.RedactionRanges {
 			kPayload.RequestRedactionRanges = append(kPayload.RequestRedactionRanges, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type, RedactionBytes: r.RedactionBytes})
 		}
 	}
 	for _, s := range session.RedactedStreams {
 		kPayload.RedactedStreams = append(kPayload.RedactedStreams, &teeproto.SignedRedactedDecryptionStream{RedactedStream: s.RedactedStream, SeqNum: s.SeqNum})
 	}
-	for _, p := range signedTranscript.Packets {
+	for _, p := range tlsPackets {
 		kPayload.Packets = append(kPayload.Packets, p)
 	}
-	for _, rr := range signedTranscript.ResponseRedactionRanges {
-		kPayload.ResponseRedactionRanges = append(kPayload.ResponseRedactionRanges, &teeproto.ResponseRedactionRange{Start: int32(rr.Start), Length: int32(rr.Length)})
+	if session.ResponseState != nil && len(session.ResponseState.ResponseRedactionRanges) > 0 {
+		for _, rr := range session.ResponseState.ResponseRedactionRanges {
+			kPayload.ResponseRedactionRanges = append(kPayload.ResponseRedactionRanges, &teeproto.ResponseRedactionRange{Start: int32(rr.Start), Length: int32(rr.Length)})
+		}
+		t.logger.WithSession(sessionID).Info("Included response redaction ranges in signed payload", zap.Int("ranges", len(session.ResponseState.ResponseRedactionRanges)))
 	}
 
-	// Deterministic serialization
-	body, err := proto.MarshalOptions{Deterministic: true}.Marshal(kPayload)
+	// Create protobuf body and sign it directly
+	body, err := proto.Marshal(kPayload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal KOutputPayload: %v", err)
 	}
 
+	// Sign the exact protobuf body bytes
+	comprehensiveSignature, err := t.signingKeyPair.SignData(body)
+	if err != nil {
+		return fmt.Errorf("failed to generate comprehensive signature: %v", err)
+	}
+
+	t.logger.WithSession(sessionID).Info("Generated comprehensive signature over protobuf body",
+		zap.Int("tls_packets", len(tlsPackets)),
+		zap.Int("redacted_streams", len(session.RedactedStreams)),
+		zap.Bool("metadata_present", requestMetadata != nil),
+		zap.Int("body_bytes", len(body)),
+		zap.Int("signature_bytes", len(comprehensiveSignature)))
+
+	// Send the signed message to client
 	signedMsg := &teeproto.SignedMessage{
 		BodyType:  teeproto.BodyType_BODY_TYPE_K_OUTPUT,
 		Body:      body,
-		PublicKey: signedTranscript.PublicKey,
-		Signature: signedTranscript.Signature,
+		PublicKey: publicKeyDER,
+		Signature: comprehensiveSignature,
 	}
 
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
@@ -2315,7 +2263,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	}
 
 	t.logger.WithSession(sessionID).Info("Sent SignedMessage (KOutput) to client",
-		zap.Int("packets", len(signedTranscript.Packets)),
+		zap.Int("packets", len(tlsPackets)),
 		zap.Int("redacted_streams", len(session.RedactedStreams)))
 	return nil
 }
@@ -2367,21 +2315,30 @@ func (t *TEEK) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 	t.logger.WithSession(sessionID).Info("Generated attestation document", zap.Int("bytes", len(attestationDoc)))
 
 	// Wrap in structured report for unified client handling (Nitro)
-	report := shared.AttestationReport{
+	report := &teeproto.AttestationReport{
 		Type:       "nitro",
 		Report:     attestationDoc,
 		SigningKey: publicKeyDER,
 	}
-	payload, _ := json.Marshal(report)
 
 	// Send successful response
-	t.sendAttestationResponse(sessionID, payload, true, "")
+	t.sendAttestationResponseProtobuf(sessionID, report, true, "")
 }
 
 // sendAttestationResponse sends attestation response to client (request ID removed)
 func (t *TEEK) sendAttestationResponse(sessionID string, attestationDoc []byte, success bool, errorMessage string) {
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationDoc: attestationDoc, Success: success, ErrorMessage: errorMessage, Source: "tee_k"}},
+	}
+	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
+		t.logger.WithSession(sessionID).Error("Failed to send attestation response", zap.Error(err))
+	}
+}
+
+// sendAttestationResponseProtobuf sends structured attestation response to client
+func (t *TEEK) sendAttestationResponseProtobuf(sessionID string, report *teeproto.AttestationReport, success bool, errorMessage string) {
+	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationReport: report, Success: success, ErrorMessage: errorMessage, Source: "tee_k"}},
 	}
 	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
 		t.logger.WithSession(sessionID).Error("Failed to send attestation response", zap.Error(err))

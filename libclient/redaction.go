@@ -507,36 +507,31 @@ func (c *Client) processBatchedSignedRedactedDecryptionStreamsData(batchedStream
 	// Check completion condition - triggers immediately since all streams received at once
 	if c.teekSignedTranscript != nil && !c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
 		if len(c.signedRedactedStreams) >= c.expectedRedactedStreams {
-			c.logger.Info("Received all expected redacted streams from batch, attempting TEE_K comprehensive signature verification", zap.Int("expected_streams", c.expectedRedactedStreams))
-			verificationErr := shared.VerifyComprehensiveSignature(c.teekSignedTranscript, c.signedRedactedStreams)
-			if verificationErr != nil {
-				c.logger.Error("TEE_K signature verification FAILED", zap.Error(verificationErr))
+			c.logger.Info("Received all expected redacted streams from batch - signature already verified on SignedMessage", zap.Int("expected_streams", c.expectedRedactedStreams))
+			// Set signature as valid since we verified the SignedMessage upfront
+			c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+
+			_, transcriptCount := c.getProtocolState()
+			if transcriptCount >= 2 {
+				c.logger.Info("Redacted streams processed AND both transcripts received - completing protocol")
+				c.advanceToPhase(PhaseComplete)
 			} else {
-				c.logger.Info("TEE_K signature verification SUCCESS")
-				c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+				c.logger.Info("Redacted streams processed but waiting for remaining transcripts")
+			}
 
-				_, transcriptCount := c.getProtocolState()
-				if transcriptCount >= 2 {
-					c.logger.Info("Redacted streams processed AND both transcripts received - completing protocol")
-					c.advanceToPhase(PhaseComplete)
-				} else {
-					c.logger.Info("Redacted streams processed but waiting for remaining transcripts")
-				}
+			c.logger.Info("All redacted streams received - displaying final redacted response")
+			redactionSpec := c.analyzeResponseRedaction()
+			// Consolidate ranges for display (same as verifier)
+			consolidatedRanges := shared.ConsolidateResponseRedactionRanges(redactionSpec.Ranges)
+			c.displayRedactedResponseFromRandomGarbage(consolidatedRanges)
 
-				c.logger.Info("All redacted streams received - displaying final redacted response")
-				redactionSpec := c.analyzeResponseRedaction()
-				// Consolidate ranges for display (same as verifier)
-				consolidatedRanges := shared.ConsolidateResponseRedactionRanges(redactionSpec.Ranges)
-				c.displayRedactedResponseFromRandomGarbage(consolidatedRanges)
+			// Check if we can now proceed with full protocol completion
+			transcriptsComplete := c.transcriptsReceived >= 2
+			signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
-				// Check if we can now proceed with full protocol completion
-				transcriptsComplete := c.transcriptsReceived >= 2
-				signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
-
-				// Validation is now handled centrally by checkValidationAndCompletion()
-				if transcriptsComplete && signaturesValid {
-					c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
-				}
+			// Validation is now handled centrally by checkValidationAndCompletion()
+			if transcriptsComplete && signaturesValid {
+				c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
 			}
 		}
 	}

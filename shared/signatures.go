@@ -1,18 +1,70 @@
 package shared
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"math/big"
+	teeproto "tee-mpc/proto"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // Single Session Mode: Cryptographic signing infrastructure
+
+// Simple protobuf marshaling functions for internal transcript storage
+// (These are NOT used for signing - only for storing/loading transcript data)
+
+// MarshalRequestRedactionRangesProtobuf marshals request redaction ranges for transcript storage
+func MarshalRequestRedactionRangesProtobuf(ranges []RequestRedactionRange) ([]byte, error) {
+	if len(ranges) == 0 {
+		return nil, nil
+	}
+
+	var pbRanges []*teeproto.RequestRedactionRange
+	for _, r := range ranges {
+		pbRanges = append(pbRanges, &teeproto.RequestRedactionRange{
+			Start:          int32(r.Start),
+			Length:         int32(r.Length),
+			Type:           r.Type,
+			RedactionBytes: r.RedactionBytes,
+		})
+	}
+
+	wrapper := &teeproto.RedactedRequest{RedactionRanges: pbRanges}
+	return proto.Marshal(wrapper)
+}
+
+// UnmarshalRequestRedactionRangesProtobuf unmarshals request redaction ranges from transcript storage
+func UnmarshalRequestRedactionRangesProtobuf(data []byte) ([]RequestRedactionRange, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var wrapper teeproto.RedactedRequest
+	if err := proto.Unmarshal(data, &wrapper); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal protobuf wrapper: %v", err)
+	}
+
+	if len(wrapper.RedactionRanges) == 0 {
+		return nil, nil
+	}
+
+	ranges := make([]RequestRedactionRange, len(wrapper.RedactionRanges))
+	for i, pbRange := range wrapper.RedactionRanges {
+		ranges[i] = RequestRedactionRange{
+			Start:          int(pbRange.Start),
+			Length:         int(pbRange.Length),
+			Type:           pbRange.Type,
+			RedactionBytes: pbRange.RedactionBytes,
+		}
+	}
+
+	return ranges, nil
+}
 
 // SigningKeyPair represents a cryptographic ECDSA signing key pair
 type SigningKeyPair struct {
@@ -111,83 +163,5 @@ func VerifySignatureWithDER(data []byte, signature []byte, publicKeyDER []byte) 
 	return VerifySignature(data, signature, pubKey)
 }
 
-// VerifyTranscriptSignature verifies a signed transcript's signature
-func VerifyTranscriptSignature(transcript *SignedTranscript) error {
-	// Reconstruct the original data that was signed (TLS packets only)
-	var buffer bytes.Buffer
-
-	// Write each TLS packet to buffer
-	for _, packet := range transcript.Packets {
-		buffer.Write(packet)
-	}
-
-	originalData := buffer.Bytes()
-
-	// Verify signature using the public key
-	return VerifySignatureWithDER(originalData, transcript.Signature, transcript.PublicKey)
-}
-
-// VerifyComprehensiveSignature verifies TEE_K's comprehensive signature over all data
-func VerifyComprehensiveSignature(transcript *SignedTranscript, redactedStreams []SignedRedactedDecryptionStream) error {
-	if transcript == nil {
-		return fmt.Errorf("transcript is nil")
-	}
-
-	if len(transcript.Signature) == 0 {
-		return fmt.Errorf("signature is empty")
-	}
-
-	// Reconstruct the original data that was signed
-	var buffer bytes.Buffer
-
-	// Add request metadata
-	if transcript.RequestMetadata != nil {
-		buffer.Write(transcript.RequestMetadata.RedactedRequest)
-		// Note: Commitments are no longer included in signature verification
-		// TEE_T verifies commitments and signs the proof stream
-
-		// Include redaction ranges in signature verification (same as signing)
-		if len(transcript.RequestMetadata.RedactionRanges) > 0 {
-			redactionRangesBytes, err := json.Marshal(transcript.RequestMetadata.RedactionRanges)
-			if err != nil {
-				return fmt.Errorf("failed to marshal redaction ranges for verification: %v", err)
-			}
-			buffer.Write(redactionRangesBytes)
-		}
-	}
-
-	// Add response redaction ranges to signature verification (same as signing)
-	if len(transcript.ResponseRedactionRanges) > 0 {
-		responseRedactionRangesBytes, err := json.Marshal(transcript.ResponseRedactionRanges)
-		if err != nil {
-			return fmt.Errorf("failed to marshal response redaction ranges for verification: %v", err)
-		}
-		buffer.Write(responseRedactionRangesBytes)
-	}
-
-	// Add concatenated redacted streams
-	for _, stream := range redactedStreams {
-		buffer.Write(stream.RedactedStream)
-	}
-
-	// Add TLS packets
-	for _, packet := range transcript.Packets {
-		buffer.Write(packet)
-	}
-
-	originalData := buffer.Bytes()
-
-	// Verify signature using the public key
-	return VerifySignatureWithDER(originalData, transcript.Signature, transcript.PublicKey)
-}
-
-// SignTranscript signs a transcript of packets and returns the signature
-func (kp *SigningKeyPair) SignTranscript(packets [][]byte) ([]byte, error) {
-	// Concatenate all packets for signing
-	var allData []byte
-	for _, packet := range packets {
-		allData = append(allData, packet...)
-	}
-
-	return kp.SignData(allData)
-}
+// REMOVED: VerifyComprehensiveSignature and SignTranscript - obsolete functions
+// SignedMessage verification is now done directly against protobuf bodies

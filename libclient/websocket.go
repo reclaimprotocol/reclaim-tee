@@ -158,6 +158,13 @@ func (c *Client) handleMessages() {
 				break
 			}
 			if sm.GetBodyType() == teeproto.BodyType_BODY_TYPE_K_OUTPUT {
+				// SECURITY FIX: Verify SignedMessage directly before processing
+				if err := c.verifySignedMessage(sm, "TEE_K"); err != nil {
+					c.logger.Error("TEE_K SignedMessage verification FAILED", zap.Error(err))
+					break
+				}
+				c.logger.Info("TEE_K SignedMessage verification SUCCESS")
+
 				// Store the original SignedMessage for verification bundle
 				c.teekSignedMessage = sm
 
@@ -193,7 +200,19 @@ func (c *Client) handleMessages() {
 			}
 		case *teeproto.Envelope_AttestationResponse:
 			ar := p.AttestationResponse
-			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: ar.GetAttestationDoc(), Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
+			var attestationDoc []byte
+
+			// Use structured AttestationReport if available (new protobuf format)
+			if ar.GetAttestationReport() != nil {
+				report := ar.GetAttestationReport()
+				// Serialize the protobuf AttestationReport using deterministic marshaling
+				attestationDoc, _ = proto.MarshalOptions{Deterministic: true}.Marshal(report)
+			} else {
+				// Fall back to raw attestation_doc (legacy format)
+				attestationDoc = ar.GetAttestationDoc()
+			}
+
+			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: attestationDoc, Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleAttestationResponse(msg)
 		case *teeproto.Envelope_BatchedTagVerifications:
 			var ver []shared.ResponseTagVerificationData
@@ -262,6 +281,13 @@ func (c *Client) handleTEETMessages() {
 				break
 			}
 			if sm.GetBodyType() == teeproto.BodyType_BODY_TYPE_T_OUTPUT {
+				// SECURITY FIX: Verify SignedMessage directly before processing
+				if err := c.verifySignedMessage(sm, "TEE_T"); err != nil {
+					c.logger.Error("TEE_T SignedMessage verification FAILED", zap.Error(err))
+					break
+				}
+				c.logger.Info("TEE_T SignedMessage verification SUCCESS")
+
 				// Store the original SignedMessage for verification bundle
 				c.teetSignedMessage = sm
 
@@ -279,7 +305,19 @@ func (c *Client) handleTEETMessages() {
 			}
 		case *teeproto.Envelope_AttestationResponse:
 			ar := p.AttestationResponse
-			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: ar.GetAttestationDoc(), Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
+			var attestationDoc []byte
+
+			// Use structured AttestationReport if available (new protobuf format)
+			if ar.GetAttestationReport() != nil {
+				report := ar.GetAttestationReport()
+				// Serialize the protobuf AttestationReport using deterministic marshaling
+				attestationDoc, _ = proto.MarshalOptions{Deterministic: true}.Marshal(report)
+			} else {
+				// Fall back to raw attestation_doc (legacy format)
+				attestationDoc = ar.GetAttestationDoc()
+			}
+
+			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: attestationDoc, Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleAttestationResponse(msg)
 		case *teeproto.Envelope_Error:
 			msg := &shared.Message{Type: shared.MsgError, SessionID: env.GetSessionId(), Data: shared.ErrorData{Message: p.Error.GetMessage()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}

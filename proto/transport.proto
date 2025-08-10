@@ -214,9 +214,17 @@ message BatchedSignedRedactedDecryptionStreams {
   int32 total_count = 3;
 }
 
+// Attestation report with structured data
+message AttestationReport {
+  string type = 1; // "nitro" or "gcp"
+  bytes report = 2; // raw provider-specific attestation bytes
+  bytes signing_key = 3; // TEE runtime ECDSA public key (DER)
+}
+
 // Attestation
 message AttestationResponse {
-  bytes attestation_doc = 1;
+  bytes attestation_doc = 1; // deprecated: raw bytes (for backwards compatibility)
+  AttestationReport attestation_report = 5; // structured report
   bool success = 2;
   string error_message = 3;
   string source = 4; // "tee_k" or "tee_t"

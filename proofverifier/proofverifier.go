@@ -1,8 +1,6 @@
 package proofverifier
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -307,84 +305,6 @@ func Validate(bundlePath string) error {
 	return nil
 }
 
-// verifyTEEKTranscript verifies TEE_K's master signature over all data
-func verifyTEEKTranscript(transcript *shared.TEEKTranscript) error {
-	if transcript == nil {
-		return fmt.Errorf("transcript is nil")
-	}
-
-	if len(transcript.Signature) == 0 {
-		return fmt.Errorf("signature is empty")
-	}
-
-	// Reconstruct the original data that was signed (master signature covers all data)
-	var buffer bytes.Buffer
-
-	// Add request metadata
-	if transcript.RequestMetadata != nil {
-		buffer.Write(transcript.RequestMetadata.RedactedRequest)
-		// Note: Commitments are no longer included in signature verification
-		// TEE_T verifies commitments and signs the proof stream
-
-		// Include redaction ranges in signature verification (same as signing)
-		if len(transcript.RequestMetadata.RedactionRanges) > 0 {
-			redactionRangesBytes, err := json.Marshal(transcript.RequestMetadata.RedactionRanges)
-			if err != nil {
-				return fmt.Errorf("failed to marshal redaction ranges for verification: %v", err)
-			}
-			buffer.Write(redactionRangesBytes)
-		}
-	}
-
-	// Add response redaction ranges to signature verification (same as signing)
-	if len(transcript.ResponseRedactionRanges) > 0 {
-		responseRedactionRangesBytes, err := json.Marshal(transcript.ResponseRedactionRanges)
-		if err != nil {
-			return fmt.Errorf("failed to marshal response redaction ranges for verification: %v", err)
-		}
-		buffer.Write(responseRedactionRangesBytes)
-	}
-
-	// Add concatenated redacted streams
-	for _, stream := range transcript.RedactedStreams {
-		buffer.Write(stream.RedactedStream)
-	}
-
-	// Add TLS packets
-	for _, packet := range transcript.Packets {
-		buffer.Write(packet)
-	}
-
-	originalData := buffer.Bytes()
-
-	// Verify signature using the public key
-	return shared.VerifySignatureWithDER(originalData, transcript.Signature, transcript.PublicKey)
-}
-
-// verifyTEETTranscript verifies TEE_T's signature over TLS packets
-func verifyTEETTranscript(transcript *shared.TEETTranscript) error {
-	if transcript == nil {
-		return fmt.Errorf("transcript is nil")
-	}
-
-	if len(transcript.Signature) == 0 {
-		return fmt.Errorf("signature is empty")
-	}
-
-	// Reconstruct the original data that was signed (TLS packets only)
-	var buffer bytes.Buffer
-
-	// Write each TLS packet to buffer
-	for _, packet := range transcript.Packets {
-		buffer.Write(packet)
-	}
-
-	originalData := buffer.Bytes()
-
-	// Verify signature using the public key
-	return shared.VerifySignatureWithDER(originalData, transcript.Signature, transcript.PublicKey)
-}
-
 // verifyAndRevealProofData applies the proof stream to reveal original sensitive_proof data
 func verifyAndRevealProofData(bundle shared.VerificationBundle) error {
 	if bundle.Transcripts.TEEK == nil || bundle.Transcripts.TEEK.RequestMetadata == nil {
@@ -496,81 +416,32 @@ func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error
 		return fmt.Errorf("SECURITY ERROR: %s wrong body type, expected %v got %v", source, expectedBodyType, signedMsg.GetBodyType())
 	}
 
-	// For TEE_K signatures, we need to reconstruct the original signed data
-	// The signature was created over concatenated raw data, not the protobuf body
-	var dataToVerify []byte
-	if source == "TEE_K" {
-		// Reconstruct the masterBuffer that was originally signed by TEE_K
-		var kPayload teeproto.KOutputPayload
-		if err := proto.Unmarshal(signedMsg.GetBody(), &kPayload); err != nil {
-			return fmt.Errorf("failed to unmarshal TEE_K body for verification: %v", err)
-		}
-
-		var masterBuffer bytes.Buffer
-
-		// Add request metadata (redacted request + redaction ranges as JSON)
-		if kPayload.RedactedRequest != nil {
-			masterBuffer.Write(kPayload.RedactedRequest)
-		}
-		if len(kPayload.RequestRedactionRanges) > 0 {
-			// Convert protobuf ranges back to shared format for JSON marshaling
-			var ranges []shared.RequestRedactionRange
-			for _, r := range kPayload.RequestRedactionRanges {
-				ranges = append(ranges, shared.RequestRedactionRange{
-					Start: int(r.Start), Length: int(r.Length),
-					Type: r.Type, RedactionBytes: r.RedactionBytes,
-				})
-			}
-			if rangesJSON, err := json.Marshal(ranges); err == nil {
-				masterBuffer.Write(rangesJSON)
-			}
-		}
-
-		// Add response redaction ranges as JSON
-		if len(kPayload.ResponseRedactionRanges) > 0 {
-			var respRanges []shared.ResponseRedactionRange
-			for _, rr := range kPayload.ResponseRedactionRanges {
-				respRanges = append(respRanges, shared.ResponseRedactionRange{
-					Start: int(rr.Start), Length: int(rr.Length),
-				})
-			}
-			if respRangesJSON, err := json.Marshal(respRanges); err == nil {
-				masterBuffer.Write(respRangesJSON)
-			}
-		}
-
-		// Add redacted streams
-		for _, s := range kPayload.RedactedStreams {
-			masterBuffer.Write(s.RedactedStream)
-		}
-
-		// Add TLS packets
-		for _, p := range kPayload.Packets {
-			masterBuffer.Write(p)
-		}
-
-		dataToVerify = masterBuffer.Bytes()
-	} else {
-		// For TEE_T, the signature is over concatenated raw packets, not the protobuf body
-		var tPayload teeproto.TOutputPayload
-		if err := proto.Unmarshal(signedMsg.GetBody(), &tPayload); err != nil {
-			return fmt.Errorf("failed to unmarshal TEE_T body for verification: %v", err)
-		}
-
-		// Concatenate all packets (same as SignTranscript method)
-		var allData []byte
-		for _, packet := range tPayload.Packets {
-			allData = append(allData, packet...)
-		}
-		dataToVerify = allData
-	}
-
-	// Perform actual cryptographic signature verification
-	if err := shared.VerifySignatureWithDER(dataToVerify, signedMsg.GetSignature(), signedMsg.GetPublicKey()); err != nil {
+	// SECURITY FIX: Verify signature against the exact signed bytes (SignedMessage.Body)
+	// The TEEs sign their protobuf payload and put those signed bytes as the body
+	if err := shared.VerifySignatureWithDER(signedMsg.GetBody(), signedMsg.GetSignature(), signedMsg.GetPublicKey()); err != nil {
 		return fmt.Errorf("SECURITY ERROR: %s cryptographic signature verification FAILED: %v", source, err)
 	}
 
-	fmt.Printf("[Verifier] ✅ %s cryptographic signature verification PASSED (signature: %d bytes, body: %d bytes)\n",
-		source, len(signedMsg.GetSignature()), len(signedMsg.GetBody()))
+	fmt.Printf("[Verifier] ✅ %s cryptographic signature verification PASSED (verified %d bytes exactly as signed)\n",
+		source, len(signedMsg.GetBody()))
+
+	// Only after signature verification succeeds, validate that the body can be parsed
+	switch signedMsg.GetBodyType() {
+	case teeproto.BodyType_BODY_TYPE_K_OUTPUT:
+		var kPayload teeproto.KOutputPayload
+		if err := proto.Unmarshal(signedMsg.GetBody(), &kPayload); err != nil {
+			return fmt.Errorf("SECURITY ERROR: %s body parsing failed after signature verification: %v", source, err)
+		}
+		fmt.Printf("[Verifier] %s body content validated: redacted_request=%d bytes, ranges=%d, streams=%d, packets=%d\n",
+			source, len(kPayload.GetRedactedRequest()), len(kPayload.GetRequestRedactionRanges()),
+			len(kPayload.GetRedactedStreams()), len(kPayload.GetPackets()))
+	case teeproto.BodyType_BODY_TYPE_T_OUTPUT:
+		var tPayload teeproto.TOutputPayload
+		if err := proto.Unmarshal(signedMsg.GetBody(), &tPayload); err != nil {
+			return fmt.Errorf("SECURITY ERROR: %s body parsing failed after signature verification: %v", source, err)
+		}
+		fmt.Printf("[Verifier] %s body content validated: packets=%d\n", source, len(tPayload.GetPackets()))
+	}
+
 	return nil
 }

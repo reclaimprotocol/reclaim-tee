@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -1665,13 +1664,12 @@ func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 			t.sendAttestationResponseToClient(actualSessionID, nil, false, fmt.Sprintf("Failed to generate attestation: %v", err))
 			return
 		}
-		report := shared.AttestationReport{
+		report := &teeproto.AttestationReport{
 			Type:       "gcp",
 			Report:     raw,
 			SigningKey: publicKeyDER,
 		}
-		payload, _ := json.Marshal(report)
-		t.sendAttestationResponseToClient(actualSessionID, payload, true, "")
+		t.sendAttestationResponseToClientProtobuf(actualSessionID, report, true, "")
 		return
 	}
 
@@ -1689,21 +1687,32 @@ func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 		zap.String("session_id", actualSessionID),
 		zap.Int("attestation_bytes", len(attestationDoc)))
 
-	report := shared.AttestationReport{
-		Type:       "gcp",
+	report := &teeproto.AttestationReport{
+		Type:       "nitro",
 		Report:     attestationDoc,
 		SigningKey: publicKeyDER,
 	}
-	payload, _ := json.Marshal(report)
 
 	// Send successful response
-	t.sendAttestationResponseToClient(actualSessionID, payload, true, "")
+	t.sendAttestationResponseToClientProtobuf(actualSessionID, report, true, "")
 }
 
 // sendAttestationResponseToClient sends attestation response to client (request ID removed)
 func (t *TEET) sendAttestationResponseToClient(sessionID string, attestationDoc []byte, success bool, errorMessage string) {
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationDoc: attestationDoc, Success: success, ErrorMessage: errorMessage, Source: "tee_t"}},
+	}
+	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
+		t.logger.Error("Failed to send attestation response",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+	}
+}
+
+// sendAttestationResponseToClientProtobuf sends structured attestation response to client
+func (t *TEET) sendAttestationResponseToClientProtobuf(sessionID string, report *teeproto.AttestationReport, success bool, errorMessage string) {
+	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationReport: report, Success: success, ErrorMessage: errorMessage, Source: "tee_t"}},
 	}
 	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
 		t.logger.Error("Failed to send attestation response",
@@ -1863,19 +1872,6 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			return
 		}
 
-		signature, err := t.signingKeyPair.SignTranscript(transcript)
-		if err != nil {
-			t.logger.Error("Failed to sign transcript",
-				zap.String("session_id", sessionID),
-				zap.Error(err))
-			return
-		}
-
-		t.logger.InfoIf("Successfully signed transcript",
-			zap.String("session_id", sessionID),
-			zap.Int("total_packets", len(transcript)),
-			zap.Int("signature_bytes", len(signature)))
-
 		// Get public key in DER format
 		publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
 		if err != nil {
@@ -1885,15 +1881,31 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			return
 		}
 
-		// Send SignedMessage (T_OUTPUT) to client via protobuf
+		// SECURITY FIX: Create protobuf body and sign it directly
 		tOutput := &teeproto.TOutputPayload{Packets: transcript}
-		body, err := proto.MarshalOptions{Deterministic: true}.Marshal(tOutput)
+		body, err := proto.Marshal(tOutput)
 		if err != nil {
 			t.logger.Error("Failed to marshal TOutputPayload",
 				zap.String("session_id", sessionID),
 				zap.Error(err))
 			return
 		}
+
+		// Sign the exact protobuf body bytes
+		signature, err := t.signingKeyPair.SignData(body)
+		if err != nil {
+			t.logger.Error("Failed to sign protobuf body",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
+			return
+		}
+
+		t.logger.InfoIf("Successfully signed protobuf body",
+			zap.String("session_id", sessionID),
+			zap.Int("total_packets", len(transcript)),
+			zap.Int("body_bytes", len(body)),
+			zap.Int("signature_bytes", len(signature)))
+
 		sm := &teeproto.SignedMessage{
 			BodyType:  teeproto.BodyType_BODY_TYPE_T_OUTPUT,
 			Body:      body,

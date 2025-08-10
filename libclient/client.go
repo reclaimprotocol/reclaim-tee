@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/anjuna-security/go-nitro-attestation/verifier"
 )
@@ -839,38 +840,92 @@ func (c *Client) fetchAndVerifyAttestations() error {
 
 // verifyAttestation verifies an attestation document and extracts the public key from user data
 func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string) ([]byte, error) {
-	// Structured AttestationReport (nitro or gcp)
+	// Try to unmarshal as protobuf AttestationReport first (new format)
+	var pbReport teeproto.AttestationReport
+	if pbErr := proto.Unmarshal(attestationDoc, &pbReport); pbErr == nil && pbReport.Type != "" {
+		// Convert protobuf to shared.AttestationReport for compatibility with existing validation logic
+		report := shared.AttestationReport{
+			Type:       pbReport.Type,
+			Report:     pbReport.Report,
+			SigningKey: pbReport.SigningKey,
+		}
+		return c.verifyAttestationReport(&report)
+	}
+
+	// Fall back to JSON format (legacy)
 	var report shared.AttestationReport
 	if jsonErr := json.Unmarshal(attestationDoc, &report); jsonErr == nil && report.Type != "" {
-		switch report.Type {
-		case "nitro":
-			sr, err := verifier.NewSignedAttestationReport(strings.NewReader(string(report.Report)))
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse nitro report: %v", err)
-			}
-			if err := verifier.Validate(sr, nil); err != nil {
-				return nil, fmt.Errorf("nitro validation failed: %v", err)
-			}
-			if len(report.SigningKey) == 0 {
-				return nil, fmt.Errorf("missing signing key in nitro attestation report")
-			}
-			return report.SigningKey, nil
-		case "gcp":
-			att, err := shared.NewGoogleAttestor()
-			if err != nil {
-				return nil, fmt.Errorf("failed to init google attestor: %v", err)
-			}
-			if err := att.Validate(context.Background(), report.Report); err != nil {
-				return nil, fmt.Errorf("google attestation validation failed: %v", err)
-			}
-			if len(report.SigningKey) == 0 {
-				return nil, fmt.Errorf("missing signing key in gcp attestation report")
-			}
-			return report.SigningKey, nil
-		}
+		return c.verifyAttestationReport(&report)
 	}
 
 	return nil, fmt.Errorf("unsupported attestation format")
+}
+
+// verifyAttestationReport verifies a structured AttestationReport and extracts the public key
+func (c *Client) verifyAttestationReport(report *shared.AttestationReport) ([]byte, error) {
+	switch report.Type {
+	case "nitro":
+		sr, err := verifier.NewSignedAttestationReport(strings.NewReader(string(report.Report)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse nitro report: %v", err)
+		}
+		if err := verifier.Validate(sr, nil); err != nil {
+			return nil, fmt.Errorf("nitro validation failed: %v", err)
+		}
+		if len(report.SigningKey) == 0 {
+			return nil, fmt.Errorf("missing signing key in nitro attestation report")
+		}
+		return report.SigningKey, nil
+	case "gcp":
+		att, err := shared.NewGoogleAttestor()
+		if err != nil {
+			return nil, fmt.Errorf("failed to init google attestor: %v", err)
+		}
+		if err := att.Validate(context.Background(), report.Report); err != nil {
+			return nil, fmt.Errorf("google attestation validation failed: %v", err)
+		}
+		if len(report.SigningKey) == 0 {
+			return nil, fmt.Errorf("missing signing key in gcp attestation report")
+		}
+		return report.SigningKey, nil
+	default:
+		return nil, fmt.Errorf("unsupported attestation type: %s", report.Type)
+	}
+}
+
+// verifySignedMessage verifies a protobuf SignedMessage using the same logic as the offline verifier
+func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error {
+	if signedMsg == nil {
+		return fmt.Errorf("SECURITY ERROR: %s signed message is nil", source)
+	}
+
+	// Validate required fields
+	if len(signedMsg.GetSignature()) == 0 {
+		return fmt.Errorf("SECURITY ERROR: %s missing signature", source)
+	}
+	if len(signedMsg.GetPublicKey()) == 0 {
+		return fmt.Errorf("SECURITY ERROR: %s missing public key", source)
+	}
+	if len(signedMsg.GetBody()) == 0 {
+		return fmt.Errorf("SECURITY ERROR: %s missing body", source)
+	}
+
+	// Validate body type
+	expectedBodyType := teeproto.BodyType_BODY_TYPE_K_OUTPUT
+	if source == "TEE_T" {
+		expectedBodyType = teeproto.BodyType_BODY_TYPE_T_OUTPUT
+	}
+	if signedMsg.GetBodyType() != expectedBodyType {
+		return fmt.Errorf("SECURITY ERROR: %s wrong body type, expected %v got %v", source, expectedBodyType, signedMsg.GetBodyType())
+	}
+
+	// SECURITY: Verify signature against the exact signed bytes (SignedMessage.Body)
+	if err := shared.VerifySignatureWithDER(signedMsg.GetBody(), signedMsg.GetSignature(), signedMsg.GetPublicKey()); err != nil {
+		return fmt.Errorf("SECURITY ERROR: %s cryptographic signature verification FAILED: %v", source, err)
+	}
+
+	c.logger.Info("SignedMessage verification SUCCESS", zap.String("source", source), zap.Int("body_bytes", len(signedMsg.GetBody())))
+	return nil
 }
 
 // verifyAttestationPublicKeys compares the public keys from attestations with those from signed transcripts
