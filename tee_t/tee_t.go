@@ -1321,10 +1321,6 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 
 }
 
-// Note: computeAuthenticationTag function has been consolidated into minitls.ComputeTagFromSecrets
-
-// sendMessageToClient removed - use sendMessageToClientSession instead
-
 // sendMessageToClientSession sends a message to a specific client by session ID
 func (t *TEET) sendMessageToClientSession(sessionID string, msg *shared.Message) error {
 	if sessionID == "" {
@@ -1693,8 +1689,15 @@ func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 		zap.String("session_id", actualSessionID),
 		zap.Int("attestation_bytes", len(attestationDoc)))
 
+	report := shared.AttestationReport{
+		Type:       "gcp",
+		Report:     attestationDoc,
+		SigningKey: publicKeyDER,
+	}
+	payload, _ := json.Marshal(report)
+
 	// Send successful response
-	t.sendAttestationResponseToClient(actualSessionID, attestationDoc, true, "")
+	t.sendAttestationResponseToClient(actualSessionID, payload, true, "")
 }
 
 // sendAttestationResponseToClient sends attestation response to client (request ID removed)
