@@ -486,7 +486,6 @@ type BatchedResponseLengthData struct {
 		Length       int    `json:"length"`                // Length of encrypted response data (without tag)
 		RecordHeader []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
 		SeqNum       uint64 `json:"seq_num"`               // TLS sequence number for AEAD
-		CipherSuite  uint16 `json:"cipher_suite"`          // TLS cipher suite
 		ExplicitIV   []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
 	} `json:"lengths"` // Array of individual response lengths
 	SessionID  string `json:"session_id"`  // Session identifier
@@ -496,9 +495,8 @@ type BatchedResponseLengthData struct {
 // BatchedTagSecretsData contains multiple tag secrets for batch processing
 type BatchedTagSecretsData struct {
 	TagSecrets []struct {
-		TagSecrets  []byte `json:"tag_secrets"`  // E_K(0^128) and E_K(nonce||1) for GCM
-		SeqNum      uint64 `json:"seq_num"`      // TLS sequence number for AEAD
-		CipherSuite uint16 `json:"cipher_suite"` // TLS cipher suite
+		TagSecrets []byte `json:"tag_secrets"` // E_K(0^128) and E_K(nonce||1) for GCM
+		SeqNum     uint64 `json:"seq_num"`     // TLS sequence number for AEAD
 	} `json:"tag_secrets"` // Array of individual tag secrets
 	SessionID  string `json:"session_id"`  // Session identifier
 	TotalCount int    `json:"total_count"` // Total number of tag secrets in batch

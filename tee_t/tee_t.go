@@ -376,16 +376,14 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgFinished, Data: shared.FinishedMessage{}}
 		case *teeproto.Envelope_BatchedTagSecrets:
 			var ts []struct {
-				TagSecrets  []byte `json:"tag_secrets"`
-				SeqNum      uint64 `json:"seq_num"`
-				CipherSuite uint16 `json:"cipher_suite"`
+				TagSecrets []byte `json:"tag_secrets"`
+				SeqNum     uint64 `json:"seq_num"`
 			}
 			for _, tsec := range p.BatchedTagSecrets.GetTagSecrets() {
 				ts = append(ts, struct {
-					TagSecrets  []byte `json:"tag_secrets"`
-					SeqNum      uint64 `json:"seq_num"`
-					CipherSuite uint16 `json:"cipher_suite"`
-				}{TagSecrets: tsec.GetTagSecrets(), SeqNum: tsec.GetSeqNum(), CipherSuite: uint16(tsec.GetCipherSuite())})
+					TagSecrets []byte `json:"tag_secrets"`
+					SeqNum     uint64 `json:"seq_num"`
+				}{TagSecrets: tsec.GetTagSecrets(), SeqNum: tsec.GetSeqNum()})
 			}
 			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgBatchedTagSecrets, Data: shared.BatchedTagSecretsData{TagSecrets: ts, SessionID: sessionID, TotalCount: int(p.BatchedTagSecrets.GetTotalCount())}}
 		default:
@@ -602,7 +600,6 @@ func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *sha
 		Length       int    `json:"length"`
 		RecordHeader []byte `json:"record_header"`
 		SeqNum       uint64 `json:"seq_num"`
-		CipherSuite  uint16 `json:"cipher_suite"`
 		ExplicitIV   []byte `json:"explicit_iv,omitempty"`
 	}
 
@@ -619,13 +616,11 @@ func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *sha
 			Length       int    `json:"length"`
 			RecordHeader []byte `json:"record_header"`
 			SeqNum       uint64 `json:"seq_num"`
-			CipherSuite  uint16 `json:"cipher_suite"`
 			ExplicitIV   []byte `json:"explicit_iv,omitempty"`
 		}{
 			Length:       len(encryptedResp.EncryptedData),
 			RecordHeader: encryptedResp.RecordHeader,
 			SeqNum:       encryptedResp.SeqNum,
-			CipherSuite:  encryptedResp.CipherSuite,
 			ExplicitIV:   encryptedResp.ExplicitIV,
 		}
 		responseLengths = append(responseLengths, lengthData)
@@ -644,7 +639,6 @@ func (t *TEET) handleBatchedEncryptedResponsesSession(sessionID string, msg *sha
 			Length:       int32(l.Length),
 			RecordHeader: l.RecordHeader,
 			SeqNum:       l.SeqNum,
-			CipherSuite:  uint32(l.CipherSuite),
 			ExplicitIv:   l.ExplicitIV,
 		})
 	}
@@ -1057,12 +1051,11 @@ func (t *TEET) handleBatchedTagSecretsSession(msg *shared.Message) {
 }
 
 func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.EncryptedResponseData, tagSecretsData *struct {
-	TagSecrets  []byte `json:"tag_secrets"`
-	SeqNum      uint64 `json:"seq_num"`
-	CipherSuite uint16 `json:"cipher_suite"`
+	TagSecrets []byte `json:"tag_secrets"`
+	SeqNum     uint64 `json:"seq_num"`
 }) shared.ResponseTagVerificationData {
 	var additionalData []byte
-	cipherSuite := tagSecretsData.CipherSuite
+	cipherSuite := encryptedResp.CipherSuite
 
 	// Determine TLS version based on cipher suite and construct appropriate AAD
 	if cipherSuite == 0x1301 || cipherSuite == 0x1302 || cipherSuite == 0x1303 {
@@ -1369,7 +1362,7 @@ func (t *TEET) sendMessageToTEEKForSession(sessionID string, msg *shared.Message
 			}
 			var lens []*teeproto.BatchedResponseLengths_Length
 			for _, l := range d.Lengths {
-				lens = append(lens, &teeproto.BatchedResponseLengths_Length{Length: int32(l.Length), RecordHeader: l.RecordHeader, SeqNum: l.SeqNum, CipherSuite: uint32(l.CipherSuite), ExplicitIv: l.ExplicitIV})
+				lens = append(lens, &teeproto.BatchedResponseLengths_Length{Length: int32(l.Length), RecordHeader: l.RecordHeader, SeqNum: l.SeqNum, ExplicitIv: l.ExplicitIV})
 			}
 			env = &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(), Payload: &teeproto.Envelope_BatchedResponseLengths{BatchedResponseLengths: &teeproto.BatchedResponseLengths{Lengths: lens, SessionId: d.SessionID, TotalCount: int32(d.TotalCount)}}}
 		case shared.MsgBatchedTagSecrets:
@@ -1379,7 +1372,7 @@ func (t *TEET) sendMessageToTEEKForSession(sessionID string, msg *shared.Message
 			}
 			var tags []*teeproto.BatchedTagSecrets_TagSecret
 			for _, tsec := range d.TagSecrets {
-				tags = append(tags, &teeproto.BatchedTagSecrets_TagSecret{TagSecrets: tsec.TagSecrets, SeqNum: tsec.SeqNum, CipherSuite: uint32(tsec.CipherSuite)})
+				tags = append(tags, &teeproto.BatchedTagSecrets_TagSecret{TagSecrets: tsec.TagSecrets, SeqNum: tsec.SeqNum})
 			}
 			env = &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(), Payload: &teeproto.Envelope_BatchedTagSecrets{BatchedTagSecrets: &teeproto.BatchedTagSecrets{TagSecrets: tags, SessionId: d.SessionID, TotalCount: int32(d.TotalCount)}}}
 		case shared.MsgBatchedTagVerifications:

@@ -311,9 +311,8 @@ func (t *TEEK) handleSharedTEETMessage(msgBytes []byte) {
 						Length       int    `json:"length"`
 						RecordHeader []byte `json:"record_header"`
 						SeqNum       uint64 `json:"seq_num"`
-						CipherSuite  uint16 `json:"cipher_suite"`
 						ExplicitIV   []byte `json:"explicit_iv,omitempty"`
-					}{Length: int(l.GetLength()), RecordHeader: l.GetRecordHeader(), SeqNum: l.GetSeqNum(), CipherSuite: uint16(l.GetCipherSuite()), ExplicitIV: l.GetExplicitIv()})
+					}{Length: int(l.GetLength()), RecordHeader: l.GetRecordHeader(), SeqNum: l.GetSeqNum(), ExplicitIV: l.GetExplicitIv()})
 				}
 				return out
 			}(),
@@ -464,7 +463,7 @@ func (t *TEEK) sendMessageToTEETForSession(sessionID string, msg *shared.Message
 		}
 		var tags []*teeproto.BatchedTagSecrets_TagSecret
 		for _, ts := range d.TagSecrets {
-			tags = append(tags, &teeproto.BatchedTagSecrets_TagSecret{TagSecrets: ts.TagSecrets, SeqNum: ts.SeqNum, CipherSuite: uint32(ts.CipherSuite)})
+			tags = append(tags, &teeproto.BatchedTagSecrets_TagSecret{TagSecrets: ts.TagSecrets, SeqNum: ts.SeqNum})
 		}
 		env = &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 			Payload: &teeproto.Envelope_BatchedTagSecrets{BatchedTagSecrets: &teeproto.BatchedTagSecrets{TagSecrets: tags, SessionId: d.SessionID, TotalCount: int32(d.TotalCount)}},
@@ -921,6 +920,7 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	certPacket := tlsClient.GetCertificatePacket()
 	cipherSuite := tlsClient.GetCipherSuite()
 	algorithm := getCipherSuiteAlgorithm(cipherSuite)
+	tlsState.CipherSuite = cipherSuite
 
 	// Send handshake key disclosure to Client
 	envDisclosure := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
@@ -1591,16 +1591,19 @@ func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encrypted
 // generateDecryptionStream generates cipher-agnostic keystream for decryption
 // Note: generateDecryptionStream functions have been consolidated into minitls.GenerateDecryptionStream
 
-func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseLength int, seqNum uint64, cipherSuite uint16, recordHeader []byte, explicitIV []byte) ([]byte, error) {
-	// Get TLS client from session state
-	var tlsClient *minitls.Client
-	if sessionID != "" {
-		tlsState, err := t.getSessionTLSState(sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get TLS state: %v", err)
-		}
-		tlsClient = tlsState.TLSClient
+func (t *TEEK) generateResponseTagSecretsWithSession(sessionID string, responseLength int, seqNum uint64, recordHeader []byte, explicitIV []byte) ([]byte, error) {
+
+	if sessionID == "" {
+		return nil, fmt.Errorf("sessionID is empty")
 	}
+
+	// Get TLS client from session state
+	tlsState, err := t.getSessionTLSState(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get TLS state: %v", err)
+	}
+	tlsClient := tlsState.TLSClient
+	cipherSuite := tlsState.CipherSuite
 
 	if tlsClient == nil {
 		return nil, fmt.Errorf("no TLS client available")
@@ -2407,9 +2410,8 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 
 	// Process each length in the batch and generate tag secrets
 	var tagSecrets []struct {
-		TagSecrets  []byte `json:"tag_secrets"`
-		SeqNum      uint64 `json:"seq_num"`
-		CipherSuite uint16 `json:"cipher_suite"`
+		TagSecrets []byte `json:"tag_secrets"`
+		SeqNum     uint64 `json:"seq_num"`
 	}
 
 	session.ResponseState.ResponsesMutex.Lock()
@@ -2432,7 +2434,6 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 			sessionID,
 			lengthData.Length,
 			lengthData.SeqNum,
-			lengthData.CipherSuite,
 			lengthData.RecordHeader,
 			lengthData.ExplicitIV,
 		)
@@ -2443,13 +2444,11 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 		}
 
 		tagSecrets = append(tagSecrets, struct {
-			TagSecrets  []byte `json:"tag_secrets"`
-			SeqNum      uint64 `json:"seq_num"`
-			CipherSuite uint16 `json:"cipher_suite"`
+			TagSecrets []byte `json:"tag_secrets"`
+			SeqNum     uint64 `json:"seq_num"`
 		}{
-			TagSecrets:  tagSecretsBytes,
-			SeqNum:      lengthData.SeqNum,
-			CipherSuite: lengthData.CipherSuite,
+			TagSecrets: tagSecretsBytes,
+			SeqNum:     lengthData.SeqNum,
 		})
 	}
 	session.ResponseState.ResponsesMutex.Unlock()
@@ -2462,9 +2461,9 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 	var pbTagSecrets []*teeproto.BatchedTagSecrets_TagSecret
 	for _, ts := range tagSecrets {
 		pbTagSecrets = append(pbTagSecrets, &teeproto.BatchedTagSecrets_TagSecret{
-			TagSecrets:  ts.TagSecrets,
-			SeqNum:      ts.SeqNum,
-			CipherSuite: uint32(ts.CipherSuite),
+			TagSecrets: ts.TagSecrets,
+			SeqNum:     ts.SeqNum,
+			// CipherSuite removed - already known by TEE_K
 		})
 	}
 

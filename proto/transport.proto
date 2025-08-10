@@ -175,8 +175,7 @@ message BatchedResponseLengths {
     int32 length = 1;
     bytes record_header = 2;
     uint64 seq_num = 3;
-    uint32 cipher_suite = 4;
-    bytes explicit_iv = 5;
+    bytes explicit_iv = 4;
   }
   repeated Length lengths = 1;
   string session_id = 2;
@@ -187,7 +186,6 @@ message BatchedTagSecrets {
   message TagSecret {
     bytes tag_secrets = 1;
     uint64 seq_num = 2;
-    uint32 cipher_suite = 3;
   }
   repeated TagSecret tag_secrets = 1;
   string session_id = 2;

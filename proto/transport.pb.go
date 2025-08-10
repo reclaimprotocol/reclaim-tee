@@ -2248,8 +2248,7 @@ type BatchedResponseLengths_Length struct {
 	Length        int32                  `protobuf:"varint,1,opt,name=length,proto3" json:"length,omitempty"`
 	RecordHeader  []byte                 `protobuf:"bytes,2,opt,name=record_header,json=recordHeader,proto3" json:"record_header,omitempty"`
 	SeqNum        uint64                 `protobuf:"varint,3,opt,name=seq_num,json=seqNum,proto3" json:"seq_num,omitempty"`
-	CipherSuite   uint32                 `protobuf:"varint,4,opt,name=cipher_suite,json=cipherSuite,proto3" json:"cipher_suite,omitempty"`
-	ExplicitIv    []byte                 `protobuf:"bytes,5,opt,name=explicit_iv,json=explicitIv,proto3" json:"explicit_iv,omitempty"`
+	ExplicitIv    []byte                 `protobuf:"bytes,4,opt,name=explicit_iv,json=explicitIv,proto3" json:"explicit_iv,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2305,13 +2304,6 @@ func (x *BatchedResponseLengths_Length) GetSeqNum() uint64 {
 	return 0
 }
 
-func (x *BatchedResponseLengths_Length) GetCipherSuite() uint32 {
-	if x != nil {
-		return x.CipherSuite
-	}
-	return 0
-}
-
 func (x *BatchedResponseLengths_Length) GetExplicitIv() []byte {
 	if x != nil {
 		return x.ExplicitIv
@@ -2323,7 +2315,6 @@ type BatchedTagSecrets_TagSecret struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TagSecrets    []byte                 `protobuf:"bytes,1,opt,name=tag_secrets,json=tagSecrets,proto3" json:"tag_secrets,omitempty"`
 	SeqNum        uint64                 `protobuf:"varint,2,opt,name=seq_num,json=seqNum,proto3" json:"seq_num,omitempty"`
-	CipherSuite   uint32                 `protobuf:"varint,3,opt,name=cipher_suite,json=cipherSuite,proto3" json:"cipher_suite,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2368,13 +2359,6 @@ func (x *BatchedTagSecrets_TagSecret) GetTagSecrets() []byte {
 func (x *BatchedTagSecrets_TagSecret) GetSeqNum() uint64 {
 	if x != nil {
 		return x.SeqNum
-	}
-	return 0
-}
-
-func (x *BatchedTagSecrets_TagSecret) GetCipherSuite() uint32 {
-	if x != nil {
-		return x.CipherSuite
 	}
 	return 0
 }
@@ -2562,32 +2546,30 @@ const file_transport_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1f\n" +
 	"\vtotal_count\x18\x03 \x01(\x05R\n" +
-	"totalCount\"\xc0\x02\n" +
+	"totalCount\"\x9c\x02\n" +
 	"\x16BatchedResponseLengths\x12A\n" +
 	"\alengths\x18\x01 \x03(\v2'.teeproto.BatchedResponseLengths.LengthR\alengths\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1f\n" +
 	"\vtotal_count\x18\x03 \x01(\x05R\n" +
-	"totalCount\x1a\xa2\x01\n" +
+	"totalCount\x1a\x7f\n" +
 	"\x06Length\x12\x16\n" +
 	"\x06length\x18\x01 \x01(\x05R\x06length\x12#\n" +
 	"\rrecord_header\x18\x02 \x01(\fR\frecordHeader\x12\x17\n" +
-	"\aseq_num\x18\x03 \x01(\x04R\x06seqNum\x12!\n" +
-	"\fcipher_suite\x18\x04 \x01(\rR\vcipherSuite\x12\x1f\n" +
-	"\vexplicit_iv\x18\x05 \x01(\fR\n" +
-	"explicitIv\"\x85\x02\n" +
+	"\aseq_num\x18\x03 \x01(\x04R\x06seqNum\x12\x1f\n" +
+	"\vexplicit_iv\x18\x04 \x01(\fR\n" +
+	"explicitIv\"\xe2\x01\n" +
 	"\x11BatchedTagSecrets\x12F\n" +
 	"\vtag_secrets\x18\x01 \x03(\v2%.teeproto.BatchedTagSecrets.TagSecretR\n" +
 	"tagSecrets\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1f\n" +
 	"\vtotal_count\x18\x03 \x01(\x05R\n" +
-	"totalCount\x1ah\n" +
+	"totalCount\x1aE\n" +
 	"\tTagSecret\x12\x1f\n" +
 	"\vtag_secrets\x18\x01 \x01(\fR\n" +
 	"tagSecrets\x12\x17\n" +
-	"\aseq_num\x18\x02 \x01(\x04R\x06seqNum\x12!\n" +
-	"\fcipher_suite\x18\x03 \x01(\rR\vcipherSuite\"\xb3\x02\n" +
+	"\aseq_num\x18\x02 \x01(\x04R\x06seqNum\"\xb3\x02\n" +
 	"\x17BatchedTagVerifications\x12T\n" +
 	"\rverifications\x18\x01 \x03(\v2..teeproto.BatchedTagVerifications.VerificationR\rverifications\x12\x1d\n" +
 	"\n" +
