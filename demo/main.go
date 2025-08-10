@@ -153,13 +153,21 @@ func main() {
 		fmt.Printf("   Both Valid: %v\n", transcripts.BothSignaturesValid)
 
 		if transcripts.TEEK != nil {
-			fmt.Printf("   TEE_K: %d packets, %d bytes\n",
-				len(transcripts.TEEK.Packets), len(transcripts.TEEK.Signature))
+			totalTEEKBytes := 0
+			for _, packet := range transcripts.TEEK.Packets {
+				totalTEEKBytes += len(packet)
+			}
+			fmt.Printf("   TEE_K: %d packets, %d bytes data\n",
+				len(transcripts.TEEK.Packets), totalTEEKBytes)
 		}
 
 		if transcripts.TEET != nil {
-			fmt.Printf("   TEE_T: %d packets, %d bytes\n",
-				len(transcripts.TEET.Packets), len(transcripts.TEET.Signature))
+			totalTEETBytes := 0
+			for _, packet := range transcripts.TEET.Packets {
+				totalTEETBytes += len(packet)
+			}
+			fmt.Printf("   TEE_T: %d packets, %d bytes data\n",
+				len(transcripts.TEET.Packets), totalTEETBytes)
 		}
 	}
 

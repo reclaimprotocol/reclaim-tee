@@ -118,100 +118,16 @@ func Validate(bundlePath string) error {
 
 	fmt.Println("[Verifier] Comprehensive signature verification successful")
 
-	// Convert protobuf SignedMessage back to legacy bundle format for existing verification logic
-	bundle := &shared.VerificationBundle{}
-
-	// Extract data from TEE_K signed message
-	if bundlePB.TeekSigned != nil {
-		var kPayload teeproto.KOutputPayload
-		if err := proto.Unmarshal(bundlePB.TeekSigned.GetBody(), &kPayload); err != nil {
-			return fmt.Errorf("failed to unmarshal TEE_K body: %v", err)
-		}
-
-		// Convert request redaction ranges
-		var reqRanges []shared.RequestRedactionRange
-		for _, r := range kPayload.GetRequestRedactionRanges() {
-			reqRanges = append(reqRanges, shared.RequestRedactionRange{
-				Start:          int(r.GetStart()),
-				Length:         int(r.GetLength()),
-				Type:           r.GetType(),
-				RedactionBytes: r.GetRedactionBytes(),
-			})
-		}
-
-		// Convert redacted streams
-		var redactedStreams []shared.SignedRedactedDecryptionStream
-		for _, s := range kPayload.GetRedactedStreams() {
-			redactedStreams = append(redactedStreams, shared.SignedRedactedDecryptionStream{
-				RedactedStream: s.GetRedactedStream(),
-				SeqNum:         s.GetSeqNum(),
-			})
-		}
-
-		// Convert response redaction ranges
-		var respRanges []shared.ResponseRedactionRange
-		for _, rr := range kPayload.GetResponseRedactionRanges() {
-			respRanges = append(respRanges, shared.ResponseRedactionRange{
-				Start:  int(rr.GetStart()),
-				Length: int(rr.GetLength()),
-			})
-		}
-
-		bundle.Transcripts.TEEK = &shared.TEEKTranscript{
-			Packets: kPayload.GetPackets(),
-			RequestMetadata: &shared.RequestMetadata{
-				RedactedRequest: kPayload.GetRedactedRequest(),
-				RedactionRanges: reqRanges,
-			},
-			ResponseRedactionRanges: respRanges,
-			RedactedStreams:         redactedStreams,
-			Signature:               bundlePB.TeekSigned.GetSignature(),
-			PublicKey:               bundlePB.TeekSigned.GetPublicKey(),
-		}
-	}
-
-	// Extract data from TEE_T signed message
-	if bundlePB.TeetSigned != nil {
-		var tPayload teeproto.TOutputPayload
-		if err := proto.Unmarshal(bundlePB.TeetSigned.GetBody(), &tPayload); err != nil {
-			return fmt.Errorf("failed to unmarshal TEE_T body: %v", err)
-		}
-
-		bundle.Transcripts.TEET = &shared.TEETTranscript{
-			Packets:   tPayload.GetPackets(),
-			Signature: bundlePB.TeetSigned.GetSignature(),
-			PublicKey: bundlePB.TeetSigned.GetPublicKey(),
-		}
-	}
-
-	// Convert handshake keys if present
-	if bundlePB.HandshakeKeys != nil {
-		bundle.HandshakeKeys = shared.HandshakeSecrets{
-			HandshakeKey: bundlePB.HandshakeKeys.GetHandshakeKey(),
-			HandshakeIV:  bundlePB.HandshakeKeys.GetHandshakeIv(),
-			CipherSuite:  uint16(bundlePB.HandshakeKeys.GetCipherSuite()),
-			Algorithm:    bundlePB.HandshakeKeys.GetAlgorithm(),
-		}
-	}
-
-	// Convert opening if present
-	if bundlePB.Opening != nil {
-		bundle.Opening = &shared.Opening{
-			ProofStream: bundlePB.Opening.GetProofStream(),
-			ProofKey:    bundlePB.Opening.GetProofKey(),
-		}
-	}
-
-	// Now run the existing verification logic with the converted bundle
+	// Work directly with protobuf format - no legacy conversion needed!
 
 	// --- Proof stream application (commitment verification handled by TEE_T) ---
-	if bundle.Opening.ProofStream != nil && bundle.Opening.ProofKey != nil && bundle.Transcripts.TEEK != nil {
+	if bundlePB.Opening != nil && bundlePB.Opening.ProofStream != nil && bundlePB.Opening.ProofKey != nil && bundlePB.TeekSigned != nil {
 		fmt.Printf("[Verifier] Proof stream available ✅ (len=%d, key_len=%d)\n",
-			len(bundle.Opening.ProofStream), len(bundle.Opening.ProofKey))
+			len(bundlePB.Opening.ProofStream), len(bundlePB.Opening.ProofKey))
 		fmt.Printf("[Verifier] Note: Commitment verification performed by TEE_T during protocol execution\n")
 
 		// Apply proof stream to reveal original sensitive_proof data
-		if err := verifyAndRevealProofData(*bundle); err != nil {
+		if err := verifyAndRevealProofDataProtobuf(&bundlePB); err != nil {
 			return fmt.Errorf("failed to apply proof stream: %v", err)
 		}
 	} else {
@@ -220,17 +136,33 @@ func Validate(bundlePath string) error {
 	}
 
 	// --- Redacted response reconstruction check ---
-	if bundle.Transcripts.TEET == nil {
+	if bundlePB.TeetSigned == nil {
 		// SECURITY: TEET transcript is required for proper verification
 		return fmt.Errorf("critical security failure: TEET transcript missing - cannot perform stream verification")
 	}
+	// Extract TEE_T payload for redacted response reconstruction
+	var tPayload teeproto.TOutputPayload
+	if err := proto.Unmarshal(bundlePB.TeetSigned.GetBody(), &tPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_T body: %v", err)
+	}
+
+	// Extract TEE_K payload for redacted streams and redaction ranges
+	var kPayload teeproto.KOutputPayload
+	if err := proto.Unmarshal(bundlePB.TeekSigned.GetBody(), &kPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_K body: %v", err)
+	}
+
 	// Build ordered slice of ciphertexts (application data) from TEET transcript
 	var ciphertexts [][]byte
 
 	// Check if this is TLS 1.2 AES-GCM (has explicit IV)
-	isTLS12AESGCM := shared.IsTLS12AESGCMCipherSuite(bundle.HandshakeKeys.CipherSuite)
+	var cipherSuite uint16
+	if bundlePB.HandshakeKeys != nil {
+		cipherSuite = uint16(bundlePB.HandshakeKeys.GetCipherSuite())
+	}
+	isTLS12AESGCM := shared.IsTLS12AESGCMCipherSuite(cipherSuite)
 
-	for _, pkt := range bundle.Transcripts.TEET.Packets {
+	for _, pkt := range tPayload.GetPackets() {
 		if len(pkt) < 5+16 {
 			continue
 		}
@@ -260,28 +192,36 @@ func Validate(bundlePath string) error {
 	// Reconstruct plaintext by walking streams and finding the next ciphertext with matching length
 	var reconstructed []byte
 	cipherIdx := 0
-	if bundle.Transcripts.TEEK != nil && len(bundle.Transcripts.TEEK.RedactedStreams) > 0 {
-		for _, stream := range bundle.Transcripts.TEEK.RedactedStreams {
+	if len(kPayload.GetRedactedStreams()) > 0 {
+		for _, stream := range kPayload.GetRedactedStreams() {
 			// advance cipherIdx until length matches
-			for cipherIdx < len(ciphertexts) && len(ciphertexts[cipherIdx]) != len(stream.RedactedStream) {
+			for cipherIdx < len(ciphertexts) && len(ciphertexts[cipherIdx]) != len(stream.GetRedactedStream()) {
 				cipherIdx++
 			}
 			if cipherIdx >= len(ciphertexts) {
-				return fmt.Errorf("no ciphertext of length %d found for stream seq %d", len(stream.RedactedStream), stream.SeqNum)
+				return fmt.Errorf("no ciphertext of length %d found for stream seq %d", len(stream.GetRedactedStream()), stream.GetSeqNum())
 			}
 			cipher := ciphertexts[cipherIdx]
 			plain := make([]byte, len(cipher))
 			for i := range cipher {
-				plain[i] = cipher[i] ^ stream.RedactedStream[i]
+				plain[i] = cipher[i] ^ stream.GetRedactedStream()[i]
 			}
 			reconstructed = append(reconstructed, plain...)
 			cipherIdx++
 		}
 
 		// Replace random garbage with asterisks using response redaction ranges
-		if bundle.Transcripts.TEEK.ResponseRedactionRanges != nil && len(bundle.Transcripts.TEEK.ResponseRedactionRanges) > 0 {
+		if len(kPayload.GetResponseRedactionRanges()) > 0 {
+			// Convert protobuf ranges to shared format for consolidation
+			var respRanges []shared.ResponseRedactionRange
+			for _, rr := range kPayload.GetResponseRedactionRanges() {
+				respRanges = append(respRanges, shared.ResponseRedactionRange{
+					Start:  int(rr.GetStart()),
+					Length: int(rr.GetLength()),
+				})
+			}
 			// Consolidate ranges for display (same as client)
-			consolidatedRanges := shared.ConsolidateResponseRedactionRanges(bundle.Transcripts.TEEK.ResponseRedactionRanges)
+			consolidatedRanges := shared.ConsolidateResponseRedactionRanges(respRanges)
 			reconstructed = replaceRandomGarbageWithAsterisks(reconstructed, consolidatedRanges)
 			fmt.Printf("[Verifier] Applied %d consolidated response redaction ranges to replace random garbage with asterisks\n", len(consolidatedRanges))
 		}
@@ -293,9 +233,8 @@ func Validate(bundlePath string) error {
 	}
 
 	// --- Verify redaction ranges authenticity ---
-	if bundle.Transcripts.TEEK != nil && bundle.Transcripts.TEEK.RequestMetadata != nil {
-		signedRanges := bundle.Transcripts.TEEK.RequestMetadata.RedactionRanges
-		fmt.Printf("[Verifier] Redaction ranges verified ✅ (TEE_K signed %d ranges)\n", len(signedRanges))
+	if len(kPayload.GetRequestRedactionRanges()) > 0 {
+		fmt.Printf("[Verifier] Redaction ranges verified ✅ (TEE_K signed %d ranges)\n", len(kPayload.GetRequestRedactionRanges()))
 	} else {
 		fmt.Println("[Verifier] Warning: No signed redaction ranges from TEE_K")
 	}
@@ -307,21 +246,23 @@ func Validate(bundlePath string) error {
 	return nil
 }
 
-// verifyAndRevealProofData applies the proof stream to reveal original sensitive_proof data
-func verifyAndRevealProofData(bundle shared.VerificationBundle) error {
-	if bundle.Transcripts.TEEK == nil || bundle.Transcripts.TEEK.RequestMetadata == nil {
-		return fmt.Errorf("no TEE_K request metadata available")
+// verifyAndRevealProofDataProtobuf applies the proof stream to reveal original sensitive_proof data (protobuf version)
+func verifyAndRevealProofDataProtobuf(bundlePB *teeproto.VerificationBundlePB) error {
+	// Extract TEE_K payload
+	var kPayload teeproto.KOutputPayload
+	if err := proto.Unmarshal(bundlePB.TeekSigned.GetBody(), &kPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_K body: %v", err)
 	}
 
-	redactedRequest := bundle.Transcripts.TEEK.RequestMetadata.RedactedRequest
-	redactionRanges := bundle.Transcripts.TEEK.RequestMetadata.RedactionRanges
+	redactedRequest := kPayload.GetRedactedRequest()
+	redactionRanges := kPayload.GetRequestRedactionRanges()
 
-	if bundle.Opening == nil || bundle.Opening.ProofStream == nil {
+	if bundlePB.Opening == nil || bundlePB.Opening.ProofStream == nil {
 		fmt.Println("[Verifier] No proof stream available for SP revelation")
 		return nil
 	}
 
-	proofStream := bundle.Opening.ProofStream
+	proofStream := bundlePB.Opening.ProofStream
 
 	if len(redactedRequest) == 0 || len(proofStream) == 0 {
 		fmt.Println("[Verifier] No proof stream or redacted request available for SP revelation")
@@ -338,27 +279,29 @@ func verifyAndRevealProofData(bundle shared.VerificationBundle) error {
 
 	for _, r := range redactionRanges {
 		// Only reveal ranges marked as proof-relevant (sensitive_proof)
-		if r.Type == shared.RedactionTypeSensitiveProof {
+		if r.GetType() == shared.RedactionTypeSensitiveProof {
 			// Check bounds
-			if r.Start+r.Length > len(revealedRequest) {
-				return fmt.Errorf("proof range [%d:%d] exceeds request length %d", r.Start, r.Start+r.Length, len(revealedRequest))
+			start := int(r.GetStart())
+			length := int(r.GetLength())
+			if start+length > len(revealedRequest) {
+				return fmt.Errorf("proof range [%d:%d] exceeds request length %d", start, start+length, len(revealedRequest))
 			}
 
 			// Check if we have enough proof stream data
-			if proofStreamOffset+r.Length > len(proofStream) {
+			if proofStreamOffset+length > len(proofStream) {
 				return fmt.Errorf("insufficient proof stream data for range %d (need %d bytes, have %d)",
-					proofRangesFound, r.Length, len(proofStream)-proofStreamOffset)
+					proofRangesFound, length, len(proofStream)-proofStreamOffset)
 			}
 
 			// Apply XOR to reveal original sensitive_proof data
-			for i := 0; i < r.Length; i++ {
-				revealedRequest[r.Start+i] ^= proofStream[proofStreamOffset+i]
+			for i := 0; i < length; i++ {
+				revealedRequest[start+i] ^= proofStream[proofStreamOffset+i]
 			}
 
 			fmt.Printf("[Verifier] Revealed proof range [%d:%d] type=%s (%d bytes)\n",
-				r.Start, r.Start+r.Length, r.Type, r.Length)
+				start, start+length, r.GetType(), length)
 
-			proofStreamOffset += r.Length
+			proofStreamOffset += length
 			proofRangesFound++
 		}
 	}
@@ -377,9 +320,11 @@ func verifyAndRevealProofData(bundle shared.VerificationBundle) error {
 
 	for _, r := range redactionRanges {
 		// Keep non-proof sensitive data as '*' for display
-		if !strings.Contains(r.Type, "proof") {
-			for i := 0; i < r.Length && r.Start+i < len(prettyRequest); i++ {
-				prettyRequest[r.Start+i] = '*'
+		if !strings.Contains(r.GetType(), "proof") {
+			start := int(r.GetStart())
+			length := int(r.GetLength())
+			for i := 0; i < length && start+i < len(prettyRequest); i++ {
+				prettyRequest[start+i] = '*'
 			}
 		}
 	}
