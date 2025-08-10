@@ -192,7 +192,6 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 	// Store the public key for attestation verification
 	// For combined messages, this is always from TEE_K
 	c.teekTranscriptPublicKey = signedTranscript.PublicKey
-	c.teekSignedTranscript = signedTranscript
 	c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
 
 	// Calculate total size of all packets
@@ -264,12 +263,10 @@ func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTran
 	if signedTranscript.RequestMetadata != nil {
 		// This is from TEE_K
 		c.teekTranscriptPublicKey = signedTranscript.PublicKey
-		c.teekSignedTranscript = signedTranscript
 		c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
 	} else {
 		// This is from TEE_T
 		c.teetTranscriptPublicKey = signedTranscript.PublicKey
-		c.teetSignedTranscript = signedTranscript
 		c.teetTranscriptPackets = signedTranscript.Packets // Store packets for validation
 	}
 

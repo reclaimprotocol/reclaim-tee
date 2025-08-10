@@ -170,8 +170,6 @@ type Client struct {
 
 	// Verification bundle tracking fields
 	handshakeDisclosure     *shared.HandshakeKeyDisclosureData      // store handshake keys
-	teekSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_K (legacy compatibility)
-	teetSignedTranscript    *shared.SignedTranscript                // full signed transcript from TEE_T (legacy compatibility)
 	teekSignedMessage       *teeproto.SignedMessage                 // original protobuf SignedMessage from TEE_K
 	teetSignedMessage       *teeproto.SignedMessage                 // original protobuf SignedMessage from TEE_T
 	signedRedactedStreams   []shared.SignedRedactedDecryptionStream // ordered collection of redacted streams

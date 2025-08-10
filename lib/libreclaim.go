@@ -21,6 +21,7 @@ typedef enum {
 */
 import "C"
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -366,7 +367,7 @@ func reclaim_finish_protocol(protocol_handle C.reclaim_protocol_t, response_reda
 	}
 
 	// Build verification bundle after protocol completion
-	tempPath := fmt.Sprintf("/tmp/verification_bundle_%s.json", session.ID)
+	tempPath := fmt.Sprintf("/tmp/verification_bundle_%s.pb", session.ID)
 	if err := session.Client.BuildVerificationBundle(tempPath); err != nil {
 		return C.RECLAIM_ERROR_PROTOCOL_FAILED
 	}
@@ -381,9 +382,9 @@ func reclaim_finish_protocol(protocol_handle C.reclaim_protocol_t, response_reda
 	// Clean up the temporary file
 	os.Remove(tempPath)
 
-	// Create verification bundle data
+	// Create verification bundle data (keep as binary, encode as base64 for safe string transport)
 	bundleResponse := VerificationBundleData{
-		VerificationBundle: string(bundleData),
+		VerificationBundle: base64.StdEncoding.EncodeToString(bundleData),
 		BundleSize:         len(bundleData),
 		Success:            true,
 	}

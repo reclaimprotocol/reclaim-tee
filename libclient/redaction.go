@@ -505,7 +505,7 @@ func (c *Client) processBatchedSignedRedactedDecryptionStreamsData(batchedStream
 	}
 
 	// Check completion condition - triggers immediately since all streams received at once
-	if c.teekSignedTranscript != nil && !c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
+	if c.teekSignedMessage != nil && !c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
 		if len(c.signedRedactedStreams) >= c.expectedRedactedStreams {
 			c.logger.Info("Received all expected redacted streams from batch - signature already verified on SignedMessage", zap.Int("expected_streams", c.expectedRedactedStreams))
 			// Set signature as valid since we verified the SignedMessage upfront

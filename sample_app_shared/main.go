@@ -31,6 +31,7 @@ char* reclaim_get_version(void);
 */
 import "C"
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -162,8 +163,9 @@ func main() {
 	}
 
 	// Save verification bundle to file for offline verification
-	bundlePath := fmt.Sprintf("/tmp/verification_bundle_%s.json", protocolID)
-	if err := writeVerificationBundle(bundlePath, []byte(verificationBundle)); err != nil {
+	// The verification bundle from the shared library is base64-encoded protobuf data
+	bundlePath := fmt.Sprintf("/tmp/verification_bundle_%s.pb", protocolID)
+	if err := writeVerificationBundleProtobuf(bundlePath, verificationBundle); err != nil {
 		log.Printf("Failed to write verification bundle: %v", err)
 	} else {
 		fmt.Printf("Verification bundle saved to: %s\n", bundlePath)
@@ -493,5 +495,16 @@ func calculateResponseRedactionRanges(responseData []byte) []map[string]interfac
 
 // writeVerificationBundle writes the verification bundle data to a file
 func writeVerificationBundle(path string, bundleData []byte) error {
+	return os.WriteFile(path, bundleData, 0644)
+}
+
+// writeVerificationBundleProtobuf decodes base64-encoded protobuf bundle and writes to file
+func writeVerificationBundleProtobuf(path string, base64Data string) error {
+	// Decode base64 data back to protobuf binary
+	bundleData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64 bundle data: %v", err)
+	}
+
 	return os.WriteFile(path, bundleData, 0644)
 }
