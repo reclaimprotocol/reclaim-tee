@@ -225,7 +225,7 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		case *teeproto.Envelope_BatchedEncryptedResponses:
 			var arr []shared.EncryptedResponseData
 			for _, r := range p.BatchedEncryptedResponses.GetResponses() {
-				arr = append(arr, shared.EncryptedResponseData{EncryptedData: r.GetEncryptedData(), Tag: r.GetTag(), RecordHeader: r.GetRecordHeader(), SeqNum: r.GetSeqNum(), CipherSuite: uint16(r.GetCipherSuite()), ExplicitIV: r.GetExplicitIv()})
+				arr = append(arr, shared.EncryptedResponseData{EncryptedData: r.GetEncryptedData(), Tag: r.GetTag(), RecordHeader: r.GetRecordHeader(), SeqNum: r.GetSeqNum(), ExplicitIV: r.GetExplicitIv()})
 			}
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgBatchedEncryptedResponses, Data: shared.BatchedEncryptedResponseData{Responses: arr, SessionID: p.BatchedEncryptedResponses.GetSessionId(), TotalCount: int(p.BatchedEncryptedResponses.GetTotalCount())}}
 		default:
@@ -671,8 +671,15 @@ func (t *TEET) addSingleResponseToTranscript(sessionID string, encryptedResp *sh
 	// Session-aware transcript collection
 	// For TLS 1.2 AES-GCM, we need to include the explicit IV in the response record too
 
+	// Get CipherSuite from session state
+	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
+	if err != nil {
+		t.logger.Error("Failed to get TEET session state", zap.Error(err))
+		return
+	}
+
 	// Check if this is TLS 1.2 AES-GCM cipher suite
-	isTLS12AESGCMCipher := shared.IsTLS12AESGCMCipherSuite(encryptedResp.CipherSuite)
+	isTLS12AESGCMCipher := shared.IsTLS12AESGCMCipherSuite(teetState.CipherSuite)
 
 	var payload []byte
 	if isTLS12AESGCMCipher && encryptedResp.ExplicitIV != nil && len(encryptedResp.ExplicitIV) == 8 {
@@ -1054,8 +1061,27 @@ func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.Encr
 	TagSecrets []byte `json:"tag_secrets"`
 	SeqNum     uint64 `json:"seq_num"`
 }) shared.ResponseTagVerificationData {
+	// Get CipherSuite from TEE_T session state (stored during EncryptedRequest processing)
+	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
+	if err != nil {
+		return shared.ResponseTagVerificationData{
+			Success: false,
+			SeqNum:  encryptedResp.SeqNum,
+			Message: fmt.Sprintf("Failed to get TEE_T session state: %v", err),
+		}
+	}
+
 	var additionalData []byte
-	cipherSuite := encryptedResp.CipherSuite
+	cipherSuite := teetState.CipherSuite
+
+	// Validate CipherSuite is available
+	if cipherSuite == 0 {
+		return shared.ResponseTagVerificationData{
+			Success: false,
+			SeqNum:  encryptedResp.SeqNum,
+			Message: "CipherSuite not available in session state",
+		}
+	}
 
 	// Determine TLS version based on cipher suite and construct appropriate AAD
 	if cipherSuite == 0x1301 || cipherSuite == 0x1302 || cipherSuite == 0x1303 {
@@ -1175,6 +1201,21 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 		}
 		return
 	}
+
+	// Store CipherSuite in TEE_T session state for future crypto operations
+	// EncryptedRequest is always the first message, so this is the perfect place to store it
+	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
+	if err != nil {
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted, err) {
+			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to get TEE_T session state: %v", err))
+			return
+		}
+		return
+	}
+	teetState.CipherSuite = encReq.CipherSuite
+	t.logger.InfoIf("Stored CipherSuite in session state",
+		zap.String("session_id", sessionID),
+		zap.Uint16("cipher_suite", encReq.CipherSuite))
 
 	if session.RedactionState == nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted,

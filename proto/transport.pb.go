@@ -1579,8 +1579,7 @@ type EncryptedResponseData struct {
 	Tag           []byte                 `protobuf:"bytes,2,opt,name=tag,proto3" json:"tag,omitempty"`                                          // auth tag
 	RecordHeader  []byte                 `protobuf:"bytes,3,opt,name=record_header,json=recordHeader,proto3" json:"record_header,omitempty"`    // 5 bytes
 	SeqNum        uint64                 `protobuf:"varint,4,opt,name=seq_num,json=seqNum,proto3" json:"seq_num,omitempty"`
-	CipherSuite   uint32                 `protobuf:"varint,5,opt,name=cipher_suite,json=cipherSuite,proto3" json:"cipher_suite,omitempty"` // uint16 fits here
-	ExplicitIv    []byte                 `protobuf:"bytes,6,opt,name=explicit_iv,json=explicitIv,proto3" json:"explicit_iv,omitempty"`     // optional (tls1.2)
+	ExplicitIv    []byte                 `protobuf:"bytes,5,opt,name=explicit_iv,json=explicitIv,proto3" json:"explicit_iv,omitempty"` // optional (tls1.2)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1639,13 +1638,6 @@ func (x *EncryptedResponseData) GetRecordHeader() []byte {
 func (x *EncryptedResponseData) GetSeqNum() uint64 {
 	if x != nil {
 		return x.SeqNum
-	}
-	return 0
-}
-
-func (x *EncryptedResponseData) GetCipherSuite() uint32 {
-	if x != nil {
-		return x.CipherSuite
 	}
 	return 0
 }
@@ -2528,14 +2520,13 @@ const file_transport_proto_rawDesc = "" +
 	"\vcommitments\x18\x03 \x03(\fR\vcommitments\x12!\n" +
 	"\fcipher_suite\x18\x04 \x01(\rR\vcipherSuite\x12\x17\n" +
 	"\aseq_num\x18\x05 \x01(\x04R\x06seqNum\x12J\n" +
-	"\x10redaction_ranges\x18\x06 \x03(\v2\x1f.teeproto.RequestRedactionRangeR\x0fredactionRanges\"\xd2\x01\n" +
+	"\x10redaction_ranges\x18\x06 \x03(\v2\x1f.teeproto.RequestRedactionRangeR\x0fredactionRanges\"\xaf\x01\n" +
 	"\x15EncryptedResponseData\x12%\n" +
 	"\x0eencrypted_data\x18\x01 \x01(\fR\rencryptedData\x12\x10\n" +
 	"\x03tag\x18\x02 \x01(\fR\x03tag\x12#\n" +
 	"\rrecord_header\x18\x03 \x01(\fR\frecordHeader\x12\x17\n" +
-	"\aseq_num\x18\x04 \x01(\x04R\x06seqNum\x12!\n" +
-	"\fcipher_suite\x18\x05 \x01(\rR\vcipherSuite\x12\x1f\n" +
-	"\vexplicit_iv\x18\x06 \x01(\fR\n" +
+	"\aseq_num\x18\x04 \x01(\x04R\x06seqNum\x12\x1f\n" +
+	"\vexplicit_iv\x18\x05 \x01(\fR\n" +
 	"explicitIv\"f\n" +
 	"\x17ResponseTagVerification\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x17\n" +

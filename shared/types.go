@@ -411,7 +411,6 @@ type EncryptedResponseData struct {
 	Tag           []byte `json:"tag"`                   // Authentication tag extracted from TLS record
 	RecordHeader  []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
 	SeqNum        uint64 `json:"seq_num"`               // TLS sequence number for AEAD
-	CipherSuite   uint16 `json:"cipher_suite"`          // TLS cipher suite
 	ExplicitIV    []byte `json:"explicit_iv,omitempty"` // TLS 1.2 AES-GCM explicit IV (8 bytes, nil for TLS 1.3)
 }
 

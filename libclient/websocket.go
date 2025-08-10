@@ -453,13 +453,13 @@ func (c *Client) sendMessageToTEET(msg *shared.Message) error {
 		}
 	case shared.MsgEncryptedResponse:
 		if d, ok := msg.Data.(shared.EncryptedResponseData); ok {
-			env.Payload = &teeproto.Envelope_EncryptedResponse{EncryptedResponse: &teeproto.EncryptedResponseData{EncryptedData: d.EncryptedData, Tag: d.Tag, RecordHeader: d.RecordHeader, SeqNum: d.SeqNum, CipherSuite: uint32(d.CipherSuite), ExplicitIv: d.ExplicitIV}}
+			env.Payload = &teeproto.Envelope_EncryptedResponse{EncryptedResponse: &teeproto.EncryptedResponseData{EncryptedData: d.EncryptedData, Tag: d.Tag, RecordHeader: d.RecordHeader, SeqNum: d.SeqNum, ExplicitIv: d.ExplicitIV}}
 		}
 	case shared.MsgBatchedEncryptedResponses:
 		if d, ok := msg.Data.(shared.BatchedEncryptedResponseData); ok {
 			arr := make([]*teeproto.EncryptedResponseData, 0, len(d.Responses))
 			for _, r := range d.Responses {
-				arr = append(arr, &teeproto.EncryptedResponseData{EncryptedData: r.EncryptedData, Tag: r.Tag, RecordHeader: r.RecordHeader, SeqNum: r.SeqNum, CipherSuite: uint32(r.CipherSuite), ExplicitIv: r.ExplicitIV})
+				arr = append(arr, &teeproto.EncryptedResponseData{EncryptedData: r.EncryptedData, Tag: r.Tag, RecordHeader: r.RecordHeader, SeqNum: r.SeqNum, ExplicitIv: r.ExplicitIV})
 			}
 			env.Payload = &teeproto.Envelope_BatchedEncryptedResponses{BatchedEncryptedResponses: &teeproto.BatchedEncryptedResponses{Responses: arr, SessionId: d.SessionID, TotalCount: int32(d.TotalCount)}}
 		}

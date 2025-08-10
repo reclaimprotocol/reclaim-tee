@@ -157,8 +157,7 @@ message EncryptedResponseData {
   bytes tag = 2; // auth tag
   bytes record_header = 3; // 5 bytes
   uint64 seq_num = 4;
-  uint32 cipher_suite = 5; // uint16 fits here
-  bytes explicit_iv = 6; // optional (tls1.2)
+  bytes explicit_iv = 5; // optional (tls1.2)
 }
 
 message ResponseTagVerification {

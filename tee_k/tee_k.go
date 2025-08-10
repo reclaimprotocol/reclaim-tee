@@ -2409,6 +2409,7 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 	}
 
 	// Process each length in the batch and generate tag secrets
+	// Note: CipherSuite is now stored in TEE_T session state from EncryptedRequest
 	var tagSecrets []struct {
 		TagSecrets []byte `json:"tag_secrets"`
 		SeqNum     uint64 `json:"seq_num"`
@@ -2463,7 +2464,6 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 		pbTagSecrets = append(pbTagSecrets, &teeproto.BatchedTagSecrets_TagSecret{
 			TagSecrets: ts.TagSecrets,
 			SeqNum:     ts.SeqNum,
-			// CipherSuite removed - already known by TEE_K
 		})
 	}
 

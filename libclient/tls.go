@@ -277,19 +277,12 @@ func (c *Client) processTLSRecord(record []byte) {
 	c.responseContentMutex.Unlock()
 
 	// Prepare data to send to TEE_T for tag verification
-	// Get the actual negotiated cipher suite from handshake disclosure
-	cipherSuite := uint16(0x1302) // Default fallback
-	if c.handshakeDisclosure != nil {
-		cipherSuite = c.handshakeDisclosure.CipherSuite
-	}
-
 	encryptedResponseData := shared.EncryptedResponseData{
 		EncryptedData: encryptedData,
 		Tag:           tag,
 		RecordHeader:  record[:5], // Include actual TLS record header from server
 		SeqNum:        c.responseSeqNum,
-		CipherSuite:   cipherSuite, // Use actual negotiated cipher suite
-		ExplicitIV:    explicitIV,  // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
+		ExplicitIV:    explicitIV, // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
 	}
 
 	// Batch responses until EOF instead of sending immediately
@@ -315,7 +308,6 @@ func (c *Client) processTLSRecord(record []byte) {
 				Tag:           encryptedResponseData.Tag,
 				RecordHeader:  encryptedResponseData.RecordHeader,
 				SeqNum:        encryptedResponseData.SeqNum,
-				CipherSuite:   uint32(encryptedResponseData.CipherSuite),
 				ExplicitIv:    encryptedResponseData.ExplicitIV,
 			},
 		},
@@ -364,7 +356,6 @@ func (c *Client) sendBatchedResponses() error {
 			Tag:           r.Tag,
 			RecordHeader:  r.RecordHeader,
 			SeqNum:        r.SeqNum,
-			CipherSuite:   uint32(r.CipherSuite),
 			ExplicitIv:    r.ExplicitIV,
 		})
 	}
