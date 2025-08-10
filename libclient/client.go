@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -779,19 +780,13 @@ func (c *Client) getProtocolState() (ProtocolPhase, int) {
 	return c.protocolPhase, c.transcriptsReceived
 }
 
-// fetchAndVerifyAttestations fetches attestations from both TEE_K and TEE_T via WebSocket
-// Now waits for session coordination before sending requests
+// fetchAndVerifyAttestations is deprecated - attestations are now included in SignedMessage
 func (c *Client) fetchAndVerifyAttestations() error {
-	// Skip attestations entirely in standalone mode
-	if c.clientMode == ModeStandalone {
-		c.logger.Info("Skipping attestation in standalone mode - public keys will be extracted from signed transcripts")
-		return nil
-	}
-
-	c.logger.Info("Requesting attestations from both TEE_K and TEE_T via WebSocket")
+	// Attestation requests removed - attestations are now included directly in SignedMessage
+	c.logger.Info("Skipping separate attestation requests - attestations now included in SignedMessage")
 
 	// Wait for session ID from TEE_K (indicates successful session coordination)
-	// This is a simple polling approach for now
+	// This is still needed for session management
 	maxWait := 30 * time.Second
 	waitStart := time.Now()
 
@@ -802,37 +797,7 @@ func (c *Client) fetchAndVerifyAttestations() error {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	c.logger.Info("Session coordinated, proceeding with attestation requests", zap.String("session_id", c.sessionID))
-
-	// Create attestation request (no request ID needed)
-	// Send to TEE_K
-	teekEnv := &teeproto.Envelope{
-		TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_AttestationRequest{
-			AttestationRequest: &teeproto.AttestationRequestData{},
-		},
-	}
-
-	if err := c.sendEnvelope(teekEnv); err != nil {
-		return fmt.Errorf("failed to send TEE_K attestation request: %v", err)
-	}
-	c.logger.Info("Sent attestation request to TEE_K")
-
-	// Send to TEE_T
-	teetEnv := &teeproto.Envelope{
-		TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_AttestationRequest{
-			AttestationRequest: &teeproto.AttestationRequestData{},
-		},
-	}
-
-	if err := c.sendEnvelopeToTEET(teetEnv); err != nil {
-		return fmt.Errorf("failed to send TEE_T attestation request: %v", err)
-	}
-	c.logger.Info("Sent attestation request to TEE_T")
-
-	// Responses will be handled asynchronously by handleAttestationResponse
-	c.logger.Info("Waiting for attestation responses from both TEE_K and TEE_T")
+	c.logger.Info("Session coordinated, ready for protocol", zap.String("session_id", c.sessionID))
 	return nil
 }
 
@@ -841,13 +806,8 @@ func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string)
 	// Try to unmarshal as protobuf AttestationReport first (new format)
 	var pbReport teeproto.AttestationReport
 	if pbErr := proto.Unmarshal(attestationDoc, &pbReport); pbErr == nil && pbReport.Type != "" {
-		// Convert protobuf to shared.AttestationReport for compatibility with existing validation logic
-		report := shared.AttestationReport{
-			Type:       pbReport.Type,
-			Report:     pbReport.Report,
-			SigningKey: pbReport.SigningKey,
-		}
-		return c.verifyAttestationReport(&report)
+		// Use the new protobuf format directly
+		return c.verifyAttestationReportProtobuf(&pbReport, expectedSource)
 	}
 
 	// Fall back to JSON format (legacy)
@@ -857,6 +817,52 @@ func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string)
 	}
 
 	return nil, fmt.Errorf("unsupported attestation format")
+}
+
+// verifyAttestationReportProtobuf verifies a protobuf AttestationReport and extracts the public key from the report itself
+func (c *Client) verifyAttestationReportProtobuf(report *teeproto.AttestationReport, expectedSource string) ([]byte, error) {
+	switch report.Type {
+	case "nitro":
+		sr, err := verifier.NewSignedAttestationReport(strings.NewReader(string(report.Report)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse nitro report: %v", err)
+		}
+		if err := verifier.Validate(sr, nil); err != nil {
+			return nil, fmt.Errorf("nitro validation failed: %v", err)
+		}
+
+		// Extract public key from user data in the attestation document
+		userDataStr := string(sr.Document.UserData)
+		expectedPrefix := fmt.Sprintf("%s_public_key:", strings.ToLower(expectedSource))
+		if !strings.HasPrefix(userDataStr, expectedPrefix) {
+			return nil, fmt.Errorf("invalid user data format, expected prefix %s", expectedPrefix)
+		}
+
+		publicKeyHex := userDataStr[len(expectedPrefix):]
+		publicKeyDER, err := hex.DecodeString(publicKeyHex)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode public key hex: %v", err)
+		}
+
+		c.logger.Info("Extracted public key from Nitro attestation", zap.String("source", expectedSource), zap.Int("key_bytes", len(publicKeyDER)))
+		return publicKeyDER, nil
+
+	case "gcp":
+		att, err := shared.NewGoogleAttestor()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create google attestor: %v", err)
+		}
+		if err := att.Validate(context.Background(), report.Report); err != nil {
+			return nil, fmt.Errorf("google attestation validation failed: %v", err)
+		}
+
+		// For GCP, we need to extract the public key from the attestation token
+		// This is a placeholder - GCP attestation key extraction needs specific implementation
+		return nil, fmt.Errorf("GCP public key extraction not yet implemented for protobuf format")
+
+	default:
+		return nil, fmt.Errorf("unsupported attestation type: %s", report.Type)
+	}
 }
 
 // verifyAttestationReport verifies a structured AttestationReport and extracts the public key
@@ -892,6 +898,7 @@ func (c *Client) verifyAttestationReport(report *shared.AttestationReport) ([]by
 }
 
 // verifySignedMessage verifies a protobuf SignedMessage using the same logic as the offline verifier
+// Now supports both enclave mode (with AttestationReport) and standalone mode (with PublicKey)
 func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error {
 	if signedMsg == nil {
 		return fmt.Errorf("SECURITY ERROR: %s signed message is nil", source)
@@ -900,9 +907,6 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 	// Validate required fields
 	if len(signedMsg.GetSignature()) == 0 {
 		return fmt.Errorf("SECURITY ERROR: %s missing signature", source)
-	}
-	if len(signedMsg.GetPublicKey()) == 0 {
-		return fmt.Errorf("SECURITY ERROR: %s missing public key", source)
 	}
 	if len(signedMsg.GetBody()) == 0 {
 		return fmt.Errorf("SECURITY ERROR: %s missing body", source)
@@ -917,8 +921,31 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 		return fmt.Errorf("SECURITY ERROR: %s wrong body type, expected %v got %v", source, expectedBodyType, signedMsg.GetBodyType())
 	}
 
+	// Extract public key - either from AttestationReport (enclave mode) or PublicKey field (standalone mode)
+	var publicKeyDER []byte
+	var err error
+
+	if signedMsg.GetAttestationReport() != nil {
+		// Enclave mode: extract public key from attestation report
+		attestationReport := signedMsg.GetAttestationReport()
+		c.logger.Info("Verifying attestation and extracting public key", zap.String("source", source), zap.String("attestation_type", attestationReport.GetType()))
+
+		// Verify attestation and extract public key
+		publicKeyDER, err = c.verifyAttestation(attestationReport.GetReport(), source)
+		if err != nil {
+			return fmt.Errorf("SECURITY ERROR: %s attestation verification failed: %v", source, err)
+		}
+		c.logger.Info("Attestation verification SUCCESS", zap.String("source", source), zap.Int("public_key_bytes", len(publicKeyDER)))
+	} else if len(signedMsg.GetPublicKey()) > 0 {
+		// Standalone mode: use public key directly
+		publicKeyDER = signedMsg.GetPublicKey()
+		c.logger.Info("Using standalone mode public key", zap.String("source", source), zap.Int("public_key_bytes", len(publicKeyDER)))
+	} else {
+		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)
+	}
+
 	// SECURITY: Verify signature against the exact signed bytes (SignedMessage.Body)
-	if err := shared.VerifySignatureWithDER(signedMsg.GetBody(), signedMsg.GetSignature(), signedMsg.GetPublicKey()); err != nil {
+	if err := shared.VerifySignatureWithDER(signedMsg.GetBody(), signedMsg.GetSignature(), publicKeyDER); err != nil {
 		return fmt.Errorf("SECURITY ERROR: %s cryptographic signature verification FAILED: %v", source, err)
 	}
 
@@ -926,38 +953,7 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 	return nil
 }
 
-// verifyAttestationPublicKeys compares the public keys from attestations with those from signed transcripts
-func (c *Client) verifyAttestationPublicKeys() error {
-
-	// Check if we have both transcript public keys
-	if c.teekTranscriptPublicKey == nil || c.teetTranscriptPublicKey == nil {
-		return fmt.Errorf("not all transcript public keys are available yet")
-	}
-
-	// Check if we have both attestation public keys
-	if c.teekAttestationPublicKey == nil || c.teetAttestationPublicKey == nil {
-		return fmt.Errorf("not all attestation public keys are available yet")
-	}
-
-	// Compare TEE_K public keys
-	if !bytes.Equal(c.teekAttestationPublicKey, c.teekTranscriptPublicKey) {
-		return fmt.Errorf("TEE_K public key mismatch: attestation=%x, transcript=%x",
-			c.teekAttestationPublicKey[:16], c.teekTranscriptPublicKey[:16])
-	}
-
-	// Compare TEE_T public keys
-	if !bytes.Equal(c.teetAttestationPublicKey, c.teetTranscriptPublicKey) {
-		return fmt.Errorf("TEE_T public key mismatch: attestation=%x, transcript=%x",
-			c.teetAttestationPublicKey[:16], c.teetTranscriptPublicKey[:16])
-	}
-
-	c.logger.Info("Public key verification SUCCESS!")
-	c.logger.Info("TEE_K: attestation and transcript public keys match")
-	c.logger.Info("TEE_T: attestation and transcript public keys match")
-
-	c.publicKeyComparisonDone = true
-	return nil
-}
+// DEPRECATED: verifyAttestationPublicKeys removed - attestations now verified directly in SignedMessage
 
 // buildProtocolResult constructs the complete protocol execution results
 func (c *Client) buildProtocolResult() (*ProtocolResult, error) {

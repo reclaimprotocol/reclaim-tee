@@ -602,8 +602,9 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// TEE_K only sends finished to TEE_T, doesn't receive from client
 			t.logger.WithSession(sessionID).Info("Ignoring finished message from client (not needed in single session mode)")
 		case *teeproto.Envelope_AttestationRequest:
-			msg := &shared.Message{SessionID: sessionID, Type: shared.MsgAttestationRequest, Data: shared.AttestationRequestData{}}
-			t.handleAttestationRequestSession(sessionID, msg)
+			// Attestation requests no longer supported - attestations are included in SignedMessage
+			t.logger.WithSession(sessionID).Info("Ignoring legacy attestation request - attestations now included in SignedMessage")
+			t.terminateSessionWithError(sessionID, shared.ReasonProtocolViolation, fmt.Errorf("attestation requests no longer supported"), "Attestation requests deprecated - use SignedMessage")
 		default:
 			unknownMsgErr := fmt.Errorf("unknown message type: %T", p)
 			t.terminateSessionWithError(sessionID, shared.ReasonUnknownMessageType, unknownMsgErr, "Unknown message type")
@@ -2247,12 +2248,31 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		zap.Int("body_bytes", len(body)),
 		zap.Int("signature_bytes", len(comprehensiveSignature)))
 
+	// Generate attestation report for enclave mode, or use public key for standalone
+	var attestationReport *teeproto.AttestationReport
+	var publicKeyForStandalone []byte
+
+	if t.enclaveManager != nil {
+		// Enclave mode: include attestation report
+		var err error
+		attestationReport, err = t.generateAttestationReport(sessionID)
+		if err != nil {
+			return fmt.Errorf("failed to generate attestation report: %v", err)
+		}
+		t.logger.WithSession(sessionID).Info("Including attestation report in SignedMessage")
+	} else {
+		// Standalone mode: include public key
+		publicKeyForStandalone = publicKeyDER
+		t.logger.WithSession(sessionID).Info("Including public key in SignedMessage (standalone mode)")
+	}
+
 	// Send the signed message to client
 	signedMsg := &teeproto.SignedMessage{
-		BodyType:  teeproto.BodyType_BODY_TYPE_K_OUTPUT,
-		Body:      body,
-		PublicKey: publicKeyDER,
-		Signature: comprehensiveSignature,
+		BodyType:          teeproto.BodyType_BODY_TYPE_K_OUTPUT,
+		Body:              body,
+		PublicKey:         publicKeyForStandalone,
+		Signature:         comprehensiveSignature,
+		AttestationReport: attestationReport,
 	}
 
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
@@ -2265,33 +2285,21 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	t.logger.WithSession(sessionID).Info("Sent SignedMessage (KOutput) to client",
 		zap.Int("packets", len(tlsPackets)),
 		zap.Int("redacted_streams", len(session.RedactedStreams)))
+
 	return nil
 }
 
-// handleAttestationRequestSession handles attestation requests from clients over WebSocket
-func (t *TEEK) handleAttestationRequestSession(sessionID string, msg *shared.Message) {
-	var attestReq shared.AttestationRequestData
-	if err := msg.UnmarshalData(&attestReq); err != nil {
-		t.logger.WithSession(sessionID).Error("Failed to unmarshal attestation request", zap.Error(err))
-		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, fmt.Errorf("failed to parse attestation request"), "failed to parse attestation request")
-		return
+// generateAttestationReport generates an AttestationReport for enclave mode
+func (t *TEEK) generateAttestationReport(sessionID string) (*teeproto.AttestationReport, error) {
+	// Skip in standalone mode
+	if t.enclaveManager == nil {
+		return nil, nil
 	}
 
-	t.logger.WithSession(sessionID).Info("Processing attestation request")
-
-	// Get attestation from enclave manager if available
-	if t.signingKeyPair == nil {
-		t.logger.WithSession(sessionID).Error("No signing key pair available for attestation")
-		t.sendAttestationResponse(sessionID, nil, false, "No signing key pair available")
-		return
-	}
-
-	// Generate attestation document using enclave manager
+	// Get public key
 	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
 	if err != nil {
-		t.logger.WithSession(sessionID).Error("Failed to get public key DER", zap.Error(err))
-		t.sendAttestationResponse(sessionID, nil, false, "Failed to get public key")
-		return
+		return nil, fmt.Errorf("failed to get public key DER: %v", err)
 	}
 
 	// Create user data containing the hex-encoded ECDSA public key
@@ -2299,51 +2307,24 @@ func (t *TEEK) handleAttestationRequestSession(sessionID string, msg *shared.Mes
 	t.logger.WithSession(sessionID).Info("Including ECDSA public key in attestation", zap.Int("der_bytes", len(publicKeyDER)))
 
 	// Generate attestation document using enclave manager
-	if t.enclaveManager == nil {
-		t.logger.WithSession(sessionID).Error("No enclave manager available for attestation")
-		t.sendAttestationResponse(sessionID, nil, false, "No enclave manager available")
-		return
-	}
-
 	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
 	if err != nil {
-		t.logger.WithSession(sessionID).Error("Failed to generate attestation", zap.Error(err))
-		t.sendAttestationResponse(sessionID, nil, false, fmt.Sprintf("Failed to generate attestation: %v", err))
-		return
+		return nil, fmt.Errorf("failed to generate attestation: %v", err)
 	}
 
 	t.logger.WithSession(sessionID).Info("Generated attestation document", zap.Int("bytes", len(attestationDoc)))
 
-	// Wrap in structured report for unified client handling (Nitro)
-	report := &teeproto.AttestationReport{
-		Type:       "nitro",
-		Report:     attestationDoc,
-		SigningKey: publicKeyDER,
-	}
-
-	// Send successful response
-	t.sendAttestationResponseProtobuf(sessionID, report, true, "")
+	// Create structured report
+	return &teeproto.AttestationReport{
+		Type:   "nitro",
+		Report: attestationDoc,
+		// Public key will be extracted from report during verification
+	}, nil
 }
 
-// sendAttestationResponse sends attestation response to client (request ID removed)
-func (t *TEEK) sendAttestationResponse(sessionID string, attestationDoc []byte, success bool, errorMessage string) {
-	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationDoc: attestationDoc, Success: success, ErrorMessage: errorMessage, Source: "tee_k"}},
-	}
-	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
-		t.logger.WithSession(sessionID).Error("Failed to send attestation response", zap.Error(err))
-	}
-}
+// DEPRECATED: Attestation requests removed - attestations now included in SignedMessage
 
-// sendAttestationResponseProtobuf sends structured attestation response to client
-func (t *TEEK) sendAttestationResponseProtobuf(sessionID string, report *teeproto.AttestationReport, success bool, errorMessage string) {
-	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationReport: report, Success: success, ErrorMessage: errorMessage, Source: "tee_k"}},
-	}
-	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
-		t.logger.WithSession(sessionID).Error("Failed to send attestation response", zap.Error(err))
-	}
-}
+// DEPRECATED: Attestation response functions removed - attestations now included in SignedMessage
 
 // constructNonce creates the appropriate nonce for a given cipher suite and sequence number
 // Following RFC specifications and minitls implementation exactly

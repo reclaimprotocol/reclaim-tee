@@ -1,6 +1,7 @@
 package proofverifier
 
 import (
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
 
+	"github.com/anjuna-security/go-nitro-attestation/verifier"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -388,6 +390,44 @@ func verifyAndRevealProofData(bundle shared.VerificationBundle) error {
 	return nil
 }
 
+// verifyAttestationReport verifies a protobuf AttestationReport and extracts the public key
+func verifyAttestationReport(report *teeproto.AttestationReport, expectedSource string) ([]byte, error) {
+	switch report.Type {
+	case "nitro":
+		sr, err := verifier.NewSignedAttestationReport(strings.NewReader(string(report.Report)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse nitro report: %v", err)
+		}
+		if err := verifier.Validate(sr, nil); err != nil {
+			return nil, fmt.Errorf("nitro validation failed: %v", err)
+		}
+
+		// Extract public key from user data in the attestation document
+		userDataStr := string(sr.Document.UserData)
+		expectedPrefix := fmt.Sprintf("%s_public_key:", strings.ToLower(expectedSource))
+		if !strings.HasPrefix(userDataStr, expectedPrefix) {
+			return nil, fmt.Errorf("invalid user data format, expected prefix %s", expectedPrefix)
+		}
+
+		publicKeyHex := userDataStr[len(expectedPrefix):]
+		publicKeyDER, err := hex.DecodeString(publicKeyHex)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode public key hex: %v", err)
+		}
+
+		fmt.Printf("[Verifier] Extracted public key from Nitro attestation (%d bytes)\n", len(publicKeyDER))
+		return publicKeyDER, nil
+
+	case "gcp":
+		// For GCP, we need to extract the public key from the attestation token
+		// This is a placeholder - GCP attestation key extraction needs specific implementation
+		return nil, fmt.Errorf("GCP public key extraction not yet implemented for protobuf format")
+
+	default:
+		return nil, fmt.Errorf("unsupported attestation type: %s", report.Type)
+	}
+}
+
 // verifySignedMessage verifies a protobuf SignedMessage
 func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error {
 	if signedMsg == nil {
@@ -399,9 +439,6 @@ func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error
 	// SECURITY: Strict validation of required fields
 	if len(signedMsg.GetSignature()) == 0 {
 		return fmt.Errorf("SECURITY ERROR: %s missing signature - cannot verify authenticity", source)
-	}
-	if len(signedMsg.GetPublicKey()) == 0 {
-		return fmt.Errorf("SECURITY ERROR: %s missing public key - cannot verify authenticity", source)
 	}
 	if len(signedMsg.GetBody()) == 0 {
 		return fmt.Errorf("SECURITY ERROR: %s missing body - no data to verify", source)
@@ -416,9 +453,32 @@ func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error
 		return fmt.Errorf("SECURITY ERROR: %s wrong body type, expected %v got %v", source, expectedBodyType, signedMsg.GetBodyType())
 	}
 
+	// Extract public key - either from AttestationReport (enclave mode) or PublicKey field (standalone mode)
+	var publicKeyDER []byte
+	var err error
+
+	if signedMsg.GetAttestationReport() != nil {
+		// Enclave mode: extract public key from attestation report
+		attestationReport := signedMsg.GetAttestationReport()
+		fmt.Printf("[Verifier] Verifying %s attestation report (type: %s)\n", source, attestationReport.GetType())
+
+		// Verify attestation and extract public key
+		publicKeyDER, err = verifyAttestationReport(attestationReport, source)
+		if err != nil {
+			return fmt.Errorf("SECURITY ERROR: %s attestation verification failed: %v", source, err)
+		}
+		fmt.Printf("[Verifier] %s attestation verification SUCCESS, extracted %d bytes public key\n", source, len(publicKeyDER))
+	} else if len(signedMsg.GetPublicKey()) > 0 {
+		// Standalone mode: use public key directly
+		publicKeyDER = signedMsg.GetPublicKey()
+		fmt.Printf("[Verifier] Using %s standalone mode public key (%d bytes)\n", source, len(publicKeyDER))
+	} else {
+		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)
+	}
+
 	// SECURITY FIX: Verify signature against the exact signed bytes (SignedMessage.Body)
 	// The TEEs sign their protobuf payload and put those signed bytes as the body
-	if err := shared.VerifySignatureWithDER(signedMsg.GetBody(), signedMsg.GetSignature(), signedMsg.GetPublicKey()); err != nil {
+	if err := shared.VerifySignatureWithDER(signedMsg.GetBody(), signedMsg.GetSignature(), publicKeyDER); err != nil {
 		return fmt.Errorf("SECURITY ERROR: %s cryptographic signature verification FAILED: %v", source, err)
 	}
 

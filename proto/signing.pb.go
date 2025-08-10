@@ -193,19 +193,73 @@ func (x *TOutputPayload) GetPackets() [][]byte {
 	return nil
 }
 
-type SignedMessage struct {
+// Attestation report with structured data
+type AttestationReport struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	BodyType      BodyType               `protobuf:"varint,1,opt,name=body_type,json=bodyType,proto3,enum=teeproto.BodyType" json:"body_type,omitempty"`
-	Body          []byte                 `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`                            // serialized deterministic KOutputPayload or TOutputPayload
-	PublicKey     []byte                 `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"` // DER-encoded public key
-	Signature     []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`                  // signature over body bytes
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`     // "nitro" or "gcp"
+	Report        []byte                 `protobuf:"bytes,2,opt,name=report,proto3" json:"report,omitempty"` // raw provider-specific attestation bytes
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *AttestationReport) Reset() {
+	*x = AttestationReport{}
+	mi := &file_signing_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AttestationReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AttestationReport) ProtoMessage() {}
+
+func (x *AttestationReport) ProtoReflect() protoreflect.Message {
+	mi := &file_signing_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AttestationReport.ProtoReflect.Descriptor instead.
+func (*AttestationReport) Descriptor() ([]byte, []int) {
+	return file_signing_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *AttestationReport) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *AttestationReport) GetReport() []byte {
+	if x != nil {
+		return x.Report
+	}
+	return nil
+}
+
+type SignedMessage struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	BodyType          BodyType               `protobuf:"varint,1,opt,name=body_type,json=bodyType,proto3,enum=teeproto.BodyType" json:"body_type,omitempty"`
+	Body              []byte                 `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`                                                    // serialized deterministic KOutputPayload or TOutputPayload
+	PublicKey         []byte                 `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`                         // DER-encoded public key (standalone mode only)
+	Signature         []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`                                          // signature over body bytes
+	AttestationReport *AttestationReport     `protobuf:"bytes,5,opt,name=attestation_report,json=attestationReport,proto3" json:"attestation_report,omitempty"` // full attestation (enclave mode only)
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
 func (x *SignedMessage) Reset() {
 	*x = SignedMessage{}
-	mi := &file_signing_proto_msgTypes[2]
+	mi := &file_signing_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -217,7 +271,7 @@ func (x *SignedMessage) String() string {
 func (*SignedMessage) ProtoMessage() {}
 
 func (x *SignedMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_signing_proto_msgTypes[2]
+	mi := &file_signing_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -230,7 +284,7 @@ func (x *SignedMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignedMessage.ProtoReflect.Descriptor instead.
 func (*SignedMessage) Descriptor() ([]byte, []int) {
-	return file_signing_proto_rawDescGZIP(), []int{2}
+	return file_signing_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SignedMessage) GetBodyType() BodyType {
@@ -261,6 +315,13 @@ func (x *SignedMessage) GetSignature() []byte {
 	return nil
 }
 
+func (x *SignedMessage) GetAttestationReport() *AttestationReport {
+	if x != nil {
+		return x.AttestationReport
+	}
+	return nil
+}
+
 var File_signing_proto protoreflect.FileDescriptor
 
 const file_signing_proto_rawDesc = "" +
@@ -273,13 +334,17 @@ const file_signing_proto_rawDesc = "" +
 	"\apackets\x18\x04 \x03(\fR\apackets\x12\\\n" +
 	"\x19response_redaction_ranges\x18\x05 \x03(\v2 .teeproto.ResponseRedactionRangeR\x17responseRedactionRanges\"*\n" +
 	"\x0eTOutputPayload\x12\x18\n" +
-	"\apackets\x18\x01 \x03(\fR\apackets\"\x91\x01\n" +
+	"\apackets\x18\x01 \x03(\fR\apackets\"?\n" +
+	"\x11AttestationReport\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x16\n" +
+	"\x06report\x18\x02 \x01(\fR\x06report\"\xdd\x01\n" +
 	"\rSignedMessage\x12/\n" +
 	"\tbody_type\x18\x01 \x01(\x0e2\x12.teeproto.BodyTypeR\bbodyType\x12\x12\n" +
 	"\x04body\x18\x02 \x01(\fR\x04body\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x03 \x01(\fR\tpublicKey\x12\x1c\n" +
-	"\tsignature\x18\x04 \x01(\fR\tsignature*U\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\x12J\n" +
+	"\x12attestation_report\x18\x05 \x01(\v2\x1b.teeproto.AttestationReportR\x11attestationReport*U\n" +
 	"\bBodyType\x12\x19\n" +
 	"\x15BODY_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12BODY_TYPE_K_OUTPUT\x10\x01\x12\x16\n" +
@@ -298,26 +363,28 @@ func file_signing_proto_rawDescGZIP() []byte {
 }
 
 var file_signing_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_signing_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_signing_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_signing_proto_goTypes = []any{
 	(BodyType)(0),                          // 0: teeproto.BodyType
 	(*KOutputPayload)(nil),                 // 1: teeproto.KOutputPayload
 	(*TOutputPayload)(nil),                 // 2: teeproto.TOutputPayload
-	(*SignedMessage)(nil),                  // 3: teeproto.SignedMessage
-	(*RequestRedactionRange)(nil),          // 4: teeproto.RequestRedactionRange
-	(*SignedRedactedDecryptionStream)(nil), // 5: teeproto.SignedRedactedDecryptionStream
-	(*ResponseRedactionRange)(nil),         // 6: teeproto.ResponseRedactionRange
+	(*AttestationReport)(nil),              // 3: teeproto.AttestationReport
+	(*SignedMessage)(nil),                  // 4: teeproto.SignedMessage
+	(*RequestRedactionRange)(nil),          // 5: teeproto.RequestRedactionRange
+	(*SignedRedactedDecryptionStream)(nil), // 6: teeproto.SignedRedactedDecryptionStream
+	(*ResponseRedactionRange)(nil),         // 7: teeproto.ResponseRedactionRange
 }
 var file_signing_proto_depIdxs = []int32{
-	4, // 0: teeproto.KOutputPayload.request_redaction_ranges:type_name -> teeproto.RequestRedactionRange
-	5, // 1: teeproto.KOutputPayload.redacted_streams:type_name -> teeproto.SignedRedactedDecryptionStream
-	6, // 2: teeproto.KOutputPayload.response_redaction_ranges:type_name -> teeproto.ResponseRedactionRange
+	5, // 0: teeproto.KOutputPayload.request_redaction_ranges:type_name -> teeproto.RequestRedactionRange
+	6, // 1: teeproto.KOutputPayload.redacted_streams:type_name -> teeproto.SignedRedactedDecryptionStream
+	7, // 2: teeproto.KOutputPayload.response_redaction_ranges:type_name -> teeproto.ResponseRedactionRange
 	0, // 3: teeproto.SignedMessage.body_type:type_name -> teeproto.BodyType
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	3, // 4: teeproto.SignedMessage.attestation_report:type_name -> teeproto.AttestationReport
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_signing_proto_init() }
@@ -332,7 +399,7 @@ func file_signing_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_signing_proto_rawDesc), len(file_signing_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

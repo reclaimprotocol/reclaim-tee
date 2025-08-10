@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -278,8 +279,9 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			t.logger.DebugIf("Handling MsgRedactionStreams", zap.String("session_id", sessionID))
 			t.handleRedactionStreamsSession(sessionID, msg)
 		case shared.MsgAttestationRequest:
-			t.logger.DebugIf("Handling MsgAttestationRequest from client", zap.String("session_id", sessionID))
-			t.handleAttestationRequestSession(sessionID, msg)
+			// Attestation requests no longer supported - attestations are included in SignedMessage
+			t.logger.InfoIf("Ignoring legacy attestation request - attestations now included in SignedMessage", zap.String("session_id", sessionID))
+			t.sendErrorToClientSession(sessionID, "Attestation requests deprecated - use SignedMessage")
 		case shared.MsgFinished:
 			t.logger.DebugIf("Handling MsgFinished from TEE_K", zap.String("session_id", sessionID))
 			t.handleFinishedFromTEEKSession(msg)
@@ -1591,135 +1593,9 @@ func (t *TEET) handleTEETReady(conn *websocket.Conn, msg *shared.Message) {
 	}
 }
 
-// handleAttestationRequestSession handles attestation requests from clients over WebSocket
-func (t *TEET) handleAttestationRequestSession(sessionID string, msg *shared.Message) {
-	var attestReq shared.AttestationRequestData
-	if err := msg.UnmarshalData(&attestReq); err != nil {
-		t.logger.Error("Failed to unmarshal attestation request",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-		t.sendErrorToClientSession(sessionID, "Failed to parse attestation request")
-		return
-	}
+// DEPRECATED: Attestation requests removed - attestations now included in SignedMessage
 
-	// Use the session ID from the message itself as the primary source of truth
-	// This fixes the race condition where the parameter might be empty
-	actualSessionID := msg.SessionID
-	if actualSessionID == "" {
-		t.logger.WarnIf("No session ID in attestation message, using parameter",
-			zap.String("session_id", sessionID))
-		actualSessionID = sessionID
-	}
-
-	t.logger.InfoIf("Processing attestation request",
-		zap.String("session_id", actualSessionID))
-
-	// Get attestation from enclave manager if available
-	if t.signingKeyPair == nil {
-		t.logger.Error("No signing key pair available for attestation",
-			zap.String("session_id", actualSessionID))
-		t.sendAttestationResponseToClient(actualSessionID, nil, false, "No signing key pair available")
-		return
-	}
-
-	// Generate attestation document using enclave manager
-	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-	if err != nil {
-		t.logger.Error("Failed to get public key DER for attestation",
-			zap.String("session_id", actualSessionID),
-			zap.Error(err))
-		t.sendAttestationResponseToClient(actualSessionID, nil, false, "Failed to get public key")
-		return
-	}
-
-	// Create user data containing the hex-encoded ECDSA public key
-	userData := fmt.Sprintf("tee_t_public_key:%x", publicKeyDER)
-	t.logger.InfoIf("Including ECDSA public key in attestation",
-		zap.String("session_id", actualSessionID),
-		zap.Int("public_key_der_bytes", len(publicKeyDER)))
-
-	// Generate attestation document using enclave manager
-	if t.enclaveManager == nil {
-		t.logger.Error("No enclave manager available for attestation",
-			zap.String("session_id", actualSessionID))
-		t.sendAttestationResponseToClient(actualSessionID, nil, false, "No enclave manager available")
-		return
-	}
-
-	// Switch on platform to decide attestation format
-	platform := "nitro"
-	// If we have config available in enclave manager, read domain only; platform sourced via env in config
-	if envPlatform := shared.GetEnvOrDefault("PLATFORM", ""); envPlatform != "" {
-		platform = envPlatform
-	}
-
-	if platform == "google_cvm" {
-		// In GCP mode, return structured AttestationReport with signing key
-		// Get raw GCP attestation token from enclave attestor if available in future; placeholder uses Nitro doc as Report
-		raw, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
-		if err != nil {
-			t.logger.Error("Failed to generate GCP attestation",
-				zap.String("session_id", actualSessionID),
-				zap.Error(err))
-			t.sendAttestationResponseToClient(actualSessionID, nil, false, fmt.Sprintf("Failed to generate attestation: %v", err))
-			return
-		}
-		report := &teeproto.AttestationReport{
-			Type:       "gcp",
-			Report:     raw,
-			SigningKey: publicKeyDER,
-		}
-		t.sendAttestationResponseToClientProtobuf(actualSessionID, report, true, "")
-		return
-	}
-
-	// Default Nitro path (existing behavior)
-	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
-	if err != nil {
-		t.logger.Error("Failed to generate attestation document",
-			zap.String("session_id", actualSessionID),
-			zap.Error(err))
-		t.sendAttestationResponseToClient(actualSessionID, nil, false, fmt.Sprintf("Failed to generate attestation: %v", err))
-		return
-	}
-
-	t.logger.InfoIf("Generated attestation document",
-		zap.String("session_id", actualSessionID),
-		zap.Int("attestation_bytes", len(attestationDoc)))
-
-	report := &teeproto.AttestationReport{
-		Type:       "nitro",
-		Report:     attestationDoc,
-		SigningKey: publicKeyDER,
-	}
-
-	// Send successful response
-	t.sendAttestationResponseToClientProtobuf(actualSessionID, report, true, "")
-}
-
-// sendAttestationResponseToClient sends attestation response to client (request ID removed)
-func (t *TEET) sendAttestationResponseToClient(sessionID string, attestationDoc []byte, success bool, errorMessage string) {
-	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationDoc: attestationDoc, Success: success, ErrorMessage: errorMessage, Source: "tee_t"}},
-	}
-	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
-		t.logger.Error("Failed to send attestation response",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-	}
-}
-
-// sendAttestationResponseToClientProtobuf sends structured attestation response to client
-func (t *TEET) sendAttestationResponseToClientProtobuf(sessionID string, report *teeproto.AttestationReport, success bool, errorMessage string) {
-	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationReport: report, Success: success, ErrorMessage: errorMessage, Source: "tee_t"}},
-	}
-	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
-		t.logger.Error("Failed to send attestation response",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-	}
-}
+// DEPRECATED: Attestation response functions removed - attestations now included in SignedMessage
 
 // sendErrorToClientSession sends an error message to a client session
 func (t *TEET) sendErrorToClientSession(sessionID, errMsg string) {
@@ -1906,11 +1782,33 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			zap.Int("body_bytes", len(body)),
 			zap.Int("signature_bytes", len(signature)))
 
+		// Generate attestation report for enclave mode, or use public key for standalone
+		var attestationReport *teeproto.AttestationReport
+		var publicKeyForStandalone []byte
+
+		if t.enclaveManager != nil {
+			// Enclave mode: include attestation report
+			var err error
+			attestationReport, err = t.generateAttestationReport(sessionID)
+			if err != nil {
+				t.logger.Error("Failed to generate attestation report",
+					zap.String("session_id", sessionID),
+					zap.Error(err))
+				return
+			}
+			t.logger.InfoIf("Including attestation report in SignedMessage", zap.String("session_id", sessionID))
+		} else {
+			// Standalone mode: include public key
+			publicKeyForStandalone = publicKeyDER
+			t.logger.InfoIf("Including public key in SignedMessage (standalone mode)", zap.String("session_id", sessionID))
+		}
+
 		sm := &teeproto.SignedMessage{
-			BodyType:  teeproto.BodyType_BODY_TYPE_T_OUTPUT,
-			Body:      body,
-			PublicKey: publicKeyDER,
-			Signature: signature,
+			BodyType:          teeproto.BodyType_BODY_TYPE_T_OUTPUT,
+			Body:              body,
+			PublicKey:         publicKeyForStandalone,
+			Signature:         signature,
+			AttestationReport: attestationReport,
 		}
 		env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 			Payload: &teeproto.Envelope_SignedMessage{SignedMessage: sm},
@@ -1930,6 +1828,61 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 		t.logger.DebugIf("Waiting for finished from TEE_K",
 			zap.String("session_id", sessionID),
 			zap.Bool("teek_finished", teekFinished))
+	}
+}
+
+// generateAttestationReport generates an AttestationReport for enclave mode
+func (t *TEET) generateAttestationReport(sessionID string) (*teeproto.AttestationReport, error) {
+	// Skip in standalone mode
+	if t.enclaveManager == nil {
+		return nil, nil
+	}
+
+	// Get public key
+	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key DER: %v", err)
+	}
+
+	// Create user data containing the hex-encoded ECDSA public key
+	userData := fmt.Sprintf("tee_t_public_key:%x", publicKeyDER)
+	t.logger.InfoIf("Including ECDSA public key in attestation",
+		zap.String("session_id", sessionID),
+		zap.Int("der_bytes", len(publicKeyDER)))
+
+	// Check attestation provider and generate accordingly
+	provider := os.Getenv("ATTESTATION_PROVIDER")
+	if provider == "gcp" {
+		raw, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate GCP attestation: %v", err)
+		}
+
+		t.logger.InfoIf("Generated GCP attestation",
+			zap.String("session_id", sessionID),
+			zap.Int("bytes", len(raw)))
+
+		return &teeproto.AttestationReport{
+			Type:   "gcp",
+			Report: raw,
+			// Public key will be extracted from report during verification
+		}, nil
+	} else {
+		// Default to Nitro
+		attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate Nitro attestation: %v", err)
+		}
+
+		t.logger.InfoIf("Generated Nitro attestation document",
+			zap.String("session_id", sessionID),
+			zap.Int("bytes", len(attestationDoc)))
+
+		return &teeproto.AttestationReport{
+			Type:   "nitro",
+			Report: attestationDoc,
+			// Public key will be extracted from report during verification
+		}, nil
 	}
 }
 

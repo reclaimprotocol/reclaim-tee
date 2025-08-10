@@ -20,6 +20,12 @@ message TOutputPayload {
   repeated bytes packets = 1; // TLS packets observed by TEE_T
 }
 
+// Attestation report with structured data
+message AttestationReport {
+  string type = 1; // "nitro" or "gcp"
+  bytes report = 2; // raw provider-specific attestation bytes
+}
+
 // Signature wrapper used everywhere
 enum BodyType {
   BODY_TYPE_UNSPECIFIED = 0;
@@ -30,8 +36,9 @@ enum BodyType {
 message SignedMessage {
   BodyType body_type = 1;
   bytes body = 2; // serialized deterministic KOutputPayload or TOutputPayload
-  bytes public_key = 3; // DER-encoded public key
+  bytes public_key = 3; // DER-encoded public key (standalone mode only)
   bytes signature = 4; // signature over body bytes
+  AttestationReport attestation_report = 5; // full attestation (enclave mode only)
 }
 
 

@@ -2086,72 +2086,11 @@ func (x *BatchedSignedRedactedDecryptionStreams) GetTotalCount() int32 {
 	return 0
 }
 
-// Attestation report with structured data
-type AttestationReport struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`                               // "nitro" or "gcp"
-	Report        []byte                 `protobuf:"bytes,2,opt,name=report,proto3" json:"report,omitempty"`                           // raw provider-specific attestation bytes
-	SigningKey    []byte                 `protobuf:"bytes,3,opt,name=signing_key,json=signingKey,proto3" json:"signing_key,omitempty"` // TEE runtime ECDSA public key (DER)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AttestationReport) Reset() {
-	*x = AttestationReport{}
-	mi := &file_transport_proto_msgTypes[25]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AttestationReport) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AttestationReport) ProtoMessage() {}
-
-func (x *AttestationReport) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[25]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AttestationReport.ProtoReflect.Descriptor instead.
-func (*AttestationReport) Descriptor() ([]byte, []int) {
-	return file_transport_proto_rawDescGZIP(), []int{25}
-}
-
-func (x *AttestationReport) GetType() string {
-	if x != nil {
-		return x.Type
-	}
-	return ""
-}
-
-func (x *AttestationReport) GetReport() []byte {
-	if x != nil {
-		return x.Report
-	}
-	return nil
-}
-
-func (x *AttestationReport) GetSigningKey() []byte {
-	if x != nil {
-		return x.SigningKey
-	}
-	return nil
-}
-
 // Attestation
 type AttestationResponse struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	AttestationDoc    []byte                 `protobuf:"bytes,1,opt,name=attestation_doc,json=attestationDoc,proto3" json:"attestation_doc,omitempty"`          // deprecated: raw bytes (for backwards compatibility)
-	AttestationReport *AttestationReport     `protobuf:"bytes,5,opt,name=attestation_report,json=attestationReport,proto3" json:"attestation_report,omitempty"` // structured report
+	AttestationReport *AttestationReport     `protobuf:"bytes,5,opt,name=attestation_report,json=attestationReport,proto3" json:"attestation_report,omitempty"` // structured report (from signing.proto)
 	Success           bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
 	ErrorMessage      string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
 	Source            string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"` // "tee_k" or "tee_t"
@@ -2161,7 +2100,7 @@ type AttestationResponse struct {
 
 func (x *AttestationResponse) Reset() {
 	*x = AttestationResponse{}
-	mi := &file_transport_proto_msgTypes[26]
+	mi := &file_transport_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2173,7 +2112,7 @@ func (x *AttestationResponse) String() string {
 func (*AttestationResponse) ProtoMessage() {}
 
 func (x *AttestationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[26]
+	mi := &file_transport_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2186,7 +2125,7 @@ func (x *AttestationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttestationResponse.ProtoReflect.Descriptor instead.
 func (*AttestationResponse) Descriptor() ([]byte, []int) {
-	return file_transport_proto_rawDescGZIP(), []int{26}
+	return file_transport_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *AttestationResponse) GetAttestationDoc() []byte {
@@ -2232,7 +2171,7 @@ type SessionCreated struct {
 
 func (x *SessionCreated) Reset() {
 	*x = SessionCreated{}
-	mi := &file_transport_proto_msgTypes[27]
+	mi := &file_transport_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2244,7 +2183,7 @@ func (x *SessionCreated) String() string {
 func (*SessionCreated) ProtoMessage() {}
 
 func (x *SessionCreated) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[27]
+	mi := &file_transport_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2257,7 +2196,7 @@ func (x *SessionCreated) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionCreated.ProtoReflect.Descriptor instead.
 func (*SessionCreated) Descriptor() ([]byte, []int) {
-	return file_transport_proto_rawDescGZIP(), []int{27}
+	return file_transport_proto_rawDescGZIP(), []int{26}
 }
 
 type SessionReady struct {
@@ -2269,7 +2208,7 @@ type SessionReady struct {
 
 func (x *SessionReady) Reset() {
 	*x = SessionReady{}
-	mi := &file_transport_proto_msgTypes[28]
+	mi := &file_transport_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2281,7 +2220,7 @@ func (x *SessionReady) String() string {
 func (*SessionReady) ProtoMessage() {}
 
 func (x *SessionReady) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[28]
+	mi := &file_transport_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2294,7 +2233,7 @@ func (x *SessionReady) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionReady.ProtoReflect.Descriptor instead.
 func (*SessionReady) Descriptor() ([]byte, []int) {
-	return file_transport_proto_rawDescGZIP(), []int{28}
+	return file_transport_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *SessionReady) GetReady() bool {
@@ -2317,7 +2256,7 @@ type BatchedResponseLengths_Length struct {
 
 func (x *BatchedResponseLengths_Length) Reset() {
 	*x = BatchedResponseLengths_Length{}
-	mi := &file_transport_proto_msgTypes[29]
+	mi := &file_transport_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2329,7 +2268,7 @@ func (x *BatchedResponseLengths_Length) String() string {
 func (*BatchedResponseLengths_Length) ProtoMessage() {}
 
 func (x *BatchedResponseLengths_Length) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[29]
+	mi := &file_transport_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2391,7 +2330,7 @@ type BatchedTagSecrets_TagSecret struct {
 
 func (x *BatchedTagSecrets_TagSecret) Reset() {
 	*x = BatchedTagSecrets_TagSecret{}
-	mi := &file_transport_proto_msgTypes[30]
+	mi := &file_transport_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2403,7 +2342,7 @@ func (x *BatchedTagSecrets_TagSecret) String() string {
 func (*BatchedTagSecrets_TagSecret) ProtoMessage() {}
 
 func (x *BatchedTagSecrets_TagSecret) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[30]
+	mi := &file_transport_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2451,7 +2390,7 @@ type BatchedTagVerifications_Verification struct {
 
 func (x *BatchedTagVerifications_Verification) Reset() {
 	*x = BatchedTagVerifications_Verification{}
-	mi := &file_transport_proto_msgTypes[31]
+	mi := &file_transport_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2463,7 +2402,7 @@ func (x *BatchedTagVerifications_Verification) String() string {
 func (*BatchedTagVerifications_Verification) ProtoMessage() {}
 
 func (x *BatchedTagVerifications_Verification) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[31]
+	mi := &file_transport_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2671,12 +2610,7 @@ const file_transport_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1f\n" +
 	"\vtotal_count\x18\x03 \x01(\x05R\n" +
-	"totalCount\"`\n" +
-	"\x11AttestationReport\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\x12\x16\n" +
-	"\x06report\x18\x02 \x01(\fR\x06report\x12\x1f\n" +
-	"\vsigning_key\x18\x03 \x01(\fR\n" +
-	"signingKey\"\xe1\x01\n" +
+	"totalCount\"\xe1\x01\n" +
 	"\x13AttestationResponse\x12'\n" +
 	"\x0fattestation_doc\x18\x01 \x01(\fR\x0eattestationDoc\x12J\n" +
 	"\x12attestation_report\x18\x05 \x01(\v2\x1b.teeproto.AttestationReportR\x11attestationReport\x12\x18\n" +
@@ -2705,7 +2639,7 @@ func file_transport_proto_rawDescGZIP() []byte {
 }
 
 var file_transport_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_transport_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_transport_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_transport_proto_goTypes = []any{
 	(Sender)(0),                                    // 0: teeproto.Sender
 	(*Envelope)(nil),                               // 1: teeproto.Envelope
@@ -2733,30 +2667,30 @@ var file_transport_proto_goTypes = []any{
 	(*BatchedTagVerifications)(nil),                // 23: teeproto.BatchedTagVerifications
 	(*BatchedDecryptionStreams)(nil),               // 24: teeproto.BatchedDecryptionStreams
 	(*BatchedSignedRedactedDecryptionStreams)(nil), // 25: teeproto.BatchedSignedRedactedDecryptionStreams
-	(*AttestationReport)(nil),                      // 26: teeproto.AttestationReport
-	(*AttestationResponse)(nil),                    // 27: teeproto.AttestationResponse
-	(*SessionCreated)(nil),                         // 28: teeproto.SessionCreated
-	(*SessionReady)(nil),                           // 29: teeproto.SessionReady
-	(*BatchedResponseLengths_Length)(nil),          // 30: teeproto.BatchedResponseLengths.Length
-	(*BatchedTagSecrets_TagSecret)(nil),            // 31: teeproto.BatchedTagSecrets.TagSecret
-	(*BatchedTagVerifications_Verification)(nil),   // 32: teeproto.BatchedTagVerifications.Verification
-	(*ErrorData)(nil),                              // 33: teeproto.ErrorData
-	(*FinishedMessage)(nil),                        // 34: teeproto.FinishedMessage
-	(*AttestationRequestData)(nil),                 // 35: teeproto.AttestationRequestData
-	(*SignedMessage)(nil),                          // 36: teeproto.SignedMessage
-	(*RequestRedactionRange)(nil),                  // 37: teeproto.RequestRedactionRange
-	(*ResponseRedactionRange)(nil),                 // 38: teeproto.ResponseRedactionRange
-	(*ResponseDecryptionStreamData)(nil),           // 39: teeproto.ResponseDecryptionStreamData
-	(*SignedRedactedDecryptionStream)(nil),         // 40: teeproto.SignedRedactedDecryptionStream
+	(*AttestationResponse)(nil),                    // 26: teeproto.AttestationResponse
+	(*SessionCreated)(nil),                         // 27: teeproto.SessionCreated
+	(*SessionReady)(nil),                           // 28: teeproto.SessionReady
+	(*BatchedResponseLengths_Length)(nil),          // 29: teeproto.BatchedResponseLengths.Length
+	(*BatchedTagSecrets_TagSecret)(nil),            // 30: teeproto.BatchedTagSecrets.TagSecret
+	(*BatchedTagVerifications_Verification)(nil),   // 31: teeproto.BatchedTagVerifications.Verification
+	(*ErrorData)(nil),                              // 32: teeproto.ErrorData
+	(*FinishedMessage)(nil),                        // 33: teeproto.FinishedMessage
+	(*AttestationRequestData)(nil),                 // 34: teeproto.AttestationRequestData
+	(*SignedMessage)(nil),                          // 35: teeproto.SignedMessage
+	(*RequestRedactionRange)(nil),                  // 36: teeproto.RequestRedactionRange
+	(*ResponseRedactionRange)(nil),                 // 37: teeproto.ResponseRedactionRange
+	(*ResponseDecryptionStreamData)(nil),           // 38: teeproto.ResponseDecryptionStreamData
+	(*SignedRedactedDecryptionStream)(nil),         // 39: teeproto.SignedRedactedDecryptionStream
+	(*AttestationReport)(nil),                      // 40: teeproto.AttestationReport
 }
 var file_transport_proto_depIdxs = []int32{
 	0,  // 0: teeproto.Envelope.sender:type_name -> teeproto.Sender
 	3,  // 1: teeproto.Envelope.connection_ready:type_name -> teeproto.ConnectionReady
 	4,  // 2: teeproto.Envelope.tcp_ready:type_name -> teeproto.TCPReady
-	33, // 3: teeproto.Envelope.error:type_name -> teeproto.ErrorData
-	34, // 4: teeproto.Envelope.finished:type_name -> teeproto.FinishedMessage
-	28, // 5: teeproto.Envelope.session_created:type_name -> teeproto.SessionCreated
-	29, // 6: teeproto.Envelope.session_ready:type_name -> teeproto.SessionReady
+	32, // 3: teeproto.Envelope.error:type_name -> teeproto.ErrorData
+	33, // 4: teeproto.Envelope.finished:type_name -> teeproto.FinishedMessage
+	27, // 5: teeproto.Envelope.session_created:type_name -> teeproto.SessionCreated
+	28, // 6: teeproto.Envelope.session_ready:type_name -> teeproto.SessionReady
 	2,  // 7: teeproto.Envelope.request_connection:type_name -> teeproto.RequestConnection
 	5,  // 8: teeproto.Envelope.tcp_data:type_name -> teeproto.TCPData
 	6,  // 9: teeproto.Envelope.handshake_complete:type_name -> teeproto.HandshakeComplete
@@ -2777,20 +2711,20 @@ var file_transport_proto_depIdxs = []int32{
 	23, // 24: teeproto.Envelope.batched_tag_verifications:type_name -> teeproto.BatchedTagVerifications
 	24, // 25: teeproto.Envelope.batched_decryption_streams:type_name -> teeproto.BatchedDecryptionStreams
 	25, // 26: teeproto.Envelope.batched_signed_redacted_decryption_streams:type_name -> teeproto.BatchedSignedRedactedDecryptionStreams
-	35, // 27: teeproto.Envelope.attestation_request:type_name -> teeproto.AttestationRequestData
-	27, // 28: teeproto.Envelope.attestation_response:type_name -> teeproto.AttestationResponse
+	34, // 27: teeproto.Envelope.attestation_request:type_name -> teeproto.AttestationRequestData
+	26, // 28: teeproto.Envelope.attestation_response:type_name -> teeproto.AttestationResponse
 	12, // 29: teeproto.Envelope.teet_ready:type_name -> teeproto.TEETReady
-	36, // 30: teeproto.Envelope.signed_message:type_name -> teeproto.SignedMessage
-	37, // 31: teeproto.RedactedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
-	38, // 32: teeproto.ResponseRedactionSpec.ranges:type_name -> teeproto.ResponseRedactionRange
-	37, // 33: teeproto.EncryptedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
+	35, // 30: teeproto.Envelope.signed_message:type_name -> teeproto.SignedMessage
+	36, // 31: teeproto.RedactedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
+	37, // 32: teeproto.ResponseRedactionSpec.ranges:type_name -> teeproto.ResponseRedactionRange
+	36, // 33: teeproto.EncryptedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
 	18, // 34: teeproto.BatchedEncryptedResponses.responses:type_name -> teeproto.EncryptedResponseData
-	30, // 35: teeproto.BatchedResponseLengths.lengths:type_name -> teeproto.BatchedResponseLengths.Length
-	31, // 36: teeproto.BatchedTagSecrets.tag_secrets:type_name -> teeproto.BatchedTagSecrets.TagSecret
-	32, // 37: teeproto.BatchedTagVerifications.verifications:type_name -> teeproto.BatchedTagVerifications.Verification
-	39, // 38: teeproto.BatchedDecryptionStreams.decryption_streams:type_name -> teeproto.ResponseDecryptionStreamData
-	40, // 39: teeproto.BatchedSignedRedactedDecryptionStreams.signed_redacted_streams:type_name -> teeproto.SignedRedactedDecryptionStream
-	26, // 40: teeproto.AttestationResponse.attestation_report:type_name -> teeproto.AttestationReport
+	29, // 35: teeproto.BatchedResponseLengths.lengths:type_name -> teeproto.BatchedResponseLengths.Length
+	30, // 36: teeproto.BatchedTagSecrets.tag_secrets:type_name -> teeproto.BatchedTagSecrets.TagSecret
+	31, // 37: teeproto.BatchedTagVerifications.verifications:type_name -> teeproto.BatchedTagVerifications.Verification
+	38, // 38: teeproto.BatchedDecryptionStreams.decryption_streams:type_name -> teeproto.ResponseDecryptionStreamData
+	39, // 39: teeproto.BatchedSignedRedactedDecryptionStreams.signed_redacted_streams:type_name -> teeproto.SignedRedactedDecryptionStream
+	40, // 40: teeproto.AttestationResponse.attestation_report:type_name -> teeproto.AttestationReport
 	41, // [41:41] is the sub-list for method output_type
 	41, // [41:41] is the sub-list for method input_type
 	41, // [41:41] is the sub-list for extension type_name
@@ -2843,7 +2777,7 @@ func file_transport_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_transport_proto_rawDesc), len(file_transport_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   32,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

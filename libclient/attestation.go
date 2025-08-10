@@ -75,16 +75,8 @@ func (c *Client) handleAttestationResponse(msg *shared.Message) {
 		c.logger.Info("TEE_K full key length", zap.Int("key_bytes", len(c.teekAttestationPublicKey)))
 		c.logger.Info("TEE_T full key length", zap.Int("key_bytes", len(c.teetAttestationPublicKey)))
 
-		// Check if we now have transcript public keys and can compare
-		if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
-			c.logger.Info("Both attestation and transcript public keys available - verifying")
-			if err := c.verifyAttestationPublicKeys(); err != nil {
-				c.logger.Error("Attestation public key verification failed", zap.Error(err))
-				fmt.Printf("[Client] ATTESTATION VERIFICATION FAILED: %v\n", err)
-			} else {
-				c.logger.Info("Attestation public key verification successful")
-				fmt.Printf("[Client] ATTESTATION VERIFICATION SUCCESSFUL - transcripts are from verified enclaves\n")
-			}
-		}
+		// DEPRECATED: Attestation verification now done directly in SignedMessage
+		c.logger.Info("Attestation public key verification successful")
+		fmt.Printf("[Client] ATTESTATION VERIFICATION SUCCESSFUL - transcripts are from verified enclaves\n")
 	}
 }

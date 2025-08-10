@@ -226,15 +226,7 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 
 	c.logger.Info("Marked transcript as received", zap.String("source", sourceName), zap.Bool("signature_valid", true))
 
-	// Check if we now have both transcript public keys and can verify against attestations
-	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
-		c.logger.Info("Both transcript public keys received - verifying against attestations")
-		if err := c.verifyAttestationPublicKeys(); err != nil {
-			c.logger.Error("Attestation public key verification failed", zap.Error(err))
-		} else {
-			c.logger.Info("Attestation public key verification successful - transcripts are from verified enclaves")
-		}
-	}
+	// DEPRECATED: Attestation verification now done directly in SignedMessage
 
 	transcriptsComplete := c.transcriptsReceived >= 2
 	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
@@ -310,15 +302,7 @@ func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTran
 
 	c.logger.Info("Marked transcript as received", zap.String("source", sourceName), zap.Bool("signature_valid", true))
 
-	// Check if we now have both transcript public keys and can verify against attestations
-	if c.teekTranscriptPublicKey != nil && c.teetTranscriptPublicKey != nil && !c.publicKeyComparisonDone {
-		c.logger.Info("Both transcript public keys received - verifying against attestations")
-		if err := c.verifyAttestationPublicKeys(); err != nil {
-			c.logger.Error("Attestation public key verification failed", zap.Error(err))
-		} else {
-			c.logger.Info("Attestation public key verification successful - transcripts are from verified enclaves")
-		}
-	}
+	// DEPRECATED: Attestation verification now done directly in SignedMessage
 
 	transcriptsComplete := c.transcriptsReceived >= 2
 	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
