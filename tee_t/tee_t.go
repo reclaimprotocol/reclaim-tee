@@ -319,50 +319,60 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var sessionID string
-
 	t.logger.InfoIf("TEE_K connection established", zap.String("remote_addr", conn.RemoteAddr().String()))
+
+	// Track active sessions on this connection for cleanup
+	activeSessions := make(map[string]bool)
+	var activeSessionsMutex sync.RWMutex
 
 	for {
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				t.logger.InfoIf("TEE_K disconnected normally", zap.String("session_id", sessionID))
+				t.logger.InfoIf("TEE_K disconnected normally")
 			} else if !isNetworkShutdownError(err) {
-				// Network error from TEE_K connection
-				if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonConnectionLost, err,
-					zap.String("remote_addr", r.RemoteAddr),
-					zap.String("connection_type", "teek")) {
-					break // Terminate session due to repeated errors
-				}
+				t.logger.Error("TEE_K connection error", zap.Error(err), zap.String("remote_addr", r.RemoteAddr))
 			}
 			break
 		}
 
 		var env teeproto.Envelope
 		if err := proto.Unmarshal(msgBytes, &env); err != nil {
-			// Message parsing failure from TEE_K is critical - always terminate
-			t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
+			t.logger.Error("Failed to parse message from TEE_K",
+				zap.Error(err),
 				zap.String("remote_addr", r.RemoteAddr),
-				zap.String("connection_type", "teek"),
 				zap.Int("message_size", len(msgBytes)))
 			t.sendErrorToTEEKForSession("", conn, fmt.Sprintf("Failed to parse message: %v", err))
-			break // Terminate session
+			continue // Skip invalid messages instead of terminating connection
 		}
+
+		// Get session ID from envelope - this supports multiple concurrent sessions
+		sessionID := env.GetSessionId()
+		if sessionID == "" {
+			t.logger.Error("Missing session ID in message from TEE_K", zap.String("remote_addr", r.RemoteAddr))
+			t.sendErrorToTEEKForSession("", conn, "Missing session ID")
+			continue
+		}
+
 		var msg *shared.Message
 		switch p := env.Payload.(type) {
 		case *teeproto.Envelope_SessionCreated:
-			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgSessionCreated, Data: map[string]interface{}{"session_id": env.GetSessionId()}}
+			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgSessionCreated, Data: map[string]interface{}{"session_id": sessionID}}
+			// Track this session on this connection
+			activeSessionsMutex.Lock()
+			activeSessions[sessionID] = true
+			activeSessionsMutex.Unlock()
+			t.logger.InfoIf("New session started on TEE_K connection", zap.String("session_id", sessionID))
 		case *teeproto.Envelope_KeyShareRequest:
-			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgKeyShareRequest, Data: shared.KeyShareRequestData{CipherSuite: uint16(p.KeyShareRequest.GetCipherSuite()), KeyLength: int(p.KeyShareRequest.GetKeyLength()), IVLength: int(p.KeyShareRequest.GetIvLength())}}
+			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgKeyShareRequest, Data: shared.KeyShareRequestData{CipherSuite: uint16(p.KeyShareRequest.GetCipherSuite()), KeyLength: int(p.KeyShareRequest.GetKeyLength()), IVLength: int(p.KeyShareRequest.GetIvLength())}}
 		case *teeproto.Envelope_EncryptedRequest:
 			var rr []shared.RequestRedactionRange
 			for _, r := range p.EncryptedRequest.GetRedactionRanges() {
 				rr = append(rr, shared.RequestRedactionRange{Start: int(r.GetStart()), Length: int(r.GetLength()), Type: r.GetType(), RedactionBytes: r.GetRedactionBytes()})
 			}
-			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgEncryptedRequest, Data: shared.EncryptedRequestData{EncryptedData: p.EncryptedRequest.GetEncryptedData(), TagSecrets: p.EncryptedRequest.GetTagSecrets(), Commitments: p.EncryptedRequest.GetCommitments(), CipherSuite: uint16(p.EncryptedRequest.GetCipherSuite()), SeqNum: p.EncryptedRequest.GetSeqNum(), RedactionRanges: rr}}
+			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgEncryptedRequest, Data: shared.EncryptedRequestData{EncryptedData: p.EncryptedRequest.GetEncryptedData(), TagSecrets: p.EncryptedRequest.GetTagSecrets(), Commitments: p.EncryptedRequest.GetCommitments(), CipherSuite: uint16(p.EncryptedRequest.GetCipherSuite()), SeqNum: p.EncryptedRequest.GetSeqNum(), RedactionRanges: rr}}
 		case *teeproto.Envelope_Finished:
-			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgFinished, Data: shared.FinishedMessage{}}
+			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgFinished, Data: shared.FinishedMessage{}}
 		case *teeproto.Envelope_BatchedTagSecrets:
 			var ts []struct {
 				TagSecrets  []byte `json:"tag_secrets"`
@@ -376,28 +386,12 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 					CipherSuite uint16 `json:"cipher_suite"`
 				}{TagSecrets: tsec.GetTagSecrets(), SeqNum: tsec.GetSeqNum(), CipherSuite: uint16(tsec.GetCipherSuite())})
 			}
-			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgBatchedTagSecrets, Data: shared.BatchedTagSecretsData{TagSecrets: ts, SessionID: env.GetSessionId(), TotalCount: int(p.BatchedTagSecrets.GetTotalCount())}}
+			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgBatchedTagSecrets, Data: shared.BatchedTagSecretsData{TagSecrets: ts, SessionID: sessionID, TotalCount: int(p.BatchedTagSecrets.GetTotalCount())}}
 		default:
+			t.logger.Error("Unknown message type from TEE_K",
+				zap.String("session_id", sessionID),
+				zap.String("remote_addr", r.RemoteAddr))
 			t.sendErrorToTEEKForSession(sessionID, conn, "Unknown message type from TEE_K")
-		}
-
-		// For the first message (session creation), store the session ID
-		if msg.Type == shared.MsgSessionCreated && sessionID == "" {
-			sessionID = msg.SessionID
-			t.logger.InfoIf("Received session creation from TEE_K", zap.String("session_id", sessionID))
-		}
-
-		// Ensure subsequent messages have the correct session ID
-		if sessionID != "" && msg.SessionID != sessionID {
-			// Session ID mismatch from TEE_K is a security violation
-			if t.sessionTerminator.SecurityViolation(sessionID, shared.ReasonSessionIDMismatch,
-				fmt.Errorf("expected %s, got %s", sessionID, msg.SessionID),
-				zap.String("expected_session", sessionID),
-				zap.String("received_session", msg.SessionID),
-				zap.String("remote_addr", r.RemoteAddr),
-				zap.String("connection_type", "teek")) {
-				break // Terminate session
-			}
 			continue
 		}
 
@@ -448,12 +442,20 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Clean up session association when TEE_K disconnects
-	if sessionID != "" {
-		t.logger.InfoIf("Cleaning up session due to TEE_K disconnect", zap.String("session_id", sessionID))
-		// Note: we don't close the session here as the client may still be connected
-		// The session cleanup will be handled when the client disconnects
-		t.sessionTerminator.CleanupSession(sessionID)
+	// Clean up all active sessions when TEE_K disconnects
+	activeSessionsMutex.RLock()
+	sessionCount := len(activeSessions)
+	activeSessionsMutex.RUnlock()
+
+	if sessionCount > 0 {
+		t.logger.InfoIf("Cleaning up sessions due to TEE_K disconnect", zap.Int("session_count", sessionCount))
+		activeSessionsMutex.RLock()
+		for sessionID := range activeSessions {
+			// Note: we don't close the session here as the client may still be connected
+			// The session cleanup will be handled when the client disconnects
+			t.sessionTerminator.CleanupSession(sessionID)
+		}
+		activeSessionsMutex.RUnlock()
 	}
 }
 
