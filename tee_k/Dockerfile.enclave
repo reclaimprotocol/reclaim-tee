@@ -6,6 +6,7 @@ WORKDIR /app
 # Copy shared dependencies first
 COPY shared/ /app/shared/
 COPY minitls/ /app/minitls/
+COPY proto/*.go /app/proto/
 
 # Copy TEE_K source files
 COPY tee_k/*.go /app/tee_k/
