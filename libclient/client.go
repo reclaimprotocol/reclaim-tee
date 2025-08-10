@@ -821,10 +821,13 @@ func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string)
 
 // verifyAttestationReportProtobuf verifies a protobuf AttestationReport and extracts the public key from the report itself
 func (c *Client) verifyAttestationReportProtobuf(report *teeproto.AttestationReport, expectedSource string) ([]byte, error) {
+	c.logger.Info("verifyAttestationReportProtobuf called", zap.String("type", report.Type), zap.String("source", expectedSource), zap.Int("report_bytes", len(report.Report)))
 	switch report.Type {
 	case "nitro":
+		c.logger.Info("Attempting to parse Nitro attestation report", zap.String("source", expectedSource))
 		sr, err := verifier.NewSignedAttestationReport(strings.NewReader(string(report.Report)))
 		if err != nil {
+			c.logger.Error("Failed to parse Nitro attestation report", zap.Error(err))
 			return nil, fmt.Errorf("failed to parse nitro report: %v", err)
 		}
 		if err := verifier.Validate(sr, nil); err != nil {
@@ -928,10 +931,10 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 	if signedMsg.GetAttestationReport() != nil {
 		// Enclave mode: extract public key from attestation report
 		attestationReport := signedMsg.GetAttestationReport()
-		c.logger.Info("Verifying attestation and extracting public key", zap.String("source", source), zap.String("attestation_type", attestationReport.GetType()))
+		c.logger.Info("Verifying attestation and extracting public key", zap.String("source", source), zap.String("attestation_type", attestationReport.GetType()), zap.Int("report_bytes", len(attestationReport.GetReport())))
 
 		// Verify attestation and extract public key
-		publicKeyDER, err = c.verifyAttestation(attestationReport.GetReport(), source)
+		publicKeyDER, err = c.verifyAttestationReportProtobuf(attestationReport, source)
 		if err != nil {
 			return fmt.Errorf("SECURITY ERROR: %s attestation verification failed: %v", source, err)
 		}
