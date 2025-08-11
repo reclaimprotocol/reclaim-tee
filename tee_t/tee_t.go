@@ -343,7 +343,7 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 				zap.Error(err),
 				zap.String("remote_addr", r.RemoteAddr),
 				zap.Int("message_size", len(msgBytes)))
-			t.sendErrorToTEEKForSession("", conn, fmt.Sprintf("Failed to parse message: %v", err))
+			t.sendErrorToTEEK("", fmt.Sprintf("Failed to parse message: %v", err))
 			continue // Skip invalid messages instead of terminating connection
 		}
 
@@ -351,7 +351,7 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 		sessionID := env.GetSessionId()
 		if sessionID == "" {
 			t.logger.Error("Missing session ID in message from TEE_K", zap.String("remote_addr", r.RemoteAddr))
-			t.sendErrorToTEEKForSession("", conn, "Missing session ID")
+			t.sendErrorToTEEK("", "Missing session ID")
 			continue
 		}
 
@@ -390,7 +390,7 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 			t.logger.Error("Unknown message type from TEE_K",
 				zap.String("session_id", sessionID),
 				zap.String("remote_addr", r.RemoteAddr))
-			t.sendErrorToTEEKForSession(sessionID, conn, "Unknown message type from TEE_K")
+			t.sendErrorToTEEK(sessionID, "Unknown message type from TEE_K")
 			continue
 		}
 
@@ -434,10 +434,10 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 				zap.String("message_type", string(msg.Type)),
 				zap.String("remote_addr", r.RemoteAddr),
 				zap.String("connection_type", "teek")) {
-				t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+				t.sendErrorToTEEK(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
 				break // Terminate session if too many unknown messages
 			}
-			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
 		}
 	}
 
@@ -529,8 +529,14 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 
 	t.logger.InfoIf("Redaction streams stored for session", zap.String("session_id", sessionID))
 
-	// Note: Commitment verification will happen when encrypted request arrives from TEE_K
-	// Do not verify commitments here as they may not be available yet
+	// Verify commitments if expected commitments are already available from TEE_K
+	if err := t.verifyCommitmentsIfReady(sessionID); err != nil {
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoCommitmentFailed, err,
+			zap.Int("commitment_count", len(session.RedactionState.ExpectedCommitments))) {
+			return
+		}
+		return
+	}
 
 	// Process pending encrypted request if available
 	teetState, err := t.getTEETSessionState(sessionID)
@@ -781,7 +787,7 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 	if err := msg.UnmarshalData(&keyReq); err != nil {
 		if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
 			zap.String("data_type", "key_share_request")) {
-			t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to unmarshal key share request: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to unmarshal key share request: %v", err))
 			return
 		}
 		return
@@ -793,7 +799,7 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 		// Key generation failure is a critical cryptographic error
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoKeyGenerationFailed, err,
 			zap.Int("key_length", keyReq.KeyLength)) {
-			t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to generate key share: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to generate key share: %v", err))
 			return
 		}
 		return
@@ -1195,7 +1201,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
-			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Failed to get session: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to get session: %v", err))
 			return
 		}
 		return
@@ -1206,7 +1212,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted, err) {
-			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Failed to get TEE_T session state: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to get TEE_T session state: %v", err))
 			return
 		}
 		return
@@ -1219,7 +1225,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	if session.RedactionState == nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted,
 			fmt.Errorf("no redaction state available for session")) {
-			t.sendErrorToTEEKForSession(sessionID, conn, "No redaction state available")
+			t.sendErrorToTEEK(sessionID, "No redaction state available")
 			return
 		}
 		return
@@ -1229,7 +1235,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	reconstructedData, err := t.reconstructFullRequestWithStreams(encReq.EncryptedData, encReq.RedactionRanges, session.RedactionState.RedactionStreams)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagComputationFailed, err) {
-			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Failed to reconstruct full request: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to reconstruct full request: %v", err))
 			return
 		}
 		return
@@ -1274,7 +1280,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	if err != nil {
 		// Cryptographic computation failure is CRITICAL and should terminate session
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagComputationFailed, err) {
-			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to compute authentication tag: %v", err))
 			return
 		}
 		return
@@ -1447,7 +1453,7 @@ func (t *TEET) sendMessageToTEEKForSession(sessionID string, msg *shared.Message
 	return fmt.Errorf("unsupported TEE_K connection type")
 }
 
-func (t *TEET) sendErrorToTEEKForSession(sessionID string, conn *websocket.Conn, errMsg string) {
+func (t *TEET) sendErrorToTEEK(sessionID string, errMsg string) {
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: errMsg}},
 	}
