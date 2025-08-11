@@ -57,22 +57,16 @@ const (
 	MsgHTTPResponse           MessageType = "http_response"
 
 	// Client-specific response handling messages
-	MsgEncryptedResponse        MessageType = "encrypted_response"
-	MsgResponseTagVerification  MessageType = "response_tag_verification"
-	MsgResponseDecryptionStream MessageType = "response_decryption_stream"
+	MsgEncryptedResponse MessageType = "encrypted_response"
 
 	// Phase 2: Split AEAD messages
 	// TEE_K to TEE_T messages
 	MsgKeyShareRequest  MessageType = "key_share_request"
 	MsgEncryptedRequest MessageType = "encrypted_request"
 
-	// TEE_T to TEE_K messages
-	MsgKeyShareResponse MessageType = "key_share_response"
-
 	// Phase 3: Client to TEE_T messages
 	MsgRedactedRequest       MessageType = "redacted_request"
 	MsgRedactionVerification MessageType = "redaction_verification"
-	MsgEncryptedData         MessageType = "encrypted_data"
 
 	// Session management messages
 	MsgSessionCreated MessageType = "session_created"
@@ -88,10 +82,9 @@ const (
 	MsgAttestationResponse MessageType = "attestation_response"
 
 	// Single Session Mode message types
-	MsgFinished                    MessageType = "finished"
-	MsgSignedTranscript            MessageType = "signed_transcript"
-	MsgSignedTranscriptWithStreams MessageType = "signed_transcript_with_streams"
-	MsgRedactionSpec               MessageType = "redaction_spec"
+	MsgFinished         MessageType = "finished"
+	MsgSignedTranscript MessageType = "signed_transcript"
+	MsgRedactionSpec    MessageType = "redaction_spec"
 )
 
 const (
@@ -321,9 +314,8 @@ type ErrorData struct {
 
 // TEE_K to TEE_T: Request key share for split AEAD
 type KeyShareRequestData struct {
-	CipherSuite uint16 `json:"cipher_suite"`
-	KeyLength   int    `json:"key_length"`
-	IVLength    int    `json:"iv_length"`
+	KeyLength int `json:"key_length"`
+	IVLength  int `json:"iv_length"`
 }
 
 // TEE_T to TEE_K: Response with key share
@@ -528,25 +520,4 @@ type SignedTranscriptWithStreams struct {
 	SignedTranscript                                       // Embed the existing SignedTranscript structure
 	SignedRedactedStreams []SignedRedactedDecryptionStream `json:"signed_redacted_streams,omitempty"` // Optional redacted streams
 	TotalStreamsCount     int                              `json:"total_streams_count"`               // Total number of streams included
-}
-
-// Helper functions
-func CreateMessage(msgType MessageType, data interface{}, sessionID ...string) *Message {
-	msg := &Message{
-		Type:      msgType,
-		Data:      data,
-		Timestamp: time.Now(),
-	}
-
-	// If sessionID is provided and not empty, set it
-	if len(sessionID) > 0 && sessionID[0] != "" {
-		msg.SessionID = sessionID[0]
-	}
-
-	return msg
-}
-
-// CreateSessionMessage calls CreateMessage
-func CreateSessionMessage(msgType MessageType, sessionID string, data interface{}) *Message {
-	return CreateMessage(msgType, data, sessionID)
 }

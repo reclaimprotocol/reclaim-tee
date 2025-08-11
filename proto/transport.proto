@@ -103,9 +103,8 @@ message HTTPResponse {
 }
 
 message KeyShareRequest {
-  uint32 cipher_suite = 1; // uint16 fits here
-  int32 key_length = 2;
-  int32 iv_length = 3;
+  int32 key_length = 1;
+  int32 iv_length = 2;
 }
 
 message KeyShareResponse {

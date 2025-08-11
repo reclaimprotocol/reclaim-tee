@@ -365,7 +365,7 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 			activeSessionsMutex.Unlock()
 			t.logger.InfoIf("New session started on TEE_K connection", zap.String("session_id", sessionID))
 		case *teeproto.Envelope_KeyShareRequest:
-			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgKeyShareRequest, Data: shared.KeyShareRequestData{CipherSuite: uint16(p.KeyShareRequest.GetCipherSuite()), KeyLength: int(p.KeyShareRequest.GetKeyLength()), IVLength: int(p.KeyShareRequest.GetIvLength())}}
+			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgKeyShareRequest, Data: shared.KeyShareRequestData{KeyLength: int(p.KeyShareRequest.GetKeyLength()), IVLength: int(p.KeyShareRequest.GetIvLength())}}
 		case *teeproto.Envelope_EncryptedRequest:
 			var rr []shared.RequestRedactionRange
 			for _, r := range p.EncryptedRequest.GetRedactionRanges() {
@@ -808,14 +808,13 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 	}
 
 	teetState.KeyShare = keyShare
-	teetState.CipherSuite = keyReq.CipherSuite
+	// Note: CipherSuite is now set from EncryptedRequest, not KeyShareRequest
 
 	// Global state removed - using session state only
 
 	t.logger.InfoIf("Generated key share for session",
 		zap.String("session_id", sessionID),
-		zap.Int("key_length", len(keyShare)),
-		zap.Uint16("cipher_suite", keyReq.CipherSuite))
+		zap.Int("key_length", len(keyShare)))
 
 	// Send key share response
 	// Send protobuf key share response to TEE_K

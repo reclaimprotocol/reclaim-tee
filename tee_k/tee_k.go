@@ -437,7 +437,7 @@ func (t *TEEK) sendMessageToTEETForSession(sessionID string, msg *shared.Message
 			return fmt.Errorf("failed to unmarshal key share request: %v", err)
 		}
 		env = &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-			Payload: &teeproto.Envelope_KeyShareRequest{KeyShareRequest: &teeproto.KeyShareRequest{CipherSuite: uint32(d.CipherSuite), KeyLength: int32(d.KeyLength), IvLength: int32(d.IVLength)}},
+			Payload: &teeproto.Envelope_KeyShareRequest{KeyShareRequest: &teeproto.KeyShareRequest{KeyLength: int32(d.KeyLength), IvLength: int32(d.IVLength)}},
 		}
 	case shared.MsgEncryptedRequest:
 		var d shared.EncryptedRequestData
@@ -1486,9 +1486,8 @@ func (t *TEEK) requestKeyShareFromTEET(cipherSuite uint16) error {
 		TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_KeyShareRequest{
 			KeyShareRequest: &teeproto.KeyShareRequest{
-				CipherSuite: uint32(cipherSuite),
-				KeyLength:   int32(keyLen),
-				IvLength:    int32(ivLen),
+				KeyLength: int32(keyLen),
+				IvLength:  int32(ivLen),
 			},
 		},
 	}
@@ -1510,9 +1509,8 @@ func (t *TEEK) requestKeyShareFromTEETWithSession(sessionID string, cipherSuite 
 		TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_KeyShareRequest{
 			KeyShareRequest: &teeproto.KeyShareRequest{
-				CipherSuite: uint32(cipherSuite),
-				KeyLength:   int32(keyLen),
-				IvLength:    int32(ivLen),
+				KeyLength: int32(keyLen),
+				IvLength:  int32(ivLen),
 			},
 		},
 	}

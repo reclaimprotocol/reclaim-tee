@@ -1058,9 +1058,8 @@ func (x *HTTPResponse) GetSuccess() bool {
 
 type KeyShareRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	CipherSuite   uint32                 `protobuf:"varint,1,opt,name=cipher_suite,json=cipherSuite,proto3" json:"cipher_suite,omitempty"` // uint16 fits here
-	KeyLength     int32                  `protobuf:"varint,2,opt,name=key_length,json=keyLength,proto3" json:"key_length,omitempty"`
-	IvLength      int32                  `protobuf:"varint,3,opt,name=iv_length,json=ivLength,proto3" json:"iv_length,omitempty"`
+	KeyLength     int32                  `protobuf:"varint,1,opt,name=key_length,json=keyLength,proto3" json:"key_length,omitempty"`
+	IvLength      int32                  `protobuf:"varint,2,opt,name=iv_length,json=ivLength,proto3" json:"iv_length,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1093,13 +1092,6 @@ func (x *KeyShareRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use KeyShareRequest.ProtoReflect.Descriptor instead.
 func (*KeyShareRequest) Descriptor() ([]byte, []int) {
 	return file_transport_proto_rawDescGZIP(), []int{8}
-}
-
-func (x *KeyShareRequest) GetCipherSuite() uint32 {
-	if x != nil {
-		return x.CipherSuite
-	}
-	return 0
 }
 
 func (x *KeyShareRequest) GetKeyLength() int32 {
@@ -2485,12 +2477,11 @@ const file_transport_proto_rawDesc = "" +
 	"\asuccess\x18\x06 \x01(\bR\asuccess\"D\n" +
 	"\fHTTPResponse\x12\x1a\n" +
 	"\bresponse\x18\x01 \x01(\fR\bresponse\x12\x18\n" +
-	"\asuccess\x18\x02 \x01(\bR\asuccess\"p\n" +
-	"\x0fKeyShareRequest\x12!\n" +
-	"\fcipher_suite\x18\x01 \x01(\rR\vcipherSuite\x12\x1d\n" +
+	"\asuccess\x18\x02 \x01(\bR\asuccess\"M\n" +
+	"\x0fKeyShareRequest\x12\x1d\n" +
 	"\n" +
-	"key_length\x18\x02 \x01(\x05R\tkeyLength\x12\x1b\n" +
-	"\tiv_length\x18\x03 \x01(\x05R\bivLength\"I\n" +
+	"key_length\x18\x01 \x01(\x05R\tkeyLength\x12\x1b\n" +
+	"\tiv_length\x18\x02 \x01(\x05R\bivLength\"I\n" +
 	"\x10KeyShareResponse\x12\x1b\n" +
 	"\tkey_share\x18\x01 \x01(\fR\bkeyShare\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\"s\n" +
