@@ -168,12 +168,6 @@ func (c *Client) handleMessages() {
 				// Store the original SignedMessage for verification bundle
 				c.teekSignedMessage = sm
 
-				// Debug: Check what's in the SignedMessage
-				var kPayload teeproto.KOutputPayload
-				if err := proto.Unmarshal(sm.GetBody(), &kPayload); err == nil {
-					fmt.Printf("DEBUG: Stored TEE_K SignedMessage with %d packets in payload\n", len(kPayload.GetPackets()))
-				}
-
 				var body teeproto.KOutputPayload
 				if err := proto.Unmarshal(sm.GetBody(), &body); err != nil {
 					c.logger.Error("Failed to unmarshal KOutputPayload", zap.Error(err))
@@ -293,12 +287,6 @@ func (c *Client) handleTEETMessages() {
 
 				// Store the original SignedMessage for verification bundle
 				c.teetSignedMessage = sm
-
-				// Debug: Check what's in the SignedMessage
-				var tPayload teeproto.TOutputPayload
-				if err := proto.Unmarshal(sm.GetBody(), &tPayload); err == nil {
-					fmt.Printf("DEBUG: Stored TEE_T SignedMessage with %d packets in payload\n", len(tPayload.GetPackets()))
-				}
 
 				var body teeproto.TOutputPayload
 				if err := proto.Unmarshal(sm.GetBody(), &body); err != nil {
