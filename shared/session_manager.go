@@ -69,8 +69,7 @@ func (sm *SessionManager) CreateSession(clientConn Connection) (string, error) {
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),
-			ResponseLengthBySeq:       make(map[uint64]uint32),
-			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ResponseLengthBySeq:       make(map[uint64]int),
 			ExplicitIVBySeq:           make(map[uint64][]byte),
 			PendingEncryptedResponses: make(map[uint64]*EncryptedResponseData),
 		},
@@ -102,8 +101,7 @@ func (sm *SessionManager) RegisterSession(sessionID string) error {
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),
-			ResponseLengthBySeq:       make(map[uint64]uint32),
-			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ResponseLengthBySeq:       make(map[uint64]int),
 			ExplicitIVBySeq:           make(map[uint64][]byte),
 			PendingEncryptedResponses: make(map[uint64]*EncryptedResponseData),
 		},

@@ -194,15 +194,14 @@ type ResponseSessionState struct {
 	PendingResponses    map[string][]byte
 	ResponseSequence    int
 	LastResponseTime    time.Time
-	ResponseLengthBySeq map[uint64]uint32
+	ResponseLengthBySeq map[uint64]int
 
 	// Per-session pending encrypted responses
 	PendingEncryptedResponses map[uint64]*EncryptedResponseData // Responses awaiting tag secrets by seq num
 	ResponsesMutex            sync.Mutex                        // Protects PendingEncryptedResponses map access
 
 	// Additional response state migrated from global state
-	ResponseLengthBySeqInt map[uint64]int // Keep both for compatibility
-	ExplicitIVBySeq        map[uint64][]byte
+	ExplicitIVBySeq map[uint64][]byte
 
 	// Response redaction ranges for transcript signature
 	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`

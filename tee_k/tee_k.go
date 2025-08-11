@@ -748,8 +748,7 @@ func (t *TEEK) getSessionResponseState(sessionID string) (*shared.ResponseSessio
 	if session.ResponseState == nil {
 		session.ResponseState = &shared.ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),
-			ResponseLengthBySeq:       make(map[uint64]uint32),
-			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ResponseLengthBySeq:       make(map[uint64]int),
 			ExplicitIVBySeq:           make(map[uint64][]byte),
 			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
 		}
@@ -2400,8 +2399,7 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 	if session.ResponseState == nil {
 		session.ResponseState = &shared.ResponseSessionState{
 			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
-			ResponseLengthBySeq:       make(map[uint64]uint32),
-			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ResponseLengthBySeq:       make(map[uint64]int),
 			ExplicitIVBySeq:           make(map[uint64][]byte),
 		}
 	}
@@ -2416,8 +2414,7 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 	session.ResponseState.ResponsesMutex.Lock()
 	for _, lengthData := range batchedLengths.Lengths {
 		// Store response lengths in session state for later decryption stream generation
-		session.ResponseState.ResponseLengthBySeqInt[lengthData.SeqNum] = lengthData.Length
-		session.ResponseState.ResponseLengthBySeq[lengthData.SeqNum] = uint32(lengthData.Length)
+		session.ResponseState.ResponseLengthBySeq[lengthData.SeqNum] = lengthData.Length
 
 		// Store explicit IV for TLS 1.2 AES-GCM decryption stream generation
 		if lengthData.ExplicitIV != nil {
@@ -2516,7 +2513,7 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 		}
 
 		// Generate decryption streams for all response sequences
-		for seqNum, responseLength := range responseState.ResponseLengthBySeqInt {
+		for seqNum, responseLength := range responseState.ResponseLengthBySeq {
 			// Generate decryption stream using session-aware logic
 			decryptionStream, err := t.generateSingleDecryptionStreamWithSession(sessionID, responseLength, seqNum)
 			if err != nil {
@@ -2555,7 +2552,7 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 				t.logger.WithSession(sessionID).Error("Failed to get response state", zap.Error(err))
 				continue
 			}
-			responseLength, exists := responseState.ResponseLengthBySeqInt[verification.SeqNum]
+			responseLength, exists := responseState.ResponseLengthBySeq[verification.SeqNum]
 			if !exists {
 				t.logger.WithSession(sessionID).Error("No response length found for sequence", zap.Uint64("seq_num", verification.SeqNum))
 				continue
