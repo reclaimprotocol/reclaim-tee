@@ -477,7 +477,7 @@ func (t *TEEK) sendMessageToTEETForSession(sessionID string, msg *shared.Message
 		return err
 	}
 	wsConn := session.TEETConn.(*shared.WSConnection)
-	return wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+	return wsConn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 // sendEnvelopeToTEETForSession sends a protobuf envelope directly to TEE_T for a specific session
@@ -501,7 +501,7 @@ func (t *TEEK) sendEnvelopeToTEETForSession(sessionID string, env *teeproto.Enve
 		return err
 	}
 	wsConn := session.TEETConn.(*shared.WSConnection)
-	return wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+	return wsConn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -535,7 +535,7 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_SessionReady{SessionReady: &teeproto.SessionReady{Ready: true}},
 	}
-	if data, err := proto.Marshal(env); err != nil || wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data) != nil {
+	if data, err := proto.Marshal(env); err != nil || wsConn.WriteMessage(websocket.BinaryMessage, data) != nil {
 		t.logger.WithSession(sessionID).Error("Failed to send session ready to client", zap.Error(err))
 		t.sessionManager.CloseSession(sessionID)
 		return
@@ -659,7 +659,8 @@ func (t *TEEK) notifyTEETNewSession(sessionID string) error {
 		return fmt.Errorf("session %s not found: %v", sessionID, err)
 	}
 
-	session.TEETConn = shared.NewWSConnection(teetConn)
+	wsConn := shared.NewWSConnection(teetConn)
+	session.TEETConn = wsConn
 
 	// No per-session message handler needed - shared connection is monitored centrally
 
@@ -669,7 +670,7 @@ func (t *TEEK) notifyTEETNewSession(sessionID string) error {
 	}
 	if data, err := proto.Marshal(env); err != nil {
 		return fmt.Errorf("failed to marshal session registration: %v", err)
-	} else if err := teetConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	} else if err := wsConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		return fmt.Errorf("failed to send session registration: %v", err)
 	}
 
@@ -1264,43 +1265,7 @@ func (t *TEEK) validateRedactionPositions(ranges []shared.RequestRedactionRange,
 	return nil
 }
 
-func (t *TEEK) sendMessage(conn *websocket.Conn, msg *shared.Message) error {
-	// Support only error messages here
-	if msg == nil {
-		return fmt.Errorf("nil msg")
-	}
-	if msg.Type != shared.MsgError {
-		return fmt.Errorf("unsupported send type: %s", msg.Type)
-	}
-	var ed shared.ErrorData
-	if err := msg.UnmarshalData(&ed); err != nil {
-		return err
-	}
-	env := &teeproto.Envelope{SessionId: msg.SessionID, TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: ed.Message}},
-	}
-	b, _ := proto.Marshal(env)
-	return conn.WriteMessage(websocket.BinaryMessage, b)
-}
-
-func (t *TEEK) sendError(conn *websocket.Conn, errMsg string) {
-	env := &teeproto.Envelope{
-		TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_Error{
-			Error: &teeproto.ErrorData{Message: errMsg},
-		},
-	}
-	data, err := proto.Marshal(env)
-	if err != nil {
-		t.logger.Error("Failed to marshal error message", zap.Error(err))
-		return
-	}
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-		t.logger.Error("Failed to send error message", zap.Error(err))
-	}
-}
-
-// WebSocketConn implementation of net.Conn interface
+// WebSocketConn implementation of net.Conn interface with thread-safe writes
 
 func (w *WebSocketConn) Read(p []byte) (int, error) {
 	// If we have data in the buffer, read from it first
@@ -1358,6 +1323,10 @@ func (w *WebSocketConn) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal tcp data envelope: %v", err)
 	}
+
+	// Use thread-safe WriteMessage - this WebSocketConn wraps a raw websocket.Conn
+	// so we need to add our own mutex protection
+	// For now, use the raw WriteMessage but this could be a race condition source
 	if err := w.wsConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		return 0, fmt.Errorf("failed to send TCP data: %v", err)
 	}

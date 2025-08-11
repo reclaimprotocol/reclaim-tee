@@ -823,7 +823,7 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 	}
 	if data, err := proto.Marshal(env); err == nil {
 		wsConn := session.TEEKConn.(*shared.WSConnection)
-		if err := wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data); err != nil {
+		if err := wsConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 			t.logger.Error("Failed to send key share response",
 				zap.String("session_id", sessionID),
 				zap.Error(err))
@@ -1195,7 +1195,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
-			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to get session: %v", err))
+			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Failed to get session: %v", err))
 			return
 		}
 		return
@@ -1206,7 +1206,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted, err) {
-			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to get TEE_T session state: %v", err))
+			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Failed to get TEE_T session state: %v", err))
 			return
 		}
 		return
@@ -1219,7 +1219,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	if session.RedactionState == nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted,
 			fmt.Errorf("no redaction state available for session")) {
-			t.sendErrorToTEEK(conn, "No redaction state available")
+			t.sendErrorToTEEKForSession(sessionID, conn, "No redaction state available")
 			return
 		}
 		return
@@ -1229,7 +1229,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	reconstructedData, err := t.reconstructFullRequestWithStreams(encReq.EncryptedData, encReq.RedactionRanges, session.RedactionState.RedactionStreams)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagComputationFailed, err) {
-			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to reconstruct full request: %v", err))
+			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Failed to reconstruct full request: %v", err))
 			return
 		}
 		return
@@ -1274,7 +1274,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	if err != nil {
 		// Cryptographic computation failure is CRITICAL and should terminate session
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagComputationFailed, err) {
-			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
+			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
 			return
 		}
 		return
@@ -1442,7 +1442,7 @@ func (t *TEET) sendMessageToTEEKForSession(sessionID string, msg *shared.Message
 		if err != nil {
 			return err
 		}
-		return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+		return ws.WriteMessage(websocket.BinaryMessage, data)
 	}
 	return fmt.Errorf("unsupported TEE_K connection type")
 }
@@ -1451,15 +1451,9 @@ func (t *TEET) sendErrorToTEEKForSession(sessionID string, conn *websocket.Conn,
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: errMsg}},
 	}
-	data, err := proto.Marshal(env)
-	if err == nil {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			t.logger.Error("Failed to send error message to TEE_K",
-				zap.String("session_id", sessionID),
-				zap.Error(err))
-		}
-	} else {
-		t.logger.Error("Failed to send error message to TEE_K",
+	// Use session manager for thread-safe routing instead of direct websocket write
+	if err := t.sessionManager.RouteToTEEK(sessionID, env); err != nil {
+		t.logger.Error("Failed to send error message to TEE_K via session manager",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
 	}
@@ -1475,19 +1469,6 @@ func (t *TEET) sendErrorToClient(conn *websocket.Conn, errMsg string) {
 		}
 	} else {
 		t.logger.Error("Failed to send error message to client", zap.Error(err))
-	}
-}
-
-func (t *TEET) sendErrorToTEEK(conn *websocket.Conn, errMsg string) {
-	env := &teeproto.Envelope{TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: errMsg}},
-	}
-	if data, err := proto.Marshal(env); err == nil {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			t.logger.Error("Failed to send error message to TEE_K", zap.Error(err))
-		}
-	} else {
-		t.logger.Error("Failed to marshal error envelope to TEE_K", zap.Error(err))
 	}
 }
 

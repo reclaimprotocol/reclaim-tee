@@ -555,7 +555,6 @@ func (e *EnclaveHandle) generateAttestation(userData []byte) ([]byte, error) {
 		createdAt: time.Now(),
 	}
 	e.mu.Unlock()
-	log.Printf("Stored new attestation in cache for userData: %s", cacheKey)
 
 	return attestationDoc, nil
 }

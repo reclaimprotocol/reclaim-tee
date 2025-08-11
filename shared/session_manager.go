@@ -250,7 +250,7 @@ func (sm *SessionManager) RouteToSession(sessionID string, env *teeproto.Envelop
 			if err != nil {
 				return err
 			}
-			return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+			return ws.WriteMessage(websocket.BinaryMessage, data)
 		}
 	}
 
@@ -275,7 +275,7 @@ func (sm *SessionManager) RouteToTEEK(sessionID string, env *teeproto.Envelope) 
 		if err != nil {
 			return err
 		}
-		return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+		return ws.WriteMessage(websocket.BinaryMessage, data)
 	}
 	return fmt.Errorf("unsupported connection type for TEE_K")
 }
@@ -298,7 +298,7 @@ func (sm *SessionManager) RouteToClient(sessionID string, env *teeproto.Envelope
 		if err != nil {
 			return err
 		}
-		return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+		return ws.WriteMessage(websocket.BinaryMessage, data)
 	}
 	return fmt.Errorf("unsupported client connection type")
 }

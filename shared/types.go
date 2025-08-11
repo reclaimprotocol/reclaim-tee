@@ -40,6 +40,13 @@ func (w *WSConnection) GetWebSocketConn() *websocket.Conn {
 	return w.conn
 }
 
+// WriteMessage writes a message to the WebSocket connection with thread safety
+func (w *WSConnection) WriteMessage(messageType int, data []byte) error {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+	return w.conn.WriteMessage(messageType, data)
+}
+
 // Message types for websocket communication
 type MessageType string
 
