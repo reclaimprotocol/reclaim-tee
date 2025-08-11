@@ -445,10 +445,6 @@ func (c *Client) sendMessageToTEET(msg *shared.Message) error {
 		if d, ok := msg.Data.(shared.RedactionStreamsData); ok {
 			env.Payload = &teeproto.Envelope_RedactionStreams{RedactionStreams: &teeproto.RedactionStreams{Streams: d.Streams, CommitmentKeys: d.CommitmentKeys}}
 		}
-	case shared.MsgEncryptedResponse:
-		if d, ok := msg.Data.(shared.EncryptedResponseData); ok {
-			env.Payload = &teeproto.Envelope_EncryptedResponse{EncryptedResponse: &teeproto.EncryptedResponseData{EncryptedData: d.EncryptedData, Tag: d.Tag, RecordHeader: d.RecordHeader, SeqNum: d.SeqNum, ExplicitIv: d.ExplicitIV}}
-		}
 	case shared.MsgBatchedEncryptedResponses:
 		if d, ok := msg.Data.(shared.BatchedEncryptedResponseData); ok {
 			arr := make([]*teeproto.EncryptedResponseData, 0, len(d.Responses))

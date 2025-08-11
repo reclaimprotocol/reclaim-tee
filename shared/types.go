@@ -56,8 +56,7 @@ const (
 	MsgHandshakeKeyDisclosure MessageType = "handshake_key_disclosure"
 	MsgHTTPResponse           MessageType = "http_response"
 
-	// Client-specific response handling messages
-	MsgEncryptedResponse MessageType = "encrypted_response"
+	// Client-specific response handling messages (individual responses removed - only batched)
 
 	// Phase 2: Split AEAD messages
 	// TEE_K to TEE_T messages

@@ -102,7 +102,6 @@ type Envelope struct {
 	//	*Envelope_RedactionVerification
 	//	*Envelope_ResponseRedactionSpec
 	//	*Envelope_EncryptedData
-	//	*Envelope_EncryptedResponse
 	//	*Envelope_BatchedEncryptedResponses
 	//	*Envelope_BatchedResponseLengths
 	//	*Envelope_BatchedTagSecrets
@@ -361,15 +360,6 @@ func (x *Envelope) GetEncryptedData() *EncryptedDataResponse {
 	return nil
 }
 
-func (x *Envelope) GetEncryptedResponse() *EncryptedResponseData {
-	if x != nil {
-		if x, ok := x.Payload.(*Envelope_EncryptedResponse); ok {
-			return x.EncryptedResponse
-		}
-	}
-	return nil
-}
-
 func (x *Envelope) GetBatchedEncryptedResponses() *BatchedEncryptedResponses {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_BatchedEncryptedResponses); ok {
@@ -541,11 +531,7 @@ type Envelope_ResponseRedactionSpec struct {
 }
 
 type Envelope_EncryptedData struct {
-	EncryptedData *EncryptedDataResponse `protobuf:"bytes,42,opt,name=encrypted_data,json=encryptedData,proto3,oneof"`
-}
-
-type Envelope_EncryptedResponse struct {
-	EncryptedResponse *EncryptedResponseData `protobuf:"bytes,43,opt,name=encrypted_response,json=encryptedResponse,proto3,oneof"`
+	EncryptedData *EncryptedDataResponse `protobuf:"bytes,42,opt,name=encrypted_data,json=encryptedData,proto3,oneof"` // Individual EncryptedResponseData removed - use BatchedEncryptedResponses instead
 }
 
 type Envelope_BatchedEncryptedResponses struct {
@@ -628,8 +614,6 @@ func (*Envelope_RedactionVerification) isEnvelope_Payload() {}
 func (*Envelope_ResponseRedactionSpec) isEnvelope_Payload() {}
 
 func (*Envelope_EncryptedData) isEnvelope_Payload() {}
-
-func (*Envelope_EncryptedResponse) isEnvelope_Payload() {}
 
 func (*Envelope_BatchedEncryptedResponses) isEnvelope_Payload() {}
 
@@ -2403,7 +2387,7 @@ var File_transport_proto protoreflect.FileDescriptor
 
 const file_transport_proto_rawDesc = "" +
 	"\n" +
-	"\x0ftransport.proto\x12\bteeproto\x1a\fcommon.proto\x1a\rsigning.proto\"\xd7\x13\n" +
+	"\x0ftransport.proto\x12\bteeproto\x1a\fcommon.proto\x1a\rsigning.proto\"\x85\x13\n" +
 	"\bEnvelope\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x10\n" +
@@ -2430,8 +2414,7 @@ const file_transport_proto_rawDesc = "" +
 	"\x11redaction_streams\x18) \x01(\v2\x1a.teeproto.RedactionStreamsH\x00R\x10redactionStreams\x12X\n" +
 	"\x16redaction_verification\x18, \x01(\v2\x1f.teeproto.RedactionVerificationH\x00R\x15redactionVerification\x12Y\n" +
 	"\x17response_redaction_spec\x18- \x01(\v2\x1f.teeproto.ResponseRedactionSpecH\x00R\x15responseRedactionSpec\x12H\n" +
-	"\x0eencrypted_data\x18* \x01(\v2\x1f.teeproto.EncryptedDataResponseH\x00R\rencryptedData\x12P\n" +
-	"\x12encrypted_response\x18+ \x01(\v2\x1f.teeproto.EncryptedResponseDataH\x00R\x11encryptedResponse\x12e\n" +
+	"\x0eencrypted_data\x18* \x01(\v2\x1f.teeproto.EncryptedDataResponseH\x00R\rencryptedData\x12e\n" +
 	"\x1bbatched_encrypted_responses\x182 \x01(\v2#.teeproto.BatchedEncryptedResponsesH\x00R\x19batchedEncryptedResponses\x12\\\n" +
 	"\x18batched_response_lengths\x183 \x01(\v2 .teeproto.BatchedResponseLengthsH\x00R\x16batchedResponseLengths\x12M\n" +
 	"\x13batched_tag_secrets\x184 \x01(\v2\x1b.teeproto.BatchedTagSecretsH\x00R\x11batchedTagSecrets\x12_\n" +
@@ -2659,32 +2642,31 @@ var file_transport_proto_depIdxs = []int32{
 	14, // 17: teeproto.Envelope.redaction_verification:type_name -> teeproto.RedactionVerification
 	16, // 18: teeproto.Envelope.response_redaction_spec:type_name -> teeproto.ResponseRedactionSpec
 	11, // 19: teeproto.Envelope.encrypted_data:type_name -> teeproto.EncryptedDataResponse
-	18, // 20: teeproto.Envelope.encrypted_response:type_name -> teeproto.EncryptedResponseData
-	20, // 21: teeproto.Envelope.batched_encrypted_responses:type_name -> teeproto.BatchedEncryptedResponses
-	21, // 22: teeproto.Envelope.batched_response_lengths:type_name -> teeproto.BatchedResponseLengths
-	22, // 23: teeproto.Envelope.batched_tag_secrets:type_name -> teeproto.BatchedTagSecrets
-	23, // 24: teeproto.Envelope.batched_tag_verifications:type_name -> teeproto.BatchedTagVerifications
-	24, // 25: teeproto.Envelope.batched_decryption_streams:type_name -> teeproto.BatchedDecryptionStreams
-	25, // 26: teeproto.Envelope.batched_signed_redacted_decryption_streams:type_name -> teeproto.BatchedSignedRedactedDecryptionStreams
-	34, // 27: teeproto.Envelope.attestation_request:type_name -> teeproto.AttestationRequestData
-	26, // 28: teeproto.Envelope.attestation_response:type_name -> teeproto.AttestationResponse
-	12, // 29: teeproto.Envelope.teet_ready:type_name -> teeproto.TEETReady
-	35, // 30: teeproto.Envelope.signed_message:type_name -> teeproto.SignedMessage
-	36, // 31: teeproto.RedactedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
-	37, // 32: teeproto.ResponseRedactionSpec.ranges:type_name -> teeproto.ResponseRedactionRange
-	36, // 33: teeproto.EncryptedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
-	18, // 34: teeproto.BatchedEncryptedResponses.responses:type_name -> teeproto.EncryptedResponseData
-	29, // 35: teeproto.BatchedResponseLengths.lengths:type_name -> teeproto.BatchedResponseLengths.Length
-	30, // 36: teeproto.BatchedTagSecrets.tag_secrets:type_name -> teeproto.BatchedTagSecrets.TagSecret
-	31, // 37: teeproto.BatchedTagVerifications.verifications:type_name -> teeproto.BatchedTagVerifications.Verification
-	38, // 38: teeproto.BatchedDecryptionStreams.decryption_streams:type_name -> teeproto.ResponseDecryptionStreamData
-	39, // 39: teeproto.BatchedSignedRedactedDecryptionStreams.signed_redacted_streams:type_name -> teeproto.SignedRedactedDecryptionStream
-	40, // 40: teeproto.AttestationResponse.attestation_report:type_name -> teeproto.AttestationReport
-	41, // [41:41] is the sub-list for method output_type
-	41, // [41:41] is the sub-list for method input_type
-	41, // [41:41] is the sub-list for extension type_name
-	41, // [41:41] is the sub-list for extension extendee
-	0,  // [0:41] is the sub-list for field type_name
+	20, // 20: teeproto.Envelope.batched_encrypted_responses:type_name -> teeproto.BatchedEncryptedResponses
+	21, // 21: teeproto.Envelope.batched_response_lengths:type_name -> teeproto.BatchedResponseLengths
+	22, // 22: teeproto.Envelope.batched_tag_secrets:type_name -> teeproto.BatchedTagSecrets
+	23, // 23: teeproto.Envelope.batched_tag_verifications:type_name -> teeproto.BatchedTagVerifications
+	24, // 24: teeproto.Envelope.batched_decryption_streams:type_name -> teeproto.BatchedDecryptionStreams
+	25, // 25: teeproto.Envelope.batched_signed_redacted_decryption_streams:type_name -> teeproto.BatchedSignedRedactedDecryptionStreams
+	34, // 26: teeproto.Envelope.attestation_request:type_name -> teeproto.AttestationRequestData
+	26, // 27: teeproto.Envelope.attestation_response:type_name -> teeproto.AttestationResponse
+	12, // 28: teeproto.Envelope.teet_ready:type_name -> teeproto.TEETReady
+	35, // 29: teeproto.Envelope.signed_message:type_name -> teeproto.SignedMessage
+	36, // 30: teeproto.RedactedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
+	37, // 31: teeproto.ResponseRedactionSpec.ranges:type_name -> teeproto.ResponseRedactionRange
+	36, // 32: teeproto.EncryptedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
+	18, // 33: teeproto.BatchedEncryptedResponses.responses:type_name -> teeproto.EncryptedResponseData
+	29, // 34: teeproto.BatchedResponseLengths.lengths:type_name -> teeproto.BatchedResponseLengths.Length
+	30, // 35: teeproto.BatchedTagSecrets.tag_secrets:type_name -> teeproto.BatchedTagSecrets.TagSecret
+	31, // 36: teeproto.BatchedTagVerifications.verifications:type_name -> teeproto.BatchedTagVerifications.Verification
+	38, // 37: teeproto.BatchedDecryptionStreams.decryption_streams:type_name -> teeproto.ResponseDecryptionStreamData
+	39, // 38: teeproto.BatchedSignedRedactedDecryptionStreams.signed_redacted_streams:type_name -> teeproto.SignedRedactedDecryptionStream
+	40, // 39: teeproto.AttestationResponse.attestation_report:type_name -> teeproto.AttestationReport
+	40, // [40:40] is the sub-list for method output_type
+	40, // [40:40] is the sub-list for method input_type
+	40, // [40:40] is the sub-list for extension type_name
+	40, // [40:40] is the sub-list for extension extendee
+	0,  // [0:40] is the sub-list for field type_name
 }
 
 func init() { file_transport_proto_init() }
@@ -2714,7 +2696,6 @@ func file_transport_proto_init() {
 		(*Envelope_RedactionVerification)(nil),
 		(*Envelope_ResponseRedactionSpec)(nil),
 		(*Envelope_EncryptedData)(nil),
-		(*Envelope_EncryptedResponse)(nil),
 		(*Envelope_BatchedEncryptedResponses)(nil),
 		(*Envelope_BatchedResponseLengths)(nil),
 		(*Envelope_BatchedTagSecrets)(nil),

@@ -285,45 +285,12 @@ func (c *Client) processTLSRecord(record []byte) {
 		ExplicitIV:    explicitIV, // TLS 1.2 AES-GCM explicit IV (nil for TLS 1.3)
 	}
 
-	// Batch responses until EOF instead of sending immediately
-	collectionComplete, _, _ := c.getBatchState()
+	// Always batch responses - never send individually
+	c.batchedResponses = append(c.batchedResponses, encryptedResponseData)
 
-	if !collectionComplete {
-		// Collection not complete yet - collect packet for batch processing
-		c.batchedResponses = append(c.batchedResponses, encryptedResponseData)
-
-		// Still increment sequence number
-		c.responseSeqNum++
-		return // Don't send yet - wait for collection complete
-	}
-
-	// If EOF already reached, send packet immediately (shouldn't happen)
-	c.logger.Info("EOF already reached, sending packet immediately")
-
-	env := &teeproto.Envelope{
-		TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_EncryptedResponse{
-			EncryptedResponse: &teeproto.EncryptedResponseData{
-				EncryptedData: encryptedResponseData.EncryptedData,
-				Tag:           encryptedResponseData.Tag,
-				RecordHeader:  encryptedResponseData.RecordHeader,
-				SeqNum:        encryptedResponseData.SeqNum,
-				ExplicitIv:    encryptedResponseData.ExplicitIV,
-			},
-		},
-	}
-
-	if err := c.sendEnvelopeToTEET(env); err != nil {
-
-		if c.isClosing {
-			c.logger.Info("Send failed during shutdown - this is expected, continuing")
-		} else {
-			c.logger.Error("CRITICAL: Failed to send encrypted response to TEE_T - terminating session", zap.Error(err))
-			// This is a protocol violation - should terminate the session
-			c.isClosing = true
-		}
-		return
-	}
+	c.logger.Debug("Added response packet to batch",
+		zap.Int("batch_size", len(c.batchedResponses)),
+		zap.Uint64("seq_num", c.responseSeqNum))
 
 	// Increment sequence number for next response
 	c.responseSeqNum++

@@ -49,7 +49,6 @@ message Envelope {
     RedactionVerification redaction_verification = 44;
     ResponseRedactionSpec response_redaction_spec = 45;
     EncryptedDataResponse encrypted_data = 42;
-    EncryptedResponseData encrypted_response = 43;
 
     // Batches
     BatchedEncryptedResponses batched_encrypted_responses = 50;
