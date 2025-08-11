@@ -1824,7 +1824,7 @@ func (t *TEEK) addToTranscriptForSessionWithType(sessionID string, packet []byte
 
 // addToTranscriptForSession safely adds a packet to the session's transcript collection
 func (t *TEEK) addToTranscriptForSession(sessionID string, packet []byte) {
-	// Default to TLS record type for backwards compatibility
+	// Default to TLS record type
 	t.addToTranscriptForSessionWithType(sessionID, packet, shared.TranscriptPacketTypeTLSRecord)
 }
 

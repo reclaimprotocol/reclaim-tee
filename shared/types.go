@@ -344,7 +344,7 @@ type AttestationRequestData struct {
 // AttestationResponseData represents an attestation response
 type AttestationResponseData struct {
 	// RequestID removed - no longer needed since we wait for session coordination
-	AttestationDoc []byte `json:"attestation_doc,omitempty"`
+	AttestationDoc []byte `json:"attestation_doc,omitempty"` // Now populated from marshaled AttestationReport
 	Success        bool   `json:"success"`
 	ErrorMessage   string `json:"error_message,omitempty"`
 	Source         string `json:"source,omitempty"` // "tee_k" or "tee_t"

@@ -208,14 +208,11 @@ func (c *Client) handleMessages() {
 			ar := p.AttestationResponse
 			var attestationDoc []byte
 
-			// Use structured AttestationReport if available (new protobuf format)
+			// Use structured AttestationReport (protobuf format)
 			if ar.GetAttestationReport() != nil {
 				report := ar.GetAttestationReport()
 				// Serialize the protobuf AttestationReport using deterministic marshaling
 				attestationDoc, _ = proto.MarshalOptions{Deterministic: true}.Marshal(report)
-			} else {
-				// Fall back to raw attestation_doc (legacy format)
-				attestationDoc = ar.GetAttestationDoc()
 			}
 
 			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: attestationDoc, Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
@@ -319,14 +316,11 @@ func (c *Client) handleTEETMessages() {
 			ar := p.AttestationResponse
 			var attestationDoc []byte
 
-			// Use structured AttestationReport if available (new protobuf format)
+			// Use structured AttestationReport (protobuf format)
 			if ar.GetAttestationReport() != nil {
 				report := ar.GetAttestationReport()
 				// Serialize the protobuf AttestationReport using deterministic marshaling
 				attestationDoc, _ = proto.MarshalOptions{Deterministic: true}.Marshal(report)
-			} else {
-				// Fall back to raw attestation_doc (legacy format)
-				attestationDoc = ar.GetAttestationDoc()
 			}
 
 			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: attestationDoc, Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}

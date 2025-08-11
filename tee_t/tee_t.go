@@ -1367,12 +1367,22 @@ func (t *TEET) sendMessageToClientSession(sessionID string, msg *shared.Message)
 		if err := msg.UnmarshalData(&d); err != nil {
 			return err
 		}
+		// Convert AttestationDoc back to AttestationReport if needed
+		var attestationReport *teeproto.AttestationReport
+		if len(d.AttestationDoc) > 0 {
+			attestationReport = &teeproto.AttestationReport{}
+			if err := proto.Unmarshal(d.AttestationDoc, attestationReport); err != nil {
+				t.logger.Error("Failed to unmarshal attestation doc", zap.Error(err))
+				attestationReport = nil
+			}
+		}
+
 		env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-			Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationDoc: d.AttestationDoc, Success: d.Success, ErrorMessage: d.ErrorMessage, Source: d.Source}},
+			Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationReport: attestationReport, Success: d.Success, ErrorMessage: d.ErrorMessage, Source: d.Source}},
 		}
 		return t.sessionManager.RouteToClient(sessionID, env)
 	case shared.MsgSignedTranscript:
-		// Legacy path still used in some flows; skip mapping for now
+		// MsgSignedTranscript should use SignedMessage instead
 		return fmt.Errorf("MsgSignedTranscript route should be migrated to SignedMessage")
 	default:
 		return fmt.Errorf("unsupported message type for client routing: %s", msg.Type)

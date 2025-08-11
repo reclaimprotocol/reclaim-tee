@@ -2073,8 +2073,7 @@ func (x *BatchedSignedRedactedDecryptionStreams) GetTotalCount() int32 {
 // Attestation
 type AttestationResponse struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	AttestationDoc    []byte                 `protobuf:"bytes,1,opt,name=attestation_doc,json=attestationDoc,proto3" json:"attestation_doc,omitempty"`          // deprecated: raw bytes (for backwards compatibility)
-	AttestationReport *AttestationReport     `protobuf:"bytes,5,opt,name=attestation_report,json=attestationReport,proto3" json:"attestation_report,omitempty"` // structured report (from signing.proto)
+	AttestationReport *AttestationReport     `protobuf:"bytes,1,opt,name=attestation_report,json=attestationReport,proto3" json:"attestation_report,omitempty"` // structured report (from signing.proto)
 	Success           bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
 	ErrorMessage      string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
 	Source            string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"` // "tee_k" or "tee_t"
@@ -2110,13 +2109,6 @@ func (x *AttestationResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use AttestationResponse.ProtoReflect.Descriptor instead.
 func (*AttestationResponse) Descriptor() ([]byte, []int) {
 	return file_transport_proto_rawDescGZIP(), []int{25}
-}
-
-func (x *AttestationResponse) GetAttestationDoc() []byte {
-	if x != nil {
-		return x.AttestationDoc
-	}
-	return nil
 }
 
 func (x *AttestationResponse) GetAttestationReport() *AttestationReport {
@@ -2574,10 +2566,9 @@ const file_transport_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1f\n" +
 	"\vtotal_count\x18\x03 \x01(\x05R\n" +
-	"totalCount\"\xe1\x01\n" +
-	"\x13AttestationResponse\x12'\n" +
-	"\x0fattestation_doc\x18\x01 \x01(\fR\x0eattestationDoc\x12J\n" +
-	"\x12attestation_report\x18\x05 \x01(\v2\x1b.teeproto.AttestationReportR\x11attestationReport\x12\x18\n" +
+	"totalCount\"\xb8\x01\n" +
+	"\x13AttestationResponse\x12J\n" +
+	"\x12attestation_report\x18\x01 \x01(\v2\x1b.teeproto.AttestationReportR\x11attestationReport\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12#\n" +
 	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12\x16\n" +
 	"\x06source\x18\x04 \x01(\tR\x06source\"\x10\n" +

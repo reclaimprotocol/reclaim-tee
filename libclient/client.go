@@ -741,7 +741,7 @@ func (c *Client) checkValidationAndCompletion(reason string) {
 	}
 }
 
-// Legacy function for backward compatibility - now delegates to the centralized function
+// Convenience function - delegates to the centralized function
 func (c *Client) checkFinalCompletion(reason string) {
 	c.checkValidationAndCompletion(reason)
 }
