@@ -16,11 +16,12 @@ import (
 )
 
 func main() {
+	config := LoadTEETConfig()
 
 	// Get the TEE_T logger for this service
 	logger := shared.GetLogger()
 	defer logger.Sync()
-	config := LoadTEETConfig()
+
 	if config.EnclaveMode {
 		logger.InfoIf("Starting TEE_T in enclave mode")
 		startEnclaveMode(config, logger)
