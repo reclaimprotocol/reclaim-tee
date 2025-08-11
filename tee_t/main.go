@@ -34,6 +34,15 @@ func main() {
 func startStandaloneMode(config *TEETConfig, logger *shared.Logger) {
 	teet := NewTEETWithLogger(config.Port, logger)
 
+	// Start background attestation refresh in a separate context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start background attestation refresh if in enclave mode
+	if teet.enclaveManager != nil {
+		go teet.startAttestationRefresh(ctx)
+	}
+
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
 		Handler:      setupRoutes(teet),
@@ -66,10 +75,11 @@ func startStandaloneMode(config *TEETConfig, logger *shared.Logger) {
 	logger.InfoIf("Shutting down...")
 
 	// Graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	cancel() // Cancel attestation refresh context
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("Shutdown error", zap.Error(err))
 	}
 

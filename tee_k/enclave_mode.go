@@ -49,6 +49,9 @@ func startEnclaveMode(config *TEEKConfig, logger *shared.Logger) {
 	// Phase 2: Start production HTTPS server with WebSocket support
 	teek := NewTEEKWithEnclaveManager(int(enclaveConfig.HTTPSPort), enclaveManager)
 
+	// Start background attestation refresh for performance optimization
+	go teek.startAttestationRefresh(ctx)
+
 	// Apply TLS configuration
 	teek.SetForceTLSVersion(config.ForceTLSVersion)
 	teek.SetForceCipherSuite(config.ForceCipherSuite)
