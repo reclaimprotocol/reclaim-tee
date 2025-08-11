@@ -1490,11 +1490,17 @@ func (t *TEET) verifyCommitmentsIfReady(sessionID string) error {
 	hasCommitments := len(session.RedactionState.ExpectedCommitments) > 0
 
 	if !hasStreams {
-		return fmt.Errorf("critical security failure: redaction streams not available for commitment verification in session %s", sessionID)
+		// Streams not ready yet - this is normal, just return success and let the caller handle deferred processing
+		t.logger.InfoIf("Redaction streams not yet available for commitment verification, deferring",
+			zap.String("session_id", sessionID))
+		return nil
 	}
 
 	if !hasCommitments {
-		return fmt.Errorf("critical security failure: expected commitments from TEE_K not available for verification in session %s", sessionID)
+		// Commitments not ready yet - this is normal, just return success and let the caller handle deferred processing
+		t.logger.InfoIf("Expected commitments not yet available for verification, deferring",
+			zap.String("session_id", sessionID))
+		return nil
 	}
 
 	// Both collections available - perform verification
