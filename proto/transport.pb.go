@@ -531,7 +531,7 @@ type Envelope_ResponseRedactionSpec struct {
 }
 
 type Envelope_EncryptedData struct {
-	EncryptedData *EncryptedDataResponse `protobuf:"bytes,42,opt,name=encrypted_data,json=encryptedData,proto3,oneof"`
+	EncryptedData *EncryptedDataResponse `protobuf:"bytes,42,opt,name=encrypted_data,json=encryptedData,proto3,oneof"` // Individual EncryptedResponseData removed - use BatchedEncryptedResponses instead
 }
 
 type Envelope_BatchedEncryptedResponses struct {

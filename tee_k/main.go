@@ -16,10 +16,18 @@ import (
 )
 
 func main() {
-	config := LoadTEEKConfig()
+	// Initialize global loggers first
+	if err := shared.InitializeGlobalLoggers(); err != nil {
+		// Cannot use logger here since it failed to initialize
+		fmt.Printf("FATAL: Failed to initialize loggers: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Get the TEE_K logger for this service
-	logger := shared.GetLogger()
+	logger := shared.GetTEEKLogger()
 	defer logger.Sync()
+
+	config := LoadTEEKConfig()
 
 	if config.EnclaveMode {
 		logger.Info("=== TEE_K Enclave Mode ===")
