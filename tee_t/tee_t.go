@@ -204,11 +204,11 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
 				zap.String("remote_addr", r.RemoteAddr),
 				zap.Int("message_size", len(msgBytes))) {
-				t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
+				t.sendErrorToClient(sessionID, fmt.Sprintf("Failed to parse message: %v", err))
 				break // Terminate session
 			}
 			// Protocol errors now always terminate - no more continue
-			t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
+			t.sendErrorToClient(sessionID, fmt.Sprintf("Failed to parse message: %v", err))
 			break
 		}
 		// Map to shared message for existing handlers
@@ -229,7 +229,7 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgBatchedEncryptedResponses, Data: shared.BatchedEncryptedResponseData{Responses: arr, SessionID: p.BatchedEncryptedResponses.GetSessionId(), TotalCount: int(p.BatchedEncryptedResponses.GetTotalCount())}}
 		default:
-			t.sendErrorToClient(conn, "Unknown message type")
+			t.sendErrorToClient(sessionID, "Unknown message type")
 		}
 
 		t.logger.DebugIf("Received message from client",
@@ -246,7 +246,7 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 					// Session activation failure is critical - always terminate
 					t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionManagerFailure, err,
 						zap.String("remote_addr", r.RemoteAddr))
-					t.sendErrorToClient(conn, "Failed to activate session")
+					t.sendErrorToClient(sessionID, "Failed to activate session")
 					break // Terminate session
 				}
 
@@ -266,7 +266,7 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 					zap.String("expected_session", sessionID),
 					zap.String("received_session", msg.SessionID),
 					zap.String("remote_addr", r.RemoteAddr))
-				t.sendErrorToClient(conn, "Session ID mismatch")
+				t.sendErrorToClient(sessionID, "Session ID mismatch")
 				break // Terminate session
 			}
 		}
@@ -281,7 +281,7 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgAttestationRequest:
 			// Attestation requests no longer supported - attestations are included in SignedMessage
 			t.logger.InfoIf("Ignoring legacy attestation request - attestations now included in SignedMessage", zap.String("session_id", sessionID))
-			t.sendErrorToClientSession(sessionID, "Attestation requests deprecated - use SignedMessage")
+			t.sendErrorToClient(sessionID, "Attestation requests deprecated - use SignedMessage")
 		case shared.MsgFinished:
 			t.logger.DebugIf("Handling MsgFinished from TEE_K", zap.String("session_id", sessionID))
 			t.handleFinishedFromTEEKSession(msg)
@@ -296,10 +296,10 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 				fmt.Errorf("unknown message type: %s", string(msg.Type)),
 				zap.String("message_type", string(msg.Type)),
 				zap.String("remote_addr", r.RemoteAddr)) {
-				t.sendErrorToClient(conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+				t.sendErrorToClient(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
 				break // Terminate session if too many unknown messages
 			}
-			t.sendErrorToClient(conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+			t.sendErrorToClient(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
 		}
 	}
 
@@ -471,17 +471,25 @@ func (t *TEET) handleTEETReadySession(sessionID string, msg *shared.Message) {
 
 	t.logger.InfoIf("Handling TEE_T ready for session", zap.String("session_id", sessionID))
 
-	// Delegate to handler with the client connection
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		if t.sessionTerminator.ZeroToleranceError(sessionID, shared.ReasonSessionNotFound, err) {
-			return
-		}
+	// Handle TEE_T ready message inline (was delegated to legacy function)
+	var readyData shared.TEETReadyData
+	if err := msg.UnmarshalData(&readyData); err != nil {
+		t.logger.Error("Failed to unmarshal TEE_T ready data", zap.Error(err))
+		t.sendErrorToClient(sessionID, fmt.Sprintf("Failed to unmarshal TEE_T ready data: %v", err))
 		return
 	}
 
-	wsConn := session.ClientConn.(*shared.WSConnection)
-	t.handleTEETReady(wsConn.GetWebSocketConn(), msg)
+	t.ready = readyData.Success
+
+	// Send confirmation back to client using session routing
+	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_TeetReady{TeetReady: &teeproto.TEETReady{Success: true}},
+	}
+	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
+		t.logger.Error("Failed to send TEE_T ready response",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+	}
 }
 
 func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Message) {
@@ -1465,19 +1473,6 @@ func (t *TEET) sendErrorToTEEK(sessionID string, errMsg string) {
 	}
 }
 
-func (t *TEET) sendErrorToClient(conn *websocket.Conn, errMsg string) {
-	env := &teeproto.Envelope{TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: errMsg}},
-	}
-	if data, err := proto.Marshal(env); err == nil {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			t.logger.Error("Failed to send error message to client", zap.Error(err))
-		}
-	} else {
-		t.logger.Error("Failed to send error message to client", zap.Error(err))
-	}
-}
-
 // Phase 3: Redaction system implementation
 
 // verifyCommitmentsIfReady checks if both stream collections (from Client) and expected commitments (from TEE_K) are available, then verifies them
@@ -1605,36 +1600,12 @@ func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, range
 
 // Phase 4: Response handling methods (moved to session-aware versions)
 
-func (t *TEET) handleTEETReady(conn *websocket.Conn, msg *shared.Message) {
-	var readyData shared.TEETReadyData
-	if err := msg.UnmarshalData(&readyData); err != nil {
-		t.logger.Error("Failed to unmarshal TEE_T ready data", zap.Error(err))
-		t.sendErrorToClient(conn, fmt.Sprintf("Failed to unmarshal TEE_T ready data: %v", err))
-		return
-	}
-
-	t.ready = readyData.Success
-
-	// Send confirmation back to client
-	// Send protobuf envelope back to client
-	env := &teeproto.Envelope{TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_TeetReady{TeetReady: &teeproto.TEETReady{Success: true}},
-	}
-	if data, err := proto.Marshal(env); err == nil {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			t.logger.Error("Failed to send TEE_T ready response", zap.Error(err))
-		}
-	} else {
-		t.logger.Error("Failed to marshal TEE_T ready envelope", zap.Error(err))
-	}
-}
-
 // DEPRECATED: Attestation requests removed - attestations now included in SignedMessage
 
 // DEPRECATED: Attestation response functions removed - attestations now included in SignedMessage
 
-// sendErrorToClientSession sends an error message to a client session
-func (t *TEET) sendErrorToClientSession(sessionID, errMsg string) {
+// sendErrorToClient sends an error message to a client session using thread-safe session routing
+func (t *TEET) sendErrorToClient(sessionID, errMsg string) {
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: errMsg}},
 	}
