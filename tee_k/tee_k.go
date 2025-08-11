@@ -162,7 +162,7 @@ func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 	}
 
 	// Get logger
-	logger := shared.GetTEEKLogger()
+	logger := shared.GetLogger()
 	logger.Info("Generated ECDSA signing key pair", zap.String("curve", "P-256"))
 
 	return &TEEK{

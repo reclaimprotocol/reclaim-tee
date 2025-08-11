@@ -16,18 +16,11 @@ import (
 )
 
 func main() {
-	// Initialize global loggers first
-	if err := shared.InitializeGlobalLoggers(); err != nil {
-		// Cannot use logger here since it failed to initialize
-		fmt.Printf("FATAL: Failed to initialize loggers: %v\n", err)
-		os.Exit(1)
-	}
+	config := LoadTEETConfig()
 
 	// Get the TEE_T logger for this service
-	logger := shared.GetTEETLogger()
+	logger := shared.GetLogger()
 	defer logger.Sync()
-
-	config := LoadTEETConfig()
 
 	if config.EnclaveMode {
 		logger.InfoIf("Starting TEE_T in enclave mode")
