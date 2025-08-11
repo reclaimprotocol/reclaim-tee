@@ -250,11 +250,18 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 					break // Terminate session
 				}
 
-				// Initialize TEE_T session state
-				teetState := &TEETSessionState{
-					TEETClientConn: conn,
+				// Initialize or update TEE_T session state
+				teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
+				if err != nil {
+					// Create new state if doesn't exist
+					teetState = &TEETSessionState{
+						TEETClientConn: conn,
+					}
+					t.sessionManager.SetTEETSessionState(sessionID, teetState)
+				} else {
+					// Update existing state with client connection
+					teetState.TEETClientConn = conn
 				}
-				t.sessionManager.SetTEETSessionState(sessionID, teetState)
 				t.logger.InfoIf("Activated session for client",
 					zap.String("session_id", sessionID),
 					zap.String("remote_addr", conn.RemoteAddr().String()))
@@ -766,6 +773,14 @@ func (t *TEET) handleSessionCreation(msg *shared.Message) {
 		}
 		return
 	}
+
+	// Create TEE_T session state when session is registered from TEE_K
+	// This ensures the state exists before encrypted requests arrive
+	teetState := &TEETSessionState{
+		TEETClientConn: nil, // Will be set when client connects
+	}
+	t.sessionManager.SetTEETSessionState(sessionID, teetState)
+	t.logger.InfoIf("Created TEE_T session state for registered session", zap.String("session_id", sessionID))
 
 	t.logger.InfoIf("Registered session from TEE_K", zap.String("session_id", sessionID))
 }
