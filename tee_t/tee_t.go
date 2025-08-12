@@ -1620,10 +1620,6 @@ func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, range
 
 // Phase 4: Response handling methods (moved to session-aware versions)
 
-// DEPRECATED: Attestation requests removed - attestations now included in SignedMessage
-
-// DEPRECATED: Attestation response functions removed - attestations now included in SignedMessage
-
 // sendErrorToClient sends an error message to a client session using thread-safe session routing
 func (t *TEET) sendErrorToClient(sessionID, errMsg string) {
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
@@ -1775,14 +1771,8 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			return
 		}
 
-		// Get public key in DER format
-		publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-		if err != nil {
-			t.logger.Error("Failed to get public key DER for signed transcript",
-				zap.String("session_id", sessionID),
-				zap.Error(err))
-			return
-		}
+		// Get ETH address for this key pair
+		ethAddress := t.signingKeyPair.GetEthAddress()
 
 		// SECURITY FIX: Create protobuf body and sign it directly
 		tOutput := &teeproto.TOutputPayload{Packets: transcript}
@@ -1825,9 +1815,11 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			}
 			t.logger.InfoIf("Including attestation report in SignedMessage", zap.String("session_id", sessionID))
 		} else {
-			// Standalone mode: include public key
-			publicKeyForStandalone = publicKeyDER
-			t.logger.InfoIf("Including public key in SignedMessage (standalone mode)", zap.String("session_id", sessionID))
+			// Standalone mode: include ETH address as public key
+			publicKeyForStandalone = ethAddress.Bytes()
+			t.logger.InfoIf("Including ETH address in SignedMessage (standalone mode)",
+				zap.String("session_id", sessionID),
+				zap.String("eth_address", ethAddress.Hex()))
 		}
 
 		sm := &teeproto.SignedMessage{
@@ -1895,14 +1887,11 @@ func (t *TEET) refreshAttestation() error {
 		return nil
 	}
 
-	// Get public key
-	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-	if err != nil {
-		return fmt.Errorf("failed to get public key DER: %v", err)
-	}
+	// Get ETH address for this key pair
+	ethAddress := t.signingKeyPair.GetEthAddress()
 
-	// Create user data containing the hex-encoded ECDSA public key
-	userData := fmt.Sprintf("tee_t_public_key:%x", publicKeyDER)
+	// Create user data containing the ETH address
+	userData := fmt.Sprintf("tee_t_public_key:%s", ethAddress.Hex())
 
 	// Check attestation provider and generate accordingly
 	provider := os.Getenv("ATTESTATION_PROVIDER")

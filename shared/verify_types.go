@@ -13,8 +13,6 @@ type Opening struct {
 	ProofKey    []byte `json:"proof_key"`    // K_SP - commitment key for proof stream
 }
 
-// Legacy VerificationBundle, TEEKTranscript, TEETTranscript removed - now using protobuf VerificationBundlePB directly!
-
 // Report captures the result of offline verification. The verifier returns it
 // to the caller so they can inspect what failed.
 // For the first iteration we only expose booleans; we can extend later.

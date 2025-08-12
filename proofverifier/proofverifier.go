@@ -1,7 +1,6 @@
 package proofverifier
 
 import (
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"tee-mpc/shared"
 
 	"github.com/anjuna-security/go-nitro-attestation/verifier"
+	"github.com/ethereum/go-ethereum/common"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -335,41 +335,45 @@ func verifyAndRevealProofDataProtobuf(bundlePB *teeproto.VerificationBundlePB) e
 	return nil
 }
 
-// verifyAttestationReport verifies a protobuf AttestationReport and extracts the public key
-func verifyAttestationReport(report *teeproto.AttestationReport, expectedSource string) ([]byte, error) {
+// verifyAttestationReportETH verifies a protobuf AttestationReport and extracts the ETH address
+func verifyAttestationReportETH(report *teeproto.AttestationReport, expectedSource string) (common.Address, error) {
 	switch report.Type {
 	case "nitro":
 		sr, err := verifier.NewSignedAttestationReport(strings.NewReader(string(report.Report)))
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse nitro report: %v", err)
+			return common.Address{}, fmt.Errorf("failed to parse nitro report: %v", err)
 		}
 		if err := verifier.Validate(sr, nil); err != nil {
-			return nil, fmt.Errorf("nitro validation failed: %v", err)
+			return common.Address{}, fmt.Errorf("nitro validation failed: %v", err)
 		}
 
-		// Extract public key from user data in the attestation document
+		// Extract ETH address from user data in the attestation document
 		userDataStr := string(sr.Document.UserData)
 		expectedPrefix := fmt.Sprintf("%s_public_key:", strings.ToLower(expectedSource))
 		if !strings.HasPrefix(userDataStr, expectedPrefix) {
-			return nil, fmt.Errorf("invalid user data format, expected prefix %s", expectedPrefix)
+			return common.Address{}, fmt.Errorf("invalid user data format, expected prefix %s", expectedPrefix)
 		}
 
-		publicKeyHex := userDataStr[len(expectedPrefix):]
-		publicKeyDER, err := hex.DecodeString(publicKeyHex)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode public key hex: %v", err)
+		ethAddressHex := userDataStr[len(expectedPrefix):]
+		if !strings.HasPrefix(ethAddressHex, "0x") {
+			return common.Address{}, fmt.Errorf("invalid ETH address format, expected 0x prefix")
 		}
 
-		fmt.Printf("[Verifier] Extracted public key from Nitro attestation (%d bytes)\n", len(publicKeyDER))
-		return publicKeyDER, nil
+		if !common.IsHexAddress(ethAddressHex) {
+			return common.Address{}, fmt.Errorf("invalid ETH address format: %s", ethAddressHex)
+		}
+
+		ethAddress := common.HexToAddress(ethAddressHex)
+		fmt.Printf("[Verifier] Extracted ETH address from Nitro attestation: %s\n", ethAddress.Hex())
+		return ethAddress, nil
 
 	case "gcp":
-		// For GCP, we need to extract the public key from the attestation token
-		// This is a placeholder - GCP attestation key extraction needs specific implementation
-		return nil, fmt.Errorf("GCP public key extraction not yet implemented for protobuf format")
+		// For GCP, we need to extract the ETH address from the attestation token
+		// This is a placeholder - GCP attestation ETH address extraction needs specific implementation
+		return common.Address{}, fmt.Errorf("GCP ETH address extraction not yet implemented for protobuf format")
 
 	default:
-		return nil, fmt.Errorf("unsupported attestation type: %s", report.Type)
+		return common.Address{}, fmt.Errorf("unsupported attestation type: %s", report.Type)
 	}
 }
 
@@ -398,32 +402,35 @@ func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error
 		return fmt.Errorf("SECURITY ERROR: %s wrong body type, expected %v got %v", source, expectedBodyType, signedMsg.GetBodyType())
 	}
 
-	// Extract public key - either from AttestationReport (enclave mode) or PublicKey field (standalone mode)
-	var publicKeyDER []byte
+	// Extract ETH address - either from AttestationReport (enclave mode) or PublicKey field (standalone mode)
+	var ethAddress common.Address
 	var err error
 
 	if signedMsg.GetAttestationReport() != nil {
-		// Enclave mode: extract public key from attestation report
+		// Enclave mode: extract ETH address from attestation report
 		attestationReport := signedMsg.GetAttestationReport()
 		fmt.Printf("[Verifier] Verifying %s attestation report (type: %s)\n", source, attestationReport.GetType())
 
-		// Verify attestation and extract public key
-		publicKeyDER, err = verifyAttestationReport(attestationReport, source)
+		// Verify attestation and extract ETH address
+		ethAddress, err = verifyAttestationReportETH(attestationReport, source)
 		if err != nil {
 			return fmt.Errorf("SECURITY ERROR: %s attestation verification failed: %v", source, err)
 		}
-		fmt.Printf("[Verifier] %s attestation verification SUCCESS, extracted %d bytes public key\n", source, len(publicKeyDER))
+		fmt.Printf("[Verifier] %s attestation verification SUCCESS, extracted ETH address: %s\n", source, ethAddress.Hex())
 	} else if len(signedMsg.GetPublicKey()) > 0 {
-		// Standalone mode: use public key directly
-		publicKeyDER = signedMsg.GetPublicKey()
-		fmt.Printf("[Verifier] Using %s standalone mode public key (%d bytes)\n", source, len(publicKeyDER))
+		// Standalone mode: use ETH address directly (20 bytes)
+		if len(signedMsg.GetPublicKey()) != 20 {
+			return fmt.Errorf("SECURITY ERROR: %s invalid ETH address length: expected 20 bytes, got %d", source, len(signedMsg.GetPublicKey()))
+		}
+		ethAddress = common.BytesToAddress(signedMsg.GetPublicKey())
+		fmt.Printf("[Verifier] Using %s standalone mode ETH address: %s\n", source, ethAddress.Hex())
 	} else {
 		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)
 	}
 
-	// SECURITY FIX: Verify signature against the exact signed bytes (SignedMessage.Body)
+	// SECURITY FIX: Verify ETH signature against the exact signed bytes (SignedMessage.Body)
 	// The TEEs sign their protobuf payload and put those signed bytes as the body
-	if err := shared.VerifySignatureWithDER(signedMsg.GetBody(), signedMsg.GetSignature(), publicKeyDER); err != nil {
+	if err := shared.VerifySignatureWithETH(signedMsg.GetBody(), signedMsg.GetSignature(), ethAddress); err != nil {
 		return fmt.Errorf("SECURITY ERROR: %s cryptographic signature verification FAILED: %v", source, err)
 	}
 

@@ -128,16 +128,11 @@ func setupEnclaveRoutes(teek *TEEK, enclaveManager *shared.EnclaveManager, logge
 			return
 		}
 
-		publicKeyDER, err := teek.signingKeyPair.GetPublicKeyDER()
-		if err != nil {
-			logger.Error("Failed to get public key DER", zap.Error(err))
-			http.Error(w, "Failed to get public key", http.StatusInternalServerError)
-			return
-		}
+		ethAddress := teek.signingKeyPair.GetEthAddress()
 
-		// Create user data containing the hex-encoded ECDSA public key
-		userData := fmt.Sprintf("tee_k_public_key:%x", publicKeyDER)
-		logger.Info("Including ECDSA public key in attestation", zap.Int("der_bytes", len(publicKeyDER)))
+		// Create user data containing the ETH address
+		userData := fmt.Sprintf("tee_k_public_key:%s", ethAddress.Hex())
+		logger.Info("Including ETH address in attestation", zap.String("eth_address", ethAddress.Hex()))
 
 		attestationDoc, err := enclaveManager.GenerateAttestation(r.Context(), []byte(userData))
 		if err != nil {

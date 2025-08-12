@@ -2176,11 +2176,8 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 
 	// SECURITY FIX: Sign protobuf body directly instead of reconstructing data
 
-	// Get public key in DER format
-	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-	if err != nil {
-		return fmt.Errorf("failed to get public key DER: %v", err)
-	}
+	// Get ETH address for this key pair
+	ethAddress := t.signingKeyPair.GetEthAddress()
 
 	// SECURITY FIX: Build KOutputPayload and sign it directly
 	kPayload := &teeproto.KOutputPayload{}
@@ -2235,9 +2232,10 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		}
 		t.logger.WithSession(sessionID).Info("Including attestation report in SignedMessage")
 	} else {
-		// Standalone mode: include public key
-		publicKeyForStandalone = publicKeyDER
-		t.logger.WithSession(sessionID).Info("Including public key in SignedMessage (standalone mode)")
+		// Standalone mode: include ETH address as public key
+		publicKeyForStandalone = ethAddress.Bytes()
+		t.logger.WithSession(sessionID).Info("Including ETH address in SignedMessage (standalone mode)",
+			zap.String("eth_address", ethAddress.Hex()))
 	}
 
 	// Send the signed message to client
@@ -2300,14 +2298,11 @@ func (t *TEEK) refreshAttestation() error {
 		return nil
 	}
 
-	// Get public key
-	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-	if err != nil {
-		return fmt.Errorf("failed to get public key DER: %v", err)
-	}
+	// Get ETH address for this key pair
+	ethAddress := t.signingKeyPair.GetEthAddress()
 
-	// Create user data containing the hex-encoded ECDSA public key
-	userData := fmt.Sprintf("tee_k_public_key:%x", publicKeyDER)
+	// Create user data containing the ETH address
+	userData := fmt.Sprintf("tee_k_public_key:%s", ethAddress.Hex())
 
 	// Generate attestation document using enclave manager
 	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
@@ -2374,10 +2369,6 @@ func (t *TEEK) generateAttestationReport(sessionID string) (*teeproto.Attestatio
 	// Use cached attestation for performance
 	return t.getCachedAttestation(sessionID)
 }
-
-// DEPRECATED: Attestation requests removed - attestations now included in SignedMessage
-
-// DEPRECATED: Attestation response functions removed - attestations now included in SignedMessage
 
 // constructNonce creates the appropriate nonce for a given cipher suite and sequence number
 // Following RFC specifications and minitls implementation exactly

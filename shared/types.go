@@ -442,7 +442,7 @@ type SignedTranscript struct {
 	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`
 
 	Signature []byte `json:"signature"`  // Comprehensive signature over all data (TLS packets + metadata + streams)
-	PublicKey []byte `json:"public_key"` // Public key in DER format (binary data)
+	PublicKey []byte `json:"public_key"` // ETH address (20 bytes)
 }
 
 // Transcript packet type constants – exported so both client and TEEs can reference them.

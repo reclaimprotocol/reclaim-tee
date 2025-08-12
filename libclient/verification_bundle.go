@@ -48,9 +48,9 @@ func (c *Client) BuildVerificationBundle(path string) error {
 		}
 	}
 
-	// Attestations (if any; nil slices marshal as null, omit empty)
-	bundle.AttestationTeeK = c.teekAttestationPublicKey
-	bundle.AttestationTeeT = c.teetAttestationPublicKey
+	// Attestations not included
+	bundle.AttestationTeeK = nil
+	bundle.AttestationTeeT = nil
 
 	// Write protobuf to file
 	data, err := proto.Marshal(bundle)

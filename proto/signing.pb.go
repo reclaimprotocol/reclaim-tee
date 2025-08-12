@@ -250,7 +250,7 @@ type SignedMessage struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	BodyType          BodyType               `protobuf:"varint,1,opt,name=body_type,json=bodyType,proto3,enum=teeproto.BodyType" json:"body_type,omitempty"`
 	Body              []byte                 `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`                                                    // serialized deterministic KOutputPayload or TOutputPayload
-	PublicKey         []byte                 `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`                         // DER-encoded public key (standalone mode only)
+	PublicKey         []byte                 `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`                         // ETH address (20 bytes, standalone mode only)
 	Signature         []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`                                          // signature over body bytes
 	AttestationReport *AttestationReport     `protobuf:"bytes,5,opt,name=attestation_report,json=attestationReport,proto3" json:"attestation_report,omitempty"` // full attestation (enclave mode only)
 	unknownFields     protoimpl.UnknownFields

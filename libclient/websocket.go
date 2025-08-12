@@ -199,18 +199,7 @@ func (c *Client) handleMessages() {
 				c.processSignedTranscriptDataWithStreams(&st)
 			}
 		case *teeproto.Envelope_AttestationResponse:
-			ar := p.AttestationResponse
-			var attestationDoc []byte
-
-			// Use structured AttestationReport (protobuf format)
-			if ar.GetAttestationReport() != nil {
-				report := ar.GetAttestationReport()
-				// Serialize the protobuf AttestationReport using deterministic marshaling
-				attestationDoc, _ = proto.MarshalOptions{Deterministic: true}.Marshal(report)
-			}
-
-			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: attestationDoc, Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
-			c.handleAttestationResponse(msg)
+			// Ignored - using SignedMessage attestations
 		case *teeproto.Envelope_BatchedTagVerifications:
 			var ver []shared.ResponseTagVerificationData
 			for _, v := range p.BatchedTagVerifications.GetVerifications() {
@@ -301,18 +290,7 @@ func (c *Client) handleTEETMessages() {
 				c.processSignedTranscriptData(&st)
 			}
 		case *teeproto.Envelope_AttestationResponse:
-			ar := p.AttestationResponse
-			var attestationDoc []byte
-
-			// Use structured AttestationReport (protobuf format)
-			if ar.GetAttestationReport() != nil {
-				report := ar.GetAttestationReport()
-				// Serialize the protobuf AttestationReport using deterministic marshaling
-				attestationDoc, _ = proto.MarshalOptions{Deterministic: true}.Marshal(report)
-			}
-
-			msg := &shared.Message{Type: shared.MsgAttestationResponse, SessionID: env.GetSessionId(), Data: shared.AttestationResponseData{AttestationDoc: attestationDoc, Success: ar.GetSuccess(), ErrorMessage: ar.GetErrorMessage(), Source: ar.GetSource()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
-			c.handleAttestationResponse(msg)
+			// Ignored - using SignedMessage attestations
 		case *teeproto.Envelope_Error:
 			msg := &shared.Message{Type: shared.MsgError, SessionID: env.GetSessionId(), Data: shared.ErrorData{Message: p.Error.GetMessage()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleTEETError(msg)

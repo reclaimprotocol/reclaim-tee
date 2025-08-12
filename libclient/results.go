@@ -45,7 +45,7 @@ type TranscriptResults struct {
 type SignedTranscriptData struct {
 	Packets   [][]byte `json:"packets"`    // Array of TLS packets
 	Signature []byte   `json:"signature"`  // Comprehensive cryptographic signature
-	PublicKey []byte   `json:"public_key"` // Public key in DER format
+	PublicKey []byte   `json:"public_key"` // ETH address (20 bytes)
 }
 
 // ValidationResults contains the results of transcript validation
