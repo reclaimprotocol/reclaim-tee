@@ -5,6 +5,7 @@ import (
 	"fmt"
 	teeproto "tee-mpc/proto"
 
+	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"google.golang.org/protobuf/proto"
@@ -85,11 +86,11 @@ func GenerateSigningKeyPair() (*SigningKeyPair, error) {
 
 // SignData signs the given data using Ethereum-style signatures
 func (kp *SigningKeyPair) SignData(data []byte) ([]byte, error) {
-	// Hash the data with Keccak-256 (Ethereum standard)
-	hash := crypto.Keccak256Hash(data)
+	// Use standard Ethereum message signing (includes prefix)
+	hash := accounts.TextHash(data)
 
 	// Sign the hash - this returns a 65-byte signature with recovery ID
-	signature, err := crypto.Sign(hash.Bytes(), kp.PrivateKey)
+	signature, err := crypto.Sign(hash, kp.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign data with ETH style: %v", err)
 	}
@@ -103,11 +104,11 @@ func VerifySignature(data []byte, signature []byte, publicKey *ecdsa.PublicKey) 
 		return fmt.Errorf("invalid ETH signature length: expected 65 bytes, got %d", len(signature))
 	}
 
-	// Hash the data with Keccak-256 (Ethereum standard)
-	hash := crypto.Keccak256Hash(data)
+	// Use standard Ethereum message signing (includes prefix)
+	hash := accounts.TextHash(data)
 
 	// Recover public key from signature
-	recoveredPubKey, err := crypto.SigToPub(hash.Bytes(), signature)
+	recoveredPubKey, err := crypto.SigToPub(hash, signature)
 	if err != nil {
 		return fmt.Errorf("failed to recover public key from signature: %v", err)
 	}
@@ -146,11 +147,11 @@ func VerifyEthSignature(data []byte, signature []byte, expectedAddress common.Ad
 		return fmt.Errorf("invalid ETH signature length: expected 65 bytes, got %d", len(signature))
 	}
 
-	// Hash the data with Keccak-256
-	hash := crypto.Keccak256Hash(data)
+	// Use standard Ethereum message signing (includes prefix)
+	hash := accounts.TextHash(data)
 
 	// Recover public key from signature
-	recoveredPubKey, err := crypto.SigToPub(hash.Bytes(), signature)
+	recoveredPubKey, err := crypto.SigToPub(hash, signature)
 	if err != nil {
 		return fmt.Errorf("failed to recover public key from signature: %v", err)
 	}
