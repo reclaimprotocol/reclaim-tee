@@ -14,9 +14,11 @@ require (
 	github.com/hf/nsm v0.0.0-20220930140112-cd181bd646b9
 	github.com/joho/godotenv v1.5.1
 	github.com/mdlayher/vsock v1.2.1
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.41.0
 	google.golang.org/protobuf v1.36.7
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
