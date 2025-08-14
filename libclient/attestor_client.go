@@ -2,7 +2,8 @@ package clientlib
 
 import (
 	"crypto/ecdsa"
-
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -184,7 +185,7 @@ type ClaimTeeBundleParams struct {
 }
 
 // SubmitTeeBundle submits a TEE verification bundle to attestor-core for claim validation
-func (ac *AttestorClient) SubmitTeeBundle(verificationBundle *teeproto.VerificationBundlePB, params ClaimTeeBundleParams) (*attestor.ProviderClaimData, error) {
+func (ac *AttestorClient) SubmitTeeBundle(verificationBundle *teeproto.VerificationBundle, params ClaimTeeBundleParams) (*attestor.ProviderClaimData, error) {
 	// 1. Serialize the verification bundle
 	bundleBytes, err := proto.Marshal(verificationBundle)
 	if err != nil {
@@ -206,12 +207,13 @@ func (ac *AttestorClient) SubmitTeeBundle(verificationBundle *teeproto.Verificat
 		contextJson = string(contextBytes)
 	}
 
-	// 3. Create claim request data
+	// 3. Create claim request data with consistent timestamp
+	timestamp := uint32(time.Now().Unix())
 	claimData := &attestor.ClaimRequestData{
 		Provider:   params.Provider,
 		Parameters: string(parametersJson),
 		Owner:      ac.address.Hex(),
-		TimestampS: uint32(time.Now().Unix()),
+		TimestampS: timestamp,
 		Context:    contextJson,
 	}
 
@@ -235,10 +237,50 @@ func (ac *AttestorClient) SubmitTeeBundle(verificationBundle *teeproto.Verificat
 		return nil, fmt.Errorf("failed to marshal request for signing: %v", err)
 	}
 
-	// Use standard Ethereum message signing (compatible with our TEE signatures)
+	// ===== TEE BUNDLE SIGNATURE DEBUG LOGGING =====
+	hasher := sha256.New()
+	hasher.Write(requestBytes)
+	serializedHash := hex.EncodeToString(hasher.Sum(nil))
+
+	// Verify the owner address matches the private key
+	address := crypto.PubkeyToAddress(ac.privateKey.PublicKey)
+
+	ac.logger.Info("TEE Bundle signature creation debug",
+		zap.String("owner", claimData.Owner),
+		zap.String("privateKeyAddress", address.Hex()),
+		zap.Bool("addressesMatch", strings.EqualFold(claimData.Owner, address.Hex())),
+		zap.Int("serializedLength", len(requestBytes)),
+		zap.String("serializedHash", serializedHash),
+		zap.String("serializedPreview", hex.EncodeToString(requestBytes[:min(200, len(requestBytes))])),
+		zap.String("signatureType", "ETH"),
+		zap.Uint32("timestampS", claimData.TimestampS),
+		zap.String("provider", claimData.Provider),
+		zap.Int("parametersLength", len(claimData.Parameters)),
+		zap.Int("contextLength", len(claimData.Context)),
+		zap.Int("bundleLength", len(bundleBytes)),
+	)
+	// ===== END TEE BUNDLE DEBUG LOGGING =====
+
+	// Use personal_sign compatible signature (same as ethers.js wallet.signMessage)
 	signature, err := crypto.Sign(accounts.TextHash(requestBytes), ac.privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign request: %v", err)
+	}
+
+	// Log signature creation details
+	ac.logger.Info("TEE Bundle signature details",
+		zap.Int("signatureLength", len(signature)),
+		zap.String("signatureHex", hex.EncodeToString(signature[:min(10, len(signature))])+"..."),
+		zap.String("textHashHex", hex.EncodeToString(accounts.TextHash(requestBytes))),
+		zap.String("recoveryId", fmt.Sprintf("%d", signature[64])),
+	)
+
+	// Convert to ethers.js compatible format: add 27 to recovery ID for ethers.js
+	if len(signature) == 65 {
+		signature[64] += 27
+		ac.logger.Info("Converted signature for ethers.js compatibility",
+			zap.String("newRecoveryId", fmt.Sprintf("%d", signature[64])),
+		)
 	}
 
 	// 7. Add signature to request
@@ -293,18 +335,17 @@ func (ac *AttestorClient) SubmitTeeBundle(verificationBundle *teeproto.Verificat
 
 // createClaimTunnelRequestFromTeeBundle creates a ClaimTunnelRequest from TEE bundle data
 // This allows the attestor to use existing validation logic
-func (ac *AttestorClient) createClaimTunnelRequestFromTeeBundle(bundle *teeproto.VerificationBundlePB, claimData *attestor.ClaimRequestData) (*attestor.ClaimTunnelRequest, error) {
-	// Extract host information from the TEE bundle
-	host := "example.com" // Default value
-	if bundle.TeekSigned != nil && bundle.TeekSigned.AttestationReport != nil {
-		// In a full implementation, we would parse the attestation report
-		// to extract the actual host information from the TEE data
-		// For now, we use a default value as the attestor will verify the actual host
-		host = "example.com"
+func (ac *AttestorClient) createClaimTunnelRequestFromTeeBundle(bundle *teeproto.VerificationBundle, claimData *attestor.ClaimRequestData) (*attestor.ClaimTunnelRequest, error) {
+	// 1. Reconstruct transcript exactly like attestor will do
+	transcript, err := ReconstructTranscriptForClaimTunnel(bundle)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reconstruct transcript: %v", err)
 	}
 
-	// Create a minimal ClaimTunnelRequest that the attestor can use
-	// The attestor will fill in the transcript and other details during reconstruction
+	// 2. Extract host from bundle
+	host := ExtractHostFromBundle(bundle)
+
+	// 3. Create complete ClaimTunnelRequest with reconstructed transcript
 	claimTunnelRequest := &attestor.ClaimTunnelRequest{
 		Request: &attestor.CreateTunnelRequest{
 			Id:          0, // Synthetic tunnel ID
@@ -312,38 +353,43 @@ func (ac *AttestorClient) createClaimTunnelRequestFromTeeBundle(bundle *teeproto
 			Port:        443, // Default HTTPS port
 			GeoLocation: "",  // Not applicable for TEE mode
 		},
-		Data: claimData,
-		// Transcript will be filled by attestor during reconstruction
-		Transcript: nil,
-		// ZK engine not applicable for TEE mode
-		ZkEngine: attestor.ZKProofEngine_ZK_ENGINE_SNARKJS,
-		// IVs not applicable for TEE mode
-		FixedServerIV: nil,
-		FixedClientIV: nil,
-		// Signatures will be added after encoding
-		Signatures: nil,
+		Data:          claimData,
+		Transcript:    transcript, // ✅ NOW INCLUDES RECONSTRUCTED TRANSCRIPT
+		ZkEngine:      0,          // ✅ TEE mode (use 0, not ZK_ENGINE_SNARKJS)
+		FixedServerIV: []byte{},   // ✅ Empty for TEE mode
+		FixedClientIV: []byte{},   // ✅ Empty for TEE mode
+		Signatures:    nil,        // Will be added after signing
 	}
 
-	// Sign the ClaimTunnelRequest (without signatures field)
+	// 4. Marshal for signing (same as attestor does)
 	claimTunnelBytes, err := proto.Marshal(claimTunnelRequest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal ClaimTunnelRequest for signing: %v", err)
 	}
 
-	// Create signature using the same method as the attestor SDK
+	// 5. Sign using Ethereum personal_sign
 	signature, err := crypto.Sign(accounts.TextHash(claimTunnelBytes), ac.privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign ClaimTunnelRequest: %v", err)
 	}
 
-	// Add signature to the request
+	// Log signature info
+	ac.logger.Info("TEE signature creation",
+		zap.Int("signatureLength", len(signature)),
+		zap.String("signatureHex", hex.EncodeToString(signature[:min(10, len(signature))])+"..."),
+		zap.String("textHashHex", hex.EncodeToString(accounts.TextHash(claimTunnelBytes))),
+	)
+
+	// 6. Add signature to the request
 	claimTunnelRequest.Signatures = &attestor.ClaimTunnelRequest_Signatures{
 		RequestSignature: signature,
 	}
 
-	ac.logger.Info("Created ClaimTunnelRequest for TEE bundle",
+	ac.logger.Info("Created complete ClaimTunnelRequest with reconstructed transcript",
 		zap.String("host", host),
-		zap.Int("signature_length", len(signature)))
+		zap.Int("transcript_messages", len(transcript)),
+		zap.Int("signature_length", len(signature)),
+		zap.String("signature_hex", fmt.Sprintf("0x%x...", signature[:10])))
 
 	return claimTunnelRequest, nil
 }
@@ -451,4 +497,48 @@ func HTTPProviderParams(url, method string, headers map[string]string, body stri
 	}
 
 	return params
+}
+
+// Helper functions for debug hashing
+func hashRequestOnly(req *attestor.ClaimTunnelRequest) string {
+	tempReq := &attestor.ClaimTunnelRequest{
+		Request:       req.Request,
+		ZkEngine:      req.ZkEngine,
+		FixedServerIV: req.FixedServerIV,
+		FixedClientIV: req.FixedClientIV,
+	}
+	bytes, _ := proto.Marshal(tempReq)
+	hasher := sha256.New()
+	hasher.Write(bytes)
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func hashDataOnly(req *attestor.ClaimTunnelRequest) string {
+	tempReq := &attestor.ClaimTunnelRequest{
+		Data: req.Data,
+	}
+	bytes, _ := proto.Marshal(tempReq)
+	hasher := sha256.New()
+	hasher.Write(bytes)
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func hashTranscriptOnly(req *attestor.ClaimTunnelRequest) string {
+	if req.Transcript == nil || len(req.Transcript) == 0 {
+		return "empty"
+	}
+	tempReq := &attestor.ClaimTunnelRequest{
+		Transcript: req.Transcript,
+	}
+	bytes, _ := proto.Marshal(tempReq)
+	hasher := sha256.New()
+	hasher.Write(bytes)
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

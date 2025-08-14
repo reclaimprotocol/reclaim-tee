@@ -14,7 +14,7 @@ import (
 // path of the file written or an error.
 // SECURITY: This function validates that required data is present before creating bundle
 func (c *Client) BuildVerificationBundle(path string) error {
-	bundle := &teeproto.VerificationBundlePB{}
+	bundle := &teeproto.VerificationBundle{}
 
 	// SECURITY: Validate that we have the required signed messages
 	if c.teekSignedMessage == nil {

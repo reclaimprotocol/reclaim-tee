@@ -55,7 +55,7 @@ func submitGitHubClaim(client *clientlib.Client, privateKey *ecdsa.PrivateKey, l
 	}
 
 	claimParams := clientlib.ClaimTeeBundleParams{
-		Provider:   "github",
+		Provider:   "http",
 		Parameters: httpParams,
 		Context: map[string]interface{}{
 			"purpose": "github_identity_proof",

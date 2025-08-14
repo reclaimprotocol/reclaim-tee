@@ -21,7 +21,7 @@ message Opening {
 }
 
 // Single artefact produced by client for offline verification
-message VerificationBundlePB {
+message VerificationBundle {
   HandshakeSecrets handshake_keys = 1; // optional
 
   // Signed transcripts

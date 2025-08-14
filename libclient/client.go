@@ -1241,7 +1241,6 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 
 	// Example: Submit for HTTP provider claim
 	httpParams := map[string]interface{}{
-		"name":   "http",
 		"method": "GET",
 		"url":    "https://github.com",
 		"responseMatches": []map[string]interface{}{
@@ -1265,7 +1264,7 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 	}
 
 	params = ClaimTeeBundleParams{
-		Provider:   "github",
+		Provider:   "http",
 		Parameters: httpParams,
 		Context: map[string]interface{}{
 			"purpose": "github_identity_proof",
@@ -1284,7 +1283,7 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 	}
 
 	// Build verification bundle
-	bundle := &teeproto.VerificationBundlePB{
+	bundle := &teeproto.VerificationBundle{
 		TeekSigned: c.teekSignedMessage,
 		TeetSigned: c.teetSignedMessage,
 	}
@@ -1330,68 +1329,3 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 
 	return claim, nil
 }
-
-// // Alternative example for GitHub provider
-// func (c *Client) submitGitHubClaim(privateKey *ecdsa.PrivateKey) {
-//
-// 	// Example private key (use your own in production)
-// 	privateKey, err := crypto.GenerateKey()
-// 	if err != nil {
-// 		c.logger.Fatal("Failed to generate private key:", zap.Error(err))
-// 	}
-//
-// 	// Example: Submit for HTTP provider claim
-// 	httpParams := map[string]interface{}{
-// 		"name":   "http",
-// 		"method": "GET",
-// 		"url":    "https://github.com",
-// 		"responseMatches": []map[string]interface{}{
-// 			{
-// 				"type":  "regex",
-// 				"value": "github",
-// 			},
-// 		},
-// 		"responseRedactions": []map[string]interface{}{
-// 			{
-// 				"jsonPath": "$.cardano.usd",
-// 				"regex":    "",
-// 				"xPath":    "",
-// 			},
-// 			{
-// 				"jsonPath": "$.solana.usd",
-// 				"regex":    "",
-// 				"xPath":    "",
-// 			},
-// 		},
-// 	}
-//
-// 	claimParams := clientlib.ClaimTeeBundleParams{
-// 		Provider:   "github",
-// 		Parameters: httpParams,
-// 		Context: map[string]interface{}{
-// 			"purpose": "github_identity_proof",
-// 		},
-// 	}
-//
-// 	// Submit to attestor-core
-// 	logger.Info("Submitting verification bundle to attestor-core...")
-//
-// 	// attestorURL := "wss://attestor.reclaimprotocol.org/ws" // Production
-// 	attestorURL := "ws://localhost:8001/ws" // Local development
-//
-// 	claim, err := client.SubmitToAttestorCore(attestorURL, privateKey, claimParams)
-// 	if err != nil {
-// 		log.Fatal("Failed to submit to attestor-core:", err)
-// 	}
-//
-// 	// Success!
-// 	logger.Info("Claim validated successfully!",
-// 		zap.String("claim_id", claim.Identifier),
-// 		zap.String("provider", claim.Provider),
-// 		zap.String("owner", claim.Owner),
-// 		zap.String("parameters", claim.Parameters),
-// 	)
-//
-// 	// You can now use the validated claim for your application
-// 	log.Printf("Validated Claim: %+v", claim)
-// }

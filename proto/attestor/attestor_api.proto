@@ -259,23 +259,7 @@ message ClaimTeeBundleRequest {
 	 * Data describing the claim you want to prove
 	 */
 	ClaimRequestData data = 2;
-	/**
-	 * User signature on the request
-	 */
-	Signatures signatures = 3;
-	/**
-	 * Pre-constructed ClaimTunnelRequest with proper signature
-	 * This allows the attestor to extract and validate using existing flow
-	 */
-	ClaimTunnelRequest claimTunnelRequest = 4;
 
-	message Signatures {
-		/**
-		 * Signature of ClaimTeeBundleRequest
-		 * with empty "signatures" field
-		 */
-		bytes requestSignature = 1;
-	}
 }
 
 message ClaimTeeBundleResponse {

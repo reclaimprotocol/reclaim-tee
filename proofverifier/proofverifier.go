@@ -95,7 +95,7 @@ func Validate(bundlePath string) error {
 		return fmt.Errorf("failed to read bundle: %v", err)
 	}
 
-	var bundlePB teeproto.VerificationBundlePB
+	var bundlePB teeproto.VerificationBundle
 	if err := proto.Unmarshal(data, &bundlePB); err != nil {
 		return fmt.Errorf("failed to decode bundle protobuf: %v", err)
 	}
@@ -247,7 +247,7 @@ func Validate(bundlePath string) error {
 }
 
 // verifyAndRevealProofDataProtobuf applies the proof stream to reveal original sensitive_proof data (protobuf version)
-func verifyAndRevealProofDataProtobuf(bundlePB *teeproto.VerificationBundlePB) error {
+func verifyAndRevealProofDataProtobuf(bundlePB *teeproto.VerificationBundle) error {
 	// Extract TEE_K payload
 	var kPayload teeproto.KOutputPayload
 	if err := proto.Unmarshal(bundlePB.TeekSigned.GetBody(), &kPayload); err != nil {

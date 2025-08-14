@@ -144,7 +144,7 @@ func (x *Opening) GetProofKey() []byte {
 }
 
 // Single artefact produced by client for offline verification
-type VerificationBundlePB struct {
+type VerificationBundle struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	HandshakeKeys *HandshakeSecrets      `protobuf:"bytes,1,opt,name=handshake_keys,json=handshakeKeys,proto3" json:"handshake_keys,omitempty"` // optional
 	// Signed transcripts
@@ -156,20 +156,20 @@ type VerificationBundlePB struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *VerificationBundlePB) Reset() {
-	*x = VerificationBundlePB{}
+func (x *VerificationBundle) Reset() {
+	*x = VerificationBundle{}
 	mi := &file_bundle_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *VerificationBundlePB) String() string {
+func (x *VerificationBundle) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*VerificationBundlePB) ProtoMessage() {}
+func (*VerificationBundle) ProtoMessage() {}
 
-func (x *VerificationBundlePB) ProtoReflect() protoreflect.Message {
+func (x *VerificationBundle) ProtoReflect() protoreflect.Message {
 	mi := &file_bundle_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -181,33 +181,33 @@ func (x *VerificationBundlePB) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use VerificationBundlePB.ProtoReflect.Descriptor instead.
-func (*VerificationBundlePB) Descriptor() ([]byte, []int) {
+// Deprecated: Use VerificationBundle.ProtoReflect.Descriptor instead.
+func (*VerificationBundle) Descriptor() ([]byte, []int) {
 	return file_bundle_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *VerificationBundlePB) GetHandshakeKeys() *HandshakeSecrets {
+func (x *VerificationBundle) GetHandshakeKeys() *HandshakeSecrets {
 	if x != nil {
 		return x.HandshakeKeys
 	}
 	return nil
 }
 
-func (x *VerificationBundlePB) GetTeekSigned() *SignedMessage {
+func (x *VerificationBundle) GetTeekSigned() *SignedMessage {
 	if x != nil {
 		return x.TeekSigned
 	}
 	return nil
 }
 
-func (x *VerificationBundlePB) GetTeetSigned() *SignedMessage {
+func (x *VerificationBundle) GetTeetSigned() *SignedMessage {
 	if x != nil {
 		return x.TeetSigned
 	}
 	return nil
 }
 
-func (x *VerificationBundlePB) GetOpening() *Opening {
+func (x *VerificationBundle) GetOpening() *Opening {
 	if x != nil {
 		return x.Opening
 	}
@@ -226,8 +226,8 @@ const file_bundle_proto_rawDesc = "" +
 	"\talgorithm\x18\x04 \x01(\tR\talgorithm\"I\n" +
 	"\aOpening\x12!\n" +
 	"\fproof_stream\x18\x01 \x01(\fR\vproofStream\x12\x1b\n" +
-	"\tproof_key\x18\x02 \x01(\fR\bproofKey\"\xfa\x01\n" +
-	"\x14VerificationBundlePB\x12A\n" +
+	"\tproof_key\x18\x02 \x01(\fR\bproofKey\"\xf8\x01\n" +
+	"\x12VerificationBundle\x12A\n" +
 	"\x0ehandshake_keys\x18\x01 \x01(\v2\x1a.teeproto.HandshakeSecretsR\rhandshakeKeys\x128\n" +
 	"\vteek_signed\x18\x02 \x01(\v2\x17.teeproto.SignedMessageR\n" +
 	"teekSigned\x128\n" +
@@ -249,16 +249,16 @@ func file_bundle_proto_rawDescGZIP() []byte {
 
 var file_bundle_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_bundle_proto_goTypes = []any{
-	(*HandshakeSecrets)(nil),     // 0: teeproto.HandshakeSecrets
-	(*Opening)(nil),              // 1: teeproto.Opening
-	(*VerificationBundlePB)(nil), // 2: teeproto.VerificationBundlePB
-	(*SignedMessage)(nil),        // 3: teeproto.SignedMessage
+	(*HandshakeSecrets)(nil),   // 0: teeproto.HandshakeSecrets
+	(*Opening)(nil),            // 1: teeproto.Opening
+	(*VerificationBundle)(nil), // 2: teeproto.VerificationBundle
+	(*SignedMessage)(nil),      // 3: teeproto.SignedMessage
 }
 var file_bundle_proto_depIdxs = []int32{
-	0, // 0: teeproto.VerificationBundlePB.handshake_keys:type_name -> teeproto.HandshakeSecrets
-	3, // 1: teeproto.VerificationBundlePB.teek_signed:type_name -> teeproto.SignedMessage
-	3, // 2: teeproto.VerificationBundlePB.teet_signed:type_name -> teeproto.SignedMessage
-	1, // 3: teeproto.VerificationBundlePB.opening:type_name -> teeproto.Opening
+	0, // 0: teeproto.VerificationBundle.handshake_keys:type_name -> teeproto.HandshakeSecrets
+	3, // 1: teeproto.VerificationBundle.teek_signed:type_name -> teeproto.SignedMessage
+	3, // 2: teeproto.VerificationBundle.teet_signed:type_name -> teeproto.SignedMessage
+	1, // 3: teeproto.VerificationBundle.opening:type_name -> teeproto.Opening
 	4, // [4:4] is the sub-list for method output_type
 	4, // [4:4] is the sub-list for method input_type
 	4, // [4:4] is the sub-list for extension type_name
