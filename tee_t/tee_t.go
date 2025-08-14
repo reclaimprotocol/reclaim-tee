@@ -223,8 +223,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgTEETReady, Data: shared.TEETReadyData{Success: p.TeetReady.GetSuccess()}}
 		case *teeproto.Envelope_RedactionStreams:
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgRedactionStreams, Data: shared.RedactionStreamsData{Streams: p.RedactionStreams.GetStreams(), CommitmentKeys: p.RedactionStreams.GetCommitmentKeys()}}
-		case *teeproto.Envelope_AttestationRequest:
-			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgAttestationRequest, Data: shared.AttestationRequestData{}}
 		case *teeproto.Envelope_Finished:
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgFinished, Data: shared.FinishedMessage{}}
 		case *teeproto.Envelope_BatchedEncryptedResponses:
@@ -290,10 +288,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgRedactionStreams:
 			t.logger.DebugIf("Handling MsgRedactionStreams", zap.String("session_id", sessionID))
 			t.handleRedactionStreamsSession(sessionID, msg)
-		case shared.MsgAttestationRequest:
-			// Attestation requests no longer supported - attestations are included in SignedMessage
-			t.logger.InfoIf("Ignoring legacy attestation request - attestations now included in SignedMessage", zap.String("session_id", sessionID))
-			t.sendErrorToClient(sessionID, "Attestation requests deprecated - use SignedMessage")
 		case shared.MsgFinished:
 			t.logger.DebugIf("Handling MsgFinished from TEE_K", zap.String("session_id", sessionID))
 			t.handleFinishedFromTEEKSession(msg)
@@ -1396,25 +1390,6 @@ func (t *TEET) sendMessageToClientSession(sessionID string, msg *shared.Message)
 	}
 	// Only used for attestation and transcripts here; map manually as needed
 	switch msg.Type {
-	case shared.MsgAttestationResponse:
-		var d shared.AttestationResponseData
-		if err := msg.UnmarshalData(&d); err != nil {
-			return err
-		}
-		// Convert AttestationDoc back to AttestationReport if needed
-		var attestationReport *teeproto.AttestationReport
-		if len(d.AttestationDoc) > 0 {
-			attestationReport = &teeproto.AttestationReport{}
-			if err := proto.Unmarshal(d.AttestationDoc, attestationReport); err != nil {
-				t.logger.Error("Failed to unmarshal attestation doc", zap.Error(err))
-				attestationReport = nil
-			}
-		}
-
-		env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-			Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationReport: attestationReport, Success: d.Success, ErrorMessage: d.ErrorMessage, Source: d.Source}},
-		}
-		return t.sessionManager.RouteToClient(sessionID, env)
 	case shared.MsgSignedTranscript:
 		// MsgSignedTranscript should use SignedMessage instead
 		return fmt.Errorf("MsgSignedTranscript route should be migrated to SignedMessage")

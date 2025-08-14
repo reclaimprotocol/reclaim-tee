@@ -48,10 +48,6 @@ func (c *Client) BuildVerificationBundle(path string) error {
 		}
 	}
 
-	// Attestations not included
-	bundle.AttestationTeeK = nil
-	bundle.AttestationTeeT = nil
-
 	// Write protobuf to file
 	data, err := proto.Marshal(bundle)
 	if err != nil {

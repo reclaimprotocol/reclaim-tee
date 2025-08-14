@@ -10,6 +10,7 @@ import (
 	"tee-mpc/shared"
 	"time"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"go.uber.org/zap"
 )
 
@@ -218,6 +219,43 @@ func main() {
 		log.Fatalf("\n🔴 Offline verification failed: %v\n", err)
 	} else {
 		fmt.Println("\n✅ Offline verification succeeded")
+	}
+
+	// Test attestor-core submission
+	fmt.Println("\n📡 Testing attestor-core submission...")
+
+	// Generate a test private key for signing
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		log.Fatalf("Failed to generate private key: %v", err)
+	}
+
+	// Set up HTTP provider parameters for testing
+	httpParams := clientlib.HTTPProviderParams(
+		"https://github.com",
+		"GET",
+		nil,
+		"",
+		[]map[string]string{{"type": "regex", "value": "github"}},
+		nil,
+	)
+
+	claimParams := clientlib.ClaimTeeBundleParams{
+		Provider:   "http",
+		Parameters: httpParams,
+		Context:    map[string]interface{}{"test": "demo"},
+	}
+
+	// Submit to local attestor-core
+	claim, err := client.(*clientlib.ReclaimClientImpl).Client.SubmitToAttestorCore(
+		"ws://localhost:8001/ws",
+		privateKey,
+		claimParams,
+	)
+	if err != nil {
+		fmt.Printf("\n🔴 Attestor submission failed: %v\n", err)
+	} else {
+		fmt.Printf("\n✅ Attestor submission succeeded! Claim ID: %s\n", claim.Identifier)
 	}
 
 }

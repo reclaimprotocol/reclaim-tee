@@ -3,6 +3,7 @@ package clientlib
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,10 +13,12 @@ import (
 	"sync"
 	"sync/atomic"
 	teeproto "tee-mpc/proto"
+	"tee-mpc/proto/attestor"
 	"tee-mpc/shared"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -1226,3 +1229,169 @@ func (c *Client) ContinueToPhase2() error {
 
 	return nil
 }
+
+// SubmitToAttestorCore submits the completed verification bundle to attestor-core for claim validation
+func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.PrivateKey, params ClaimTeeBundleParams) (*attestor.ProviderClaimData, error) {
+
+	// Example private key (use your own in production)
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		c.logger.Fatal("Failed to generate private key:", zap.Error(err))
+	}
+
+	// Example: Submit for HTTP provider claim
+	httpParams := map[string]interface{}{
+		"name":   "http",
+		"method": "GET",
+		"url":    "https://github.com",
+		"responseMatches": []map[string]interface{}{
+			{
+				"type":  "regex",
+				"value": "github",
+			},
+		},
+		"responseRedactions": []map[string]interface{}{
+			{
+				"jsonPath": "$.cardano.usd",
+				"regex":    "",
+				"xPath":    "",
+			},
+			{
+				"jsonPath": "$.solana.usd",
+				"regex":    "",
+				"xPath":    "",
+			},
+		},
+	}
+
+	params = ClaimTeeBundleParams{
+		Provider:   "github",
+		Parameters: httpParams,
+		Context: map[string]interface{}{
+			"purpose": "github_identity_proof",
+		},
+	}
+
+	// Submit to attestor-core
+	c.logger.Info("Submitting verification bundle to attestor-core...")
+
+	// attestorURL := "wss://attestor.reclaimprotocol.org/ws" // Production
+	attestorURL = "ws://localhost:8001/ws" // Local development
+
+	// Ensure we have a verification bundle ready
+	if c.teekSignedMessage == nil || c.teetSignedMessage == nil {
+		return nil, fmt.Errorf("TEE protocol not completed - no signed messages available")
+	}
+
+	// Build verification bundle
+	bundle := &teeproto.VerificationBundlePB{
+		TeekSigned: c.teekSignedMessage,
+		TeetSigned: c.teetSignedMessage,
+	}
+
+	// Add handshake keys if available
+	if c.handshakeDisclosure != nil {
+		bundle.HandshakeKeys = &teeproto.HandshakeSecrets{
+			HandshakeKey: c.handshakeDisclosure.HandshakeKey,
+			HandshakeIv:  c.handshakeDisclosure.HandshakeIV,
+			CipherSuite:  uint32(c.handshakeDisclosure.CipherSuite),
+			Algorithm:    c.handshakeDisclosure.Algorithm,
+		}
+	}
+
+	// Add proof opening if available
+	if c.proofStream != nil || c.proofKey != nil {
+		bundle.Opening = &teeproto.Opening{
+			ProofStream: c.proofStream,
+			ProofKey:    c.proofKey,
+		}
+	}
+
+	c.logger.Info("Submitting verification bundle to attestor-core",
+		zap.String("attestor_url", attestorURL),
+		zap.String("provider", params.Provider))
+
+	// Create attestor client and submit
+	attestorClient := NewAttestorClient(attestorURL, privateKey, c.logger)
+
+	if err := attestorClient.Connect(); err != nil {
+		return nil, fmt.Errorf("failed to connect to attestor-core: %v", err)
+	}
+	defer attestorClient.Close()
+
+	claim, err := attestorClient.SubmitTeeBundle(bundle, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to submit TEE bundle: %v", err)
+	}
+
+	c.logger.Info("Successfully submitted TEE bundle to attestor-core",
+		zap.String("claim_id", claim.Identifier),
+		zap.String("provider", claim.Provider))
+
+	return claim, nil
+}
+
+// // Alternative example for GitHub provider
+// func (c *Client) submitGitHubClaim(privateKey *ecdsa.PrivateKey) {
+//
+// 	// Example private key (use your own in production)
+// 	privateKey, err := crypto.GenerateKey()
+// 	if err != nil {
+// 		c.logger.Fatal("Failed to generate private key:", zap.Error(err))
+// 	}
+//
+// 	// Example: Submit for HTTP provider claim
+// 	httpParams := map[string]interface{}{
+// 		"name":   "http",
+// 		"method": "GET",
+// 		"url":    "https://github.com",
+// 		"responseMatches": []map[string]interface{}{
+// 			{
+// 				"type":  "regex",
+// 				"value": "github",
+// 			},
+// 		},
+// 		"responseRedactions": []map[string]interface{}{
+// 			{
+// 				"jsonPath": "$.cardano.usd",
+// 				"regex":    "",
+// 				"xPath":    "",
+// 			},
+// 			{
+// 				"jsonPath": "$.solana.usd",
+// 				"regex":    "",
+// 				"xPath":    "",
+// 			},
+// 		},
+// 	}
+//
+// 	claimParams := clientlib.ClaimTeeBundleParams{
+// 		Provider:   "github",
+// 		Parameters: httpParams,
+// 		Context: map[string]interface{}{
+// 			"purpose": "github_identity_proof",
+// 		},
+// 	}
+//
+// 	// Submit to attestor-core
+// 	logger.Info("Submitting verification bundle to attestor-core...")
+//
+// 	// attestorURL := "wss://attestor.reclaimprotocol.org/ws" // Production
+// 	attestorURL := "ws://localhost:8001/ws" // Local development
+//
+// 	claim, err := client.SubmitToAttestorCore(attestorURL, privateKey, claimParams)
+// 	if err != nil {
+// 		log.Fatal("Failed to submit to attestor-core:", err)
+// 	}
+//
+// 	// Success!
+// 	logger.Info("Claim validated successfully!",
+// 		zap.String("claim_id", claim.Identifier),
+// 		zap.String("provider", claim.Provider),
+// 		zap.String("owner", claim.Owner),
+// 		zap.String("parameters", claim.Parameters),
+// 	)
+//
+// 	// You can now use the validated claim for your application
+// 	log.Printf("Validated Claim: %+v", claim)
+// }

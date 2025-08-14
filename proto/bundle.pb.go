@@ -151,12 +151,9 @@ type VerificationBundlePB struct {
 	TeekSigned *SignedMessage `protobuf:"bytes,2,opt,name=teek_signed,json=teekSigned,proto3" json:"teek_signed,omitempty"` // BODY_TYPE_K_OUTPUT
 	TeetSigned *SignedMessage `protobuf:"bytes,3,opt,name=teet_signed,json=teetSigned,proto3" json:"teet_signed,omitempty"` // BODY_TYPE_T_OUTPUT
 	// Commitment opening for proof ranges
-	Opening *Opening `protobuf:"bytes,4,opt,name=opening,proto3" json:"opening,omitempty"` // optional
-	// Optional attestation documents
-	AttestationTeeK []byte `protobuf:"bytes,10,opt,name=attestation_tee_k,json=attestationTeeK,proto3" json:"attestation_tee_k,omitempty"`
-	AttestationTeeT []byte `protobuf:"bytes,11,opt,name=attestation_tee_t,json=attestationTeeT,proto3" json:"attestation_tee_t,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	Opening       *Opening `protobuf:"bytes,4,opt,name=opening,proto3" json:"opening,omitempty"` // optional
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VerificationBundlePB) Reset() {
@@ -217,20 +214,6 @@ func (x *VerificationBundlePB) GetOpening() *Opening {
 	return nil
 }
 
-func (x *VerificationBundlePB) GetAttestationTeeK() []byte {
-	if x != nil {
-		return x.AttestationTeeK
-	}
-	return nil
-}
-
-func (x *VerificationBundlePB) GetAttestationTeeT() []byte {
-	if x != nil {
-		return x.AttestationTeeT
-	}
-	return nil
-}
-
 var File_bundle_proto protoreflect.FileDescriptor
 
 const file_bundle_proto_rawDesc = "" +
@@ -243,17 +226,14 @@ const file_bundle_proto_rawDesc = "" +
 	"\talgorithm\x18\x04 \x01(\tR\talgorithm\"I\n" +
 	"\aOpening\x12!\n" +
 	"\fproof_stream\x18\x01 \x01(\fR\vproofStream\x12\x1b\n" +
-	"\tproof_key\x18\x02 \x01(\fR\bproofKey\"\xd2\x02\n" +
+	"\tproof_key\x18\x02 \x01(\fR\bproofKey\"\xfa\x01\n" +
 	"\x14VerificationBundlePB\x12A\n" +
 	"\x0ehandshake_keys\x18\x01 \x01(\v2\x1a.teeproto.HandshakeSecretsR\rhandshakeKeys\x128\n" +
 	"\vteek_signed\x18\x02 \x01(\v2\x17.teeproto.SignedMessageR\n" +
 	"teekSigned\x128\n" +
 	"\vteet_signed\x18\x03 \x01(\v2\x17.teeproto.SignedMessageR\n" +
 	"teetSigned\x12+\n" +
-	"\aopening\x18\x04 \x01(\v2\x11.teeproto.OpeningR\aopening\x12*\n" +
-	"\x11attestation_tee_k\x18\n" +
-	" \x01(\fR\x0fattestationTeeK\x12*\n" +
-	"\x11attestation_tee_t\x18\v \x01(\fR\x0fattestationTeeTB\x18Z\x16tee-mpc/proto;teeprotob\x06proto3"
+	"\aopening\x18\x04 \x01(\v2\x11.teeproto.OpeningR\aopeningB\x18Z\x16tee-mpc/proto;teeprotob\x06proto3"
 
 var (
 	file_bundle_proto_rawDescOnce sync.Once

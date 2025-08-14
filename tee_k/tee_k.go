@@ -605,10 +605,6 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Protocol specification: No client finished messages in single session mode
 			// TEE_K only sends finished to TEE_T, doesn't receive from client
 			t.logger.WithSession(sessionID).Info("Ignoring finished message from client (not needed in single session mode)")
-		case *teeproto.Envelope_AttestationRequest:
-			// Attestation requests no longer supported - attestations are included in SignedMessage
-			t.logger.WithSession(sessionID).Info("Ignoring legacy attestation request - attestations now included in SignedMessage")
-			t.terminateSessionWithError(sessionID, shared.ReasonProtocolViolation, fmt.Errorf("attestation requests no longer supported"), "Attestation requests deprecated - use SignedMessage")
 		default:
 			unknownMsgErr := fmt.Errorf("unknown message type: %T", p)
 			t.terminateSessionWithError(sessionID, shared.ReasonUnknownMessageType, unknownMsgErr, "Unknown message type")

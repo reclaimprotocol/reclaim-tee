@@ -198,8 +198,6 @@ func (c *Client) handleMessages() {
 				}
 				c.processSignedTranscriptDataWithStreams(&st)
 			}
-		case *teeproto.Envelope_AttestationResponse:
-			// Ignored - using SignedMessage attestations
 		case *teeproto.Envelope_BatchedTagVerifications:
 			var ver []shared.ResponseTagVerificationData
 			for _, v := range p.BatchedTagVerifications.GetVerifications() {
@@ -289,8 +287,6 @@ func (c *Client) handleTEETMessages() {
 				}
 				c.processSignedTranscriptData(&st)
 			}
-		case *teeproto.Envelope_AttestationResponse:
-			// Ignored - using SignedMessage attestations
 		case *teeproto.Envelope_Error:
 			msg := &shared.Message{Type: shared.MsgError, SessionID: env.GetSessionId(), Data: shared.ErrorData{Message: p.Error.GetMessage()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleTEETError(msg)
@@ -354,8 +350,6 @@ func (c *Client) sendMessage(msg *shared.Message) error {
 		if d, ok := msg.Data.(shared.ErrorData); ok {
 			env.Payload = &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: d.Message}}
 		}
-	case shared.MsgAttestationRequest:
-		env.Payload = &teeproto.Envelope_AttestationRequest{AttestationRequest: &teeproto.AttestationRequestData{}}
 	default:
 		// Unknown/unsupported send type
 	}
@@ -419,8 +413,6 @@ func (c *Client) sendMessageToTEET(msg *shared.Message) error {
 			}
 			env.Payload = &teeproto.Envelope_BatchedEncryptedResponses{BatchedEncryptedResponses: &teeproto.BatchedEncryptedResponses{Responses: arr, SessionId: d.SessionID, TotalCount: int32(d.TotalCount)}}
 		}
-	case shared.MsgAttestationRequest:
-		env.Payload = &teeproto.Envelope_AttestationRequest{AttestationRequest: &teeproto.AttestationRequestData{}}
 	case shared.MsgError:
 		if d, ok := msg.Data.(shared.ErrorData); ok {
 			env.Payload = &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: d.Message}}

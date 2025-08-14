@@ -31,9 +31,6 @@ message VerificationBundlePB {
   // Commitment opening for proof ranges
   Opening opening = 4; // optional
 
-  // Optional attestation documents
-  bytes attestation_tee_k = 10;
-  bytes attestation_tee_t = 11;
 }
 
 

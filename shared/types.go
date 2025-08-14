@@ -83,10 +83,6 @@ const (
 	MsgTEETReady        MessageType = "teet_ready"
 	MsgRedactionStreams MessageType = "redaction_streams"
 
-	// Attestation request over WebSocket
-	MsgAttestationRequest  MessageType = "attestation_request"
-	MsgAttestationResponse MessageType = "attestation_response"
-
 	// Single Session Mode message types
 	MsgFinished         MessageType = "finished"
 	MsgSignedTranscript MessageType = "signed_transcript"
@@ -339,20 +335,6 @@ type EncryptedDataResponse struct {
 // TEE_T ready confirmation
 type TEETReadyData struct {
 	Success bool `json:"success"`
-}
-
-// AttestationRequestData represents a request for attestation
-type AttestationRequestData struct {
-	// RequestID removed - no longer needed since we wait for session coordination
-}
-
-// AttestationResponseData represents an attestation response
-type AttestationResponseData struct {
-	// RequestID removed - no longer needed since we wait for session coordination
-	AttestationDoc []byte `json:"attestation_doc,omitempty"` // Now populated from marshaled AttestationReport
-	Success        bool   `json:"success"`
-	ErrorMessage   string `json:"error_message,omitempty"`
-	Source         string `json:"source,omitempty"` // "tee_k" or "tee_t"
 }
 
 // Client to TEE_K: Send plaintext data for encryption
