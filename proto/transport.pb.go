@@ -2285,7 +2285,7 @@ var File_transport_proto protoreflect.FileDescriptor
 
 const file_transport_proto_rawDesc = "" +
 	"\n" +
-	"\x0ftransport.proto\x12\bteeproto\x1a\fcommon.proto\x1a\rsigning.proto\"\xdc\x11\n" +
+	"\x0ftransport.proto\x12\bteeproto\x1a\fcommon.proto\x1a\rsigning.proto\x1a\x12attestor_api.proto\"\xdc\x11\n" +
 	"\bEnvelope\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x10\n" +
@@ -2561,6 +2561,7 @@ func file_transport_proto_init() {
 	}
 	file_common_proto_init()
 	file_signing_proto_init()
+	file_attestor_api_proto_init()
 	file_transport_proto_msgTypes[0].OneofWrappers = []any{
 		(*Envelope_ConnectionReady)(nil),
 		(*Envelope_TcpReady)(nil),

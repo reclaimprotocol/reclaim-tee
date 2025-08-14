@@ -256,51 +256,6 @@ func (x *SignedRedactedDecryptionStream) GetSeqNum() uint64 {
 	return 0
 }
 
-// Error wrapper
-type ErrorData struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ErrorData) Reset() {
-	*x = ErrorData{}
-	mi := &file_common_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ErrorData) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ErrorData) ProtoMessage() {}
-
-func (x *ErrorData) ProtoReflect() protoreflect.Message {
-	mi := &file_common_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ErrorData.ProtoReflect.Descriptor instead.
-func (*ErrorData) Descriptor() ([]byte, []int) {
-	return file_common_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *ErrorData) GetMessage() string {
-	if x != nil {
-		return x.Message
-	}
-	return ""
-}
-
 // Empty placeholders
 type FinishedMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -310,7 +265,7 @@ type FinishedMessage struct {
 
 func (x *FinishedMessage) Reset() {
 	*x = FinishedMessage{}
-	mi := &file_common_proto_msgTypes[5]
+	mi := &file_common_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -322,7 +277,7 @@ func (x *FinishedMessage) String() string {
 func (*FinishedMessage) ProtoMessage() {}
 
 func (x *FinishedMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_common_proto_msgTypes[5]
+	mi := &file_common_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -335,7 +290,7 @@ func (x *FinishedMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinishedMessage.ProtoReflect.Descriptor instead.
 func (*FinishedMessage) Descriptor() ([]byte, []int) {
-	return file_common_proto_rawDescGZIP(), []int{5}
+	return file_common_proto_rawDescGZIP(), []int{4}
 }
 
 type AttestationRequestData struct {
@@ -346,7 +301,7 @@ type AttestationRequestData struct {
 
 func (x *AttestationRequestData) Reset() {
 	*x = AttestationRequestData{}
-	mi := &file_common_proto_msgTypes[6]
+	mi := &file_common_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -358,7 +313,7 @@ func (x *AttestationRequestData) String() string {
 func (*AttestationRequestData) ProtoMessage() {}
 
 func (x *AttestationRequestData) ProtoReflect() protoreflect.Message {
-	mi := &file_common_proto_msgTypes[6]
+	mi := &file_common_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -371,7 +326,7 @@ func (x *AttestationRequestData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttestationRequestData.ProtoReflect.Descriptor instead.
 func (*AttestationRequestData) Descriptor() ([]byte, []int) {
-	return file_common_proto_rawDescGZIP(), []int{6}
+	return file_common_proto_rawDescGZIP(), []int{5}
 }
 
 var File_common_proto protoreflect.FileDescriptor
@@ -393,9 +348,7 @@ const file_common_proto_rawDesc = "" +
 	"\x06length\x18\x03 \x01(\x05R\x06length\"b\n" +
 	"\x1eSignedRedactedDecryptionStream\x12'\n" +
 	"\x0fredacted_stream\x18\x01 \x01(\fR\x0eredactedStream\x12\x17\n" +
-	"\aseq_num\x18\x02 \x01(\x04R\x06seqNum\"%\n" +
-	"\tErrorData\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"\x11\n" +
+	"\aseq_num\x18\x02 \x01(\x04R\x06seqNum\"\x11\n" +
 	"\x0fFinishedMessage\"\x18\n" +
 	"\x16AttestationRequestDataB\x18Z\x16tee-mpc/proto;teeprotob\x06proto3"
 
@@ -411,15 +364,14 @@ func file_common_proto_rawDescGZIP() []byte {
 	return file_common_proto_rawDescData
 }
 
-var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_common_proto_goTypes = []any{
 	(*RequestRedactionRange)(nil),          // 0: teeproto.RequestRedactionRange
 	(*ResponseRedactionRange)(nil),         // 1: teeproto.ResponseRedactionRange
 	(*ResponseDecryptionStreamData)(nil),   // 2: teeproto.ResponseDecryptionStreamData
 	(*SignedRedactedDecryptionStream)(nil), // 3: teeproto.SignedRedactedDecryptionStream
-	(*ErrorData)(nil),                      // 4: teeproto.ErrorData
-	(*FinishedMessage)(nil),                // 5: teeproto.FinishedMessage
-	(*AttestationRequestData)(nil),         // 6: teeproto.AttestationRequestData
+	(*FinishedMessage)(nil),                // 4: teeproto.FinishedMessage
+	(*AttestationRequestData)(nil),         // 5: teeproto.AttestationRequestData
 }
 var file_common_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -440,7 +392,7 @@ func file_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_common_proto_rawDesc), len(file_common_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

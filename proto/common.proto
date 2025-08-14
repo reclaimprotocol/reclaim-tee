@@ -30,11 +30,6 @@ message SignedRedactedDecryptionStream {
   uint64 seq_num = 2;
 }
 
-// Error wrapper
-message ErrorData {
-  string message = 1;
-}
-
 // Empty placeholders
 message FinishedMessage {}
 message AttestationRequestData {}

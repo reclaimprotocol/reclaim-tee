@@ -6,6 +6,7 @@ option go_package = "tee-mpc/proto;teeproto";
 
 import "common.proto";
 import "signing.proto";
+import "attestor_api.proto";
 
 enum Sender {
   SENDER_UNSPECIFIED = 0;
@@ -162,7 +163,11 @@ message ResponseTagVerification {
 }
 
 // Batches
-message BatchedEncryptedResponses { repeated EncryptedResponseData responses = 1; string session_id = 2; int32 total_count = 3; }
+message BatchedEncryptedResponses {
+  repeated EncryptedResponseData responses = 1;
+  string session_id = 2;
+  int32 total_count = 3;
+}
 
 message BatchedResponseLengths {
   message Length {
@@ -187,7 +192,11 @@ message BatchedTagSecrets {
 }
 
 message BatchedTagVerifications {
-  message Verification { bool success = 1; uint64 seq_num = 2; string message = 3; }
+  message Verification {
+    bool success = 1;
+    uint64 seq_num = 2;
+    string message = 3;
+  }
   repeated Verification verifications = 1;
   string session_id = 2;
   int32 total_count = 3;

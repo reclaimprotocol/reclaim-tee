@@ -2,9 +2,9 @@
 // versions:
 // 	protoc-gen-go v1.36.7
 // 	protoc        v6.31.1
-// source: proto/attestor/attestor_api.proto
+// source: attestor_api.proto
 
-package attestor
+package teeproto
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -54,11 +54,11 @@ func (x TranscriptMessageSenderType) String() string {
 }
 
 func (TranscriptMessageSenderType) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_attestor_attestor_api_proto_enumTypes[0].Descriptor()
+	return file_attestor_api_proto_enumTypes[0].Descriptor()
 }
 
 func (TranscriptMessageSenderType) Type() protoreflect.EnumType {
-	return &file_proto_attestor_attestor_api_proto_enumTypes[0]
+	return &file_attestor_api_proto_enumTypes[0]
 }
 
 func (x TranscriptMessageSenderType) Number() protoreflect.EnumNumber {
@@ -67,7 +67,7 @@ func (x TranscriptMessageSenderType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TranscriptMessageSenderType.Descriptor instead.
 func (TranscriptMessageSenderType) EnumDescriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{0}
+	return file_attestor_api_proto_rawDescGZIP(), []int{0}
 }
 
 type ServiceSignatureType int32
@@ -104,11 +104,11 @@ func (x ServiceSignatureType) String() string {
 }
 
 func (ServiceSignatureType) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_attestor_attestor_api_proto_enumTypes[1].Descriptor()
+	return file_attestor_api_proto_enumTypes[1].Descriptor()
 }
 
 func (ServiceSignatureType) Type() protoreflect.EnumType {
-	return &file_proto_attestor_attestor_api_proto_enumTypes[1]
+	return &file_attestor_api_proto_enumTypes[1]
 }
 
 func (x ServiceSignatureType) Number() protoreflect.EnumNumber {
@@ -117,7 +117,7 @@ func (x ServiceSignatureType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ServiceSignatureType.Descriptor instead.
 func (ServiceSignatureType) EnumDescriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{1}
+	return file_attestor_api_proto_rawDescGZIP(), []int{1}
 }
 
 type AttestorVersion int32
@@ -159,11 +159,11 @@ func (x AttestorVersion) String() string {
 }
 
 func (AttestorVersion) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_attestor_attestor_api_proto_enumTypes[2].Descriptor()
+	return file_attestor_api_proto_enumTypes[2].Descriptor()
 }
 
 func (AttestorVersion) Type() protoreflect.EnumType {
-	return &file_proto_attestor_attestor_api_proto_enumTypes[2]
+	return &file_attestor_api_proto_enumTypes[2]
 }
 
 func (x AttestorVersion) Number() protoreflect.EnumNumber {
@@ -172,7 +172,7 @@ func (x AttestorVersion) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AttestorVersion.Descriptor instead.
 func (AttestorVersion) EnumDescriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{2}
+	return file_attestor_api_proto_rawDescGZIP(), []int{2}
 }
 
 type ErrorCode int32
@@ -251,11 +251,11 @@ func (x ErrorCode) String() string {
 }
 
 func (ErrorCode) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_attestor_attestor_api_proto_enumTypes[3].Descriptor()
+	return file_attestor_api_proto_enumTypes[3].Descriptor()
 }
 
 func (ErrorCode) Type() protoreflect.EnumType {
-	return &file_proto_attestor_attestor_api_proto_enumTypes[3]
+	return &file_attestor_api_proto_enumTypes[3]
 }
 
 func (x ErrorCode) Number() protoreflect.EnumNumber {
@@ -264,7 +264,7 @@ func (x ErrorCode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ErrorCode.Descriptor instead.
 func (ErrorCode) EnumDescriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{3}
+	return file_attestor_api_proto_rawDescGZIP(), []int{3}
 }
 
 type ZKProofEngine int32
@@ -297,11 +297,11 @@ func (x ZKProofEngine) String() string {
 }
 
 func (ZKProofEngine) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_attestor_attestor_api_proto_enumTypes[4].Descriptor()
+	return file_attestor_api_proto_enumTypes[4].Descriptor()
 }
 
 func (ZKProofEngine) Type() protoreflect.EnumType {
-	return &file_proto_attestor_attestor_api_proto_enumTypes[4]
+	return &file_attestor_api_proto_enumTypes[4]
 }
 
 func (x ZKProofEngine) Number() protoreflect.EnumNumber {
@@ -310,7 +310,7 @@ func (x ZKProofEngine) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ZKProofEngine.Descriptor instead.
 func (ZKProofEngine) EnumDescriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{4}
+	return file_attestor_api_proto_rawDescGZIP(), []int{4}
 }
 
 type ClaimContext struct {
@@ -329,7 +329,7 @@ type ClaimContext struct {
 
 func (x *ClaimContext) Reset() {
 	*x = ClaimContext{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[0]
+	mi := &file_attestor_api_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -341,7 +341,7 @@ func (x *ClaimContext) String() string {
 func (*ClaimContext) ProtoMessage() {}
 
 func (x *ClaimContext) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[0]
+	mi := &file_attestor_api_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -354,7 +354,7 @@ func (x *ClaimContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimContext.ProtoReflect.Descriptor instead.
 func (*ClaimContext) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{0}
+	return file_attestor_api_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *ClaimContext) GetExtractedParameters() map[string]string {
@@ -408,7 +408,7 @@ type ProviderClaimData struct {
 
 func (x *ProviderClaimData) Reset() {
 	*x = ProviderClaimData{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[1]
+	mi := &file_attestor_api_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -420,7 +420,7 @@ func (x *ProviderClaimData) String() string {
 func (*ProviderClaimData) ProtoMessage() {}
 
 func (x *ProviderClaimData) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[1]
+	mi := &file_attestor_api_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -433,7 +433,7 @@ func (x *ProviderClaimData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderClaimData.ProtoReflect.Descriptor instead.
 func (*ProviderClaimData) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{1}
+	return file_attestor_api_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ProviderClaimData) GetProvider() string {
@@ -496,7 +496,7 @@ type ProviderClaimInfo struct {
 
 func (x *ProviderClaimInfo) Reset() {
 	*x = ProviderClaimInfo{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[2]
+	mi := &file_attestor_api_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -508,7 +508,7 @@ func (x *ProviderClaimInfo) String() string {
 func (*ProviderClaimInfo) ProtoMessage() {}
 
 func (x *ProviderClaimInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[2]
+	mi := &file_attestor_api_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +521,7 @@ func (x *ProviderClaimInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderClaimInfo.ProtoReflect.Descriptor instead.
 func (*ProviderClaimInfo) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{2}
+	return file_attestor_api_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ProviderClaimInfo) GetProvider() string {
@@ -547,7 +547,7 @@ func (x *ProviderClaimInfo) GetContext() string {
 
 type ErrorData struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Code          ErrorCode              `protobuf:"varint,1,opt,name=code,proto3,enum=reclaim_attestor.ErrorCode" json:"code,omitempty"`
+	Code          ErrorCode              `protobuf:"varint,1,opt,name=code,proto3,enum=teeproto.ErrorCode" json:"code,omitempty"`
 	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	Data          string                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -556,7 +556,7 @@ type ErrorData struct {
 
 func (x *ErrorData) Reset() {
 	*x = ErrorData{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[3]
+	mi := &file_attestor_api_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -568,7 +568,7 @@ func (x *ErrorData) String() string {
 func (*ErrorData) ProtoMessage() {}
 
 func (x *ErrorData) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[3]
+	mi := &file_attestor_api_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -581,7 +581,7 @@ func (x *ErrorData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorData.ProtoReflect.Descriptor instead.
 func (*ErrorData) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{3}
+	return file_attestor_api_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ErrorData) GetCode() ErrorCode {
@@ -628,7 +628,7 @@ type CreateTunnelRequest struct {
 
 func (x *CreateTunnelRequest) Reset() {
 	*x = CreateTunnelRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[4]
+	mi := &file_attestor_api_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -640,7 +640,7 @@ func (x *CreateTunnelRequest) String() string {
 func (*CreateTunnelRequest) ProtoMessage() {}
 
 func (x *CreateTunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[4]
+	mi := &file_attestor_api_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -653,7 +653,7 @@ func (x *CreateTunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTunnelRequest.ProtoReflect.Descriptor instead.
 func (*CreateTunnelRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{4}
+	return file_attestor_api_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CreateTunnelRequest) GetId() uint32 {
@@ -693,7 +693,7 @@ type DisconnectTunnelRequest struct {
 
 func (x *DisconnectTunnelRequest) Reset() {
 	*x = DisconnectTunnelRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[5]
+	mi := &file_attestor_api_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -705,7 +705,7 @@ func (x *DisconnectTunnelRequest) String() string {
 func (*DisconnectTunnelRequest) ProtoMessage() {}
 
 func (x *DisconnectTunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[5]
+	mi := &file_attestor_api_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -718,7 +718,7 @@ func (x *DisconnectTunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisconnectTunnelRequest.ProtoReflect.Descriptor instead.
 func (*DisconnectTunnelRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{5}
+	return file_attestor_api_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *DisconnectTunnelRequest) GetId() uint32 {
@@ -736,7 +736,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[6]
+	mi := &file_attestor_api_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -748,7 +748,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[6]
+	mi := &file_attestor_api_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -761,7 +761,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{6}
+	return file_attestor_api_proto_rawDescGZIP(), []int{6}
 }
 
 type TunnelMessage struct {
@@ -775,7 +775,7 @@ type TunnelMessage struct {
 
 func (x *TunnelMessage) Reset() {
 	*x = TunnelMessage{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[7]
+	mi := &file_attestor_api_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -787,7 +787,7 @@ func (x *TunnelMessage) String() string {
 func (*TunnelMessage) ProtoMessage() {}
 
 func (x *TunnelMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[7]
+	mi := &file_attestor_api_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -800,7 +800,7 @@ func (x *TunnelMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TunnelMessage.ProtoReflect.Descriptor instead.
 func (*TunnelMessage) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{7}
+	return file_attestor_api_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TunnelMessage) GetTunnelId() uint32 {
@@ -827,7 +827,7 @@ type TunnelDisconnectEvent struct {
 
 func (x *TunnelDisconnectEvent) Reset() {
 	*x = TunnelDisconnectEvent{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[8]
+	mi := &file_attestor_api_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -839,7 +839,7 @@ func (x *TunnelDisconnectEvent) String() string {
 func (*TunnelDisconnectEvent) ProtoMessage() {}
 
 func (x *TunnelDisconnectEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[8]
+	mi := &file_attestor_api_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -852,7 +852,7 @@ func (x *TunnelDisconnectEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TunnelDisconnectEvent.ProtoReflect.Descriptor instead.
 func (*TunnelDisconnectEvent) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{8}
+	return file_attestor_api_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *TunnelDisconnectEvent) GetTunnelId() uint32 {
@@ -882,7 +882,7 @@ type MessageReveal struct {
 
 func (x *MessageReveal) Reset() {
 	*x = MessageReveal{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[9]
+	mi := &file_attestor_api_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -894,7 +894,7 @@ func (x *MessageReveal) String() string {
 func (*MessageReveal) ProtoMessage() {}
 
 func (x *MessageReveal) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[9]
+	mi := &file_attestor_api_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -907,7 +907,7 @@ func (x *MessageReveal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageReveal.ProtoReflect.Descriptor instead.
 func (*MessageReveal) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{9}
+	return file_attestor_api_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MessageReveal) GetReveal() isMessageReveal_Reveal {
@@ -969,7 +969,7 @@ type TOPRFPayload struct {
 
 func (x *TOPRFPayload) Reset() {
 	*x = TOPRFPayload{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[10]
+	mi := &file_attestor_api_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -981,7 +981,7 @@ func (x *TOPRFPayload) String() string {
 func (*TOPRFPayload) ProtoMessage() {}
 
 func (x *TOPRFPayload) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[10]
+	mi := &file_attestor_api_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -994,7 +994,7 @@ func (x *TOPRFPayload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TOPRFPayload.ProtoReflect.Descriptor instead.
 func (*TOPRFPayload) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{10}
+	return file_attestor_api_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *TOPRFPayload) GetDataLocation() *DataSlice {
@@ -1028,7 +1028,7 @@ type DataSlice struct {
 
 func (x *DataSlice) Reset() {
 	*x = DataSlice{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[11]
+	mi := &file_attestor_api_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1040,7 +1040,7 @@ func (x *DataSlice) String() string {
 func (*DataSlice) ProtoMessage() {}
 
 func (x *DataSlice) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[11]
+	mi := &file_attestor_api_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1053,7 +1053,7 @@ func (x *DataSlice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataSlice.ProtoReflect.Descriptor instead.
 func (*DataSlice) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{11}
+	return file_attestor_api_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *DataSlice) GetFromIndex() uint32 {
@@ -1090,7 +1090,7 @@ type ClaimRequestData struct {
 
 func (x *ClaimRequestData) Reset() {
 	*x = ClaimRequestData{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[12]
+	mi := &file_attestor_api_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1102,7 +1102,7 @@ func (x *ClaimRequestData) String() string {
 func (*ClaimRequestData) ProtoMessage() {}
 
 func (x *ClaimRequestData) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[12]
+	mi := &file_attestor_api_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1115,7 +1115,7 @@ func (x *ClaimRequestData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimRequestData.ProtoReflect.Descriptor instead.
 func (*ClaimRequestData) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{12}
+	return file_attestor_api_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ClaimRequestData) GetProvider() string {
@@ -1160,21 +1160,14 @@ type ClaimTeeBundleRequest struct {
 	VerificationBundle []byte `protobuf:"bytes,1,opt,name=verificationBundle,proto3" json:"verificationBundle,omitempty"`
 	//*
 	// Data describing the claim you want to prove
-	Data *ClaimRequestData `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
-	//*
-	// User signature on the request
-	Signatures *ClaimTeeBundleRequest_Signatures `protobuf:"bytes,3,opt,name=signatures,proto3" json:"signatures,omitempty"`
-	//*
-	// Pre-constructed ClaimTunnelRequest with proper signature
-	// This allows the attestor to extract and validate using existing flow
-	ClaimTunnelRequest *ClaimTunnelRequest `protobuf:"bytes,4,opt,name=claimTunnelRequest,proto3" json:"claimTunnelRequest,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	Data          *ClaimRequestData `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ClaimTeeBundleRequest) Reset() {
 	*x = ClaimTeeBundleRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[13]
+	mi := &file_attestor_api_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1186,7 +1179,7 @@ func (x *ClaimTeeBundleRequest) String() string {
 func (*ClaimTeeBundleRequest) ProtoMessage() {}
 
 func (x *ClaimTeeBundleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[13]
+	mi := &file_attestor_api_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1199,7 +1192,7 @@ func (x *ClaimTeeBundleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimTeeBundleRequest.ProtoReflect.Descriptor instead.
 func (*ClaimTeeBundleRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{13}
+	return file_attestor_api_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ClaimTeeBundleRequest) GetVerificationBundle() []byte {
@@ -1212,20 +1205,6 @@ func (x *ClaimTeeBundleRequest) GetVerificationBundle() []byte {
 func (x *ClaimTeeBundleRequest) GetData() *ClaimRequestData {
 	if x != nil {
 		return x.Data
-	}
-	return nil
-}
-
-func (x *ClaimTeeBundleRequest) GetSignatures() *ClaimTeeBundleRequest_Signatures {
-	if x != nil {
-		return x.Signatures
-	}
-	return nil
-}
-
-func (x *ClaimTeeBundleRequest) GetClaimTunnelRequest() *ClaimTunnelRequest {
-	if x != nil {
-		return x.ClaimTunnelRequest
 	}
 	return nil
 }
@@ -1247,7 +1226,7 @@ type ClaimTeeBundleResponse struct {
 
 func (x *ClaimTeeBundleResponse) Reset() {
 	*x = ClaimTeeBundleResponse{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[14]
+	mi := &file_attestor_api_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1259,7 +1238,7 @@ func (x *ClaimTeeBundleResponse) String() string {
 func (*ClaimTeeBundleResponse) ProtoMessage() {}
 
 func (x *ClaimTeeBundleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[14]
+	mi := &file_attestor_api_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1272,7 +1251,7 @@ func (x *ClaimTeeBundleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimTeeBundleResponse.ProtoReflect.Descriptor instead.
 func (*ClaimTeeBundleResponse) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{14}
+	return file_attestor_api_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ClaimTeeBundleResponse) GetRequest() *ClaimTeeBundleRequest {
@@ -1351,7 +1330,7 @@ type ClaimTunnelRequest struct {
 	Transcript []*ClaimTunnelRequest_TranscriptMessage `protobuf:"bytes,3,rep,name=transcript,proto3" json:"transcript,omitempty"`
 	Signatures *ClaimTunnelRequest_Signatures          `protobuf:"bytes,4,opt,name=signatures,proto3" json:"signatures,omitempty"`
 	// * type of ZK engine used. SnarkJS or Gnark
-	ZkEngine ZKProofEngine `protobuf:"varint,5,opt,name=zkEngine,proto3,enum=reclaim_attestor.ZKProofEngine" json:"zkEngine,omitempty"`
+	ZkEngine ZKProofEngine `protobuf:"varint,5,opt,name=zkEngine,proto3,enum=teeproto.ZKProofEngine" json:"zkEngine,omitempty"`
 	// * server and client fixed IVs needed for ZK validation
 	FixedServerIV []byte `protobuf:"bytes,6,opt,name=fixedServerIV,proto3" json:"fixedServerIV,omitempty"`
 	FixedClientIV []byte `protobuf:"bytes,7,opt,name=fixedClientIV,proto3" json:"fixedClientIV,omitempty"`
@@ -1361,7 +1340,7 @@ type ClaimTunnelRequest struct {
 
 func (x *ClaimTunnelRequest) Reset() {
 	*x = ClaimTunnelRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[15]
+	mi := &file_attestor_api_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1373,7 +1352,7 @@ func (x *ClaimTunnelRequest) String() string {
 func (*ClaimTunnelRequest) ProtoMessage() {}
 
 func (x *ClaimTunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[15]
+	mi := &file_attestor_api_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1386,7 +1365,7 @@ func (x *ClaimTunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimTunnelRequest.ProtoReflect.Descriptor instead.
 func (*ClaimTunnelRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{15}
+	return file_attestor_api_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ClaimTunnelRequest) GetRequest() *CreateTunnelRequest {
@@ -1455,7 +1434,7 @@ type ClaimTunnelResponse struct {
 
 func (x *ClaimTunnelResponse) Reset() {
 	*x = ClaimTunnelResponse{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[16]
+	mi := &file_attestor_api_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1467,7 +1446,7 @@ func (x *ClaimTunnelResponse) String() string {
 func (*ClaimTunnelResponse) ProtoMessage() {}
 
 func (x *ClaimTunnelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[16]
+	mi := &file_attestor_api_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1480,7 +1459,7 @@ func (x *ClaimTunnelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimTunnelResponse.ProtoReflect.Descriptor instead.
 func (*ClaimTunnelResponse) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{16}
+	return file_attestor_api_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ClaimTunnelResponse) GetRequest() *ClaimTunnelRequest {
@@ -1556,7 +1535,7 @@ type RequestClaimOnAvsRequest struct {
 
 func (x *RequestClaimOnAvsRequest) Reset() {
 	*x = RequestClaimOnAvsRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[17]
+	mi := &file_attestor_api_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1568,7 +1547,7 @@ func (x *RequestClaimOnAvsRequest) String() string {
 func (*RequestClaimOnAvsRequest) ProtoMessage() {}
 
 func (x *RequestClaimOnAvsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[17]
+	mi := &file_attestor_api_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1581,7 +1560,7 @@ func (x *RequestClaimOnAvsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestClaimOnAvsRequest.ProtoReflect.Descriptor instead.
 func (*RequestClaimOnAvsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{17}
+	return file_attestor_api_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RequestClaimOnAvsRequest) GetChainId() uint32 {
@@ -1616,7 +1595,7 @@ type RequestClaimOnAvsResponse struct {
 
 func (x *RequestClaimOnAvsResponse) Reset() {
 	*x = RequestClaimOnAvsResponse{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[18]
+	mi := &file_attestor_api_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1628,7 +1607,7 @@ func (x *RequestClaimOnAvsResponse) String() string {
 func (*RequestClaimOnAvsResponse) ProtoMessage() {}
 
 func (x *RequestClaimOnAvsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[18]
+	mi := &file_attestor_api_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1641,7 +1620,7 @@ func (x *RequestClaimOnAvsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestClaimOnAvsResponse.ProtoReflect.Descriptor instead.
 func (*RequestClaimOnAvsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{18}
+	return file_attestor_api_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *RequestClaimOnAvsResponse) GetTxHash() string {
@@ -1679,7 +1658,7 @@ type CompleteClaimOnAvsRequest struct {
 
 func (x *CompleteClaimOnAvsRequest) Reset() {
 	*x = CompleteClaimOnAvsRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[19]
+	mi := &file_attestor_api_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1691,7 +1670,7 @@ func (x *CompleteClaimOnAvsRequest) String() string {
 func (*CompleteClaimOnAvsRequest) ProtoMessage() {}
 
 func (x *CompleteClaimOnAvsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[19]
+	mi := &file_attestor_api_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1704,7 +1683,7 @@ func (x *CompleteClaimOnAvsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteClaimOnAvsRequest.ProtoReflect.Descriptor instead.
 func (*CompleteClaimOnAvsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{19}
+	return file_attestor_api_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CompleteClaimOnAvsRequest) GetChainId() uint32 {
@@ -1738,7 +1717,7 @@ type CompleteClaimOnAvsResponse struct {
 
 func (x *CompleteClaimOnAvsResponse) Reset() {
 	*x = CompleteClaimOnAvsResponse{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[20]
+	mi := &file_attestor_api_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1750,7 +1729,7 @@ func (x *CompleteClaimOnAvsResponse) String() string {
 func (*CompleteClaimOnAvsResponse) ProtoMessage() {}
 
 func (x *CompleteClaimOnAvsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[20]
+	mi := &file_attestor_api_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1763,7 +1742,7 @@ func (x *CompleteClaimOnAvsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteClaimOnAvsResponse.ProtoReflect.Descriptor instead.
 func (*CompleteClaimOnAvsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{20}
+	return file_attestor_api_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CompleteClaimOnAvsResponse) GetTxHash() string {
@@ -1789,7 +1768,7 @@ type CreateTaskOnMechainRequest struct {
 
 func (x *CreateTaskOnMechainRequest) Reset() {
 	*x = CreateTaskOnMechainRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[21]
+	mi := &file_attestor_api_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1801,7 +1780,7 @@ func (x *CreateTaskOnMechainRequest) String() string {
 func (*CreateTaskOnMechainRequest) ProtoMessage() {}
 
 func (x *CreateTaskOnMechainRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[21]
+	mi := &file_attestor_api_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1814,7 +1793,7 @@ func (x *CreateTaskOnMechainRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTaskOnMechainRequest.ProtoReflect.Descriptor instead.
 func (*CreateTaskOnMechainRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{21}
+	return file_attestor_api_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CreateTaskOnMechainRequest) GetTimestamp() uint32 {
@@ -1835,7 +1814,7 @@ type CreateTaskOnMechainResponse struct {
 
 func (x *CreateTaskOnMechainResponse) Reset() {
 	*x = CreateTaskOnMechainResponse{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[22]
+	mi := &file_attestor_api_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1847,7 +1826,7 @@ func (x *CreateTaskOnMechainResponse) String() string {
 func (*CreateTaskOnMechainResponse) ProtoMessage() {}
 
 func (x *CreateTaskOnMechainResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[22]
+	mi := &file_attestor_api_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1860,7 +1839,7 @@ func (x *CreateTaskOnMechainResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTaskOnMechainResponse.ProtoReflect.Descriptor instead.
 func (*CreateTaskOnMechainResponse) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{22}
+	return file_attestor_api_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CreateTaskOnMechainResponse) GetTaskId() uint32 {
@@ -1904,7 +1883,7 @@ type AuthenticatedUserData struct {
 
 func (x *AuthenticatedUserData) Reset() {
 	*x = AuthenticatedUserData{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[23]
+	mi := &file_attestor_api_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1916,7 +1895,7 @@ func (x *AuthenticatedUserData) String() string {
 func (*AuthenticatedUserData) ProtoMessage() {}
 
 func (x *AuthenticatedUserData) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[23]
+	mi := &file_attestor_api_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1929,7 +1908,7 @@ func (x *AuthenticatedUserData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthenticatedUserData.ProtoReflect.Descriptor instead.
 func (*AuthenticatedUserData) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{23}
+	return file_attestor_api_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *AuthenticatedUserData) GetId() string {
@@ -1971,7 +1950,7 @@ type AuthenticationRequest struct {
 
 func (x *AuthenticationRequest) Reset() {
 	*x = AuthenticationRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[24]
+	mi := &file_attestor_api_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1983,7 +1962,7 @@ func (x *AuthenticationRequest) String() string {
 func (*AuthenticationRequest) ProtoMessage() {}
 
 func (x *AuthenticationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[24]
+	mi := &file_attestor_api_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1996,7 +1975,7 @@ func (x *AuthenticationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthenticationRequest.ProtoReflect.Descriptor instead.
 func (*AuthenticationRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{24}
+	return file_attestor_api_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *AuthenticationRequest) GetData() *AuthenticatedUserData {
@@ -2016,9 +1995,9 @@ func (x *AuthenticationRequest) GetSignature() []byte {
 type InitRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// * Attestor client version
-	ClientVersion AttestorVersion `protobuf:"varint,2,opt,name=clientVersion,proto3,enum=reclaim_attestor.AttestorVersion" json:"clientVersion,omitempty"`
+	ClientVersion AttestorVersion `protobuf:"varint,2,opt,name=clientVersion,proto3,enum=teeproto.AttestorVersion" json:"clientVersion,omitempty"`
 	// * Signature type used & expected by the user
-	SignatureType ServiceSignatureType `protobuf:"varint,3,opt,name=signatureType,proto3,enum=reclaim_attestor.ServiceSignatureType" json:"signatureType,omitempty"`
+	SignatureType ServiceSignatureType `protobuf:"varint,3,opt,name=signatureType,proto3,enum=teeproto.ServiceSignatureType" json:"signatureType,omitempty"`
 	//*
 	// Request the attestor to authenticate the user
 	// with the given data. If auth fails, will return
@@ -2030,7 +2009,7 @@ type InitRequest struct {
 
 func (x *InitRequest) Reset() {
 	*x = InitRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[25]
+	mi := &file_attestor_api_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2042,7 +2021,7 @@ func (x *InitRequest) String() string {
 func (*InitRequest) ProtoMessage() {}
 
 func (x *InitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[25]
+	mi := &file_attestor_api_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2055,7 +2034,7 @@ func (x *InitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InitRequest.ProtoReflect.Descriptor instead.
 func (*InitRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{25}
+	return file_attestor_api_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *InitRequest) GetClientVersion() AttestorVersion {
@@ -2088,7 +2067,7 @@ type InitResponse struct {
 
 func (x *InitResponse) Reset() {
 	*x = InitResponse{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[26]
+	mi := &file_attestor_api_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2100,7 +2079,7 @@ func (x *InitResponse) String() string {
 func (*InitResponse) ProtoMessage() {}
 
 func (x *InitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[26]
+	mi := &file_attestor_api_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2113,7 +2092,7 @@ func (x *InitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InitResponse.ProtoReflect.Descriptor instead.
 func (*InitResponse) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{26}
+	return file_attestor_api_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *InitResponse) GetToprfPublicKey() []byte {
@@ -2126,14 +2105,14 @@ func (x *InitResponse) GetToprfPublicKey() []byte {
 type TOPRFRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MaskedData    []byte                 `protobuf:"bytes,1,opt,name=maskedData,proto3" json:"maskedData,omitempty"`
-	Engine        ZKProofEngine          `protobuf:"varint,2,opt,name=engine,proto3,enum=reclaim_attestor.ZKProofEngine" json:"engine,omitempty"`
+	Engine        ZKProofEngine          `protobuf:"varint,2,opt,name=engine,proto3,enum=teeproto.ZKProofEngine" json:"engine,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TOPRFRequest) Reset() {
 	*x = TOPRFRequest{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[27]
+	mi := &file_attestor_api_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2145,7 +2124,7 @@ func (x *TOPRFRequest) String() string {
 func (*TOPRFRequest) ProtoMessage() {}
 
 func (x *TOPRFRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[27]
+	mi := &file_attestor_api_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2158,7 +2137,7 @@ func (x *TOPRFRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TOPRFRequest.ProtoReflect.Descriptor instead.
 func (*TOPRFRequest) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{27}
+	return file_attestor_api_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *TOPRFRequest) GetMaskedData() []byte {
@@ -2188,7 +2167,7 @@ type TOPRFResponse struct {
 
 func (x *TOPRFResponse) Reset() {
 	*x = TOPRFResponse{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[28]
+	mi := &file_attestor_api_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2200,7 +2179,7 @@ func (x *TOPRFResponse) String() string {
 func (*TOPRFResponse) ProtoMessage() {}
 
 func (x *TOPRFResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[28]
+	mi := &file_attestor_api_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2213,7 +2192,7 @@ func (x *TOPRFResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TOPRFResponse.ProtoReflect.Descriptor instead.
 func (*TOPRFResponse) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{28}
+	return file_attestor_api_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *TOPRFResponse) GetPublicKeyShare() []byte {
@@ -2286,7 +2265,7 @@ type RPCMessage struct {
 
 func (x *RPCMessage) Reset() {
 	*x = RPCMessage{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[29]
+	mi := &file_attestor_api_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2298,7 +2277,7 @@ func (x *RPCMessage) String() string {
 func (*RPCMessage) ProtoMessage() {}
 
 func (x *RPCMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[29]
+	mi := &file_attestor_api_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2311,7 +2290,7 @@ func (x *RPCMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RPCMessage.ProtoReflect.Descriptor instead.
 func (*RPCMessage) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{29}
+	return file_attestor_api_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *RPCMessage) GetId() uint64 {
@@ -2706,7 +2685,7 @@ type RPCMessages struct {
 
 func (x *RPCMessages) Reset() {
 	*x = RPCMessages{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[30]
+	mi := &file_attestor_api_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2718,7 +2697,7 @@ func (x *RPCMessages) String() string {
 func (*RPCMessages) ProtoMessage() {}
 
 func (x *RPCMessages) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[30]
+	mi := &file_attestor_api_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2731,7 +2710,7 @@ func (x *RPCMessages) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RPCMessages.ProtoReflect.Descriptor instead.
 func (*RPCMessages) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{30}
+	return file_attestor_api_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *RPCMessages) GetMessages() []*RPCMessage {
@@ -2757,7 +2736,7 @@ type MessageReveal_MessageRevealDirect struct {
 
 func (x *MessageReveal_MessageRevealDirect) Reset() {
 	*x = MessageReveal_MessageRevealDirect{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[32]
+	mi := &file_attestor_api_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2769,7 +2748,7 @@ func (x *MessageReveal_MessageRevealDirect) String() string {
 func (*MessageReveal_MessageRevealDirect) ProtoMessage() {}
 
 func (x *MessageReveal_MessageRevealDirect) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[32]
+	mi := &file_attestor_api_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2782,7 +2761,7 @@ func (x *MessageReveal_MessageRevealDirect) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use MessageReveal_MessageRevealDirect.ProtoReflect.Descriptor instead.
 func (*MessageReveal_MessageRevealDirect) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{9, 0}
+	return file_attestor_api_proto_rawDescGZIP(), []int{9, 0}
 }
 
 func (x *MessageReveal_MessageRevealDirect) GetKey() []byte {
@@ -2815,7 +2794,7 @@ type MessageReveal_MessageRevealZk struct {
 
 func (x *MessageReveal_MessageRevealZk) Reset() {
 	*x = MessageReveal_MessageRevealZk{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[33]
+	mi := &file_attestor_api_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2827,7 +2806,7 @@ func (x *MessageReveal_MessageRevealZk) String() string {
 func (*MessageReveal_MessageRevealZk) ProtoMessage() {}
 
 func (x *MessageReveal_MessageRevealZk) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[33]
+	mi := &file_attestor_api_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2840,7 +2819,7 @@ func (x *MessageReveal_MessageRevealZk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageReveal_MessageRevealZk.ProtoReflect.Descriptor instead.
 func (*MessageReveal_MessageRevealZk) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{9, 1}
+	return file_attestor_api_proto_rawDescGZIP(), []int{9, 1}
 }
 
 func (x *MessageReveal_MessageRevealZk) GetProofs() []*MessageReveal_ZKProof {
@@ -2875,7 +2854,7 @@ type MessageReveal_ZKProof struct {
 
 func (x *MessageReveal_ZKProof) Reset() {
 	*x = MessageReveal_ZKProof{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[34]
+	mi := &file_attestor_api_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2887,7 +2866,7 @@ func (x *MessageReveal_ZKProof) String() string {
 func (*MessageReveal_ZKProof) ProtoMessage() {}
 
 func (x *MessageReveal_ZKProof) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[34]
+	mi := &file_attestor_api_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2900,7 +2879,7 @@ func (x *MessageReveal_ZKProof) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageReveal_ZKProof.ProtoReflect.Descriptor instead.
 func (*MessageReveal_ZKProof) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{9, 2}
+	return file_attestor_api_proto_rawDescGZIP(), []int{9, 2}
 }
 
 func (x *MessageReveal_ZKProof) GetProofJson() string {
@@ -2945,53 +2924,6 @@ func (x *MessageReveal_ZKProof) GetToprf() *TOPRFPayload {
 	return nil
 }
 
-type ClaimTeeBundleRequest_Signatures struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	//*
-	// Signature of ClaimTeeBundleRequest
-	// with empty "signatures" field
-	RequestSignature []byte `protobuf:"bytes,1,opt,name=requestSignature,proto3" json:"requestSignature,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *ClaimTeeBundleRequest_Signatures) Reset() {
-	*x = ClaimTeeBundleRequest_Signatures{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[35]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ClaimTeeBundleRequest_Signatures) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ClaimTeeBundleRequest_Signatures) ProtoMessage() {}
-
-func (x *ClaimTeeBundleRequest_Signatures) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[35]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ClaimTeeBundleRequest_Signatures.ProtoReflect.Descriptor instead.
-func (*ClaimTeeBundleRequest_Signatures) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{13, 0}
-}
-
-func (x *ClaimTeeBundleRequest_Signatures) GetRequestSignature() []byte {
-	if x != nil {
-		return x.RequestSignature
-	}
-	return nil
-}
-
 type ClaimTeeBundleResponse_Signatures struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	//*
@@ -3011,7 +2943,7 @@ type ClaimTeeBundleResponse_Signatures struct {
 
 func (x *ClaimTeeBundleResponse_Signatures) Reset() {
 	*x = ClaimTeeBundleResponse_Signatures{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[36]
+	mi := &file_attestor_api_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3023,7 +2955,7 @@ func (x *ClaimTeeBundleResponse_Signatures) String() string {
 func (*ClaimTeeBundleResponse_Signatures) ProtoMessage() {}
 
 func (x *ClaimTeeBundleResponse_Signatures) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[36]
+	mi := &file_attestor_api_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3036,7 +2968,7 @@ func (x *ClaimTeeBundleResponse_Signatures) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ClaimTeeBundleResponse_Signatures.ProtoReflect.Descriptor instead.
 func (*ClaimTeeBundleResponse_Signatures) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{14, 0}
+	return file_attestor_api_proto_rawDescGZIP(), []int{14, 0}
 }
 
 func (x *ClaimTeeBundleResponse_Signatures) GetAttestorAddress() string {
@@ -3072,7 +3004,7 @@ type ClaimTunnelRequest_Signatures struct {
 
 func (x *ClaimTunnelRequest_Signatures) Reset() {
 	*x = ClaimTunnelRequest_Signatures{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[37]
+	mi := &file_attestor_api_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3084,7 +3016,7 @@ func (x *ClaimTunnelRequest_Signatures) String() string {
 func (*ClaimTunnelRequest_Signatures) ProtoMessage() {}
 
 func (x *ClaimTunnelRequest_Signatures) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[37]
+	mi := &file_attestor_api_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3097,7 +3029,7 @@ func (x *ClaimTunnelRequest_Signatures) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimTunnelRequest_Signatures.ProtoReflect.Descriptor instead.
 func (*ClaimTunnelRequest_Signatures) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{15, 0}
+	return file_attestor_api_proto_rawDescGZIP(), []int{15, 0}
 }
 
 func (x *ClaimTunnelRequest_Signatures) GetRequestSignature() []byte {
@@ -3110,7 +3042,7 @@ func (x *ClaimTunnelRequest_Signatures) GetRequestSignature() []byte {
 type ClaimTunnelRequest_TranscriptMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// * client or server
-	Sender TranscriptMessageSenderType `protobuf:"varint,1,opt,name=sender,proto3,enum=reclaim_attestor.TranscriptMessageSenderType" json:"sender,omitempty"`
+	Sender TranscriptMessageSenderType `protobuf:"varint,1,opt,name=sender,proto3,enum=teeproto.TranscriptMessageSenderType" json:"sender,omitempty"`
 	// * packet data
 	Message       []byte         `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	Reveal        *MessageReveal `protobuf:"bytes,3,opt,name=reveal,proto3" json:"reveal,omitempty"`
@@ -3120,7 +3052,7 @@ type ClaimTunnelRequest_TranscriptMessage struct {
 
 func (x *ClaimTunnelRequest_TranscriptMessage) Reset() {
 	*x = ClaimTunnelRequest_TranscriptMessage{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[38]
+	mi := &file_attestor_api_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3132,7 +3064,7 @@ func (x *ClaimTunnelRequest_TranscriptMessage) String() string {
 func (*ClaimTunnelRequest_TranscriptMessage) ProtoMessage() {}
 
 func (x *ClaimTunnelRequest_TranscriptMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[38]
+	mi := &file_attestor_api_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3145,7 +3077,7 @@ func (x *ClaimTunnelRequest_TranscriptMessage) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use ClaimTunnelRequest_TranscriptMessage.ProtoReflect.Descriptor instead.
 func (*ClaimTunnelRequest_TranscriptMessage) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{15, 1}
+	return file_attestor_api_proto_rawDescGZIP(), []int{15, 1}
 }
 
 func (x *ClaimTunnelRequest_TranscriptMessage) GetSender() TranscriptMessageSenderType {
@@ -3188,7 +3120,7 @@ type ClaimTunnelResponse_Signatures struct {
 
 func (x *ClaimTunnelResponse_Signatures) Reset() {
 	*x = ClaimTunnelResponse_Signatures{}
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[39]
+	mi := &file_attestor_api_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3200,7 +3132,7 @@ func (x *ClaimTunnelResponse_Signatures) String() string {
 func (*ClaimTunnelResponse_Signatures) ProtoMessage() {}
 
 func (x *ClaimTunnelResponse_Signatures) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_attestor_attestor_api_proto_msgTypes[39]
+	mi := &file_attestor_api_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3213,7 +3145,7 @@ func (x *ClaimTunnelResponse_Signatures) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimTunnelResponse_Signatures.ProtoReflect.Descriptor instead.
 func (*ClaimTunnelResponse_Signatures) Descriptor() ([]byte, []int) {
-	return file_proto_attestor_attestor_api_proto_rawDescGZIP(), []int{16, 0}
+	return file_attestor_api_proto_rawDescGZIP(), []int{16, 0}
 }
 
 func (x *ClaimTunnelResponse_Signatures) GetAttestorAddress() string {
@@ -3237,13 +3169,13 @@ func (x *ClaimTunnelResponse_Signatures) GetResultSignature() []byte {
 	return nil
 }
 
-var File_proto_attestor_attestor_api_proto protoreflect.FileDescriptor
+var File_attestor_api_proto protoreflect.FileDescriptor
 
-const file_proto_attestor_attestor_api_proto_rawDesc = "" +
+const file_attestor_api_proto_rawDesc = "" +
 	"\n" +
-	"!proto/attestor/attestor_api.proto\x12\x10reclaim_attestor\"\xe5\x01\n" +
-	"\fClaimContext\x12i\n" +
-	"\x13extractedParameters\x18\x01 \x03(\v27.reclaim_attestor.ClaimContext.ExtractedParametersEntryR\x13extractedParameters\x12\"\n" +
+	"\x12attestor_api.proto\x12\bteeproto\"\xdd\x01\n" +
+	"\fClaimContext\x12a\n" +
+	"\x13extractedParameters\x18\x01 \x03(\v2/.teeproto.ClaimContext.ExtractedParametersEntryR\x13extractedParameters\x12\"\n" +
 	"\fproviderHash\x18\x02 \x01(\tR\fproviderHash\x1aF\n" +
 	"\x18ExtractedParametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -3267,9 +3199,9 @@ const file_proto_attestor_attestor_api_proto_rawDesc = "" +
 	"\n" +
 	"parameters\x18\x02 \x01(\tR\n" +
 	"parameters\x12\x18\n" +
-	"\acontext\x18\x06 \x01(\tR\acontext\"j\n" +
-	"\tErrorData\x12/\n" +
-	"\x04code\x18\x01 \x01(\x0e2\x1b.reclaim_attestor.ErrorCodeR\x04code\x12\x18\n" +
+	"\acontext\x18\x06 \x01(\tR\acontext\"b\n" +
+	"\tErrorData\x12'\n" +
+	"\x04code\x18\x01 \x01(\x0e2\x13.teeproto.ErrorCodeR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x12\n" +
 	"\x04data\x18\x03 \x01(\tR\x04data\"o\n" +
 	"\x13CreateTunnelRequest\x12\x0e\n" +
@@ -3282,31 +3214,31 @@ const file_proto_attestor_attestor_api_proto_rawDesc = "" +
 	"\x05Empty\"E\n" +
 	"\rTunnelMessage\x12\x1a\n" +
 	"\btunnelId\x18\x01 \x01(\rR\btunnelId\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\fR\amessage\"f\n" +
+	"\amessage\x18\x02 \x01(\fR\amessage\"^\n" +
 	"\x15TunnelDisconnectEvent\x12\x1a\n" +
-	"\btunnelId\x18\x01 \x01(\rR\btunnelId\x121\n" +
-	"\x05error\x18\x02 \x01(\v2\x1b.reclaim_attestor.ErrorDataR\x05error\"\xfe\x04\n" +
-	"\rMessageReveal\x12Y\n" +
-	"\fdirectReveal\x18\x01 \x01(\v23.reclaim_attestor.MessageReveal.MessageRevealDirectH\x00R\fdirectReveal\x12M\n" +
-	"\bzkReveal\x18\x02 \x01(\v2/.reclaim_attestor.MessageReveal.MessageRevealZkH\x00R\bzkReveal\x1a[\n" +
+	"\btunnelId\x18\x01 \x01(\rR\btunnelId\x12)\n" +
+	"\x05error\x18\x02 \x01(\v2\x13.teeproto.ErrorDataR\x05error\"\xde\x04\n" +
+	"\rMessageReveal\x12Q\n" +
+	"\fdirectReveal\x18\x01 \x01(\v2+.teeproto.MessageReveal.MessageRevealDirectH\x00R\fdirectReveal\x12E\n" +
+	"\bzkReveal\x18\x02 \x01(\v2'.teeproto.MessageReveal.MessageRevealZkH\x00R\bzkReveal\x1a[\n" +
 	"\x13MessageRevealDirect\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x0e\n" +
 	"\x02iv\x18\x02 \x01(\fR\x02iv\x12\"\n" +
-	"\frecordNumber\x18\x03 \x01(\rR\frecordNumber\x1aR\n" +
-	"\x0fMessageRevealZk\x12?\n" +
-	"\x06proofs\x18\x01 \x03(\v2'.reclaim_attestor.MessageReveal.ZKProofR\x06proofs\x1a\x87\x02\n" +
+	"\frecordNumber\x18\x03 \x01(\rR\frecordNumber\x1aJ\n" +
+	"\x0fMessageRevealZk\x127\n" +
+	"\x06proofs\x18\x01 \x03(\v2\x1f.teeproto.MessageReveal.ZKProofR\x06proofs\x1a\xff\x01\n" +
 	"\aZKProof\x12\x1c\n" +
 	"\tproofJson\x18\x01 \x01(\tR\tproofJson\x12@\n" +
 	"\x1bdecryptedRedactedCiphertext\x18\x02 \x01(\fR\x1bdecryptedRedactedCiphertext\x12,\n" +
 	"\x11redactedPlaintext\x18\x03 \x01(\fR\x11redactedPlaintext\x12\x1a\n" +
 	"\bstartIdx\x18\x04 \x01(\rR\bstartIdx\x12\x1c\n" +
-	"\tproofData\x18\x05 \x01(\fR\tproofData\x124\n" +
-	"\x05toprf\x18\x06 \x01(\v2\x1e.reclaim_attestor.TOPRFPayloadR\x05toprfB\b\n" +
-	"\x06reveal\"\xac\x01\n" +
-	"\fTOPRFPayload\x12?\n" +
-	"\fdataLocation\x18\x01 \x01(\v2\x1b.reclaim_attestor.DataSliceR\fdataLocation\x12\x1c\n" +
-	"\tnullifier\x18\x02 \x01(\fR\tnullifier\x12=\n" +
-	"\tresponses\x18\x03 \x03(\v2\x1f.reclaim_attestor.TOPRFResponseR\tresponses\"A\n" +
+	"\tproofData\x18\x05 \x01(\fR\tproofData\x12,\n" +
+	"\x05toprf\x18\x06 \x01(\v2\x16.teeproto.TOPRFPayloadR\x05toprfB\b\n" +
+	"\x06reveal\"\x9c\x01\n" +
+	"\fTOPRFPayload\x127\n" +
+	"\fdataLocation\x18\x01 \x01(\v2\x13.teeproto.DataSliceR\fdataLocation\x12\x1c\n" +
+	"\tnullifier\x18\x02 \x01(\fR\tnullifier\x125\n" +
+	"\tresponses\x18\x03 \x03(\v2\x17.teeproto.TOPRFResponseR\tresponses\"A\n" +
 	"\tDataSlice\x12\x1c\n" +
 	"\tfromIndex\x18\x01 \x01(\rR\tfromIndex\x12\x16\n" +
 	"\x06length\x18\x02 \x01(\rR\x06length\"\x9e\x01\n" +
@@ -3319,55 +3251,48 @@ const file_proto_attestor_attestor_api_proto_rawDesc = "" +
 	"\n" +
 	"timestampS\x18\x04 \x01(\rR\n" +
 	"timestampS\x12\x18\n" +
-	"\acontext\x18\x05 \x01(\tR\acontext\"\xe3\x02\n" +
+	"\acontext\x18\x05 \x01(\tR\acontext\"w\n" +
 	"\x15ClaimTeeBundleRequest\x12.\n" +
-	"\x12verificationBundle\x18\x01 \x01(\fR\x12verificationBundle\x126\n" +
-	"\x04data\x18\x02 \x01(\v2\".reclaim_attestor.ClaimRequestDataR\x04data\x12R\n" +
+	"\x12verificationBundle\x18\x01 \x01(\fR\x12verificationBundle\x12.\n" +
+	"\x04data\x18\x02 \x01(\v2\x1a.teeproto.ClaimRequestDataR\x04data\"\x97\x03\n" +
+	"\x16ClaimTeeBundleResponse\x129\n" +
+	"\arequest\x18\x01 \x01(\v2\x1f.teeproto.ClaimTeeBundleRequestR\arequest\x123\n" +
+	"\x05claim\x18\x02 \x01(\v2\x1b.teeproto.ProviderClaimDataH\x00R\x05claim\x12+\n" +
+	"\x05error\x18\x03 \x01(\v2\x13.teeproto.ErrorDataH\x00R\x05error\x12K\n" +
 	"\n" +
-	"signatures\x18\x03 \x01(\v22.reclaim_attestor.ClaimTeeBundleRequest.SignaturesR\n" +
-	"signatures\x12T\n" +
-	"\x12claimTunnelRequest\x18\x04 \x01(\v2$.reclaim_attestor.ClaimTunnelRequestR\x12claimTunnelRequest\x1a8\n" +
-	"\n" +
-	"Signatures\x12*\n" +
-	"\x10requestSignature\x18\x01 \x01(\fR\x10requestSignature\"\xb7\x03\n" +
-	"\x16ClaimTeeBundleResponse\x12A\n" +
-	"\arequest\x18\x01 \x01(\v2'.reclaim_attestor.ClaimTeeBundleRequestR\arequest\x12;\n" +
-	"\x05claim\x18\x02 \x01(\v2#.reclaim_attestor.ProviderClaimDataH\x00R\x05claim\x123\n" +
-	"\x05error\x18\x03 \x01(\v2\x1b.reclaim_attestor.ErrorDataH\x00R\x05error\x12S\n" +
-	"\n" +
-	"signatures\x18\x04 \x01(\v23.reclaim_attestor.ClaimTeeBundleResponse.SignaturesR\n" +
+	"signatures\x18\x04 \x01(\v2+.teeproto.ClaimTeeBundleResponse.SignaturesR\n" +
 	"signatures\x1a\x88\x01\n" +
 	"\n" +
 	"Signatures\x12(\n" +
 	"\x0fattestorAddress\x18\x01 \x01(\tR\x0fattestorAddress\x12&\n" +
 	"\x0eclaimSignature\x18\x02 \x01(\fR\x0eclaimSignature\x12(\n" +
 	"\x0fresultSignature\x18\x03 \x01(\fR\x0fresultSignatureB\b\n" +
-	"\x06result\"\xa9\x05\n" +
-	"\x12ClaimTunnelRequest\x12?\n" +
-	"\arequest\x18\x01 \x01(\v2%.reclaim_attestor.CreateTunnelRequestR\arequest\x126\n" +
-	"\x04data\x18\x02 \x01(\v2\".reclaim_attestor.ClaimRequestDataR\x04data\x12V\n" +
+	"\x06result\"\xf1\x04\n" +
+	"\x12ClaimTunnelRequest\x127\n" +
+	"\arequest\x18\x01 \x01(\v2\x1d.teeproto.CreateTunnelRequestR\arequest\x12.\n" +
+	"\x04data\x18\x02 \x01(\v2\x1a.teeproto.ClaimRequestDataR\x04data\x12N\n" +
 	"\n" +
-	"transcript\x18\x03 \x03(\v26.reclaim_attestor.ClaimTunnelRequest.TranscriptMessageR\n" +
-	"transcript\x12O\n" +
+	"transcript\x18\x03 \x03(\v2..teeproto.ClaimTunnelRequest.TranscriptMessageR\n" +
+	"transcript\x12G\n" +
 	"\n" +
-	"signatures\x18\x04 \x01(\v2/.reclaim_attestor.ClaimTunnelRequest.SignaturesR\n" +
-	"signatures\x12;\n" +
-	"\bzkEngine\x18\x05 \x01(\x0e2\x1f.reclaim_attestor.ZKProofEngineR\bzkEngine\x12$\n" +
+	"signatures\x18\x04 \x01(\v2'.teeproto.ClaimTunnelRequest.SignaturesR\n" +
+	"signatures\x123\n" +
+	"\bzkEngine\x18\x05 \x01(\x0e2\x17.teeproto.ZKProofEngineR\bzkEngine\x12$\n" +
 	"\rfixedServerIV\x18\x06 \x01(\fR\rfixedServerIV\x12$\n" +
 	"\rfixedClientIV\x18\a \x01(\fR\rfixedClientIV\x1a8\n" +
 	"\n" +
 	"Signatures\x12*\n" +
-	"\x10requestSignature\x18\x01 \x01(\fR\x10requestSignature\x1a\xad\x01\n" +
-	"\x11TranscriptMessage\x12E\n" +
-	"\x06sender\x18\x01 \x01(\x0e2-.reclaim_attestor.TranscriptMessageSenderTypeR\x06sender\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\fR\amessage\x127\n" +
-	"\x06reveal\x18\x03 \x01(\v2\x1f.reclaim_attestor.MessageRevealR\x06reveal\"\xae\x03\n" +
-	"\x13ClaimTunnelResponse\x12>\n" +
-	"\arequest\x18\x01 \x01(\v2$.reclaim_attestor.ClaimTunnelRequestR\arequest\x12;\n" +
-	"\x05claim\x18\x02 \x01(\v2#.reclaim_attestor.ProviderClaimDataH\x00R\x05claim\x123\n" +
-	"\x05error\x18\x03 \x01(\v2\x1b.reclaim_attestor.ErrorDataH\x00R\x05error\x12P\n" +
+	"\x10requestSignature\x18\x01 \x01(\fR\x10requestSignature\x1a\x9d\x01\n" +
+	"\x11TranscriptMessage\x12=\n" +
+	"\x06sender\x18\x01 \x01(\x0e2%.teeproto.TranscriptMessageSenderTypeR\x06sender\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\fR\amessage\x12/\n" +
+	"\x06reveal\x18\x03 \x01(\v2\x17.teeproto.MessageRevealR\x06reveal\"\x8e\x03\n" +
+	"\x13ClaimTunnelResponse\x126\n" +
+	"\arequest\x18\x01 \x01(\v2\x1c.teeproto.ClaimTunnelRequestR\arequest\x123\n" +
+	"\x05claim\x18\x02 \x01(\v2\x1b.teeproto.ProviderClaimDataH\x00R\x05claim\x12+\n" +
+	"\x05error\x18\x03 \x01(\v2\x13.teeproto.ErrorDataH\x00R\x05error\x12H\n" +
 	"\n" +
-	"signatures\x18\x04 \x01(\v20.reclaim_attestor.ClaimTunnelResponse.SignaturesR\n" +
+	"signatures\x18\x04 \x01(\v2(.teeproto.ClaimTunnelResponse.SignaturesR\n" +
 	"signatures\x1a\x88\x01\n" +
 	"\n" +
 	"Signatures\x12(\n" +
@@ -3400,55 +3325,55 @@ const file_proto_attestor_attestor_api_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1c\n" +
 	"\tcreatedAt\x18\x02 \x01(\rR\tcreatedAt\x12\x1c\n" +
 	"\texpiresAt\x18\x03 \x01(\rR\texpiresAt\x12$\n" +
-	"\rhostWhitelist\x18\x04 \x03(\tR\rhostWhitelist\"r\n" +
-	"\x15AuthenticationRequest\x12;\n" +
-	"\x04data\x18\x01 \x01(\v2'.reclaim_attestor.AuthenticatedUserDataR\x04data\x12\x1c\n" +
-	"\tsignature\x18\x02 \x01(\fR\tsignature\"\xe1\x01\n" +
-	"\vInitRequest\x12G\n" +
-	"\rclientVersion\x18\x02 \x01(\x0e2!.reclaim_attestor.AttestorVersionR\rclientVersion\x12L\n" +
-	"\rsignatureType\x18\x03 \x01(\x0e2&.reclaim_attestor.ServiceSignatureTypeR\rsignatureType\x12;\n" +
-	"\x04auth\x18\x04 \x01(\v2'.reclaim_attestor.AuthenticationRequestR\x04auth\"6\n" +
+	"\rhostWhitelist\x18\x04 \x03(\tR\rhostWhitelist\"j\n" +
+	"\x15AuthenticationRequest\x123\n" +
+	"\x04data\x18\x01 \x01(\v2\x1f.teeproto.AuthenticatedUserDataR\x04data\x12\x1c\n" +
+	"\tsignature\x18\x02 \x01(\fR\tsignature\"\xc9\x01\n" +
+	"\vInitRequest\x12?\n" +
+	"\rclientVersion\x18\x02 \x01(\x0e2\x19.teeproto.AttestorVersionR\rclientVersion\x12D\n" +
+	"\rsignatureType\x18\x03 \x01(\x0e2\x1e.teeproto.ServiceSignatureTypeR\rsignatureType\x123\n" +
+	"\x04auth\x18\x04 \x01(\v2\x1f.teeproto.AuthenticationRequestR\x04auth\"6\n" +
 	"\fInitResponse\x12&\n" +
-	"\x0etoprfPublicKey\x18\x01 \x01(\fR\x0etoprfPublicKey\"g\n" +
+	"\x0etoprfPublicKey\x18\x01 \x01(\fR\x0etoprfPublicKey\"_\n" +
 	"\fTOPRFRequest\x12\x1e\n" +
 	"\n" +
 	"maskedData\x18\x01 \x01(\fR\n" +
-	"maskedData\x127\n" +
-	"\x06engine\x18\x02 \x01(\x0e2\x1f.reclaim_attestor.ZKProofEngineR\x06engine\"q\n" +
+	"maskedData\x12/\n" +
+	"\x06engine\x18\x02 \x01(\x0e2\x17.teeproto.ZKProofEngineR\x06engine\"q\n" +
 	"\rTOPRFResponse\x12&\n" +
 	"\x0epublicKeyShare\x18\x01 \x01(\fR\x0epublicKeyShare\x12\x1c\n" +
 	"\tevaluated\x18\x02 \x01(\fR\tevaluated\x12\f\n" +
 	"\x01c\x18\x03 \x01(\fR\x01c\x12\f\n" +
-	"\x01r\x18\x04 \x01(\fR\x01r\"\x8e\x10\n" +
+	"\x01r\x18\x04 \x01(\fR\x01r\"\xde\x0e\n" +
 	"\n" +
 	"RPCMessage\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\x12A\n" +
-	"\vinitRequest\x18\x02 \x01(\v2\x1d.reclaim_attestor.InitRequestH\x00R\vinitRequest\x12D\n" +
-	"\finitResponse\x18\x03 \x01(\v2\x1e.reclaim_attestor.InitResponseH\x00R\finitResponse\x12]\n" +
-	"\x1aconnectionTerminationAlert\x18\x04 \x01(\v2\x1b.reclaim_attestor.ErrorDataH\x00R\x1aconnectionTerminationAlert\x12A\n" +
-	"\frequestError\x18\x05 \x01(\v2\x1b.reclaim_attestor.ErrorDataH\x00R\frequestError\x12Y\n" +
-	"\x13createTunnelRequest\x18\x06 \x01(\v2%.reclaim_attestor.CreateTunnelRequestH\x00R\x13createTunnelRequest\x12M\n" +
-	"\x14createTunnelResponse\x18\a \x01(\v2\x17.reclaim_attestor.EmptyH\x00R\x14createTunnelResponse\x12e\n" +
-	"\x17disconnectTunnelRequest\x18\b \x01(\v2).reclaim_attestor.DisconnectTunnelRequestH\x00R\x17disconnectTunnelRequest\x12U\n" +
-	"\x18disconnectTunnelResponse\x18\t \x01(\v2\x17.reclaim_attestor.EmptyH\x00R\x18disconnectTunnelResponse\x12G\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x129\n" +
+	"\vinitRequest\x18\x02 \x01(\v2\x15.teeproto.InitRequestH\x00R\vinitRequest\x12<\n" +
+	"\finitResponse\x18\x03 \x01(\v2\x16.teeproto.InitResponseH\x00R\finitResponse\x12U\n" +
+	"\x1aconnectionTerminationAlert\x18\x04 \x01(\v2\x13.teeproto.ErrorDataH\x00R\x1aconnectionTerminationAlert\x129\n" +
+	"\frequestError\x18\x05 \x01(\v2\x13.teeproto.ErrorDataH\x00R\frequestError\x12Q\n" +
+	"\x13createTunnelRequest\x18\x06 \x01(\v2\x1d.teeproto.CreateTunnelRequestH\x00R\x13createTunnelRequest\x12E\n" +
+	"\x14createTunnelResponse\x18\a \x01(\v2\x0f.teeproto.EmptyH\x00R\x14createTunnelResponse\x12]\n" +
+	"\x17disconnectTunnelRequest\x18\b \x01(\v2!.teeproto.DisconnectTunnelRequestH\x00R\x17disconnectTunnelRequest\x12M\n" +
+	"\x18disconnectTunnelResponse\x18\t \x01(\v2\x0f.teeproto.EmptyH\x00R\x18disconnectTunnelResponse\x12?\n" +
 	"\rtunnelMessage\x18\n" +
-	" \x01(\v2\x1f.reclaim_attestor.TunnelMessageH\x00R\rtunnelMessage\x12_\n" +
-	"\x15tunnelDisconnectEvent\x18\v \x01(\v2'.reclaim_attestor.TunnelDisconnectEventH\x00R\x15tunnelDisconnectEvent\x12V\n" +
-	"\x12claimTunnelRequest\x18\f \x01(\v2$.reclaim_attestor.ClaimTunnelRequestH\x00R\x12claimTunnelRequest\x12Y\n" +
-	"\x13claimTunnelResponse\x18\r \x01(\v2%.reclaim_attestor.ClaimTunnelResponseH\x00R\x13claimTunnelResponse\x12j\n" +
-	"\x19createClaimOnChainRequest\x18\x0e \x01(\v2*.reclaim_attestor.RequestClaimOnAvsRequestH\x00R\x19createClaimOnChainRequest\x12m\n" +
-	"\x1acreateClaimOnChainResponse\x18\x0f \x01(\v2+.reclaim_attestor.RequestClaimOnAvsResponseH\x00R\x1acreateClaimOnChainResponse\x12o\n" +
-	"\x1bcompleteClaimOnChainRequest\x18\x10 \x01(\v2+.reclaim_attestor.CompleteClaimOnAvsRequestH\x00R\x1bcompleteClaimOnChainRequest\x12r\n" +
-	"\x1ccompleteClaimOnChainResponse\x18\x11 \x01(\v2,.reclaim_attestor.CompleteClaimOnAvsResponseH\x00R\x1ccompleteClaimOnChainResponse\x12D\n" +
-	"\ftoprfRequest\x18\x12 \x01(\v2\x1e.reclaim_attestor.TOPRFRequestH\x00R\ftoprfRequest\x12G\n" +
-	"\rtoprfResponse\x18\x13 \x01(\v2\x1f.reclaim_attestor.TOPRFResponseH\x00R\rtoprfResponse\x12n\n" +
-	"\x1acreateTaskOnMechainRequest\x18\x14 \x01(\v2,.reclaim_attestor.CreateTaskOnMechainRequestH\x00R\x1acreateTaskOnMechainRequest\x12q\n" +
-	"\x1bcreateTaskOnMechainResponse\x18\x15 \x01(\v2-.reclaim_attestor.CreateTaskOnMechainResponseH\x00R\x1bcreateTaskOnMechainResponse\x12_\n" +
-	"\x15claimTeeBundleRequest\x18\x16 \x01(\v2'.reclaim_attestor.ClaimTeeBundleRequestH\x00R\x15claimTeeBundleRequest\x12b\n" +
-	"\x16claimTeeBundleResponse\x18\x17 \x01(\v2(.reclaim_attestor.ClaimTeeBundleResponseH\x00R\x16claimTeeBundleResponseB\t\n" +
-	"\amessage\"G\n" +
-	"\vRPCMessages\x128\n" +
-	"\bmessages\x18\x01 \x03(\v2\x1c.reclaim_attestor.RPCMessageR\bmessages*\x9f\x01\n" +
+	" \x01(\v2\x17.teeproto.TunnelMessageH\x00R\rtunnelMessage\x12W\n" +
+	"\x15tunnelDisconnectEvent\x18\v \x01(\v2\x1f.teeproto.TunnelDisconnectEventH\x00R\x15tunnelDisconnectEvent\x12N\n" +
+	"\x12claimTunnelRequest\x18\f \x01(\v2\x1c.teeproto.ClaimTunnelRequestH\x00R\x12claimTunnelRequest\x12Q\n" +
+	"\x13claimTunnelResponse\x18\r \x01(\v2\x1d.teeproto.ClaimTunnelResponseH\x00R\x13claimTunnelResponse\x12b\n" +
+	"\x19createClaimOnChainRequest\x18\x0e \x01(\v2\".teeproto.RequestClaimOnAvsRequestH\x00R\x19createClaimOnChainRequest\x12e\n" +
+	"\x1acreateClaimOnChainResponse\x18\x0f \x01(\v2#.teeproto.RequestClaimOnAvsResponseH\x00R\x1acreateClaimOnChainResponse\x12g\n" +
+	"\x1bcompleteClaimOnChainRequest\x18\x10 \x01(\v2#.teeproto.CompleteClaimOnAvsRequestH\x00R\x1bcompleteClaimOnChainRequest\x12j\n" +
+	"\x1ccompleteClaimOnChainResponse\x18\x11 \x01(\v2$.teeproto.CompleteClaimOnAvsResponseH\x00R\x1ccompleteClaimOnChainResponse\x12<\n" +
+	"\ftoprfRequest\x18\x12 \x01(\v2\x16.teeproto.TOPRFRequestH\x00R\ftoprfRequest\x12?\n" +
+	"\rtoprfResponse\x18\x13 \x01(\v2\x17.teeproto.TOPRFResponseH\x00R\rtoprfResponse\x12f\n" +
+	"\x1acreateTaskOnMechainRequest\x18\x14 \x01(\v2$.teeproto.CreateTaskOnMechainRequestH\x00R\x1acreateTaskOnMechainRequest\x12i\n" +
+	"\x1bcreateTaskOnMechainResponse\x18\x15 \x01(\v2%.teeproto.CreateTaskOnMechainResponseH\x00R\x1bcreateTaskOnMechainResponse\x12W\n" +
+	"\x15claimTeeBundleRequest\x18\x16 \x01(\v2\x1f.teeproto.ClaimTeeBundleRequestH\x00R\x15claimTeeBundleRequest\x12Z\n" +
+	"\x16claimTeeBundleResponse\x18\x17 \x01(\v2 .teeproto.ClaimTeeBundleResponseH\x00R\x16claimTeeBundleResponseB\t\n" +
+	"\amessage\"?\n" +
+	"\vRPCMessages\x120\n" +
+	"\bmessages\x18\x01 \x03(\v2\x14.teeproto.RPCMessageR\bmessages*\x9f\x01\n" +
 	"\x1bTranscriptMessageSenderType\x12*\n" +
 	"&TRANSCRIPT_MESSAGE_SENDER_TYPE_UNKNOWN\x10\x00\x12)\n" +
 	"%TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT\x10\x01\x12)\n" +
@@ -3478,150 +3403,147 @@ const file_proto_attestor_attestor_api_proto_rawDesc = "" +
 	"\x19ERROR_TOPRF_OUT_OF_BOUNDS\x10\v*;\n" +
 	"\rZKProofEngine\x12\x15\n" +
 	"\x11ZK_ENGINE_SNARKJS\x10\x00\x12\x13\n" +
-	"\x0fZK_ENGINE_GNARK\x10\x01B!Z\x1ftee-mpc/proto/attestor;attestorb\x06proto3"
+	"\x0fZK_ENGINE_GNARK\x10\x01B\x18Z\x16tee-mpc/proto;teeprotob\x06proto3"
 
 var (
-	file_proto_attestor_attestor_api_proto_rawDescOnce sync.Once
-	file_proto_attestor_attestor_api_proto_rawDescData []byte
+	file_attestor_api_proto_rawDescOnce sync.Once
+	file_attestor_api_proto_rawDescData []byte
 )
 
-func file_proto_attestor_attestor_api_proto_rawDescGZIP() []byte {
-	file_proto_attestor_attestor_api_proto_rawDescOnce.Do(func() {
-		file_proto_attestor_attestor_api_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_attestor_attestor_api_proto_rawDesc), len(file_proto_attestor_attestor_api_proto_rawDesc)))
+func file_attestor_api_proto_rawDescGZIP() []byte {
+	file_attestor_api_proto_rawDescOnce.Do(func() {
+		file_attestor_api_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_attestor_api_proto_rawDesc), len(file_attestor_api_proto_rawDesc)))
 	})
-	return file_proto_attestor_attestor_api_proto_rawDescData
+	return file_attestor_api_proto_rawDescData
 }
 
-var file_proto_attestor_attestor_api_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_proto_attestor_attestor_api_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
-var file_proto_attestor_attestor_api_proto_goTypes = []any{
-	(TranscriptMessageSenderType)(0),             // 0: reclaim_attestor.TranscriptMessageSenderType
-	(ServiceSignatureType)(0),                    // 1: reclaim_attestor.ServiceSignatureType
-	(AttestorVersion)(0),                         // 2: reclaim_attestor.AttestorVersion
-	(ErrorCode)(0),                               // 3: reclaim_attestor.ErrorCode
-	(ZKProofEngine)(0),                           // 4: reclaim_attestor.ZKProofEngine
-	(*ClaimContext)(nil),                         // 5: reclaim_attestor.ClaimContext
-	(*ProviderClaimData)(nil),                    // 6: reclaim_attestor.ProviderClaimData
-	(*ProviderClaimInfo)(nil),                    // 7: reclaim_attestor.ProviderClaimInfo
-	(*ErrorData)(nil),                            // 8: reclaim_attestor.ErrorData
-	(*CreateTunnelRequest)(nil),                  // 9: reclaim_attestor.CreateTunnelRequest
-	(*DisconnectTunnelRequest)(nil),              // 10: reclaim_attestor.DisconnectTunnelRequest
-	(*Empty)(nil),                                // 11: reclaim_attestor.Empty
-	(*TunnelMessage)(nil),                        // 12: reclaim_attestor.TunnelMessage
-	(*TunnelDisconnectEvent)(nil),                // 13: reclaim_attestor.TunnelDisconnectEvent
-	(*MessageReveal)(nil),                        // 14: reclaim_attestor.MessageReveal
-	(*TOPRFPayload)(nil),                         // 15: reclaim_attestor.TOPRFPayload
-	(*DataSlice)(nil),                            // 16: reclaim_attestor.DataSlice
-	(*ClaimRequestData)(nil),                     // 17: reclaim_attestor.ClaimRequestData
-	(*ClaimTeeBundleRequest)(nil),                // 18: reclaim_attestor.ClaimTeeBundleRequest
-	(*ClaimTeeBundleResponse)(nil),               // 19: reclaim_attestor.ClaimTeeBundleResponse
-	(*ClaimTunnelRequest)(nil),                   // 20: reclaim_attestor.ClaimTunnelRequest
-	(*ClaimTunnelResponse)(nil),                  // 21: reclaim_attestor.ClaimTunnelResponse
-	(*RequestClaimOnAvsRequest)(nil),             // 22: reclaim_attestor.RequestClaimOnAvsRequest
-	(*RequestClaimOnAvsResponse)(nil),            // 23: reclaim_attestor.RequestClaimOnAvsResponse
-	(*CompleteClaimOnAvsRequest)(nil),            // 24: reclaim_attestor.CompleteClaimOnAvsRequest
-	(*CompleteClaimOnAvsResponse)(nil),           // 25: reclaim_attestor.CompleteClaimOnAvsResponse
-	(*CreateTaskOnMechainRequest)(nil),           // 26: reclaim_attestor.CreateTaskOnMechainRequest
-	(*CreateTaskOnMechainResponse)(nil),          // 27: reclaim_attestor.CreateTaskOnMechainResponse
-	(*AuthenticatedUserData)(nil),                // 28: reclaim_attestor.AuthenticatedUserData
-	(*AuthenticationRequest)(nil),                // 29: reclaim_attestor.AuthenticationRequest
-	(*InitRequest)(nil),                          // 30: reclaim_attestor.InitRequest
-	(*InitResponse)(nil),                         // 31: reclaim_attestor.InitResponse
-	(*TOPRFRequest)(nil),                         // 32: reclaim_attestor.TOPRFRequest
-	(*TOPRFResponse)(nil),                        // 33: reclaim_attestor.TOPRFResponse
-	(*RPCMessage)(nil),                           // 34: reclaim_attestor.RPCMessage
-	(*RPCMessages)(nil),                          // 35: reclaim_attestor.RPCMessages
-	nil,                                          // 36: reclaim_attestor.ClaimContext.ExtractedParametersEntry
-	(*MessageReveal_MessageRevealDirect)(nil),    // 37: reclaim_attestor.MessageReveal.MessageRevealDirect
-	(*MessageReveal_MessageRevealZk)(nil),        // 38: reclaim_attestor.MessageReveal.MessageRevealZk
-	(*MessageReveal_ZKProof)(nil),                // 39: reclaim_attestor.MessageReveal.ZKProof
-	(*ClaimTeeBundleRequest_Signatures)(nil),     // 40: reclaim_attestor.ClaimTeeBundleRequest.Signatures
-	(*ClaimTeeBundleResponse_Signatures)(nil),    // 41: reclaim_attestor.ClaimTeeBundleResponse.Signatures
-	(*ClaimTunnelRequest_Signatures)(nil),        // 42: reclaim_attestor.ClaimTunnelRequest.Signatures
-	(*ClaimTunnelRequest_TranscriptMessage)(nil), // 43: reclaim_attestor.ClaimTunnelRequest.TranscriptMessage
-	(*ClaimTunnelResponse_Signatures)(nil),       // 44: reclaim_attestor.ClaimTunnelResponse.Signatures
+var file_attestor_api_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_attestor_api_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
+var file_attestor_api_proto_goTypes = []any{
+	(TranscriptMessageSenderType)(0),             // 0: teeproto.TranscriptMessageSenderType
+	(ServiceSignatureType)(0),                    // 1: teeproto.ServiceSignatureType
+	(AttestorVersion)(0),                         // 2: teeproto.AttestorVersion
+	(ErrorCode)(0),                               // 3: teeproto.ErrorCode
+	(ZKProofEngine)(0),                           // 4: teeproto.ZKProofEngine
+	(*ClaimContext)(nil),                         // 5: teeproto.ClaimContext
+	(*ProviderClaimData)(nil),                    // 6: teeproto.ProviderClaimData
+	(*ProviderClaimInfo)(nil),                    // 7: teeproto.ProviderClaimInfo
+	(*ErrorData)(nil),                            // 8: teeproto.ErrorData
+	(*CreateTunnelRequest)(nil),                  // 9: teeproto.CreateTunnelRequest
+	(*DisconnectTunnelRequest)(nil),              // 10: teeproto.DisconnectTunnelRequest
+	(*Empty)(nil),                                // 11: teeproto.Empty
+	(*TunnelMessage)(nil),                        // 12: teeproto.TunnelMessage
+	(*TunnelDisconnectEvent)(nil),                // 13: teeproto.TunnelDisconnectEvent
+	(*MessageReveal)(nil),                        // 14: teeproto.MessageReveal
+	(*TOPRFPayload)(nil),                         // 15: teeproto.TOPRFPayload
+	(*DataSlice)(nil),                            // 16: teeproto.DataSlice
+	(*ClaimRequestData)(nil),                     // 17: teeproto.ClaimRequestData
+	(*ClaimTeeBundleRequest)(nil),                // 18: teeproto.ClaimTeeBundleRequest
+	(*ClaimTeeBundleResponse)(nil),               // 19: teeproto.ClaimTeeBundleResponse
+	(*ClaimTunnelRequest)(nil),                   // 20: teeproto.ClaimTunnelRequest
+	(*ClaimTunnelResponse)(nil),                  // 21: teeproto.ClaimTunnelResponse
+	(*RequestClaimOnAvsRequest)(nil),             // 22: teeproto.RequestClaimOnAvsRequest
+	(*RequestClaimOnAvsResponse)(nil),            // 23: teeproto.RequestClaimOnAvsResponse
+	(*CompleteClaimOnAvsRequest)(nil),            // 24: teeproto.CompleteClaimOnAvsRequest
+	(*CompleteClaimOnAvsResponse)(nil),           // 25: teeproto.CompleteClaimOnAvsResponse
+	(*CreateTaskOnMechainRequest)(nil),           // 26: teeproto.CreateTaskOnMechainRequest
+	(*CreateTaskOnMechainResponse)(nil),          // 27: teeproto.CreateTaskOnMechainResponse
+	(*AuthenticatedUserData)(nil),                // 28: teeproto.AuthenticatedUserData
+	(*AuthenticationRequest)(nil),                // 29: teeproto.AuthenticationRequest
+	(*InitRequest)(nil),                          // 30: teeproto.InitRequest
+	(*InitResponse)(nil),                         // 31: teeproto.InitResponse
+	(*TOPRFRequest)(nil),                         // 32: teeproto.TOPRFRequest
+	(*TOPRFResponse)(nil),                        // 33: teeproto.TOPRFResponse
+	(*RPCMessage)(nil),                           // 34: teeproto.RPCMessage
+	(*RPCMessages)(nil),                          // 35: teeproto.RPCMessages
+	nil,                                          // 36: teeproto.ClaimContext.ExtractedParametersEntry
+	(*MessageReveal_MessageRevealDirect)(nil),    // 37: teeproto.MessageReveal.MessageRevealDirect
+	(*MessageReveal_MessageRevealZk)(nil),        // 38: teeproto.MessageReveal.MessageRevealZk
+	(*MessageReveal_ZKProof)(nil),                // 39: teeproto.MessageReveal.ZKProof
+	(*ClaimTeeBundleResponse_Signatures)(nil),    // 40: teeproto.ClaimTeeBundleResponse.Signatures
+	(*ClaimTunnelRequest_Signatures)(nil),        // 41: teeproto.ClaimTunnelRequest.Signatures
+	(*ClaimTunnelRequest_TranscriptMessage)(nil), // 42: teeproto.ClaimTunnelRequest.TranscriptMessage
+	(*ClaimTunnelResponse_Signatures)(nil),       // 43: teeproto.ClaimTunnelResponse.Signatures
 }
-var file_proto_attestor_attestor_api_proto_depIdxs = []int32{
-	36, // 0: reclaim_attestor.ClaimContext.extractedParameters:type_name -> reclaim_attestor.ClaimContext.ExtractedParametersEntry
-	3,  // 1: reclaim_attestor.ErrorData.code:type_name -> reclaim_attestor.ErrorCode
-	8,  // 2: reclaim_attestor.TunnelDisconnectEvent.error:type_name -> reclaim_attestor.ErrorData
-	37, // 3: reclaim_attestor.MessageReveal.directReveal:type_name -> reclaim_attestor.MessageReveal.MessageRevealDirect
-	38, // 4: reclaim_attestor.MessageReveal.zkReveal:type_name -> reclaim_attestor.MessageReveal.MessageRevealZk
-	16, // 5: reclaim_attestor.TOPRFPayload.dataLocation:type_name -> reclaim_attestor.DataSlice
-	33, // 6: reclaim_attestor.TOPRFPayload.responses:type_name -> reclaim_attestor.TOPRFResponse
-	17, // 7: reclaim_attestor.ClaimTeeBundleRequest.data:type_name -> reclaim_attestor.ClaimRequestData
-	40, // 8: reclaim_attestor.ClaimTeeBundleRequest.signatures:type_name -> reclaim_attestor.ClaimTeeBundleRequest.Signatures
-	20, // 9: reclaim_attestor.ClaimTeeBundleRequest.claimTunnelRequest:type_name -> reclaim_attestor.ClaimTunnelRequest
-	18, // 10: reclaim_attestor.ClaimTeeBundleResponse.request:type_name -> reclaim_attestor.ClaimTeeBundleRequest
-	6,  // 11: reclaim_attestor.ClaimTeeBundleResponse.claim:type_name -> reclaim_attestor.ProviderClaimData
-	8,  // 12: reclaim_attestor.ClaimTeeBundleResponse.error:type_name -> reclaim_attestor.ErrorData
-	41, // 13: reclaim_attestor.ClaimTeeBundleResponse.signatures:type_name -> reclaim_attestor.ClaimTeeBundleResponse.Signatures
-	9,  // 14: reclaim_attestor.ClaimTunnelRequest.request:type_name -> reclaim_attestor.CreateTunnelRequest
-	17, // 15: reclaim_attestor.ClaimTunnelRequest.data:type_name -> reclaim_attestor.ClaimRequestData
-	43, // 16: reclaim_attestor.ClaimTunnelRequest.transcript:type_name -> reclaim_attestor.ClaimTunnelRequest.TranscriptMessage
-	42, // 17: reclaim_attestor.ClaimTunnelRequest.signatures:type_name -> reclaim_attestor.ClaimTunnelRequest.Signatures
-	4,  // 18: reclaim_attestor.ClaimTunnelRequest.zkEngine:type_name -> reclaim_attestor.ZKProofEngine
-	20, // 19: reclaim_attestor.ClaimTunnelResponse.request:type_name -> reclaim_attestor.ClaimTunnelRequest
-	6,  // 20: reclaim_attestor.ClaimTunnelResponse.claim:type_name -> reclaim_attestor.ProviderClaimData
-	8,  // 21: reclaim_attestor.ClaimTunnelResponse.error:type_name -> reclaim_attestor.ErrorData
-	44, // 22: reclaim_attestor.ClaimTunnelResponse.signatures:type_name -> reclaim_attestor.ClaimTunnelResponse.Signatures
-	28, // 23: reclaim_attestor.AuthenticationRequest.data:type_name -> reclaim_attestor.AuthenticatedUserData
-	2,  // 24: reclaim_attestor.InitRequest.clientVersion:type_name -> reclaim_attestor.AttestorVersion
-	1,  // 25: reclaim_attestor.InitRequest.signatureType:type_name -> reclaim_attestor.ServiceSignatureType
-	29, // 26: reclaim_attestor.InitRequest.auth:type_name -> reclaim_attestor.AuthenticationRequest
-	4,  // 27: reclaim_attestor.TOPRFRequest.engine:type_name -> reclaim_attestor.ZKProofEngine
-	30, // 28: reclaim_attestor.RPCMessage.initRequest:type_name -> reclaim_attestor.InitRequest
-	31, // 29: reclaim_attestor.RPCMessage.initResponse:type_name -> reclaim_attestor.InitResponse
-	8,  // 30: reclaim_attestor.RPCMessage.connectionTerminationAlert:type_name -> reclaim_attestor.ErrorData
-	8,  // 31: reclaim_attestor.RPCMessage.requestError:type_name -> reclaim_attestor.ErrorData
-	9,  // 32: reclaim_attestor.RPCMessage.createTunnelRequest:type_name -> reclaim_attestor.CreateTunnelRequest
-	11, // 33: reclaim_attestor.RPCMessage.createTunnelResponse:type_name -> reclaim_attestor.Empty
-	10, // 34: reclaim_attestor.RPCMessage.disconnectTunnelRequest:type_name -> reclaim_attestor.DisconnectTunnelRequest
-	11, // 35: reclaim_attestor.RPCMessage.disconnectTunnelResponse:type_name -> reclaim_attestor.Empty
-	12, // 36: reclaim_attestor.RPCMessage.tunnelMessage:type_name -> reclaim_attestor.TunnelMessage
-	13, // 37: reclaim_attestor.RPCMessage.tunnelDisconnectEvent:type_name -> reclaim_attestor.TunnelDisconnectEvent
-	20, // 38: reclaim_attestor.RPCMessage.claimTunnelRequest:type_name -> reclaim_attestor.ClaimTunnelRequest
-	21, // 39: reclaim_attestor.RPCMessage.claimTunnelResponse:type_name -> reclaim_attestor.ClaimTunnelResponse
-	22, // 40: reclaim_attestor.RPCMessage.createClaimOnChainRequest:type_name -> reclaim_attestor.RequestClaimOnAvsRequest
-	23, // 41: reclaim_attestor.RPCMessage.createClaimOnChainResponse:type_name -> reclaim_attestor.RequestClaimOnAvsResponse
-	24, // 42: reclaim_attestor.RPCMessage.completeClaimOnChainRequest:type_name -> reclaim_attestor.CompleteClaimOnAvsRequest
-	25, // 43: reclaim_attestor.RPCMessage.completeClaimOnChainResponse:type_name -> reclaim_attestor.CompleteClaimOnAvsResponse
-	32, // 44: reclaim_attestor.RPCMessage.toprfRequest:type_name -> reclaim_attestor.TOPRFRequest
-	33, // 45: reclaim_attestor.RPCMessage.toprfResponse:type_name -> reclaim_attestor.TOPRFResponse
-	26, // 46: reclaim_attestor.RPCMessage.createTaskOnMechainRequest:type_name -> reclaim_attestor.CreateTaskOnMechainRequest
-	27, // 47: reclaim_attestor.RPCMessage.createTaskOnMechainResponse:type_name -> reclaim_attestor.CreateTaskOnMechainResponse
-	18, // 48: reclaim_attestor.RPCMessage.claimTeeBundleRequest:type_name -> reclaim_attestor.ClaimTeeBundleRequest
-	19, // 49: reclaim_attestor.RPCMessage.claimTeeBundleResponse:type_name -> reclaim_attestor.ClaimTeeBundleResponse
-	34, // 50: reclaim_attestor.RPCMessages.messages:type_name -> reclaim_attestor.RPCMessage
-	39, // 51: reclaim_attestor.MessageReveal.MessageRevealZk.proofs:type_name -> reclaim_attestor.MessageReveal.ZKProof
-	15, // 52: reclaim_attestor.MessageReveal.ZKProof.toprf:type_name -> reclaim_attestor.TOPRFPayload
-	0,  // 53: reclaim_attestor.ClaimTunnelRequest.TranscriptMessage.sender:type_name -> reclaim_attestor.TranscriptMessageSenderType
-	14, // 54: reclaim_attestor.ClaimTunnelRequest.TranscriptMessage.reveal:type_name -> reclaim_attestor.MessageReveal
-	55, // [55:55] is the sub-list for method output_type
-	55, // [55:55] is the sub-list for method input_type
-	55, // [55:55] is the sub-list for extension type_name
-	55, // [55:55] is the sub-list for extension extendee
-	0,  // [0:55] is the sub-list for field type_name
+var file_attestor_api_proto_depIdxs = []int32{
+	36, // 0: teeproto.ClaimContext.extractedParameters:type_name -> teeproto.ClaimContext.ExtractedParametersEntry
+	3,  // 1: teeproto.ErrorData.code:type_name -> teeproto.ErrorCode
+	8,  // 2: teeproto.TunnelDisconnectEvent.error:type_name -> teeproto.ErrorData
+	37, // 3: teeproto.MessageReveal.directReveal:type_name -> teeproto.MessageReveal.MessageRevealDirect
+	38, // 4: teeproto.MessageReveal.zkReveal:type_name -> teeproto.MessageReveal.MessageRevealZk
+	16, // 5: teeproto.TOPRFPayload.dataLocation:type_name -> teeproto.DataSlice
+	33, // 6: teeproto.TOPRFPayload.responses:type_name -> teeproto.TOPRFResponse
+	17, // 7: teeproto.ClaimTeeBundleRequest.data:type_name -> teeproto.ClaimRequestData
+	18, // 8: teeproto.ClaimTeeBundleResponse.request:type_name -> teeproto.ClaimTeeBundleRequest
+	6,  // 9: teeproto.ClaimTeeBundleResponse.claim:type_name -> teeproto.ProviderClaimData
+	8,  // 10: teeproto.ClaimTeeBundleResponse.error:type_name -> teeproto.ErrorData
+	40, // 11: teeproto.ClaimTeeBundleResponse.signatures:type_name -> teeproto.ClaimTeeBundleResponse.Signatures
+	9,  // 12: teeproto.ClaimTunnelRequest.request:type_name -> teeproto.CreateTunnelRequest
+	17, // 13: teeproto.ClaimTunnelRequest.data:type_name -> teeproto.ClaimRequestData
+	42, // 14: teeproto.ClaimTunnelRequest.transcript:type_name -> teeproto.ClaimTunnelRequest.TranscriptMessage
+	41, // 15: teeproto.ClaimTunnelRequest.signatures:type_name -> teeproto.ClaimTunnelRequest.Signatures
+	4,  // 16: teeproto.ClaimTunnelRequest.zkEngine:type_name -> teeproto.ZKProofEngine
+	20, // 17: teeproto.ClaimTunnelResponse.request:type_name -> teeproto.ClaimTunnelRequest
+	6,  // 18: teeproto.ClaimTunnelResponse.claim:type_name -> teeproto.ProviderClaimData
+	8,  // 19: teeproto.ClaimTunnelResponse.error:type_name -> teeproto.ErrorData
+	43, // 20: teeproto.ClaimTunnelResponse.signatures:type_name -> teeproto.ClaimTunnelResponse.Signatures
+	28, // 21: teeproto.AuthenticationRequest.data:type_name -> teeproto.AuthenticatedUserData
+	2,  // 22: teeproto.InitRequest.clientVersion:type_name -> teeproto.AttestorVersion
+	1,  // 23: teeproto.InitRequest.signatureType:type_name -> teeproto.ServiceSignatureType
+	29, // 24: teeproto.InitRequest.auth:type_name -> teeproto.AuthenticationRequest
+	4,  // 25: teeproto.TOPRFRequest.engine:type_name -> teeproto.ZKProofEngine
+	30, // 26: teeproto.RPCMessage.initRequest:type_name -> teeproto.InitRequest
+	31, // 27: teeproto.RPCMessage.initResponse:type_name -> teeproto.InitResponse
+	8,  // 28: teeproto.RPCMessage.connectionTerminationAlert:type_name -> teeproto.ErrorData
+	8,  // 29: teeproto.RPCMessage.requestError:type_name -> teeproto.ErrorData
+	9,  // 30: teeproto.RPCMessage.createTunnelRequest:type_name -> teeproto.CreateTunnelRequest
+	11, // 31: teeproto.RPCMessage.createTunnelResponse:type_name -> teeproto.Empty
+	10, // 32: teeproto.RPCMessage.disconnectTunnelRequest:type_name -> teeproto.DisconnectTunnelRequest
+	11, // 33: teeproto.RPCMessage.disconnectTunnelResponse:type_name -> teeproto.Empty
+	12, // 34: teeproto.RPCMessage.tunnelMessage:type_name -> teeproto.TunnelMessage
+	13, // 35: teeproto.RPCMessage.tunnelDisconnectEvent:type_name -> teeproto.TunnelDisconnectEvent
+	20, // 36: teeproto.RPCMessage.claimTunnelRequest:type_name -> teeproto.ClaimTunnelRequest
+	21, // 37: teeproto.RPCMessage.claimTunnelResponse:type_name -> teeproto.ClaimTunnelResponse
+	22, // 38: teeproto.RPCMessage.createClaimOnChainRequest:type_name -> teeproto.RequestClaimOnAvsRequest
+	23, // 39: teeproto.RPCMessage.createClaimOnChainResponse:type_name -> teeproto.RequestClaimOnAvsResponse
+	24, // 40: teeproto.RPCMessage.completeClaimOnChainRequest:type_name -> teeproto.CompleteClaimOnAvsRequest
+	25, // 41: teeproto.RPCMessage.completeClaimOnChainResponse:type_name -> teeproto.CompleteClaimOnAvsResponse
+	32, // 42: teeproto.RPCMessage.toprfRequest:type_name -> teeproto.TOPRFRequest
+	33, // 43: teeproto.RPCMessage.toprfResponse:type_name -> teeproto.TOPRFResponse
+	26, // 44: teeproto.RPCMessage.createTaskOnMechainRequest:type_name -> teeproto.CreateTaskOnMechainRequest
+	27, // 45: teeproto.RPCMessage.createTaskOnMechainResponse:type_name -> teeproto.CreateTaskOnMechainResponse
+	18, // 46: teeproto.RPCMessage.claimTeeBundleRequest:type_name -> teeproto.ClaimTeeBundleRequest
+	19, // 47: teeproto.RPCMessage.claimTeeBundleResponse:type_name -> teeproto.ClaimTeeBundleResponse
+	34, // 48: teeproto.RPCMessages.messages:type_name -> teeproto.RPCMessage
+	39, // 49: teeproto.MessageReveal.MessageRevealZk.proofs:type_name -> teeproto.MessageReveal.ZKProof
+	15, // 50: teeproto.MessageReveal.ZKProof.toprf:type_name -> teeproto.TOPRFPayload
+	0,  // 51: teeproto.ClaimTunnelRequest.TranscriptMessage.sender:type_name -> teeproto.TranscriptMessageSenderType
+	14, // 52: teeproto.ClaimTunnelRequest.TranscriptMessage.reveal:type_name -> teeproto.MessageReveal
+	53, // [53:53] is the sub-list for method output_type
+	53, // [53:53] is the sub-list for method input_type
+	53, // [53:53] is the sub-list for extension type_name
+	53, // [53:53] is the sub-list for extension extendee
+	0,  // [0:53] is the sub-list for field type_name
 }
 
-func init() { file_proto_attestor_attestor_api_proto_init() }
-func file_proto_attestor_attestor_api_proto_init() {
-	if File_proto_attestor_attestor_api_proto != nil {
+func init() { file_attestor_api_proto_init() }
+func file_attestor_api_proto_init() {
+	if File_attestor_api_proto != nil {
 		return
 	}
-	file_proto_attestor_attestor_api_proto_msgTypes[9].OneofWrappers = []any{
+	file_attestor_api_proto_msgTypes[9].OneofWrappers = []any{
 		(*MessageReveal_DirectReveal)(nil),
 		(*MessageReveal_ZkReveal)(nil),
 	}
-	file_proto_attestor_attestor_api_proto_msgTypes[14].OneofWrappers = []any{
+	file_attestor_api_proto_msgTypes[14].OneofWrappers = []any{
 		(*ClaimTeeBundleResponse_Claim)(nil),
 		(*ClaimTeeBundleResponse_Error)(nil),
 	}
-	file_proto_attestor_attestor_api_proto_msgTypes[16].OneofWrappers = []any{
+	file_attestor_api_proto_msgTypes[16].OneofWrappers = []any{
 		(*ClaimTunnelResponse_Claim)(nil),
 		(*ClaimTunnelResponse_Error)(nil),
 	}
-	file_proto_attestor_attestor_api_proto_msgTypes[29].OneofWrappers = []any{
+	file_attestor_api_proto_msgTypes[29].OneofWrappers = []any{
 		(*RPCMessage_InitRequest)(nil),
 		(*RPCMessage_InitResponse)(nil),
 		(*RPCMessage_ConnectionTerminationAlert)(nil),
@@ -3649,18 +3571,18 @@ func file_proto_attestor_attestor_api_proto_init() {
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_attestor_attestor_api_proto_rawDesc), len(file_proto_attestor_attestor_api_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_attestor_api_proto_rawDesc), len(file_attestor_api_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   40,
+			NumMessages:   39,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_proto_attestor_attestor_api_proto_goTypes,
-		DependencyIndexes: file_proto_attestor_attestor_api_proto_depIdxs,
-		EnumInfos:         file_proto_attestor_attestor_api_proto_enumTypes,
-		MessageInfos:      file_proto_attestor_attestor_api_proto_msgTypes,
+		GoTypes:           file_attestor_api_proto_goTypes,
+		DependencyIndexes: file_attestor_api_proto_depIdxs,
+		EnumInfos:         file_attestor_api_proto_enumTypes,
+		MessageInfos:      file_attestor_api_proto_msgTypes,
 	}.Build()
-	File_proto_attestor_attestor_api_proto = out.File
-	file_proto_attestor_attestor_api_proto_goTypes = nil
-	file_proto_attestor_attestor_api_proto_depIdxs = nil
+	File_attestor_api_proto = out.File
+	file_attestor_api_proto_goTypes = nil
+	file_attestor_api_proto_depIdxs = nil
 }

@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	teeproto "tee-mpc/proto"
-	"tee-mpc/proto/attestor"
 	"tee-mpc/shared"
 	"time"
 
@@ -883,11 +882,7 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 		}
 		c.logger.Info("Attestation verification SUCCESS", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
 	} else if len(signedMsg.GetPublicKey()) > 0 {
-		// Standalone mode: use ETH address directly (20 bytes)
-		if len(signedMsg.GetPublicKey()) != 20 {
-			return fmt.Errorf("SECURITY ERROR: %s invalid ETH address length: expected 20 bytes, got %d", source, len(signedMsg.GetPublicKey()))
-		}
-		ethAddress = common.BytesToAddress(signedMsg.GetPublicKey())
+		ethAddress = common.HexToAddress(string(signedMsg.GetPublicKey()))
 		c.logger.Info("Using standalone mode ETH address", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
 	} else {
 		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)
@@ -1231,7 +1226,7 @@ func (c *Client) ContinueToPhase2() error {
 }
 
 // SubmitToAttestorCore submits the completed verification bundle to attestor-core for claim validation
-func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.PrivateKey, params ClaimTeeBundleParams) (*attestor.ProviderClaimData, error) {
+func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.PrivateKey, params ClaimTeeBundleParams) (*teeproto.ProviderClaimData, error) {
 
 	// Example private key (use your own in production)
 	privateKey, err := crypto.GenerateKey()
@@ -1302,7 +1297,6 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 	if c.proofStream != nil || c.proofKey != nil {
 		bundle.Opening = &teeproto.Opening{
 			ProofStream: c.proofStream,
-			ProofKey:    c.proofKey,
 		}
 	}
 

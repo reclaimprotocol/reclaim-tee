@@ -121,9 +121,9 @@ func Validate(bundlePath string) error {
 	// Work directly with protobuf format - no legacy conversion needed!
 
 	// --- Proof stream application (commitment verification handled by TEE_T) ---
-	if bundlePB.Opening != nil && bundlePB.Opening.ProofStream != nil && bundlePB.Opening.ProofKey != nil && bundlePB.TeekSigned != nil {
-		fmt.Printf("[Verifier] Proof stream available ✅ (len=%d, key_len=%d)\n",
-			len(bundlePB.Opening.ProofStream), len(bundlePB.Opening.ProofKey))
+	if bundlePB.Opening != nil && bundlePB.Opening.ProofStream != nil && bundlePB.TeekSigned != nil {
+		fmt.Printf("[Verifier] Proof stream available ✅ (len=%d\n",
+			len(bundlePB.Opening.ProofStream))
 		fmt.Printf("[Verifier] Note: Commitment verification performed by TEE_T during protocol execution\n")
 
 		// Apply proof stream to reveal original sensitive_proof data
@@ -418,11 +418,8 @@ func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error
 		}
 		fmt.Printf("[Verifier] %s attestation verification SUCCESS, extracted ETH address: %s\n", source, ethAddress.Hex())
 	} else if len(signedMsg.GetPublicKey()) > 0 {
-		// Standalone mode: use ETH address directly (20 bytes)
-		if len(signedMsg.GetPublicKey()) != 20 {
-			return fmt.Errorf("SECURITY ERROR: %s invalid ETH address length: expected 20 bytes, got %d", source, len(signedMsg.GetPublicKey()))
-		}
-		ethAddress = common.BytesToAddress(signedMsg.GetPublicKey())
+		// Standalone mode: use ETH address
+		ethAddress = common.HexToAddress(string(signedMsg.GetPublicKey()))
 		fmt.Printf("[Verifier] Using %s standalone mode ETH address: %s\n", source, ethAddress.Hex())
 	} else {
 		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)

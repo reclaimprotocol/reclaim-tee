@@ -1791,7 +1791,7 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			t.logger.InfoIf("Including attestation report in SignedMessage", zap.String("session_id", sessionID))
 		} else {
 			// Standalone mode: include ETH address as public key
-			publicKeyForStandalone = ethAddress.Bytes()
+			publicKeyForStandalone = []byte(ethAddress.String())
 			t.logger.InfoIf("Including ETH address in SignedMessage (standalone mode)",
 				zap.String("session_id", sessionID),
 				zap.String("eth_address", ethAddress.Hex()))

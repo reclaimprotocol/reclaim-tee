@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	teeproto "tee-mpc/proto"
-	"tee-mpc/proto/attestor"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -40,7 +39,7 @@ func TestReconstructTranscriptForClaimTunnel(t *testing.T) {
 
 	// Verify transcript messages have correct structure
 	for i, msg := range transcript {
-		if msg.Sender == attestor.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_UNKNOWN {
+		if msg.Sender == teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_UNKNOWN {
 			t.Errorf("Message %d has unknown sender type", i)
 		}
 		if len(msg.Message) == 0 {

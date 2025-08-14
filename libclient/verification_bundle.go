@@ -44,7 +44,6 @@ func (c *Client) BuildVerificationBundle(path string) error {
 	if c.proofStream != nil || c.proofKey != nil {
 		bundle.Opening = &teeproto.Opening{
 			ProofStream: c.proofStream,
-			ProofKey:    c.proofKey,
 		}
 	}
 

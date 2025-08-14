@@ -17,7 +17,6 @@ message HandshakeSecrets {
 // Commitment opening for proof stream
 message Opening {
   bytes proof_stream = 1; // Str_SP
-  bytes proof_key = 2;    // K_SP
 }
 
 // Single artefact produced by client for offline verification

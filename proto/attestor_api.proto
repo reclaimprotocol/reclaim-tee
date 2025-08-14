@@ -1,7 +1,7 @@
 syntax = "proto3";
-package reclaim_attestor;
+package teeproto;
 
-option go_package = "tee-mpc/proto/attestor;attestor";
+option go_package = "tee-mpc/proto;teeproto";
 
 enum TranscriptMessageSenderType {
 	TRANSCRIPT_MESSAGE_SENDER_TYPE_UNKNOWN = 0;
@@ -259,7 +259,6 @@ message ClaimTeeBundleRequest {
 	 * Data describing the claim you want to prove
 	 */
 	ClaimRequestData data = 2;
-
 }
 
 message ClaimTeeBundleResponse {
@@ -307,7 +306,7 @@ message ClaimTunnelRequest {
 	 *
 	 * Attach a proof (if any) to each message
 	 * to reveal the contents of the message inside
-	 * 
+	 *
 	 * The revealed messages should support the proving
 	 * of the claim as defined in the provider's implementation
 	 */
@@ -355,7 +354,7 @@ message ClaimTunnelResponse {
 		 * Address of the attestor that has signed the claim
 		 */
 		string attestorAddress = 1;
-		/** 
+		/**
 		* signature of `stringifyProviderClaimData(claim)`,
 		* if the claim was successful
 		*/

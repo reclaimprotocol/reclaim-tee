@@ -94,7 +94,6 @@ func (x *HandshakeSecrets) GetAlgorithm() string {
 type Opening struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ProofStream   []byte                 `protobuf:"bytes,1,opt,name=proof_stream,json=proofStream,proto3" json:"proof_stream,omitempty"` // Str_SP
-	ProofKey      []byte                 `protobuf:"bytes,2,opt,name=proof_key,json=proofKey,proto3" json:"proof_key,omitempty"`          // K_SP
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -132,13 +131,6 @@ func (*Opening) Descriptor() ([]byte, []int) {
 func (x *Opening) GetProofStream() []byte {
 	if x != nil {
 		return x.ProofStream
-	}
-	return nil
-}
-
-func (x *Opening) GetProofKey() []byte {
-	if x != nil {
-		return x.ProofKey
 	}
 	return nil
 }
@@ -223,10 +215,9 @@ const file_bundle_proto_rawDesc = "" +
 	"\rhandshake_key\x18\x01 \x01(\fR\fhandshakeKey\x12!\n" +
 	"\fhandshake_iv\x18\x02 \x01(\fR\vhandshakeIv\x12!\n" +
 	"\fcipher_suite\x18\x03 \x01(\rR\vcipherSuite\x12\x1c\n" +
-	"\talgorithm\x18\x04 \x01(\tR\talgorithm\"I\n" +
+	"\talgorithm\x18\x04 \x01(\tR\talgorithm\",\n" +
 	"\aOpening\x12!\n" +
-	"\fproof_stream\x18\x01 \x01(\fR\vproofStream\x12\x1b\n" +
-	"\tproof_key\x18\x02 \x01(\fR\bproofKey\"\xf8\x01\n" +
+	"\fproof_stream\x18\x01 \x01(\fR\vproofStream\"\xf8\x01\n" +
 	"\x12VerificationBundle\x12A\n" +
 	"\x0ehandshake_keys\x18\x01 \x01(\v2\x1a.teeproto.HandshakeSecretsR\rhandshakeKeys\x128\n" +
 	"\vteek_signed\x18\x02 \x01(\v2\x17.teeproto.SignedMessageR\n" +

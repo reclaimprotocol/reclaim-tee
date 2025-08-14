@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	teeproto "tee-mpc/proto"
-	"tee-mpc/proto/attestor"
 	"tee-mpc/shared"
 
 	"google.golang.org/protobuf/proto"
@@ -13,7 +12,7 @@ import (
 
 // ReconstructTranscriptForClaimTunnel reconstructs TLS transcript exactly like attestor does
 // This ensures the ClaimTunnelRequest we sign matches what the attestor will validate
-func ReconstructTranscriptForClaimTunnel(bundlePB *teeproto.VerificationBundle) ([]*attestor.ClaimTunnelRequest_TranscriptMessage, error) {
+func ReconstructTranscriptForClaimTunnel(bundlePB *teeproto.VerificationBundle) ([]*teeproto.ClaimTunnelRequest_TranscriptMessage, error) {
 	// Extract payloads (copy from proofverifier.go lines 150-160)
 	var kPayload teeproto.KOutputPayload
 	if err := proto.Unmarshal(bundlePB.TeekSigned.GetBody(), &kPayload); err != nil {
@@ -222,12 +221,12 @@ func applyResponseRedactionRanges(response []byte, redactionRanges []*teeproto.R
 }
 
 // createTranscriptMessages creates transcript messages matching attestor's logic
-func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest, reconstructedResponse []byte, bundlePB *teeproto.VerificationBundle) ([]*attestor.ClaimTunnelRequest_TranscriptMessage, error) {
-	var messages []*attestor.ClaimTunnelRequest_TranscriptMessage
+func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest, reconstructedResponse []byte, bundlePB *teeproto.VerificationBundle) ([]*teeproto.ClaimTunnelRequest_TranscriptMessage, error) {
+	var messages []*teeproto.ClaimTunnelRequest_TranscriptMessage
 
 	// Add handshake packets
 	for _, packet := range kPayload.GetPackets() {
-		messages = append(messages, &attestor.ClaimTunnelRequest_TranscriptMessage{
+		messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
 			Sender:  determinePacketSender(packet),
 			Message: packet,
 			// No reveal needed for handshake
@@ -235,16 +234,16 @@ func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest
 	}
 
 	// Add client request (revealed)
-	messages = append(messages, &attestor.ClaimTunnelRequest_TranscriptMessage{
-		Sender:  attestor.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT,
+	messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
+		Sender:  teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT,
 		Message: wrapInTlsRecord(revealedRequest, 0x17),
 		Reveal:  createTeeStreamReveal(revealedRequest, bundlePB),
 	})
 
 	// Add server response (reconstructed)
 	if len(reconstructedResponse) > 0 {
-		messages = append(messages, &attestor.ClaimTunnelRequest_TranscriptMessage{
-			Sender:  attestor.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER,
+		messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
+			Sender:  teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER,
 			Message: wrapInTlsRecord(reconstructedResponse, 0x17),
 			Reveal:  createTeeStreamReveal(reconstructedResponse, bundlePB),
 		})
@@ -255,15 +254,15 @@ func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest
 
 // Helper functions
 
-func determinePacketSender(packet []byte) attestor.TranscriptMessageSenderType {
+func determinePacketSender(packet []byte) teeproto.TranscriptMessageSenderType {
 	// Simple heuristic: ClientHello = 0x01, ServerHello = 0x02
 	if len(packet) >= 6 {
 		handshakeType := packet[5]
 		if handshakeType == 0x01 {
-			return attestor.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT
+			return teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT
 		}
 	}
-	return attestor.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER
+	return teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER
 }
 
 func wrapInTlsRecord(data []byte, recordType byte) []byte {
@@ -278,10 +277,10 @@ func wrapInTlsRecord(data []byte, recordType byte) []byte {
 	return record
 }
 
-func createTeeStreamReveal(data []byte, bundlePB *teeproto.VerificationBundle) *attestor.MessageReveal {
-	return &attestor.MessageReveal{
-		Reveal: &attestor.MessageReveal_DirectReveal{
-			DirectReveal: &attestor.MessageReveal_MessageRevealDirect{
+func createTeeStreamReveal(data []byte, bundlePB *teeproto.VerificationBundle) *teeproto.MessageReveal {
+	return &teeproto.MessageReveal{
+		Reveal: &teeproto.MessageReveal_DirectReveal{
+			DirectReveal: &teeproto.MessageReveal_MessageRevealDirect{
 				Key:          bundlePB.HandshakeKeys.GetHandshakeKey(),
 				Iv:           bundlePB.HandshakeKeys.GetHandshakeIv(),
 				RecordNumber: 0,

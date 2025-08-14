@@ -2229,7 +2229,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		t.logger.WithSession(sessionID).Info("Including attestation report in SignedMessage")
 	} else {
 		// Standalone mode: include ETH address as public key
-		publicKeyForStandalone = ethAddress.Bytes()
+		publicKeyForStandalone = []byte(ethAddress.String())
 		t.logger.WithSession(sessionID).Info("Including ETH address in SignedMessage (standalone mode)",
 			zap.String("eth_address", ethAddress.Hex()))
 	}
