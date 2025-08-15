@@ -25,10 +25,9 @@ func MarshalRequestRedactionRangesProtobuf(ranges []RequestRedactionRange) ([]by
 	var pbRanges []*teeproto.RequestRedactionRange
 	for _, r := range ranges {
 		pbRanges = append(pbRanges, &teeproto.RequestRedactionRange{
-			Start:          int32(r.Start),
-			Length:         int32(r.Length),
-			Type:           r.Type,
-			RedactionBytes: r.RedactionBytes,
+			Start:  int32(r.Start),
+			Length: int32(r.Length),
+			Type:   r.Type,
 		})
 	}
 
@@ -54,10 +53,9 @@ func UnmarshalRequestRedactionRangesProtobuf(data []byte) ([]RequestRedactionRan
 	ranges := make([]RequestRedactionRange, len(wrapper.RedactionRanges))
 	for i, pbRange := range wrapper.RedactionRanges {
 		ranges[i] = RequestRedactionRange{
-			Start:          int(pbRange.Start),
-			Length:         int(pbRange.Length),
-			Type:           pbRange.Type,
-			RedactionBytes: pbRange.RedactionBytes,
+			Start:  int(pbRange.Start),
+			Length: int(pbRange.Length),
+			Type:   pbRange.Type,
 		}
 	}
 

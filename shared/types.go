@@ -220,10 +220,9 @@ const (
 
 // RequestRedactionRange is used for request redaction (needs types for proof verification)
 type RequestRedactionRange struct {
-	Start          int    `json:"start"`                     // Start position in the decryption stream
-	Length         int    `json:"length"`                    // Length of the range to redact
-	Type           string `json:"type"`                      // Use RedactionTypeSensitive or RedactionTypeSensitiveProof
-	RedactionBytes []byte `json:"redaction_bytes,omitempty"` // Bytes to use in redacted stream (calculated to produce '*' when XORed with ciphertext)
+	Start  int    `json:"start"`  // Start position in the decryption stream
+	Length int    `json:"length"` // Length of the range to redact
+	Type   string `json:"type"`   // Use RedactionTypeSensitive or RedactionTypeSensitiveProof
 }
 
 // ResponseRedactionRange is used for response redaction (no types needed - binary redaction)

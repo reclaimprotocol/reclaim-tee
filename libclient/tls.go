@@ -136,10 +136,9 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 	var pbRanges []*teeproto.RequestRedactionRange
 	for _, r := range redactedData.RedactionRanges {
 		pbRanges = append(pbRanges, &teeproto.RequestRedactionRange{
-			Start:          int32(r.Start),
-			Length:         int32(r.Length),
-			Type:           r.Type,
-			RedactionBytes: r.RedactionBytes,
+			Start:  int32(r.Start),
+			Length: int32(r.Length),
+			Type:   r.Type,
 		})
 	}
 

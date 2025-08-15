@@ -452,7 +452,7 @@ func (t *TEEK) sendMessageToTEETForSession(sessionID string, msg *shared.Message
 		// map ranges
 		var rr []*teeproto.RequestRedactionRange
 		for _, r := range d.RedactionRanges {
-			rr = append(rr, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type, RedactionBytes: r.RedactionBytes})
+			rr = append(rr, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type})
 		}
 		env = &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 			Payload: &teeproto.Envelope_EncryptedRequest{EncryptedRequest: &teeproto.EncryptedRequest{EncryptedData: d.EncryptedData, TagSecrets: d.TagSecrets, Commitments: d.Commitments, CipherSuite: uint32(d.CipherSuite), SeqNum: d.SeqNum, RedactionRanges: rr}},
@@ -587,7 +587,7 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Inline conversion
 			var ranges []shared.RequestRedactionRange
 			for _, r := range p.RedactedRequest.GetRedactionRanges() {
-				ranges = append(ranges, shared.RequestRedactionRange{Start: int(r.GetStart()), Length: int(r.GetLength()), Type: r.GetType(), RedactionBytes: r.GetRedactionBytes()})
+				ranges = append(ranges, shared.RequestRedactionRange{Start: int(r.GetStart()), Length: int(r.GetLength()), Type: r.GetType()})
 			}
 			rr := shared.RedactedRequestData{RedactedRequest: p.RedactedRequest.GetRedactedRequest(), Commitments: p.RedactedRequest.GetCommitments(), RedactionRanges: ranges}
 			msg := &shared.Message{SessionID: sessionID, Type: shared.MsgRedactedRequest, Data: rr}
@@ -1495,10 +1495,9 @@ func (t *TEEK) sendEncryptedRequestToTEET(encryptedData, tagSecrets []byte, ciph
 	var pbRanges []*teeproto.RequestRedactionRange
 	for _, r := range redactionRanges {
 		pbRanges = append(pbRanges, &teeproto.RequestRedactionRange{
-			Start:          int32(r.Start),
-			Length:         int32(r.Length),
-			Type:           r.Type,
-			RedactionBytes: r.RedactionBytes,
+			Start:  int32(r.Start),
+			Length: int32(r.Length),
+			Type:   r.Type,
 		})
 	}
 
@@ -1528,10 +1527,9 @@ func (t *TEEK) sendEncryptedRequestToTEETWithSession(sessionID string, encrypted
 	var pbRanges []*teeproto.RequestRedactionRange
 	for _, r := range redactionRanges {
 		pbRanges = append(pbRanges, &teeproto.RequestRedactionRange{
-			Start:          int32(r.Start),
-			Length:         int32(r.Length),
-			Type:           r.Type,
-			RedactionBytes: r.RedactionBytes,
+			Start:  int32(r.Start),
+			Length: int32(r.Length),
+			Type:   r.Type,
 		})
 	}
 
@@ -2180,7 +2178,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	if requestMetadata != nil {
 		kPayload.RedactedRequest = requestMetadata.RedactedRequest
 		for _, r := range requestMetadata.RedactionRanges {
-			kPayload.RequestRedactionRanges = append(kPayload.RequestRedactionRanges, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type, RedactionBytes: r.RedactionBytes})
+			kPayload.RequestRedactionRanges = append(kPayload.RequestRedactionRanges, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type})
 		}
 	}
 	for _, s := range session.RedactedStreams {
