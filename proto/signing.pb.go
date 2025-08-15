@@ -250,7 +250,7 @@ type SignedMessage struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	BodyType          BodyType               `protobuf:"varint,1,opt,name=body_type,json=bodyType,proto3,enum=teeproto.BodyType" json:"body_type,omitempty"`
 	Body              []byte                 `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`                                                    // serialized deterministic KOutputPayload or TOutputPayload
-	PublicKey         []byte                 `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`                         // ETH address (20 bytes, standalone mode only)
+	EthAddress        []byte                 `protobuf:"bytes,3,opt,name=eth_address,json=ethAddress,proto3" json:"eth_address,omitempty"`                      // ETH address (20 bytes, standalone mode only)
 	Signature         []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`                                          // signature over body bytes
 	AttestationReport *AttestationReport     `protobuf:"bytes,5,opt,name=attestation_report,json=attestationReport,proto3" json:"attestation_report,omitempty"` // full attestation (enclave mode only)
 	unknownFields     protoimpl.UnknownFields
@@ -301,9 +301,9 @@ func (x *SignedMessage) GetBody() []byte {
 	return nil
 }
 
-func (x *SignedMessage) GetPublicKey() []byte {
+func (x *SignedMessage) GetEthAddress() []byte {
 	if x != nil {
-		return x.PublicKey
+		return x.EthAddress
 	}
 	return nil
 }
@@ -337,12 +337,12 @@ const file_signing_proto_rawDesc = "" +
 	"\apackets\x18\x01 \x03(\fR\apackets\"?\n" +
 	"\x11AttestationReport\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x16\n" +
-	"\x06report\x18\x02 \x01(\fR\x06report\"\xdd\x01\n" +
+	"\x06report\x18\x02 \x01(\fR\x06report\"\xdf\x01\n" +
 	"\rSignedMessage\x12/\n" +
 	"\tbody_type\x18\x01 \x01(\x0e2\x12.teeproto.BodyTypeR\bbodyType\x12\x12\n" +
-	"\x04body\x18\x02 \x01(\fR\x04body\x12\x1d\n" +
-	"\n" +
-	"public_key\x18\x03 \x01(\fR\tpublicKey\x12\x1c\n" +
+	"\x04body\x18\x02 \x01(\fR\x04body\x12\x1f\n" +
+	"\veth_address\x18\x03 \x01(\fR\n" +
+	"ethAddress\x12\x1c\n" +
 	"\tsignature\x18\x04 \x01(\fR\tsignature\x12J\n" +
 	"\x12attestation_report\x18\x05 \x01(\v2\x1b.teeproto.AttestationReportR\x11attestationReport*U\n" +
 	"\bBodyType\x12\x19\n" +

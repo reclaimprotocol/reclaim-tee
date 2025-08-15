@@ -148,7 +148,7 @@ func (c *Client) handleSignedTranscriptWithStreams(msg *shared.Message) {
 	c.logger.Info("Received combined signed transcript with streams",
 		zap.Int("packets_count", len(combinedData.SignedTranscript.Packets)),
 		zap.Int("signature_bytes", len(combinedData.SignedTranscript.Signature)),
-		zap.Int("public_key_bytes", len(combinedData.SignedTranscript.PublicKey)),
+		zap.Int("eth_address_bytes", len(combinedData.SignedTranscript.EthAddress)),
 		zap.Int("streams_count", len(combinedData.SignedRedactedStreams)))
 
 	// Process the streams part FIRST if present
@@ -179,7 +179,7 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 	c.logger.Info("Received signed transcript",
 		zap.Int("packets_count", len(signedTranscript.Packets)),
 		zap.Int("signature_bytes", len(signedTranscript.Signature)),
-		zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
+		zap.Int("eth_address_bytes", len(signedTranscript.EthAddress)))
 
 	c.processSignedTranscriptData(&signedTranscript)
 
@@ -208,8 +208,8 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 		c.logger.Info("Signature info", zap.String("source", sourceName), zap.Int("signature_bytes", len(signedTranscript.Signature)))
 	}
 
-	if len(signedTranscript.PublicKey) > 0 {
-		c.logger.Info("Public key info", zap.String("source", sourceName), zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
+	if len(signedTranscript.EthAddress) > 0 {
+		c.logger.Info("ETH address info", zap.String("source", sourceName), zap.Int("eth_address_bytes", len(signedTranscript.EthAddress)))
 	}
 
 	// SECURITY FIX: Signature verification now done upfront on SignedMessage
@@ -275,8 +275,8 @@ func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTran
 		c.logger.Info("Signature info", zap.String("source", sourceName), zap.Int("signature_bytes", len(signedTranscript.Signature)))
 	}
 
-	if len(signedTranscript.PublicKey) > 0 {
-		c.logger.Info("Public key info", zap.String("source", sourceName), zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
+	if len(signedTranscript.EthAddress) > 0 {
+		c.logger.Info("ETH address info", zap.String("source", sourceName), zap.Int("eth_address_bytes", len(signedTranscript.EthAddress)))
 	}
 
 	// SECURITY FIX: Signature verification now done upfront on SignedMessage

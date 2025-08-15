@@ -881,8 +881,8 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 			return fmt.Errorf("SECURITY ERROR: %s attestation verification failed: %v", source, err)
 		}
 		c.logger.Info("Attestation verification SUCCESS", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
-	} else if len(signedMsg.GetPublicKey()) > 0 {
-		ethAddress = common.HexToAddress(string(signedMsg.GetPublicKey()))
+	} else if len(signedMsg.GetEthAddress()) > 0 {
+		ethAddress = common.HexToAddress(string(signedMsg.GetEthAddress()))
 		c.logger.Info("Using standalone mode ETH address", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
 	} else {
 		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)
@@ -947,9 +947,9 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 		if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err == nil {
 			packets := kPayload.GetPackets()
 			teekTranscript = &SignedTranscriptData{
-				Packets:   packets, // Get TLS packets from protobuf
-				Signature: c.teekSignedMessage.GetSignature(),
-				PublicKey: extractPublicKeyFromSignedMessage(c.teekSignedMessage),
+				Packets:    packets, // Get TLS packets from protobuf
+				Signature:  c.teekSignedMessage.GetSignature(),
+				EthAddress: extractEthAddressFromSignedMessage(c.teekSignedMessage),
 			}
 		} else {
 			fmt.Printf("DEBUG: TEE_K failed to unmarshal payload: %v\n", err)
@@ -963,9 +963,9 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 		if err := proto.Unmarshal(c.teetSignedMessage.GetBody(), &tPayload); err == nil {
 			packets := tPayload.GetPackets()
 			teetTranscript = &SignedTranscriptData{
-				Packets:   packets, // Get TLS packets from protobuf
-				Signature: c.teetSignedMessage.GetSignature(),
-				PublicKey: extractPublicKeyFromSignedMessage(c.teetSignedMessage),
+				Packets:    packets, // Get TLS packets from protobuf
+				Signature:  c.teetSignedMessage.GetSignature(),
+				EthAddress: extractEthAddressFromSignedMessage(c.teetSignedMessage),
 			}
 		} else {
 			fmt.Printf("DEBUG: TEE_T failed to unmarshal payload: %v\n", err)
@@ -983,15 +983,15 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 	}, nil
 }
 
-// extractPublicKeyFromSignedMessage extracts the public key from a SignedMessage (attestation or direct key)
-func extractPublicKeyFromSignedMessage(signedMsg *teeproto.SignedMessage) []byte {
+// extractEthAddressFromSignedMessage extracts the ETH address from a SignedMessage (attestation or direct address)
+func extractEthAddressFromSignedMessage(signedMsg *teeproto.SignedMessage) []byte {
 	if signedMsg.GetAttestationReport() != nil {
-		// In enclave mode, public key should be extracted from attestation (but that's complex)
-		// For now, return empty - the public key extraction happens during verification
+		// In enclave mode, ETH address should be extracted from attestation (but that's complex)
+		// For now, return empty - the ETH address extraction happens during verification
 		return nil
 	}
-	// In standalone mode, return the direct public key
-	return signedMsg.GetPublicKey()
+	// In standalone mode, return the direct ETH address
+	return signedMsg.GetEthAddress()
 }
 
 // buildValidationResults constructs the validation results
@@ -1085,9 +1085,9 @@ func (c *Client) buildAttestationValidationResults() *AttestationValidationResul
 	teekHasAttestation := c.teekSignedMessage != nil && c.teekSignedMessage.GetAttestationReport() != nil
 	teetHasAttestation := c.teetSignedMessage != nil && c.teetSignedMessage.GetAttestationReport() != nil
 
-	// In standalone mode, we use public keys instead of attestations
-	teekValid := c.teekSignedMessage != nil && (teekHasAttestation || len(c.teekSignedMessage.GetPublicKey()) > 0)
-	teetValid := c.teetSignedMessage != nil && (teetHasAttestation || len(c.teetSignedMessage.GetPublicKey()) > 0)
+	// In standalone mode, we use ETH addresses instead of attestations
+	teekValid := c.teekSignedMessage != nil && (teekHasAttestation || len(c.teekSignedMessage.GetEthAddress()) > 0)
+	teetValid := c.teetSignedMessage != nil && (teetHasAttestation || len(c.teetSignedMessage.GetEthAddress()) > 0)
 
 	return &AttestationValidationResults{
 		TEEKAttestation: AttestationVerificationResult{

@@ -417,9 +417,9 @@ func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error
 			return fmt.Errorf("SECURITY ERROR: %s attestation verification failed: %v", source, err)
 		}
 		fmt.Printf("[Verifier] %s attestation verification SUCCESS, extracted ETH address: %s\n", source, ethAddress.Hex())
-	} else if len(signedMsg.GetPublicKey()) > 0 {
+	} else if len(signedMsg.GetEthAddress()) > 0 {
 		// Standalone mode: use ETH address
-		ethAddress = common.HexToAddress(string(signedMsg.GetPublicKey()))
+		ethAddress = common.HexToAddress(string(signedMsg.GetEthAddress()))
 		fmt.Printf("[Verifier] Using %s standalone mode ETH address: %s\n", source, ethAddress.Hex())
 	} else {
 		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)

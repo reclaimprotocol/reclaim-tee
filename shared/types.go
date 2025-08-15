@@ -423,8 +423,8 @@ type SignedTranscript struct {
 	// Response redaction ranges for verifier display
 	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`
 
-	Signature []byte `json:"signature"`  // Comprehensive signature over all data (TLS packets + metadata + streams)
-	PublicKey []byte `json:"public_key"` // ETH address (20 bytes)
+	Signature  []byte `json:"signature"`   // Comprehensive signature over all data (TLS packets + metadata + streams)
+	EthAddress []byte `json:"eth_address"` // ETH address (20 bytes)
 }
 
 // Transcript packet type constants – exported so both client and TEEs can reference them.

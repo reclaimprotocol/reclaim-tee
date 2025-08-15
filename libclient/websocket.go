@@ -194,7 +194,7 @@ func (c *Client) handleMessages() {
 					},
 					ResponseRedactionRanges: respRanges,
 					Signature:               sm.GetSignature(),
-					PublicKey:               sm.GetPublicKey(),
+					EthAddress:              sm.GetEthAddress(),
 				}
 				c.processSignedTranscriptDataWithStreams(&st)
 			}
@@ -281,9 +281,9 @@ func (c *Client) handleTEETMessages() {
 					break
 				}
 				st := shared.SignedTranscript{
-					Packets:   body.GetPackets(),
-					Signature: sm.GetSignature(),
-					PublicKey: sm.GetPublicKey(),
+					Packets:    body.GetPackets(),
+					Signature:  sm.GetSignature(),
+					EthAddress: sm.GetEthAddress(),
 				}
 				c.processSignedTranscriptData(&st)
 			}

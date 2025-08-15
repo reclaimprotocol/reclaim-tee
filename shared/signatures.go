@@ -64,7 +64,7 @@ func UnmarshalRequestRedactionRangesProtobuf(data []byte) ([]RequestRedactionRan
 	return ranges, nil
 }
 
-// SigningKeyPair represents a cryptographic ECDSA signing key pair
+// SigningKeyPair represents a cryptographic ECDSA signing key pair for Ethereum-style signatures
 type SigningKeyPair struct {
 	PrivateKey *ecdsa.PrivateKey `json:"private_key"`
 	PublicKey  *ecdsa.PublicKey  `json:"public_key"`

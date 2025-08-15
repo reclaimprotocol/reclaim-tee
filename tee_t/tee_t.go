@@ -1800,7 +1800,7 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 		sm := &teeproto.SignedMessage{
 			BodyType:          teeproto.BodyType_BODY_TYPE_T_OUTPUT,
 			Body:              body,
-			PublicKey:         publicKeyForStandalone,
+			EthAddress:        publicKeyForStandalone,
 			Signature:         signature,
 			AttestationReport: attestationReport,
 		}

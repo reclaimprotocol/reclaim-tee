@@ -2238,7 +2238,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	signedMsg := &teeproto.SignedMessage{
 		BodyType:          teeproto.BodyType_BODY_TYPE_K_OUTPUT,
 		Body:              body,
-		PublicKey:         publicKeyForStandalone,
+		EthAddress:        publicKeyForStandalone,
 		Signature:         comprehensiveSignature,
 		AttestationReport: attestationReport,
 	}
