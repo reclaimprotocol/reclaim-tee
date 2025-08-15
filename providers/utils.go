@@ -32,7 +32,7 @@ func buildHeadersList(h map[string]string) []string {
 	return res
 }
 
-func getHostHeaderString(u url.URL) string {
+func getHostHeaderString(u *url.URL) string {
 	port := u.Port()
 	if port != "" && port != DEFAULT_HTTPS_PORT {
 		return u.Host
@@ -57,10 +57,10 @@ type substituteResult struct {
 	HiddenURLParts  []hiddenPart
 }
 
-func substituteParamValues(current HTTPProviderParams, secret *HTTPProviderSecretParams, ignoreMissing bool) substituteResult {
+func substituteParamValues(current *HTTPProviderParams, secret *HTTPProviderSecretParams, ignoreMissing bool) substituteResult {
 	// deep copy via json
 	var params HTTPProviderParams
-	b, _ := json.Marshal(current)
+	b, _ := json.Marshal(*current)
 	_ = json.Unmarshal(b, &params)
 
 	extracted := map[string]string{}
@@ -72,7 +72,7 @@ func substituteParamValues(current HTTPProviderParams, secret *HTTPProviderSecre
 		params.URL = urlParams.NewParam
 		maps.Copy(extracted, urlParams.ExtractedValues)
 		if len(urlParams.HiddenParts) > 0 {
-			host := getHostHeaderString(*mustParseURL(params.URL))
+			host := getHostHeaderString(mustParseURL(params.URL))
 			offset := len("https://"+host) - len(current.Method) - 1 // space after method
 			for _, hp := range urlParams.HiddenParts {
 				hiddenURL = append(hiddenURL, hiddenPart{Index: hp.Index - offset, Length: hp.Length})

@@ -10,7 +10,7 @@ import (
 )
 
 // CreateRequest builds the HTTP/1.1 request bytes and redaction ranges
-func CreateRequest(secret HTTPProviderSecretParams, params HTTPProviderParams) (CreateRequestResult, error) {
+func CreateRequest(secret *HTTPProviderSecretParams, params *HTTPProviderParams) (CreateRequestResult, error) {
 	if secret.CookieStr == "" && secret.AuthorisationHeader == "" && len(secret.Headers) == 0 {
 		return CreateRequestResult{}, fmt.Errorf("auth parameters are not set")
 	}
@@ -50,7 +50,7 @@ func CreateRequest(secret HTTPProviderSecretParams, params HTTPProviderParams) (
 		pubHeaders["User-Agent"] = DEFAULT_USER_AGENT
 	}
 
-	sp := substituteParamValues(params, &secret, false)
+	sp := substituteParamValues(params, secret, false)
 	p := sp.NewParams
 
 	u, err := url.Parse(p.URL)
@@ -69,7 +69,7 @@ func CreateRequest(secret HTTPProviderSecretParams, params HTTPProviderParams) (
 	contentLength := len(bodyBytes)
 
 	pubHeadersList := buildHeadersList(pubHeaders)
-	hostHeader := getHostHeaderString(*u)
+	hostHeader := getHostHeaderString(u)
 	lines := []string{
 		reqLine,
 		fmt.Sprintf("Host: %s", hostHeader),
@@ -110,7 +110,7 @@ func CreateRequest(secret HTTPProviderSecretParams, params HTTPProviderParams) (
 }
 
 // GetResponseRedactions computes redaction ranges for an HTTP response based on responseRedactions in params
-func GetResponseRedactions(response []byte, rawParams HTTPProviderParams, ctx ProviderCtx) ([]RedactedOrHashedArraySlice, error) {
+func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *ProviderCtx) ([]RedactedOrHashedArraySlice, error) {
 	res, err := parseHTTPResponseBytes(response)
 	if err != nil {
 		return nil, err
@@ -158,7 +158,7 @@ func GetResponseRedactions(response []byte, rawParams HTTPProviderParams, ctx Pr
 	redactions := []RedactedOrHashedArraySlice{}
 
 	for _, rs := range params.ResponseRedactions {
-		proc, err := processRedactionRequest(bodyStr, rs, bodyStartIdx, res.Chunks)
+		proc, err := processRedactionRequest(bodyStr, &rs, bodyStartIdx, res.Chunks)
 		if err != nil {
 			return nil, err
 		}

@@ -45,7 +45,7 @@ func convertJsNamedGroupsToGo(s string) string {
 // processRedactionRequest implements TS semantics for XPath/JSONPath/Regex and hashed groups
 func processRedactionRequest(
 	body string,
-	rs ResponseRedaction,
+	rs *ResponseRedaction,
 	bodyStartIdx int,
 	resChunks []RedactedOrHashedArraySlice,
 ) ([]RedactionItem, error) {
@@ -71,7 +71,7 @@ func processRedactionRequest(
 				for _, j := range jlocs {
 					jStartAbs := startAbs + j.start
 					jEndAbs := startAbs + j.end
-					proc, err := applyRegexWindow(body, rs, jStartAbs, jEndAbs, bodyStartIdx, resChunks)
+					proc, err := applyRegexWindow(body, *rs, jStartAbs, jEndAbs, bodyStartIdx, resChunks)
 					if err != nil {
 						return nil, err
 					}
@@ -79,7 +79,7 @@ func processRedactionRequest(
 				}
 				continue
 			}
-			proc, err := applyRegexWindow(body, rs, startAbs, endAbs, bodyStartIdx, resChunks)
+			proc, err := applyRegexWindow(body, *rs, startAbs, endAbs, bodyStartIdx, resChunks)
 			if err != nil {
 				return nil, err
 			}
@@ -97,7 +97,7 @@ func processRedactionRequest(
 		for _, j := range locs {
 			startAbs := j.start
 			endAbs := j.end
-			proc, err := applyRegexWindow(body, rs, startAbs, endAbs, bodyStartIdx, resChunks)
+			proc, err := applyRegexWindow(body, *rs, startAbs, endAbs, bodyStartIdx, resChunks)
 			if err != nil {
 				return nil, err
 			}
@@ -108,7 +108,7 @@ func processRedactionRequest(
 
 	// 3) Regex-only branch
 	if rs.Regex != "" {
-		proc, err := applyRegexWindow(body, rs, 0, len(body), bodyStartIdx, resChunks)
+		proc, err := applyRegexWindow(body, *rs, 0, len(body), bodyStartIdx, resChunks)
 		if err != nil {
 			return nil, err
 		}
