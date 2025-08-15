@@ -385,8 +385,9 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 // CreateHTTPSServer creates an HTTPS server with TLS configuration and debugging
 func (em *EnclaveManager) CreateHTTPSServer(handler http.Handler) *VSockHTTPSServer {
 	tlsConfig := &tls.Config{
-		GetCertificate: em.certManager.GetCertificate,
-		MinVersion:     tls.VersionTLS12,
+		GetCertificate:         em.certManager.GetCertificate,
+		MinVersion:             tls.VersionTLS13,
+		SessionTicketsDisabled: true,
 	}
 
 	return em.createVSockHTTPSServer(handler, tlsConfig, em.config.HTTPSPort)

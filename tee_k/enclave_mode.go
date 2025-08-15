@@ -20,6 +20,12 @@ func startEnclaveMode(config *TEEKConfig, logger *shared.Logger) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// init enclave and replace random with enclave entropy
+	_, err := shared.SafeGetEnclaveHandle()
+	if err != nil {
+		logger.Critical("Error getting enclave handle", zap.Error(err))
+	}
+
 	// Initialize enclave manager with production configuration
 	enclaveConfig := &shared.EnclaveConfig{
 		Domain:       config.Domain,
