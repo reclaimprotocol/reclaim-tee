@@ -3,10 +3,10 @@ package clientlib
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"strings"
@@ -16,6 +16,8 @@ import (
 	"tee-mpc/shared"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -138,13 +140,6 @@ type Client struct {
 
 	// Track redaction ranges so we can prettify later and include in bundle
 	requestRedactionRanges []shared.RequestRedactionRange
-	// Attestation verification fields
-	teekAttestationPublicKey []byte // Public key extracted from TEE_K attestation
-	teetAttestationPublicKey []byte // Public key extracted from TEE_T attestation
-	teekTranscriptPublicKey  []byte // Public key from TEE_K signed transcript
-	teetTranscriptPublicKey  []byte // Public key from TEE_T signed transcript
-	attestationVerified      bool   // Flag to track if attestation verification passed
-	publicKeyComparisonDone  bool   // Flag to track if public key comparison was completed
 
 	// Transcript validation fields
 	teekTranscriptPackets [][]byte // Packets from TEE_K signed transcript for validation
@@ -227,19 +222,13 @@ func NewClient(teekURL string) *Client {
 		// Response processing success tracking
 		responseProcessingSuccessful: false,
 		reconstructedResponseSize:    0,
-		teekAttestationPublicKey:     nil,
-		teetAttestationPublicKey:     nil,
-		teekTranscriptPublicKey:      nil,
-		teetTranscriptPublicKey:      nil,
 
 		// 2-phase operation support
-		twoPhaseMode:            false,
-		phase1Completed:         false,
-		phase1Completion:        make(chan struct{}),
-		attestationVerified:     false,
-		publicKeyComparisonDone: false,
-		teekTranscriptPackets:   nil,
-		teetTranscriptPackets:   nil,
+		twoPhaseMode:          false,
+		phase1Completed:       false,
+		phase1Completion:      make(chan struct{}),
+		teekTranscriptPackets: nil,
+		teetTranscriptPackets: nil,
 
 		responseCallback:             nil,
 		clientMode:                   ModeAuto, // Default to auto-detect
@@ -800,64 +789,56 @@ func (c *Client) fetchAndVerifyAttestations() error {
 	return nil
 }
 
-// verifyAttestation verifies an attestation document and extracts the public key from user data
-func (c *Client) verifyAttestation(attestationDoc []byte, expectedSource string) ([]byte, error) {
-	// Try to unmarshal as protobuf AttestationReport first (new format)
-	var pbReport teeproto.AttestationReport
-	if pbErr := proto.Unmarshal(attestationDoc, &pbReport); pbErr == nil && pbReport.Type != "" {
-		// Use the new protobuf format directly
-		return c.verifyAttestationReport(&pbReport, expectedSource)
-	}
-
-	return nil, fmt.Errorf("unsupported attestation format")
-}
-
-// verifyAttestationReport verifies a protobuf AttestationReport and extracts the public key from the report itself
-func (c *Client) verifyAttestationReport(report *teeproto.AttestationReport, expectedSource string) ([]byte, error) {
-	c.logger.Info("verifyAttestationReport called", zap.String("type", report.Type), zap.String("source", expectedSource), zap.Int("report_bytes", len(report.Report)))
+// verifyAttestationReportETH verifies a protobuf AttestationReport and extracts the ETH address from the report itself
+func (c *Client) verifyAttestationReportETH(report *teeproto.AttestationReport, expectedSource string) (common.Address, error) {
+	c.logger.Info("verifyAttestationReportETH called", zap.String("type", report.Type), zap.String("source", expectedSource), zap.Int("report_bytes", len(report.Report)))
 	switch report.Type {
 	case "nitro":
-		c.logger.Info("Attempting to parse Nitro attestation report", zap.String("source", expectedSource))
+		c.logger.Info("Attempting to parse Nitro attestation report for ETH address", zap.String("source", expectedSource))
 		sr, err := verifier.NewSignedAttestationReport(strings.NewReader(string(report.Report)))
 		if err != nil {
 			c.logger.Error("Failed to parse Nitro attestation report", zap.Error(err))
-			return nil, fmt.Errorf("failed to parse nitro report: %v", err)
+			return common.Address{}, fmt.Errorf("failed to parse nitro report: %v", err)
 		}
 		if err := verifier.Validate(sr, nil); err != nil {
-			return nil, fmt.Errorf("nitro validation failed: %v", err)
+			return common.Address{}, fmt.Errorf("nitro validation failed: %v", err)
 		}
 
-		// Extract public key from user data in the attestation document
+		// Extract ETH address from user data in the attestation document
 		userDataStr := string(sr.Document.UserData)
 		expectedPrefix := fmt.Sprintf("%s_public_key:", strings.ToLower(expectedSource))
 		if !strings.HasPrefix(userDataStr, expectedPrefix) {
-			return nil, fmt.Errorf("invalid user data format, expected prefix %s", expectedPrefix)
+			return common.Address{}, fmt.Errorf("invalid user data format, expected prefix %s", expectedPrefix)
 		}
 
-		publicKeyHex := userDataStr[len(expectedPrefix):]
-		publicKeyDER, err := hex.DecodeString(publicKeyHex)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode public key hex: %v", err)
+		ethAddressHex := userDataStr[len(expectedPrefix):]
+		if !strings.HasPrefix(ethAddressHex, "0x") {
+			return common.Address{}, fmt.Errorf("invalid ETH address format, expected 0x prefix")
 		}
 
-		c.logger.Info("Extracted public key from Nitro attestation", zap.String("source", expectedSource), zap.Int("key_bytes", len(publicKeyDER)))
-		return publicKeyDER, nil
+		if !common.IsHexAddress(ethAddressHex) {
+			return common.Address{}, fmt.Errorf("invalid ETH address format: %s", ethAddressHex)
+		}
+
+		ethAddress := common.HexToAddress(ethAddressHex)
+		c.logger.Info("Extracted ETH address from Nitro attestation", zap.String("source", expectedSource), zap.String("eth_address", ethAddress.Hex()))
+		return ethAddress, nil
 
 	case "gcp":
 		att, err := shared.NewGoogleAttestor()
 		if err != nil {
-			return nil, fmt.Errorf("failed to create google attestor: %v", err)
+			return common.Address{}, fmt.Errorf("failed to create google attestor: %v", err)
 		}
 		if err := att.Validate(context.Background(), report.Report); err != nil {
-			return nil, fmt.Errorf("google attestation validation failed: %v", err)
+			return common.Address{}, fmt.Errorf("google attestation validation failed: %v", err)
 		}
 
-		// For GCP, we need to extract the public key from the attestation token
-		// This is a placeholder - GCP attestation key extraction needs specific implementation
-		return nil, fmt.Errorf("GCP public key extraction not yet implemented for protobuf format")
+		// For GCP, we need to extract the ETH address from the attestation token
+		// This is a placeholder - GCP attestation ETH address extraction needs specific implementation
+		return common.Address{}, fmt.Errorf("GCP ETH address extraction not yet implemented for protobuf format")
 
 	default:
-		return nil, fmt.Errorf("unsupported attestation type: %s", report.Type)
+		return common.Address{}, fmt.Errorf("unsupported attestation type: %s", report.Type)
 	}
 }
 
@@ -885,39 +866,36 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 		return fmt.Errorf("SECURITY ERROR: %s wrong body type, expected %v got %v", source, expectedBodyType, signedMsg.GetBodyType())
 	}
 
-	// Extract public key - either from AttestationReport (enclave mode) or PublicKey field (standalone mode)
-	var publicKeyDER []byte
+	// Extract ETH address - either from AttestationReport (enclave mode) or PublicKey field (standalone mode)
+	var ethAddress common.Address
 	var err error
 
 	if signedMsg.GetAttestationReport() != nil {
-		// Enclave mode: extract public key from attestation report
+		// Enclave mode: extract ETH address from attestation report
 		attestationReport := signedMsg.GetAttestationReport()
-		c.logger.Info("Verifying attestation and extracting public key", zap.String("source", source), zap.String("attestation_type", attestationReport.GetType()), zap.Int("report_bytes", len(attestationReport.GetReport())))
+		c.logger.Info("Verifying attestation and extracting ETH address", zap.String("source", source), zap.String("attestation_type", attestationReport.GetType()), zap.Int("report_bytes", len(attestationReport.GetReport())))
 
-		// Verify attestation and extract public key
-		publicKeyDER, err = c.verifyAttestationReport(attestationReport, source)
+		// Verify attestation and extract ETH address
+		ethAddress, err = c.verifyAttestationReportETH(attestationReport, source)
 		if err != nil {
 			return fmt.Errorf("SECURITY ERROR: %s attestation verification failed: %v", source, err)
 		}
-		c.logger.Info("Attestation verification SUCCESS", zap.String("source", source), zap.Int("public_key_bytes", len(publicKeyDER)))
-	} else if len(signedMsg.GetPublicKey()) > 0 {
-		// Standalone mode: use public key directly
-		publicKeyDER = signedMsg.GetPublicKey()
-		c.logger.Info("Using standalone mode public key", zap.String("source", source), zap.Int("public_key_bytes", len(publicKeyDER)))
+		c.logger.Info("Attestation verification SUCCESS", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
+	} else if len(signedMsg.GetEthAddress()) > 0 {
+		ethAddress = common.HexToAddress(string(signedMsg.GetEthAddress()))
+		c.logger.Info("Using standalone mode ETH address", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
 	} else {
 		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)
 	}
 
-	// SECURITY: Verify signature against the exact signed bytes (SignedMessage.Body)
-	if err := shared.VerifySignatureWithDER(signedMsg.GetBody(), signedMsg.GetSignature(), publicKeyDER); err != nil {
+	// SECURITY: Verify ETH signature against the exact signed bytes (SignedMessage.Body)
+	if err := shared.VerifySignatureWithETH(signedMsg.GetBody(), signedMsg.GetSignature(), ethAddress); err != nil {
 		return fmt.Errorf("SECURITY ERROR: %s cryptographic signature verification FAILED: %v", source, err)
 	}
 
 	c.logger.Info("SignedMessage verification SUCCESS", zap.String("source", source), zap.Int("body_bytes", len(signedMsg.GetBody())))
 	return nil
 }
-
-// DEPRECATED: verifyAttestationPublicKeys removed - attestations now verified directly in SignedMessage
 
 // buildProtocolResult constructs the complete protocol execution results
 func (c *Client) buildProtocolResult() (*ProtocolResult, error) {
@@ -969,9 +947,9 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 		if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err == nil {
 			packets := kPayload.GetPackets()
 			teekTranscript = &SignedTranscriptData{
-				Packets:   packets, // Get TLS packets from protobuf
-				Signature: c.teekSignedMessage.GetSignature(),
-				PublicKey: extractPublicKeyFromSignedMessage(c.teekSignedMessage),
+				Packets:    packets, // Get TLS packets from protobuf
+				Signature:  c.teekSignedMessage.GetSignature(),
+				EthAddress: extractEthAddressFromSignedMessage(c.teekSignedMessage),
 			}
 		} else {
 			fmt.Printf("DEBUG: TEE_K failed to unmarshal payload: %v\n", err)
@@ -985,9 +963,9 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 		if err := proto.Unmarshal(c.teetSignedMessage.GetBody(), &tPayload); err == nil {
 			packets := tPayload.GetPackets()
 			teetTranscript = &SignedTranscriptData{
-				Packets:   packets, // Get TLS packets from protobuf
-				Signature: c.teetSignedMessage.GetSignature(),
-				PublicKey: extractPublicKeyFromSignedMessage(c.teetSignedMessage),
+				Packets:    packets, // Get TLS packets from protobuf
+				Signature:  c.teetSignedMessage.GetSignature(),
+				EthAddress: extractEthAddressFromSignedMessage(c.teetSignedMessage),
 			}
 		} else {
 			fmt.Printf("DEBUG: TEE_T failed to unmarshal payload: %v\n", err)
@@ -1005,15 +983,15 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 	}, nil
 }
 
-// extractPublicKeyFromSignedMessage extracts the public key from a SignedMessage (attestation or direct key)
-func extractPublicKeyFromSignedMessage(signedMsg *teeproto.SignedMessage) []byte {
+// extractEthAddressFromSignedMessage extracts the ETH address from a SignedMessage (attestation or direct address)
+func extractEthAddressFromSignedMessage(signedMsg *teeproto.SignedMessage) []byte {
 	if signedMsg.GetAttestationReport() != nil {
-		// In enclave mode, public key should be extracted from attestation (but that's complex)
-		// For now, return empty - the public key extraction happens during verification
+		// In enclave mode, ETH address should be extracted from attestation (but that's complex)
+		// For now, return empty - the ETH address extraction happens during verification
 		return nil
 	}
-	// In standalone mode, return the direct public key
-	return signedMsg.GetPublicKey()
+	// In standalone mode, return the direct ETH address
+	return signedMsg.GetEthAddress()
 }
 
 // buildValidationResults constructs the validation results
@@ -1041,13 +1019,13 @@ func (c *Client) buildValidationResults() (*ValidationResults, error) {
 	}, nil
 }
 
-// buildAttestationResults constructs the attestation results
+// buildAttestationResults constructs the attestation results (legacy compatibility)
 func (c *Client) buildAttestationResults() (*AttestationResults, error) {
 	verification := c.buildAttestationValidationResults()
 
 	return &AttestationResults{
-		TEEKPublicKey: c.teekAttestationPublicKey,
-		TEETPublicKey: c.teetAttestationPublicKey,
+		TEEKPublicKey: nil,
+		TEETPublicKey: nil,
 		Verification:  *verification,
 	}, nil
 }
@@ -1107,9 +1085,9 @@ func (c *Client) buildAttestationValidationResults() *AttestationValidationResul
 	teekHasAttestation := c.teekSignedMessage != nil && c.teekSignedMessage.GetAttestationReport() != nil
 	teetHasAttestation := c.teetSignedMessage != nil && c.teetSignedMessage.GetAttestationReport() != nil
 
-	// In standalone mode, we use public keys instead of attestations
-	teekValid := c.teekSignedMessage != nil && (teekHasAttestation || len(c.teekSignedMessage.GetPublicKey()) > 0)
-	teetValid := c.teetSignedMessage != nil && (teetHasAttestation || len(c.teetSignedMessage.GetPublicKey()) > 0)
+	// In standalone mode, we use ETH addresses instead of attestations
+	teekValid := c.teekSignedMessage != nil && (teekHasAttestation || len(c.teekSignedMessage.GetEthAddress()) > 0)
+	teetValid := c.teetSignedMessage != nil && (teetHasAttestation || len(c.teetSignedMessage.GetEthAddress()) > 0)
 
 	return &AttestationValidationResults{
 		TEEKAttestation: AttestationVerificationResult{
@@ -1245,4 +1223,103 @@ func (c *Client) ContinueToPhase2() error {
 	}
 
 	return nil
+}
+
+// SubmitToAttestorCore submits the completed verification bundle to attestor-core for claim validation
+func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.PrivateKey, params ClaimTeeBundleParams) (*teeproto.ProviderClaimData, error) {
+
+	// Example private key (use your own in production)
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		c.logger.Fatal("Failed to generate private key:", zap.Error(err))
+	}
+
+	// Example: Submit for HTTP provider claim
+	httpParams := map[string]interface{}{
+		"method": "GET",
+		"url":    "https://github.com",
+		"responseMatches": []map[string]interface{}{
+			{
+				"type":  "regex",
+				"value": "github",
+			},
+		},
+		"responseRedactions": []map[string]interface{}{
+			{
+				"jsonPath": "$.cardano.usd",
+				"regex":    "",
+				"xPath":    "",
+			},
+			{
+				"jsonPath": "$.solana.usd",
+				"regex":    "",
+				"xPath":    "",
+			},
+		},
+	}
+
+	params = ClaimTeeBundleParams{
+		Provider:   "http",
+		Parameters: httpParams,
+		Context: map[string]interface{}{
+			"purpose": "github_identity_proof",
+		},
+	}
+
+	// Submit to attestor-core
+	c.logger.Info("Submitting verification bundle to attestor-core...")
+
+	// attestorURL := "wss://attestor.reclaimprotocol.org/ws" // Production
+	attestorURL = "ws://localhost:8001/ws" // Local development
+
+	// Ensure we have a verification bundle ready
+	if c.teekSignedMessage == nil || c.teetSignedMessage == nil {
+		return nil, fmt.Errorf("TEE protocol not completed - no signed messages available")
+	}
+
+	// Build verification bundle
+	bundle := &teeproto.VerificationBundle{
+		TeekSigned: c.teekSignedMessage,
+		TeetSigned: c.teetSignedMessage,
+	}
+
+	// Add handshake keys if available
+	if c.handshakeDisclosure != nil {
+		bundle.HandshakeKeys = &teeproto.HandshakeSecrets{
+			HandshakeKey: c.handshakeDisclosure.HandshakeKey,
+			HandshakeIv:  c.handshakeDisclosure.HandshakeIV,
+			CipherSuite:  uint32(c.handshakeDisclosure.CipherSuite),
+			Algorithm:    c.handshakeDisclosure.Algorithm,
+		}
+	}
+
+	// Add proof opening if available
+	if c.proofStream != nil || c.proofKey != nil {
+		bundle.Opening = &teeproto.Opening{
+			ProofStream: c.proofStream,
+		}
+	}
+
+	c.logger.Info("Submitting verification bundle to attestor-core",
+		zap.String("attestor_url", attestorURL),
+		zap.String("provider", params.Provider))
+
+	// Create attestor client and submit
+	attestorClient := NewAttestorClient(attestorURL, privateKey, c.logger)
+
+	if err := attestorClient.Connect(); err != nil {
+		return nil, fmt.Errorf("failed to connect to attestor-core: %v", err)
+	}
+	defer attestorClient.Close()
+
+	claim, err := attestorClient.SubmitTeeBundle(bundle, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to submit TEE bundle: %v", err)
+	}
+
+	c.logger.Info("Successfully submitted TEE bundle to attestor-core",
+		zap.String("claim_id", claim.Identifier),
+		zap.String("provider", claim.Provider))
+
+	return claim, nil
 }

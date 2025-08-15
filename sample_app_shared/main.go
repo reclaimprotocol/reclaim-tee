@@ -37,7 +37,6 @@ import (
 	"log"
 	"os"
 	"strings"
-
 	"tee-mpc/proofverifier"
 	"tee-mpc/shared"
 )
@@ -180,6 +179,7 @@ func main() {
 	}
 
 	fmt.Println("Sample application completed successfully!")
+
 }
 
 // PatternMatch represents a pattern match result (moved from libclient)
@@ -491,11 +491,6 @@ func calculateResponseRedactionRanges(responseData []byte) []map[string]interfac
 	}
 
 	return ranges
-}
-
-// writeVerificationBundle writes the verification bundle data to a file
-func writeVerificationBundle(path string, bundleData []byte) error {
-	return os.WriteFile(path, bundleData, 0644)
 }
 
 // writeVerificationBundleProtobuf decodes base64-encoded protobuf bundle and writes to file

@@ -148,7 +148,7 @@ func (c *Client) handleSignedTranscriptWithStreams(msg *shared.Message) {
 	c.logger.Info("Received combined signed transcript with streams",
 		zap.Int("packets_count", len(combinedData.SignedTranscript.Packets)),
 		zap.Int("signature_bytes", len(combinedData.SignedTranscript.Signature)),
-		zap.Int("public_key_bytes", len(combinedData.SignedTranscript.PublicKey)),
+		zap.Int("eth_address_bytes", len(combinedData.SignedTranscript.EthAddress)),
 		zap.Int("streams_count", len(combinedData.SignedRedactedStreams)))
 
 	// Process the streams part FIRST if present
@@ -179,7 +179,7 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 	c.logger.Info("Received signed transcript",
 		zap.Int("packets_count", len(signedTranscript.Packets)),
 		zap.Int("signature_bytes", len(signedTranscript.Signature)),
-		zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
+		zap.Int("eth_address_bytes", len(signedTranscript.EthAddress)))
 
 	c.processSignedTranscriptData(&signedTranscript)
 
@@ -189,10 +189,8 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 
 // processSignedTranscriptDataWithStreams processes transcript data when streams are already available (combined message)
 func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared.SignedTranscript) {
-	// Store the public key for attestation verification
-	// For combined messages, this is always from TEE_K
-	c.teekTranscriptPublicKey = signedTranscript.PublicKey
-	c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
+	// Store packets for validation
+	c.teekTranscriptPackets = signedTranscript.Packets
 
 	// Calculate total size of all packets
 	totalSize := 0
@@ -210,8 +208,8 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 		c.logger.Info("Signature info", zap.String("source", sourceName), zap.Int("signature_bytes", len(signedTranscript.Signature)))
 	}
 
-	if len(signedTranscript.PublicKey) > 0 {
-		c.logger.Info("Public key info", zap.String("source", sourceName), zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
+	if len(signedTranscript.EthAddress) > 0 {
+		c.logger.Info("ETH address info", zap.String("source", sourceName), zap.Int("eth_address_bytes", len(signedTranscript.EthAddress)))
 	}
 
 	// SECURITY FIX: Signature verification now done upfront on SignedMessage
@@ -225,8 +223,6 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 	c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
 
 	c.logger.Info("Marked transcript as received", zap.String("source", sourceName), zap.Bool("signature_valid", true))
-
-	// DEPRECATED: Attestation verification now done directly in SignedMessage
 
 	transcriptsComplete := c.transcriptsReceived >= 2
 	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
@@ -250,15 +246,13 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 // processSignedTranscriptData contains the shared logic for processing SignedTranscript data
 func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTranscript) {
 
-	// Store the public key for attestation verification
+	// Store packets for validation
 	// Determine source based on transcript structure: TEE_K has RequestMetadata, TEE_T doesn't
 	if signedTranscript.RequestMetadata != nil {
 		// This is from TEE_K
-		c.teekTranscriptPublicKey = signedTranscript.PublicKey
 		c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
 	} else {
 		// This is from TEE_T
-		c.teetTranscriptPublicKey = signedTranscript.PublicKey
 		c.teetTranscriptPackets = signedTranscript.Packets // Store packets for validation
 	}
 
@@ -281,8 +275,8 @@ func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTran
 		c.logger.Info("Signature info", zap.String("source", sourceName), zap.Int("signature_bytes", len(signedTranscript.Signature)))
 	}
 
-	if len(signedTranscript.PublicKey) > 0 {
-		c.logger.Info("Public key info", zap.String("source", sourceName), zap.Int("public_key_bytes", len(signedTranscript.PublicKey)))
+	if len(signedTranscript.EthAddress) > 0 {
+		c.logger.Info("ETH address info", zap.String("source", sourceName), zap.Int("eth_address_bytes", len(signedTranscript.EthAddress)))
 	}
 
 	// SECURITY FIX: Signature verification now done upfront on SignedMessage
@@ -301,8 +295,6 @@ func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTran
 	}
 
 	c.logger.Info("Marked transcript as received", zap.String("source", sourceName), zap.Bool("signature_valid", true))
-
-	// DEPRECATED: Attestation verification now done directly in SignedMessage
 
 	transcriptsComplete := c.transcriptsReceived >= 2
 	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)

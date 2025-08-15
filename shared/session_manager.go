@@ -69,8 +69,7 @@ func (sm *SessionManager) CreateSession(clientConn Connection) (string, error) {
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),
-			ResponseLengthBySeq:       make(map[uint64]uint32),
-			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ResponseLengthBySeq:       make(map[uint64]int),
 			ExplicitIVBySeq:           make(map[uint64][]byte),
 			PendingEncryptedResponses: make(map[uint64]*EncryptedResponseData),
 		},
@@ -102,8 +101,7 @@ func (sm *SessionManager) RegisterSession(sessionID string) error {
 		RedactionState: &RedactionSessionState{},
 		ResponseState: &ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),
-			ResponseLengthBySeq:       make(map[uint64]uint32),
-			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ResponseLengthBySeq:       make(map[uint64]int),
 			ExplicitIVBySeq:           make(map[uint64][]byte),
 			PendingEncryptedResponses: make(map[uint64]*EncryptedResponseData),
 		},
@@ -252,7 +250,7 @@ func (sm *SessionManager) RouteToSession(sessionID string, env *teeproto.Envelop
 			if err != nil {
 				return err
 			}
-			return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+			return ws.WriteMessage(websocket.BinaryMessage, data)
 		}
 	}
 
@@ -277,7 +275,7 @@ func (sm *SessionManager) RouteToTEEK(sessionID string, env *teeproto.Envelope) 
 		if err != nil {
 			return err
 		}
-		return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+		return ws.WriteMessage(websocket.BinaryMessage, data)
 	}
 	return fmt.Errorf("unsupported connection type for TEE_K")
 }
@@ -300,7 +298,7 @@ func (sm *SessionManager) RouteToClient(sessionID string, env *teeproto.Envelope
 		if err != nil {
 			return err
 		}
-		return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+		return ws.WriteMessage(websocket.BinaryMessage, data)
 	}
 	return fmt.Errorf("unsupported client connection type")
 }

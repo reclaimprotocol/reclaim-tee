@@ -40,6 +40,13 @@ func (w *WSConnection) GetWebSocketConn() *websocket.Conn {
 	return w.conn
 }
 
+// WriteMessage writes a message to the WebSocket connection with thread safety
+func (w *WSConnection) WriteMessage(messageType int, data []byte) error {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+	return w.conn.WriteMessage(messageType, data)
+}
+
 // Message types for websocket communication
 type MessageType string
 
@@ -75,10 +82,6 @@ const (
 	MsgError            MessageType = "error"
 	MsgTEETReady        MessageType = "teet_ready"
 	MsgRedactionStreams MessageType = "redaction_streams"
-
-	// Attestation request over WebSocket
-	MsgAttestationRequest  MessageType = "attestation_request"
-	MsgAttestationResponse MessageType = "attestation_response"
 
 	// Single Session Mode message types
 	MsgFinished         MessageType = "finished"
@@ -194,15 +197,14 @@ type ResponseSessionState struct {
 	PendingResponses    map[string][]byte
 	ResponseSequence    int
 	LastResponseTime    time.Time
-	ResponseLengthBySeq map[uint64]uint32
+	ResponseLengthBySeq map[uint64]int
 
 	// Per-session pending encrypted responses
 	PendingEncryptedResponses map[uint64]*EncryptedResponseData // Responses awaiting tag secrets by seq num
 	ResponsesMutex            sync.Mutex                        // Protects PendingEncryptedResponses map access
 
 	// Additional response state migrated from global state
-	ResponseLengthBySeqInt map[uint64]int // Keep both for compatibility
-	ExplicitIVBySeq        map[uint64][]byte
+	ExplicitIVBySeq map[uint64][]byte
 
 	// Response redaction ranges for transcript signature
 	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`
@@ -335,20 +337,6 @@ type TEETReadyData struct {
 	Success bool `json:"success"`
 }
 
-// AttestationRequestData represents a request for attestation
-type AttestationRequestData struct {
-	// RequestID removed - no longer needed since we wait for session coordination
-}
-
-// AttestationResponseData represents an attestation response
-type AttestationResponseData struct {
-	// RequestID removed - no longer needed since we wait for session coordination
-	AttestationDoc []byte `json:"attestation_doc,omitempty"` // Now populated from marshaled AttestationReport
-	Success        bool   `json:"success"`
-	ErrorMessage   string `json:"error_message,omitempty"`
-	Source         string `json:"source,omitempty"` // "tee_k" or "tee_t"
-}
-
 // Client to TEE_K: Send plaintext data for encryption
 type PlaintextData struct {
 	Data []byte `json:"data"`
@@ -435,8 +423,8 @@ type SignedTranscript struct {
 	// Response redaction ranges for verifier display
 	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`
 
-	Signature []byte `json:"signature"`  // Comprehensive signature over all data (TLS packets + metadata + streams)
-	PublicKey []byte `json:"public_key"` // Public key in DER format (binary data)
+	Signature  []byte `json:"signature"`   // Comprehensive signature over all data (TLS packets + metadata + streams)
+	EthAddress []byte `json:"eth_address"` // ETH address (20 bytes)
 }
 
 // Transcript packet type constants – exported so both client and TEEs can reference them.

@@ -161,52 +161,25 @@ func (l *Logger) Close() error {
 
 // Global logger instances
 var (
-	DefaultTEETLogger *Logger
-	DefaultTEEKLogger *Logger
+	DefaultLogger *Logger
 )
-
-// InitializeGlobalLoggers initializes the global logger instances
-// This is called during application startup
-func InitializeGlobalLoggers() error {
-	var err error
-
-	DefaultTEETLogger, err = NewLoggerFromEnv("tee_t")
-	if err != nil {
-		return err
-	}
-
-	DefaultTEEKLogger, err = NewLoggerFromEnv("tee_k")
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
 
 // GetTEETLogger returns the default TEE_T logger
 func GetTEETLogger() *Logger {
-	if DefaultTEETLogger == nil {
+	if DefaultLogger == nil {
 		// Fallback: create a basic logger if not initialized
 		logger, _ := NewLoggerFromEnv("tee_t")
 		return logger
 	}
-	return DefaultTEETLogger
+	return DefaultLogger
 }
 
 // GetTEEKLogger returns the default TEE_K logger
 func GetTEEKLogger() *Logger {
-	if DefaultTEEKLogger == nil {
+	if DefaultLogger == nil {
 		// Fallback: create a basic logger if not initialized
 		logger, _ := NewLoggerFromEnv("tee_k")
 		return logger
 	}
-	return DefaultTEEKLogger
+	return DefaultLogger
 }
-
-// LogLevel constants for consistency
-const (
-	DebugLevel = "debug"
-	InfoLevel  = "info"
-	WarnLevel  = "warn"
-	ErrorLevel = "error"
-)

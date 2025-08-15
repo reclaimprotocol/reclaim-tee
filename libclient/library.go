@@ -1,7 +1,9 @@
 package clientlib
 
 import (
+	"crypto/ecdsa"
 	"fmt"
+	"tee-mpc/proto"
 	"tee-mpc/shared"
 	"time"
 )
@@ -28,6 +30,7 @@ type ReclaimClient interface {
 	GetAttestationResults() (*AttestationResults, error)
 	GetResponseResults() (*ResponseResults, error)
 	BuildVerificationBundle(path string) error
+	SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.PrivateKey, params ClaimTeeBundleParams) (*teeproto.ProviderClaimData, error)
 }
 
 // ClientMode represents the operational mode of the client
@@ -203,6 +206,10 @@ func (r *ReclaimClientImpl) SetRequestData(requestData []byte) error {
 
 func (r *ReclaimClientImpl) SetRequestRedactionRanges(ranges []shared.RequestRedactionRange) {
 	r.Client.SetRequestRedactionRanges(ranges)
+}
+
+func (r *ReclaimClientImpl) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.PrivateKey, params ClaimTeeBundleParams) (*teeproto.ProviderClaimData, error) {
+	return r.Client.SubmitToAttestorCore(attestorURL, privateKey, params)
 }
 
 // detectMode automatically detects the client mode based on URLs

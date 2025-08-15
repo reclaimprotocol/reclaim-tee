@@ -2,14 +2,12 @@ package shared
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
 	"fmt"
-	"math/big"
 	teeproto "tee-mpc/proto"
 
+	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -66,15 +64,16 @@ func UnmarshalRequestRedactionRangesProtobuf(data []byte) ([]RequestRedactionRan
 	return ranges, nil
 }
 
-// SigningKeyPair represents a cryptographic ECDSA signing key pair
+// SigningKeyPair represents a cryptographic ECDSA signing key pair for Ethereum-style signatures
 type SigningKeyPair struct {
 	PrivateKey *ecdsa.PrivateKey `json:"private_key"`
 	PublicKey  *ecdsa.PublicKey  `json:"public_key"`
 }
 
-// GenerateSigningKeyPair generates a new ECDSA signing key pair using P-256 curve
+// GenerateSigningKeyPair generates a new ECDSA signing key pair using secp256k1 curve (ETH compatible)
 func GenerateSigningKeyPair() (*SigningKeyPair, error) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	// Use Ethereum's key generation (secp256k1) instead of P-256
+	privateKey, err := crypto.GenerateKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate ECDSA key pair: %v", err)
 	}
@@ -85,41 +84,42 @@ func GenerateSigningKeyPair() (*SigningKeyPair, error) {
 	}, nil
 }
 
-// SignData signs the given data using ECDSA and returns the signature
+// SignData signs the given data using Ethereum-style signatures
 func (kp *SigningKeyPair) SignData(data []byte) ([]byte, error) {
-	// Hash the data with SHA-256
-	hash := sha256.Sum256(data)
+	// Use standard Ethereum message signing (includes prefix)
+	hash := accounts.TextHash(data)
 
-	// Sign the hash
-	r, s, err := ecdsa.Sign(rand.Reader, kp.PrivateKey, hash[:])
+	// Sign the hash - this returns a 65-byte signature with recovery ID
+	signature, err := crypto.Sign(hash, kp.PrivateKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to sign data: %v", err)
+		return nil, fmt.Errorf("failed to sign data with ETH style: %v", err)
 	}
-
-	// Encode r and s as a simple concatenation (32 bytes each for P-256)
-	signature := make([]byte, 64)
-	r.FillBytes(signature[:32])
-	s.FillBytes(signature[32:])
 
 	return signature, nil
 }
 
-// VerifySignature verifies a signature against the given data using a public key
+// VerifySignature verifies an Ethereum-style signature against the given data using a public key
 func VerifySignature(data []byte, signature []byte, publicKey *ecdsa.PublicKey) error {
-	if len(signature) != 64 {
-		return fmt.Errorf("invalid signature length: expected 64 bytes, got %d", len(signature))
+	if len(signature) != 65 {
+		return fmt.Errorf("invalid ETH signature length: expected 65 bytes, got %d", len(signature))
 	}
 
-	// Hash the data with SHA-256
-	hash := sha256.Sum256(data)
+	// Use standard Ethereum message signing (includes prefix)
+	hash := accounts.TextHash(data)
 
-	// Extract r and s from signature
-	r := new(big.Int).SetBytes(signature[:32])
-	s := new(big.Int).SetBytes(signature[32:])
+	// Recover public key from signature
+	recoveredPubKey, err := crypto.SigToPub(hash, signature)
+	if err != nil {
+		return fmt.Errorf("failed to recover public key from signature: %v", err)
+	}
 
-	// Verify the signature
-	if !ecdsa.Verify(publicKey, hash[:], r, s) {
-		return fmt.Errorf("signature verification failed")
+	// Compare recovered public key with expected public key
+	expectedAddress := crypto.PubkeyToAddress(*publicKey)
+	recoveredAddress := crypto.PubkeyToAddress(*recoveredPubKey)
+
+	if expectedAddress != recoveredAddress {
+		return fmt.Errorf("signature verification failed: expected address %s, got %s",
+			expectedAddress.Hex(), recoveredAddress.Hex())
 	}
 
 	return nil
@@ -131,37 +131,44 @@ func (kp *SigningKeyPair) VerifySignature(data []byte, signature []byte) bool {
 	return err == nil
 }
 
-// GetPublicKeyDER returns the public key in DER format for JSON serialization
-func (kp *SigningKeyPair) GetPublicKeyDER() ([]byte, error) {
-	return x509.MarshalPKIXPublicKey(kp.PublicKey)
+// GetEthAddress returns the Ethereum address for this key pair
+func (kp *SigningKeyPair) GetEthAddress() common.Address {
+	return crypto.PubkeyToAddress(*kp.PublicKey)
 }
 
-// ParsePublicKeyFromDER parses a public key from DER format
-func ParsePublicKeyFromDER(derBytes []byte) (*ecdsa.PublicKey, error) {
-	pubKeyInterface, err := x509.ParsePKIXPublicKey(derBytes)
+// VerifySignatureWithETH verifies a signature using Ethereum-style verification with an address
+func VerifySignatureWithETH(data []byte, signature []byte, expectedAddress common.Address) error {
+	return VerifyEthSignature(data, signature, expectedAddress)
+}
+
+// VerifyEthSignature verifies an Ethereum-style signature against the given data and address
+func VerifyEthSignature(data []byte, signature []byte, expectedAddress common.Address) error {
+	if len(signature) != 65 {
+		return fmt.Errorf("invalid ETH signature length: expected 65 bytes, got %d", len(signature))
+	}
+
+	// Use standard Ethereum message signing (includes prefix)
+	hash := accounts.TextHash(data)
+
+	// Recover public key from signature
+	recoveredPubKey, err := crypto.SigToPub(hash, signature)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse DER public key: %v", err)
+		return fmt.Errorf("failed to recover public key from signature: %v", err)
 	}
 
-	ecdsaPubKey, ok := pubKeyInterface.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("public key is not an ECDSA key")
+	// Derive address from recovered public key
+	recoveredAddress := crypto.PubkeyToAddress(*recoveredPubKey)
+
+	// Verify address matches
+	if recoveredAddress != expectedAddress {
+		return fmt.Errorf("signature verification failed: expected address %s, got %s",
+			expectedAddress.Hex(), recoveredAddress.Hex())
 	}
 
-	return ecdsaPubKey, nil
+	return nil
 }
 
-// VerifySignatureWithDER verifies a signature using a public key in DER format
-func VerifySignatureWithDER(data []byte, signature []byte, publicKeyDER []byte) error {
-	// Parse public key from DER
-	pubKey, err := ParsePublicKeyFromDER(publicKeyDER)
-	if err != nil {
-		return fmt.Errorf("failed to parse public key: %v", err)
-	}
-
-	// Verify signature
-	return VerifySignature(data, signature, pubKey)
+// GetEthAddress returns the Ethereum address for a given public key
+func GetEthAddress(publicKey *ecdsa.PublicKey) common.Address {
+	return crypto.PubkeyToAddress(*publicKey)
 }
-
-// REMOVED: VerifyComprehensiveSignature and SignTranscript - obsolete functions
-// SignedMessage verification is now done directly against protobuf bodies

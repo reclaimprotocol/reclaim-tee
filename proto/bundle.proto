@@ -17,11 +17,10 @@ message HandshakeSecrets {
 // Commitment opening for proof stream
 message Opening {
   bytes proof_stream = 1; // Str_SP
-  bytes proof_key = 2;    // K_SP
 }
 
 // Single artefact produced by client for offline verification
-message VerificationBundlePB {
+message VerificationBundle {
   HandshakeSecrets handshake_keys = 1; // optional
 
   // Signed transcripts
@@ -31,9 +30,6 @@ message VerificationBundlePB {
   // Commitment opening for proof ranges
   Opening opening = 4; // optional
 
-  // Optional attestation documents
-  bytes attestation_tee_k = 10;
-  bytes attestation_tee_t = 11;
 }
 
 

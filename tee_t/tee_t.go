@@ -107,6 +107,11 @@ type TEET struct {
 
 	// Enclave manager for attestation generation
 	enclaveManager *shared.EnclaveManager
+
+	// Attestation caching for performance optimization
+	cachedAttestation *teeproto.AttestationReport
+	attestationMutex  sync.RWMutex
+	attestationExpiry time.Time
 }
 
 // NewTEETWithLogger creates a TEET with a specific logger
@@ -204,11 +209,11 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
 				zap.String("remote_addr", r.RemoteAddr),
 				zap.Int("message_size", len(msgBytes))) {
-				t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
+				t.sendErrorToClient(sessionID, fmt.Sprintf("Failed to parse message: %v", err))
 				break // Terminate session
 			}
 			// Protocol errors now always terminate - no more continue
-			t.sendErrorToClient(conn, fmt.Sprintf("Failed to parse message: %v", err))
+			t.sendErrorToClient(sessionID, fmt.Sprintf("Failed to parse message: %v", err))
 			break
 		}
 		// Map to shared message for existing handlers
@@ -218,8 +223,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgTEETReady, Data: shared.TEETReadyData{Success: p.TeetReady.GetSuccess()}}
 		case *teeproto.Envelope_RedactionStreams:
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgRedactionStreams, Data: shared.RedactionStreamsData{Streams: p.RedactionStreams.GetStreams(), CommitmentKeys: p.RedactionStreams.GetCommitmentKeys()}}
-		case *teeproto.Envelope_AttestationRequest:
-			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgAttestationRequest, Data: shared.AttestationRequestData{}}
 		case *teeproto.Envelope_Finished:
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgFinished, Data: shared.FinishedMessage{}}
 		case *teeproto.Envelope_BatchedEncryptedResponses:
@@ -229,7 +232,7 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgBatchedEncryptedResponses, Data: shared.BatchedEncryptedResponseData{Responses: arr, SessionID: p.BatchedEncryptedResponses.GetSessionId(), TotalCount: int(p.BatchedEncryptedResponses.GetTotalCount())}}
 		default:
-			t.sendErrorToClient(conn, "Unknown message type")
+			t.sendErrorToClient(sessionID, "Unknown message type")
 		}
 
 		t.logger.DebugIf("Received message from client",
@@ -246,15 +249,22 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 					// Session activation failure is critical - always terminate
 					t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionManagerFailure, err,
 						zap.String("remote_addr", r.RemoteAddr))
-					t.sendErrorToClient(conn, "Failed to activate session")
+					t.sendErrorToClient(sessionID, "Failed to activate session")
 					break // Terminate session
 				}
 
-				// Initialize TEE_T session state
-				teetState := &TEETSessionState{
-					TEETClientConn: conn,
+				// Initialize or update TEE_T session state
+				teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
+				if err != nil {
+					// Create new state if doesn't exist
+					teetState = &TEETSessionState{
+						TEETClientConn: conn,
+					}
+					t.sessionManager.SetTEETSessionState(sessionID, teetState)
+				} else {
+					// Update existing state with client connection
+					teetState.TEETClientConn = conn
 				}
-				t.sessionManager.SetTEETSessionState(sessionID, teetState)
 				t.logger.InfoIf("Activated session for client",
 					zap.String("session_id", sessionID),
 					zap.String("remote_addr", conn.RemoteAddr().String()))
@@ -266,7 +276,7 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 					zap.String("expected_session", sessionID),
 					zap.String("received_session", msg.SessionID),
 					zap.String("remote_addr", r.RemoteAddr))
-				t.sendErrorToClient(conn, "Session ID mismatch")
+				t.sendErrorToClient(sessionID, "Session ID mismatch")
 				break // Terminate session
 			}
 		}
@@ -278,10 +288,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgRedactionStreams:
 			t.logger.DebugIf("Handling MsgRedactionStreams", zap.String("session_id", sessionID))
 			t.handleRedactionStreamsSession(sessionID, msg)
-		case shared.MsgAttestationRequest:
-			// Attestation requests no longer supported - attestations are included in SignedMessage
-			t.logger.InfoIf("Ignoring legacy attestation request - attestations now included in SignedMessage", zap.String("session_id", sessionID))
-			t.sendErrorToClientSession(sessionID, "Attestation requests deprecated - use SignedMessage")
 		case shared.MsgFinished:
 			t.logger.DebugIf("Handling MsgFinished from TEE_K", zap.String("session_id", sessionID))
 			t.handleFinishedFromTEEKSession(msg)
@@ -296,10 +302,10 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 				fmt.Errorf("unknown message type: %s", string(msg.Type)),
 				zap.String("message_type", string(msg.Type)),
 				zap.String("remote_addr", r.RemoteAddr)) {
-				t.sendErrorToClient(conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+				t.sendErrorToClient(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
 				break // Terminate session if too many unknown messages
 			}
-			t.sendErrorToClient(conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+			t.sendErrorToClient(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
 		}
 	}
 
@@ -343,7 +349,7 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 				zap.Error(err),
 				zap.String("remote_addr", r.RemoteAddr),
 				zap.Int("message_size", len(msgBytes)))
-			t.sendErrorToTEEKForSession("", conn, fmt.Sprintf("Failed to parse message: %v", err))
+			t.sendErrorToTEEK("", fmt.Sprintf("Failed to parse message: %v", err))
 			continue // Skip invalid messages instead of terminating connection
 		}
 
@@ -351,7 +357,7 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 		sessionID := env.GetSessionId()
 		if sessionID == "" {
 			t.logger.Error("Missing session ID in message from TEE_K", zap.String("remote_addr", r.RemoteAddr))
-			t.sendErrorToTEEKForSession("", conn, "Missing session ID")
+			t.sendErrorToTEEK("", "Missing session ID")
 			continue
 		}
 
@@ -390,7 +396,7 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 			t.logger.Error("Unknown message type from TEE_K",
 				zap.String("session_id", sessionID),
 				zap.String("remote_addr", r.RemoteAddr))
-			t.sendErrorToTEEKForSession(sessionID, conn, "Unknown message type from TEE_K")
+			t.sendErrorToTEEK(sessionID, "Unknown message type from TEE_K")
 			continue
 		}
 
@@ -434,10 +440,10 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 				zap.String("message_type", string(msg.Type)),
 				zap.String("remote_addr", r.RemoteAddr),
 				zap.String("connection_type", "teek")) {
-				t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+				t.sendErrorToTEEK(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
 				break // Terminate session if too many unknown messages
 			}
-			t.sendErrorToTEEKForSession(sessionID, conn, fmt.Sprintf("Unknown message type: %s", msg.Type))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Unknown message type: %s", msg.Type))
 		}
 	}
 
@@ -471,17 +477,25 @@ func (t *TEET) handleTEETReadySession(sessionID string, msg *shared.Message) {
 
 	t.logger.InfoIf("Handling TEE_T ready for session", zap.String("session_id", sessionID))
 
-	// Delegate to handler with the client connection
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		if t.sessionTerminator.ZeroToleranceError(sessionID, shared.ReasonSessionNotFound, err) {
-			return
-		}
+	// Handle TEE_T ready message inline (was delegated to legacy function)
+	var readyData shared.TEETReadyData
+	if err := msg.UnmarshalData(&readyData); err != nil {
+		t.logger.Error("Failed to unmarshal TEE_T ready data", zap.Error(err))
+		t.sendErrorToClient(sessionID, fmt.Sprintf("Failed to unmarshal TEE_T ready data: %v", err))
 		return
 	}
 
-	wsConn := session.ClientConn.(*shared.WSConnection)
-	t.handleTEETReady(wsConn.GetWebSocketConn(), msg)
+	t.ready = readyData.Success
+
+	// Send confirmation back to client using session routing
+	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_TeetReady{TeetReady: &teeproto.TEETReady{Success: true}},
+	}
+	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
+		t.logger.Error("Failed to send TEE_T ready response",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+	}
 }
 
 func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Message) {
@@ -529,8 +543,14 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 
 	t.logger.InfoIf("Redaction streams stored for session", zap.String("session_id", sessionID))
 
-	// Note: Commitment verification will happen when encrypted request arrives from TEE_K
-	// Do not verify commitments here as they may not be available yet
+	// Verify commitments if expected commitments are already available from TEE_K
+	if err := t.verifyCommitmentsIfReady(sessionID); err != nil {
+		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoCommitmentFailed, err,
+			zap.Int("commitment_count", len(session.RedactionState.ExpectedCommitments))) {
+			return
+		}
+		return
+	}
 
 	// Process pending encrypted request if available
 	teetState, err := t.getTEETSessionState(sessionID)
@@ -753,6 +773,14 @@ func (t *TEET) handleSessionCreation(msg *shared.Message) {
 		return
 	}
 
+	// Create TEE_T session state when session is registered from TEE_K
+	// This ensures the state exists before encrypted requests arrive
+	teetState := &TEETSessionState{
+		TEETClientConn: nil, // Will be set when client connects
+	}
+	t.sessionManager.SetTEETSessionState(sessionID, teetState)
+	t.logger.InfoIf("Created TEE_T session state for registered session", zap.String("session_id", sessionID))
+
 	t.logger.InfoIf("Registered session from TEE_K", zap.String("session_id", sessionID))
 }
 
@@ -781,7 +809,7 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 	if err := msg.UnmarshalData(&keyReq); err != nil {
 		if t.sessionTerminator.ProtocolError(sessionID, shared.ReasonMessageParsingFailed, err,
 			zap.String("data_type", "key_share_request")) {
-			t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to unmarshal key share request: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to unmarshal key share request: %v", err))
 			return
 		}
 		return
@@ -793,7 +821,7 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 		// Key generation failure is a critical cryptographic error
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoKeyGenerationFailed, err,
 			zap.Int("key_length", keyReq.KeyLength)) {
-			t.sendErrorToTEEKForSession(sessionID, session.TEEKConn.(*shared.WSConnection).GetWebSocketConn(), fmt.Sprintf("Failed to generate key share: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to generate key share: %v", err))
 			return
 		}
 		return
@@ -823,7 +851,7 @@ func (t *TEET) handleKeyShareRequestSession(msg *shared.Message) {
 	}
 	if data, err := proto.Marshal(env); err == nil {
 		wsConn := session.TEEKConn.(*shared.WSConnection)
-		if err := wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data); err != nil {
+		if err := wsConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 			t.logger.Error("Failed to send key share response",
 				zap.String("session_id", sessionID),
 				zap.Error(err))
@@ -1195,7 +1223,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionNotFound, err) {
-			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to get session: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to get session: %v", err))
 			return
 		}
 		return
@@ -1206,7 +1234,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted, err) {
-			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to get TEE_T session state: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to get TEE_T session state: %v", err))
 			return
 		}
 		return
@@ -1219,7 +1247,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	if session.RedactionState == nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonSessionStateCorrupted,
 			fmt.Errorf("no redaction state available for session")) {
-			t.sendErrorToTEEK(conn, "No redaction state available")
+			t.sendErrorToTEEK(sessionID, "No redaction state available")
 			return
 		}
 		return
@@ -1229,7 +1257,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	reconstructedData, err := t.reconstructFullRequestWithStreams(encReq.EncryptedData, encReq.RedactionRanges, session.RedactionState.RedactionStreams)
 	if err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagComputationFailed, err) {
-			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to reconstruct full request: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to reconstruct full request: %v", err))
 			return
 		}
 		return
@@ -1274,7 +1302,7 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	if err != nil {
 		// Cryptographic computation failure is CRITICAL and should terminate session
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoTagComputationFailed, err) {
-			t.sendErrorToTEEK(conn, fmt.Sprintf("Failed to compute authentication tag: %v", err))
+			t.sendErrorToTEEK(sessionID, fmt.Sprintf("Failed to compute authentication tag: %v", err))
 			return
 		}
 		return
@@ -1362,25 +1390,6 @@ func (t *TEET) sendMessageToClientSession(sessionID string, msg *shared.Message)
 	}
 	// Only used for attestation and transcripts here; map manually as needed
 	switch msg.Type {
-	case shared.MsgAttestationResponse:
-		var d shared.AttestationResponseData
-		if err := msg.UnmarshalData(&d); err != nil {
-			return err
-		}
-		// Convert AttestationDoc back to AttestationReport if needed
-		var attestationReport *teeproto.AttestationReport
-		if len(d.AttestationDoc) > 0 {
-			attestationReport = &teeproto.AttestationReport{}
-			if err := proto.Unmarshal(d.AttestationDoc, attestationReport); err != nil {
-				t.logger.Error("Failed to unmarshal attestation doc", zap.Error(err))
-				attestationReport = nil
-			}
-		}
-
-		env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-			Payload: &teeproto.Envelope_AttestationResponse{AttestationResponse: &teeproto.AttestationResponse{AttestationReport: attestationReport, Success: d.Success, ErrorMessage: d.ErrorMessage, Source: d.Source}},
-		}
-		return t.sessionManager.RouteToClient(sessionID, env)
 	case shared.MsgSignedTranscript:
 		// MsgSignedTranscript should use SignedMessage instead
 		return fmt.Errorf("MsgSignedTranscript route should be migrated to SignedMessage")
@@ -1442,52 +1451,20 @@ func (t *TEET) sendMessageToTEEKForSession(sessionID string, msg *shared.Message
 		if err != nil {
 			return err
 		}
-		return ws.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+		return ws.WriteMessage(websocket.BinaryMessage, data)
 	}
 	return fmt.Errorf("unsupported TEE_K connection type")
 }
 
-func (t *TEET) sendErrorToTEEKForSession(sessionID string, conn *websocket.Conn, errMsg string) {
+func (t *TEET) sendErrorToTEEK(sessionID string, errMsg string) {
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: errMsg}},
 	}
-	data, err := proto.Marshal(env)
-	if err == nil {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			t.logger.Error("Failed to send error message to TEE_K",
-				zap.String("session_id", sessionID),
-				zap.Error(err))
-		}
-	} else {
-		t.logger.Error("Failed to send error message to TEE_K",
+	// Use session manager for thread-safe routing instead of direct websocket write
+	if err := t.sessionManager.RouteToTEEK(sessionID, env); err != nil {
+		t.logger.Error("Failed to send error message to TEE_K via session manager",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
-	}
-}
-
-func (t *TEET) sendErrorToClient(conn *websocket.Conn, errMsg string) {
-	env := &teeproto.Envelope{TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: errMsg}},
-	}
-	if data, err := proto.Marshal(env); err == nil {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			t.logger.Error("Failed to send error message to client", zap.Error(err))
-		}
-	} else {
-		t.logger.Error("Failed to send error message to client", zap.Error(err))
-	}
-}
-
-func (t *TEET) sendErrorToTEEK(conn *websocket.Conn, errMsg string) {
-	env := &teeproto.Envelope{TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: errMsg}},
-	}
-	if data, err := proto.Marshal(env); err == nil {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			t.logger.Error("Failed to send error message to TEE_K", zap.Error(err))
-		}
-	} else {
-		t.logger.Error("Failed to marshal error envelope to TEE_K", zap.Error(err))
 	}
 }
 
@@ -1509,11 +1486,17 @@ func (t *TEET) verifyCommitmentsIfReady(sessionID string) error {
 	hasCommitments := len(session.RedactionState.ExpectedCommitments) > 0
 
 	if !hasStreams {
-		return fmt.Errorf("critical security failure: redaction streams not available for commitment verification in session %s", sessionID)
+		// Streams not ready yet - this is normal, just return success and let the caller handle deferred processing
+		t.logger.InfoIf("Redaction streams not yet available for commitment verification, deferring",
+			zap.String("session_id", sessionID))
+		return nil
 	}
 
 	if !hasCommitments {
-		return fmt.Errorf("critical security failure: expected commitments from TEE_K not available for verification in session %s", sessionID)
+		// Commitments not ready yet - this is normal, just return success and let the caller handle deferred processing
+		t.logger.InfoIf("Expected commitments not yet available for verification, deferring",
+			zap.String("session_id", sessionID))
+		return nil
 	}
 
 	// Both collections available - perform verification
@@ -1612,36 +1595,8 @@ func (t *TEET) reconstructFullRequestWithStreams(encryptedRedacted []byte, range
 
 // Phase 4: Response handling methods (moved to session-aware versions)
 
-func (t *TEET) handleTEETReady(conn *websocket.Conn, msg *shared.Message) {
-	var readyData shared.TEETReadyData
-	if err := msg.UnmarshalData(&readyData); err != nil {
-		t.logger.Error("Failed to unmarshal TEE_T ready data", zap.Error(err))
-		t.sendErrorToClient(conn, fmt.Sprintf("Failed to unmarshal TEE_T ready data: %v", err))
-		return
-	}
-
-	t.ready = readyData.Success
-
-	// Send confirmation back to client
-	// Send protobuf envelope back to client
-	env := &teeproto.Envelope{TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_TeetReady{TeetReady: &teeproto.TEETReady{Success: true}},
-	}
-	if data, err := proto.Marshal(env); err == nil {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			t.logger.Error("Failed to send TEE_T ready response", zap.Error(err))
-		}
-	} else {
-		t.logger.Error("Failed to marshal TEE_T ready envelope", zap.Error(err))
-	}
-}
-
-// DEPRECATED: Attestation requests removed - attestations now included in SignedMessage
-
-// DEPRECATED: Attestation response functions removed - attestations now included in SignedMessage
-
-// sendErrorToClientSession sends an error message to a client session
-func (t *TEET) sendErrorToClientSession(sessionID, errMsg string) {
+// sendErrorToClient sends an error message to a client session using thread-safe session routing
+func (t *TEET) sendErrorToClient(sessionID, errMsg string) {
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: errMsg}},
 	}
@@ -1791,14 +1746,8 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			return
 		}
 
-		// Get public key in DER format
-		publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-		if err != nil {
-			t.logger.Error("Failed to get public key DER for signed transcript",
-				zap.String("session_id", sessionID),
-				zap.Error(err))
-			return
-		}
+		// Get ETH address for this key pair
+		ethAddress := t.signingKeyPair.GetEthAddress()
 
 		// SECURITY FIX: Create protobuf body and sign it directly
 		tOutput := &teeproto.TOutputPayload{Packets: transcript}
@@ -1841,15 +1790,17 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			}
 			t.logger.InfoIf("Including attestation report in SignedMessage", zap.String("session_id", sessionID))
 		} else {
-			// Standalone mode: include public key
-			publicKeyForStandalone = publicKeyDER
-			t.logger.InfoIf("Including public key in SignedMessage (standalone mode)", zap.String("session_id", sessionID))
+			// Standalone mode: include ETH address as public key
+			publicKeyForStandalone = []byte(ethAddress.String())
+			t.logger.InfoIf("Including ETH address in SignedMessage (standalone mode)",
+				zap.String("session_id", sessionID),
+				zap.String("eth_address", ethAddress.Hex()))
 		}
 
 		sm := &teeproto.SignedMessage{
 			BodyType:          teeproto.BodyType_BODY_TYPE_T_OUTPUT,
 			Body:              body,
-			PublicKey:         publicKeyForStandalone,
+			EthAddress:        publicKeyForStandalone,
 			Signature:         signature,
 			AttestationReport: attestationReport,
 		}
@@ -1874,59 +1825,130 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 	}
 }
 
-// generateAttestationReport generates an AttestationReport for enclave mode
-func (t *TEET) generateAttestationReport(sessionID string) (*teeproto.AttestationReport, error) {
+// startAttestationRefresh starts a background goroutine that pre-generates and refreshes attestations
+func (t *TEET) startAttestationRefresh(ctx context.Context) {
+	t.logger.Info("Starting background attestation refresh (4-minute interval)")
+
+	// Pre-generate the first attestation
+	if err := t.refreshAttestation(); err != nil {
+		t.logger.Error("Failed to pre-generate initial attestation", zap.Error(err))
+	} else {
+		t.logger.Info("Successfully pre-generated initial attestation")
+	}
+
+	// Set up 4-minute ticker for refresh
+	ticker := time.NewTicker(4 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			t.logger.Info("Stopping attestation refresh due to context cancellation")
+			return
+		case <-ticker.C:
+			if err := t.refreshAttestation(); err != nil {
+				t.logger.Error("Failed to refresh attestation", zap.Error(err))
+			} else {
+				t.logger.Info("Successfully refreshed attestation")
+			}
+		}
+	}
+}
+
+// refreshAttestation generates a new attestation and caches it
+func (t *TEET) refreshAttestation() error {
+	// Skip in standalone mode
+	if t.enclaveManager == nil {
+		return nil
+	}
+
+	// Get ETH address for this key pair
+	ethAddress := t.signingKeyPair.GetEthAddress()
+
+	// Create user data containing the ETH address
+	userData := fmt.Sprintf("tee_t_public_key:%s", ethAddress.Hex())
+
+	// Check attestation provider and generate accordingly
+	provider := os.Getenv("ATTESTATION_PROVIDER")
+	var attestationReport *teeproto.AttestationReport
+
+	if provider == "gcp" {
+		raw, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
+		if err != nil {
+			return fmt.Errorf("failed to generate GCP attestation: %v", err)
+		}
+
+		attestationReport = &teeproto.AttestationReport{
+			Type:   "gcp",
+			Report: raw,
+		}
+	} else {
+		// Default: AWS Nitro
+		raw, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
+		if err != nil {
+			return fmt.Errorf("failed to generate Nitro attestation: %v", err)
+		}
+
+		attestationReport = &teeproto.AttestationReport{
+			Type:   "nitro",
+			Report: raw,
+		}
+	}
+
+	// Cache the new attestation
+	t.attestationMutex.Lock()
+	t.cachedAttestation = attestationReport
+	t.attestationExpiry = time.Now().Add(5 * time.Minute) // Cache valid for 5 minutes
+	t.attestationMutex.Unlock()
+
+	t.logger.Info("Cached new attestation",
+		zap.String("type", attestationReport.Type),
+		zap.Int("bytes", len(attestationReport.Report)),
+		zap.Time("expires", t.attestationExpiry))
+
+	return nil
+}
+
+// getCachedAttestation returns the cached attestation if valid, otherwise generates a new one
+func (t *TEET) getCachedAttestation(sessionID string) (*teeproto.AttestationReport, error) {
 	// Skip in standalone mode
 	if t.enclaveManager == nil {
 		return nil, nil
 	}
 
-	// Get public key
-	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get public key DER: %v", err)
+	t.attestationMutex.RLock()
+	cached := t.cachedAttestation
+	expiry := t.attestationExpiry
+	t.attestationMutex.RUnlock()
+
+	// Use cached attestation if valid
+	if cached != nil && time.Now().Before(expiry) {
+		t.logger.InfoIf("Using cached attestation",
+			zap.String("session_id", sessionID),
+			zap.String("type", cached.Type),
+			zap.Time("expires", expiry))
+		return cached, nil
 	}
 
-	// Create user data containing the hex-encoded ECDSA public key
-	userData := fmt.Sprintf("tee_t_public_key:%x", publicKeyDER)
-	t.logger.InfoIf("Including ECDSA public key in attestation",
-		zap.String("session_id", sessionID),
-		zap.Int("der_bytes", len(publicKeyDER)))
+	// Fallback: generate new attestation if cache is invalid
+	t.logger.WarnIf("Cached attestation expired or missing, generating new one",
+		zap.String("session_id", sessionID))
 
-	// Check attestation provider and generate accordingly
-	provider := os.Getenv("ATTESTATION_PROVIDER")
-	if provider == "gcp" {
-		raw, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate GCP attestation: %v", err)
-		}
-
-		t.logger.InfoIf("Generated GCP attestation",
-			zap.String("session_id", sessionID),
-			zap.Int("bytes", len(raw)))
-
-		return &teeproto.AttestationReport{
-			Type:   "gcp",
-			Report: raw,
-			// Public key will be extracted from report during verification
-		}, nil
-	} else {
-		// Default to Nitro
-		attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate Nitro attestation: %v", err)
-		}
-
-		t.logger.InfoIf("Generated Nitro attestation document",
-			zap.String("session_id", sessionID),
-			zap.Int("bytes", len(attestationDoc)))
-
-		return &teeproto.AttestationReport{
-			Type:   "nitro",
-			Report: attestationDoc,
-			// Public key will be extracted from report during verification
-		}, nil
+	if err := t.refreshAttestation(); err != nil {
+		return nil, fmt.Errorf("failed to generate fallback attestation: %v", err)
 	}
+
+	t.attestationMutex.RLock()
+	result := t.cachedAttestation
+	t.attestationMutex.RUnlock()
+
+	return result, nil
+}
+
+// generateAttestationReport generates an AttestationReport for enclave mode (uses cache for performance)
+func (t *TEET) generateAttestationReport(sessionID string) (*teeproto.AttestationReport, error) {
+	// Use cached attestation for performance
+	return t.getCachedAttestation(sessionID)
 }
 
 // Handler methods

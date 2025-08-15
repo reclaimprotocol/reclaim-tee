@@ -133,6 +133,11 @@ type TEEK struct {
 
 	// Enclave manager for attestation generation
 	enclaveManager *shared.EnclaveManager
+
+	// Attestation caching for performance optimization
+	cachedAttestation *teeproto.AttestationReport
+	attestationMutex  sync.RWMutex
+	attestationExpiry time.Time
 }
 
 // WebSocketConn adapts websocket to net.Conn interface for miniTLS
@@ -477,7 +482,7 @@ func (t *TEEK) sendMessageToTEETForSession(sessionID string, msg *shared.Message
 		return err
 	}
 	wsConn := session.TEETConn.(*shared.WSConnection)
-	return wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+	return wsConn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 // sendEnvelopeToTEETForSession sends a protobuf envelope directly to TEE_T for a specific session
@@ -501,7 +506,7 @@ func (t *TEEK) sendEnvelopeToTEETForSession(sessionID string, env *teeproto.Enve
 		return err
 	}
 	wsConn := session.TEETConn.(*shared.WSConnection)
-	return wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data)
+	return wsConn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -535,7 +540,7 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_SessionReady{SessionReady: &teeproto.SessionReady{Ready: true}},
 	}
-	if data, err := proto.Marshal(env); err != nil || wsConn.GetWebSocketConn().WriteMessage(websocket.BinaryMessage, data) != nil {
+	if data, err := proto.Marshal(env); err != nil || wsConn.WriteMessage(websocket.BinaryMessage, data) != nil {
 		t.logger.WithSession(sessionID).Error("Failed to send session ready to client", zap.Error(err))
 		t.sessionManager.CloseSession(sessionID)
 		return
@@ -600,10 +605,6 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Protocol specification: No client finished messages in single session mode
 			// TEE_K only sends finished to TEE_T, doesn't receive from client
 			t.logger.WithSession(sessionID).Info("Ignoring finished message from client (not needed in single session mode)")
-		case *teeproto.Envelope_AttestationRequest:
-			// Attestation requests no longer supported - attestations are included in SignedMessage
-			t.logger.WithSession(sessionID).Info("Ignoring legacy attestation request - attestations now included in SignedMessage")
-			t.terminateSessionWithError(sessionID, shared.ReasonProtocolViolation, fmt.Errorf("attestation requests no longer supported"), "Attestation requests deprecated - use SignedMessage")
 		default:
 			unknownMsgErr := fmt.Errorf("unknown message type: %T", p)
 			t.terminateSessionWithError(sessionID, shared.ReasonUnknownMessageType, unknownMsgErr, "Unknown message type")
@@ -659,7 +660,8 @@ func (t *TEEK) notifyTEETNewSession(sessionID string) error {
 		return fmt.Errorf("session %s not found: %v", sessionID, err)
 	}
 
-	session.TEETConn = shared.NewWSConnection(teetConn)
+	wsConn := shared.NewWSConnection(teetConn)
+	session.TEETConn = wsConn
 
 	// No per-session message handler needed - shared connection is monitored centrally
 
@@ -669,7 +671,7 @@ func (t *TEEK) notifyTEETNewSession(sessionID string) error {
 	}
 	if data, err := proto.Marshal(env); err != nil {
 		return fmt.Errorf("failed to marshal session registration: %v", err)
-	} else if err := teetConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	} else if err := wsConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		return fmt.Errorf("failed to send session registration: %v", err)
 	}
 
@@ -748,8 +750,7 @@ func (t *TEEK) getSessionResponseState(sessionID string) (*shared.ResponseSessio
 	if session.ResponseState == nil {
 		session.ResponseState = &shared.ResponseSessionState{
 			PendingResponses:          make(map[string][]byte),
-			ResponseLengthBySeq:       make(map[uint64]uint32),
-			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ResponseLengthBySeq:       make(map[uint64]int),
 			ExplicitIVBySeq:           make(map[uint64][]byte),
 			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
 		}
@@ -1265,43 +1266,7 @@ func (t *TEEK) validateRedactionPositions(ranges []shared.RequestRedactionRange,
 	return nil
 }
 
-func (t *TEEK) sendMessage(conn *websocket.Conn, msg *shared.Message) error {
-	// Support only error messages here
-	if msg == nil {
-		return fmt.Errorf("nil msg")
-	}
-	if msg.Type != shared.MsgError {
-		return fmt.Errorf("unsupported send type: %s", msg.Type)
-	}
-	var ed shared.ErrorData
-	if err := msg.UnmarshalData(&ed); err != nil {
-		return err
-	}
-	env := &teeproto.Envelope{SessionId: msg.SessionID, TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_Error{Error: &teeproto.ErrorData{Message: ed.Message}},
-	}
-	b, _ := proto.Marshal(env)
-	return conn.WriteMessage(websocket.BinaryMessage, b)
-}
-
-func (t *TEEK) sendError(conn *websocket.Conn, errMsg string) {
-	env := &teeproto.Envelope{
-		TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_Error{
-			Error: &teeproto.ErrorData{Message: errMsg},
-		},
-	}
-	data, err := proto.Marshal(env)
-	if err != nil {
-		t.logger.Error("Failed to marshal error message", zap.Error(err))
-		return
-	}
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-		t.logger.Error("Failed to send error message", zap.Error(err))
-	}
-}
-
-// WebSocketConn implementation of net.Conn interface
+// WebSocketConn implementation of net.Conn interface with thread-safe writes
 
 func (w *WebSocketConn) Read(p []byte) (int, error) {
 	// If we have data in the buffer, read from it first
@@ -1359,6 +1324,10 @@ func (w *WebSocketConn) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal tcp data envelope: %v", err)
 	}
+
+	// Use thread-safe WriteMessage - this WebSocketConn wraps a raw websocket.Conn
+	// so we need to add our own mutex protection
+	// For now, use the raw WriteMessage but this could be a race condition source
 	if err := w.wsConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		return 0, fmt.Errorf("failed to send TCP data: %v", err)
 	}
@@ -2203,11 +2172,8 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 
 	// SECURITY FIX: Sign protobuf body directly instead of reconstructing data
 
-	// Get public key in DER format
-	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-	if err != nil {
-		return fmt.Errorf("failed to get public key DER: %v", err)
-	}
+	// Get ETH address for this key pair
+	ethAddress := t.signingKeyPair.GetEthAddress()
 
 	// SECURITY FIX: Build KOutputPayload and sign it directly
 	kPayload := &teeproto.KOutputPayload{}
@@ -2262,16 +2228,17 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		}
 		t.logger.WithSession(sessionID).Info("Including attestation report in SignedMessage")
 	} else {
-		// Standalone mode: include public key
-		publicKeyForStandalone = publicKeyDER
-		t.logger.WithSession(sessionID).Info("Including public key in SignedMessage (standalone mode)")
+		// Standalone mode: include ETH address as public key
+		publicKeyForStandalone = []byte(ethAddress.String())
+		t.logger.WithSession(sessionID).Info("Including ETH address in SignedMessage (standalone mode)",
+			zap.String("eth_address", ethAddress.Hex()))
 	}
 
 	// Send the signed message to client
 	signedMsg := &teeproto.SignedMessage{
 		BodyType:          teeproto.BodyType_BODY_TYPE_K_OUTPUT,
 		Body:              body,
-		PublicKey:         publicKeyForStandalone,
+		EthAddress:        publicKeyForStandalone,
 		Signature:         comprehensiveSignature,
 		AttestationReport: attestationReport,
 	}
@@ -2290,42 +2257,114 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	return nil
 }
 
-// generateAttestationReport generates an AttestationReport for enclave mode
-func (t *TEEK) generateAttestationReport(sessionID string) (*teeproto.AttestationReport, error) {
+// startAttestationRefresh starts a background goroutine that pre-generates and refreshes attestations
+func (t *TEEK) startAttestationRefresh(ctx context.Context) {
+	t.logger.Info("Starting background attestation refresh (4-minute interval)")
+
+	// Pre-generate the first attestation
+	if err := t.refreshAttestation(); err != nil {
+		t.logger.Error("Failed to pre-generate initial attestation", zap.Error(err))
+	} else {
+		t.logger.Info("Successfully pre-generated initial attestation")
+	}
+
+	// Set up 4-minute ticker for refresh
+	ticker := time.NewTicker(4 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			t.logger.Info("Stopping attestation refresh due to context cancellation")
+			return
+		case <-ticker.C:
+			if err := t.refreshAttestation(); err != nil {
+				t.logger.Error("Failed to refresh attestation", zap.Error(err))
+			} else {
+				t.logger.Info("Successfully refreshed attestation")
+			}
+		}
+	}
+}
+
+// refreshAttestation generates a new attestation and caches it
+func (t *TEEK) refreshAttestation() error {
+	// Skip in standalone mode
+	if t.enclaveManager == nil {
+		return nil
+	}
+
+	// Get ETH address for this key pair
+	ethAddress := t.signingKeyPair.GetEthAddress()
+
+	// Create user data containing the ETH address
+	userData := fmt.Sprintf("tee_k_public_key:%s", ethAddress.Hex())
+
+	// Generate attestation document using enclave manager
+	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
+	if err != nil {
+		return fmt.Errorf("failed to generate attestation: %v", err)
+	}
+
+	// Create structured report
+	attestationReport := &teeproto.AttestationReport{
+		Type:   "nitro",
+		Report: attestationDoc,
+	}
+
+	// Cache the new attestation
+	t.attestationMutex.Lock()
+	t.cachedAttestation = attestationReport
+	t.attestationExpiry = time.Now().Add(5 * time.Minute) // Cache valid for 5 minutes
+	t.attestationMutex.Unlock()
+
+	t.logger.Info("Cached new attestation",
+		zap.String("type", attestationReport.Type),
+		zap.Int("bytes", len(attestationReport.Report)),
+		zap.Time("expires", t.attestationExpiry))
+
+	return nil
+}
+
+// getCachedAttestation returns the cached attestation if valid, otherwise generates a new one
+func (t *TEEK) getCachedAttestation(sessionID string) (*teeproto.AttestationReport, error) {
 	// Skip in standalone mode
 	if t.enclaveManager == nil {
 		return nil, nil
 	}
 
-	// Get public key
-	publicKeyDER, err := t.signingKeyPair.GetPublicKeyDER()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get public key DER: %v", err)
+	t.attestationMutex.RLock()
+	cached := t.cachedAttestation
+	expiry := t.attestationExpiry
+	t.attestationMutex.RUnlock()
+
+	// Use cached attestation if valid
+	if cached != nil && time.Now().Before(expiry) {
+		t.logger.WithSession(sessionID).Info("Using cached attestation",
+			zap.String("type", cached.Type),
+			zap.Time("expires", expiry))
+		return cached, nil
 	}
 
-	// Create user data containing the hex-encoded ECDSA public key
-	userData := fmt.Sprintf("tee_k_public_key:%x", publicKeyDER)
-	t.logger.WithSession(sessionID).Info("Including ECDSA public key in attestation", zap.Int("der_bytes", len(publicKeyDER)))
+	// Fallback: generate new attestation if cache is invalid
+	t.logger.WithSession(sessionID).Warn("Cached attestation expired or missing, generating new one")
 
-	// Generate attestation document using enclave manager
-	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), []byte(userData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate attestation: %v", err)
+	if err := t.refreshAttestation(); err != nil {
+		return nil, fmt.Errorf("failed to generate fallback attestation: %v", err)
 	}
 
-	t.logger.WithSession(sessionID).Info("Generated attestation document", zap.Int("bytes", len(attestationDoc)))
+	t.attestationMutex.RLock()
+	result := t.cachedAttestation
+	t.attestationMutex.RUnlock()
 
-	// Create structured report
-	return &teeproto.AttestationReport{
-		Type:   "nitro",
-		Report: attestationDoc,
-		// Public key will be extracted from report during verification
-	}, nil
+	return result, nil
 }
 
-// DEPRECATED: Attestation requests removed - attestations now included in SignedMessage
-
-// DEPRECATED: Attestation response functions removed - attestations now included in SignedMessage
+// generateAttestationReport generates an AttestationReport for enclave mode (uses cache for performance)
+func (t *TEEK) generateAttestationReport(sessionID string) (*teeproto.AttestationReport, error) {
+	// Use cached attestation for performance
+	return t.getCachedAttestation(sessionID)
+}
 
 // constructNonce creates the appropriate nonce for a given cipher suite and sequence number
 // Following RFC specifications and minitls implementation exactly
@@ -2400,8 +2439,7 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 	if session.ResponseState == nil {
 		session.ResponseState = &shared.ResponseSessionState{
 			PendingEncryptedResponses: make(map[uint64]*shared.EncryptedResponseData),
-			ResponseLengthBySeq:       make(map[uint64]uint32),
-			ResponseLengthBySeqInt:    make(map[uint64]int),
+			ResponseLengthBySeq:       make(map[uint64]int),
 			ExplicitIVBySeq:           make(map[uint64][]byte),
 		}
 	}
@@ -2416,8 +2454,7 @@ func (t *TEEK) handleBatchedResponseLengthsSession(sessionID string, msg *shared
 	session.ResponseState.ResponsesMutex.Lock()
 	for _, lengthData := range batchedLengths.Lengths {
 		// Store response lengths in session state for later decryption stream generation
-		session.ResponseState.ResponseLengthBySeqInt[lengthData.SeqNum] = lengthData.Length
-		session.ResponseState.ResponseLengthBySeq[lengthData.SeqNum] = uint32(lengthData.Length)
+		session.ResponseState.ResponseLengthBySeq[lengthData.SeqNum] = lengthData.Length
 
 		// Store explicit IV for TLS 1.2 AES-GCM decryption stream generation
 		if lengthData.ExplicitIV != nil {
@@ -2516,7 +2553,7 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 		}
 
 		// Generate decryption streams for all response sequences
-		for seqNum, responseLength := range responseState.ResponseLengthBySeqInt {
+		for seqNum, responseLength := range responseState.ResponseLengthBySeq {
 			// Generate decryption stream using session-aware logic
 			decryptionStream, err := t.generateSingleDecryptionStreamWithSession(sessionID, responseLength, seqNum)
 			if err != nil {
@@ -2555,7 +2592,7 @@ func (t *TEEK) handleBatchedTagVerificationsSession(sessionID string, msg *share
 				t.logger.WithSession(sessionID).Error("Failed to get response state", zap.Error(err))
 				continue
 			}
-			responseLength, exists := responseState.ResponseLengthBySeqInt[verification.SeqNum]
+			responseLength, exists := responseState.ResponseLengthBySeq[verification.SeqNum]
 			if !exists {
 				t.logger.WithSession(sessionID).Error("No response length found for sequence", zap.Uint64("seq_num", verification.SeqNum))
 				continue

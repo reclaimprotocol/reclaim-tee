@@ -14,7 +14,7 @@ import (
 // path of the file written or an error.
 // SECURITY: This function validates that required data is present before creating bundle
 func (c *Client) BuildVerificationBundle(path string) error {
-	bundle := &teeproto.VerificationBundlePB{}
+	bundle := &teeproto.VerificationBundle{}
 
 	// SECURITY: Validate that we have the required signed messages
 	if c.teekSignedMessage == nil {
@@ -44,13 +44,8 @@ func (c *Client) BuildVerificationBundle(path string) error {
 	if c.proofStream != nil || c.proofKey != nil {
 		bundle.Opening = &teeproto.Opening{
 			ProofStream: c.proofStream,
-			ProofKey:    c.proofKey,
 		}
 	}
-
-	// Attestations (if any; nil slices marshal as null, omit empty)
-	bundle.AttestationTeeK = c.teekAttestationPublicKey
-	bundle.AttestationTeeT = c.teetAttestationPublicKey
 
 	// Write protobuf to file
 	data, err := proto.Marshal(bundle)

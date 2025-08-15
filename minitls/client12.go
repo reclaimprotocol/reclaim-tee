@@ -472,7 +472,7 @@ func (c *Client) buildClientHelloTLS12(serverName string) ([]byte, *ecdh.Private
 	}
 
 	publicKeyBytes := privateKey.PublicKey().Bytes()
-	fmt.Printf("Generated X25519 public key (%d bytes): %x\n", len(publicKeyBytes), publicKeyBytes)
+	// fmt.Printf("Generated X25519 public key (%d bytes): %x\n", len(publicKeyBytes), publicKeyBytes)
 
 	// Generate client random
 	c.clientRandom = make([]byte, 32)

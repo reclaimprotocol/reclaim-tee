@@ -403,6 +403,12 @@ func reclaim_finish_protocol(protocol_handle C.reclaim_protocol_t, response_reda
 	session.Completed = true
 	session.CleanupTime = time.Now()
 
+	claim, err := session.Client.SubmitToAttestorCore("", nil, clientlib.ClaimTeeBundleParams{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(claim)
+
 	return C.RECLAIM_SUCCESS
 }
 

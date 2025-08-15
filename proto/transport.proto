@@ -6,6 +6,7 @@ option go_package = "tee-mpc/proto;teeproto";
 
 import "common.proto";
 import "signing.proto";
+import "attestor_api.proto";
 
 enum Sender {
   SENDER_UNSPECIFIED = 0;
@@ -58,13 +59,10 @@ message Envelope {
     BatchedDecryptionStreams batched_decryption_streams = 54;
     BatchedSignedRedactedDecryptionStreams batched_signed_redacted_decryption_streams = 55;
 
-    // Attestation
-    AttestationRequestData attestation_request = 60;
-    AttestationResponse attestation_response = 61;
-    TEETReady teet_ready = 62;
+    TEETReady teet_ready = 56;
 
     // Signing outputs
-    SignedMessage signed_message = 70;
+    SignedMessage signed_message = 57;
   }
 }
 
@@ -165,7 +163,11 @@ message ResponseTagVerification {
 }
 
 // Batches
-message BatchedEncryptedResponses { repeated EncryptedResponseData responses = 1; string session_id = 2; int32 total_count = 3; }
+message BatchedEncryptedResponses {
+  repeated EncryptedResponseData responses = 1;
+  string session_id = 2;
+  int32 total_count = 3;
+}
 
 message BatchedResponseLengths {
   message Length {
@@ -190,7 +192,11 @@ message BatchedTagSecrets {
 }
 
 message BatchedTagVerifications {
-  message Verification { bool success = 1; uint64 seq_num = 2; string message = 3; }
+  message Verification {
+    bool success = 1;
+    uint64 seq_num = 2;
+    string message = 3;
+  }
   repeated Verification verifications = 1;
   string session_id = 2;
   int32 total_count = 3;
@@ -207,14 +213,6 @@ message BatchedSignedRedactedDecryptionStreams {
   repeated SignedRedactedDecryptionStream signed_redacted_streams = 1;
   string session_id = 2;
   int32 total_count = 3;
-}
-
-// Attestation
-message AttestationResponse {
-  AttestationReport attestation_report = 1; // structured report (from signing.proto)
-  bool success = 2;
-  string error_message = 3;
-  string source = 4; // "tee_k" or "tee_t"
 }
 
 message SessionCreated {}

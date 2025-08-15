@@ -36,7 +36,7 @@ enum BodyType {
 message SignedMessage {
   BodyType body_type = 1;
   bytes body = 2; // serialized deterministic KOutputPayload or TOutputPayload
-  bytes public_key = 3; // DER-encoded public key (standalone mode only)
+  bytes eth_address = 3; // ETH address (20 bytes, standalone mode only)
   bytes signature = 4; // signature over body bytes
   AttestationReport attestation_report = 5; // full attestation (enclave mode only)
 }

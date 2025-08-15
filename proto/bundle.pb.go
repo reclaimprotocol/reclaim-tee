@@ -94,7 +94,6 @@ func (x *HandshakeSecrets) GetAlgorithm() string {
 type Opening struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ProofStream   []byte                 `protobuf:"bytes,1,opt,name=proof_stream,json=proofStream,proto3" json:"proof_stream,omitempty"` // Str_SP
-	ProofKey      []byte                 `protobuf:"bytes,2,opt,name=proof_key,json=proofKey,proto3" json:"proof_key,omitempty"`          // K_SP
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -136,43 +135,33 @@ func (x *Opening) GetProofStream() []byte {
 	return nil
 }
 
-func (x *Opening) GetProofKey() []byte {
-	if x != nil {
-		return x.ProofKey
-	}
-	return nil
-}
-
 // Single artefact produced by client for offline verification
-type VerificationBundlePB struct {
+type VerificationBundle struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	HandshakeKeys *HandshakeSecrets      `protobuf:"bytes,1,opt,name=handshake_keys,json=handshakeKeys,proto3" json:"handshake_keys,omitempty"` // optional
 	// Signed transcripts
 	TeekSigned *SignedMessage `protobuf:"bytes,2,opt,name=teek_signed,json=teekSigned,proto3" json:"teek_signed,omitempty"` // BODY_TYPE_K_OUTPUT
 	TeetSigned *SignedMessage `protobuf:"bytes,3,opt,name=teet_signed,json=teetSigned,proto3" json:"teet_signed,omitempty"` // BODY_TYPE_T_OUTPUT
 	// Commitment opening for proof ranges
-	Opening *Opening `protobuf:"bytes,4,opt,name=opening,proto3" json:"opening,omitempty"` // optional
-	// Optional attestation documents
-	AttestationTeeK []byte `protobuf:"bytes,10,opt,name=attestation_tee_k,json=attestationTeeK,proto3" json:"attestation_tee_k,omitempty"`
-	AttestationTeeT []byte `protobuf:"bytes,11,opt,name=attestation_tee_t,json=attestationTeeT,proto3" json:"attestation_tee_t,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	Opening       *Opening `protobuf:"bytes,4,opt,name=opening,proto3" json:"opening,omitempty"` // optional
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
-func (x *VerificationBundlePB) Reset() {
-	*x = VerificationBundlePB{}
+func (x *VerificationBundle) Reset() {
+	*x = VerificationBundle{}
 	mi := &file_bundle_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *VerificationBundlePB) String() string {
+func (x *VerificationBundle) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*VerificationBundlePB) ProtoMessage() {}
+func (*VerificationBundle) ProtoMessage() {}
 
-func (x *VerificationBundlePB) ProtoReflect() protoreflect.Message {
+func (x *VerificationBundle) ProtoReflect() protoreflect.Message {
 	mi := &file_bundle_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -184,49 +173,35 @@ func (x *VerificationBundlePB) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use VerificationBundlePB.ProtoReflect.Descriptor instead.
-func (*VerificationBundlePB) Descriptor() ([]byte, []int) {
+// Deprecated: Use VerificationBundle.ProtoReflect.Descriptor instead.
+func (*VerificationBundle) Descriptor() ([]byte, []int) {
 	return file_bundle_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *VerificationBundlePB) GetHandshakeKeys() *HandshakeSecrets {
+func (x *VerificationBundle) GetHandshakeKeys() *HandshakeSecrets {
 	if x != nil {
 		return x.HandshakeKeys
 	}
 	return nil
 }
 
-func (x *VerificationBundlePB) GetTeekSigned() *SignedMessage {
+func (x *VerificationBundle) GetTeekSigned() *SignedMessage {
 	if x != nil {
 		return x.TeekSigned
 	}
 	return nil
 }
 
-func (x *VerificationBundlePB) GetTeetSigned() *SignedMessage {
+func (x *VerificationBundle) GetTeetSigned() *SignedMessage {
 	if x != nil {
 		return x.TeetSigned
 	}
 	return nil
 }
 
-func (x *VerificationBundlePB) GetOpening() *Opening {
+func (x *VerificationBundle) GetOpening() *Opening {
 	if x != nil {
 		return x.Opening
-	}
-	return nil
-}
-
-func (x *VerificationBundlePB) GetAttestationTeeK() []byte {
-	if x != nil {
-		return x.AttestationTeeK
-	}
-	return nil
-}
-
-func (x *VerificationBundlePB) GetAttestationTeeT() []byte {
-	if x != nil {
-		return x.AttestationTeeT
 	}
 	return nil
 }
@@ -240,20 +215,16 @@ const file_bundle_proto_rawDesc = "" +
 	"\rhandshake_key\x18\x01 \x01(\fR\fhandshakeKey\x12!\n" +
 	"\fhandshake_iv\x18\x02 \x01(\fR\vhandshakeIv\x12!\n" +
 	"\fcipher_suite\x18\x03 \x01(\rR\vcipherSuite\x12\x1c\n" +
-	"\talgorithm\x18\x04 \x01(\tR\talgorithm\"I\n" +
+	"\talgorithm\x18\x04 \x01(\tR\talgorithm\",\n" +
 	"\aOpening\x12!\n" +
-	"\fproof_stream\x18\x01 \x01(\fR\vproofStream\x12\x1b\n" +
-	"\tproof_key\x18\x02 \x01(\fR\bproofKey\"\xd2\x02\n" +
-	"\x14VerificationBundlePB\x12A\n" +
+	"\fproof_stream\x18\x01 \x01(\fR\vproofStream\"\xf8\x01\n" +
+	"\x12VerificationBundle\x12A\n" +
 	"\x0ehandshake_keys\x18\x01 \x01(\v2\x1a.teeproto.HandshakeSecretsR\rhandshakeKeys\x128\n" +
 	"\vteek_signed\x18\x02 \x01(\v2\x17.teeproto.SignedMessageR\n" +
 	"teekSigned\x128\n" +
 	"\vteet_signed\x18\x03 \x01(\v2\x17.teeproto.SignedMessageR\n" +
 	"teetSigned\x12+\n" +
-	"\aopening\x18\x04 \x01(\v2\x11.teeproto.OpeningR\aopening\x12*\n" +
-	"\x11attestation_tee_k\x18\n" +
-	" \x01(\fR\x0fattestationTeeK\x12*\n" +
-	"\x11attestation_tee_t\x18\v \x01(\fR\x0fattestationTeeTB\x18Z\x16tee-mpc/proto;teeprotob\x06proto3"
+	"\aopening\x18\x04 \x01(\v2\x11.teeproto.OpeningR\aopeningB\x18Z\x16tee-mpc/proto;teeprotob\x06proto3"
 
 var (
 	file_bundle_proto_rawDescOnce sync.Once
@@ -269,16 +240,16 @@ func file_bundle_proto_rawDescGZIP() []byte {
 
 var file_bundle_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_bundle_proto_goTypes = []any{
-	(*HandshakeSecrets)(nil),     // 0: teeproto.HandshakeSecrets
-	(*Opening)(nil),              // 1: teeproto.Opening
-	(*VerificationBundlePB)(nil), // 2: teeproto.VerificationBundlePB
-	(*SignedMessage)(nil),        // 3: teeproto.SignedMessage
+	(*HandshakeSecrets)(nil),   // 0: teeproto.HandshakeSecrets
+	(*Opening)(nil),            // 1: teeproto.Opening
+	(*VerificationBundle)(nil), // 2: teeproto.VerificationBundle
+	(*SignedMessage)(nil),      // 3: teeproto.SignedMessage
 }
 var file_bundle_proto_depIdxs = []int32{
-	0, // 0: teeproto.VerificationBundlePB.handshake_keys:type_name -> teeproto.HandshakeSecrets
-	3, // 1: teeproto.VerificationBundlePB.teek_signed:type_name -> teeproto.SignedMessage
-	3, // 2: teeproto.VerificationBundlePB.teet_signed:type_name -> teeproto.SignedMessage
-	1, // 3: teeproto.VerificationBundlePB.opening:type_name -> teeproto.Opening
+	0, // 0: teeproto.VerificationBundle.handshake_keys:type_name -> teeproto.HandshakeSecrets
+	3, // 1: teeproto.VerificationBundle.teek_signed:type_name -> teeproto.SignedMessage
+	3, // 2: teeproto.VerificationBundle.teet_signed:type_name -> teeproto.SignedMessage
+	1, // 3: teeproto.VerificationBundle.opening:type_name -> teeproto.Opening
 	4, // [4:4] is the sub-list for method output_type
 	4, // [4:4] is the sub-list for method input_type
 	4, // [4:4] is the sub-list for extension type_name

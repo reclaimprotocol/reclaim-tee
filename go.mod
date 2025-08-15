@@ -8,6 +8,7 @@ require (
 	github.com/anjuna-security/go-nitro-attestation v0.0.0-20250527214750-dc507eadb414
 	github.com/antchfx/xpath v1.3.3
 	github.com/austinast/nitro-enclaves-sdk-go v0.0.2
+	github.com/ethereum/go-ethereum v1.16.2
 	github.com/coreos/go-json v0.0.0-20231102161613-e49c8866685a
 	github.com/go-acme/lego/v4 v4.25.2
 	github.com/golang-jwt/jwt/v5 v5.3.0
@@ -31,7 +32,14 @@ require (
 	cloud.google.com/go/compute/metadata v0.8.0 // indirect
 	cloud.google.com/go/iam v1.5.2 // indirect
 	cloud.google.com/go/longrunning v0.6.7 // indirect
+	github.com/bits-and-blooms/bitset v1.20.0 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
+	github.com/consensys/gnark-crypto v0.18.0 // indirect
+	github.com/crate-crypto/go-eth-kzg v1.3.0 // indirect
+	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
+	github.com/ethereum/c-kzg-4844/v2 v2.1.0 // indirect
+	github.com/ethereum/go-verkle v0.2.2 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.2 // indirect
@@ -40,8 +48,10 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
+	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/miekg/dns v1.1.68 // indirect
+	github.com/supranational/blst v0.3.14 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f // indirect
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
