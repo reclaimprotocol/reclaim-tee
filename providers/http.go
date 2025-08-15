@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -106,4 +107,87 @@ func CreateRequest(secret HTTPProviderSecretParams, params HTTPProviderParams) (
 	}
 	sort.Slice(redactions, func(i, j int) bool { return redactions[i].To < redactions[j].To })
 	return CreateRequestResult{Data: data, Redactions: redactions}, nil
+}
+
+// GetResponseRedactions computes redaction ranges for an HTTP response based on responseRedactions in params
+func GetResponseRedactions(response []byte, rawParams HTTPProviderParams, ctx ProviderCtx) ([]RedactedOrHashedArraySlice, error) {
+	res, err := parseHTTPResponseBytes(response)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(rawParams.ResponseRedactions) == 0 {
+		return []RedactedOrHashedArraySlice{}, nil
+	}
+
+	if res.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("Expected status 2xx, got %d (%s)", res.StatusCode, res.StatusMessage)
+	}
+
+	// substitute placeholders in params (ignoreMissing = true)
+	sp := substituteParamValues(rawParams, nil, true)
+	params := sp.NewParams
+
+	headerEndIndex := res.StatusLineEndIndex
+	bodyStartIdx := res.BodyStartIndex
+	if bodyStartIdx < 4 {
+		return nil, errors.New("Failed to find response body")
+	}
+
+	reveals := []RedactedOrHashedArraySlice{{From: 0, To: headerEndIndex}}
+
+	// CRLF boundary: only verify and reveal when client supports it
+	if shouldRevealCrlf(ctx) {
+		if res.HeaderEndIdx < 0 || res.HeaderEndIdx+4 > len(response) {
+			return nil, fmt.Errorf("Failed to find header/body separator at index %d", res.HeaderEndIdx)
+		}
+		if !bytes.Equal(response[res.HeaderEndIdx:res.HeaderEndIdx+4], []byte("\r\n\r\n")) {
+			return nil, fmt.Errorf("Failed to find header/body separator at index %d", res.HeaderEndIdx)
+		}
+	}
+
+	// always reveal the double CRLF which separates headers from body (mirror TS)
+	reveals = append(reveals, RedactedOrHashedArraySlice{From: res.HeaderEndIdx, To: res.HeaderEndIdx + 4})
+
+	// reveal Date header if present
+	if rng, ok := res.HeaderLowerToRanges["date"]; ok && rng.To > rng.From {
+		reveals = append(reveals, rng)
+	}
+
+	bodyStr := uint8ArrayToStr(res.Body)
+	redactions := []RedactedOrHashedArraySlice{}
+
+	for _, rs := range params.ResponseRedactions {
+		proc, err := processRedactionRequest(bodyStr, rs, bodyStartIdx, res.Chunks)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range proc {
+			reveals = append(reveals, item.Reveal)
+			redactions = append(redactions, item.Redactions...)
+		}
+	}
+
+	sort.Slice(reveals, func(i, j int) bool { return reveals[i].To < reveals[j].To })
+
+	if len(reveals) > 1 {
+		currentIndex := 0
+		for _, r := range reveals {
+			if currentIndex < r.From {
+				redactions = append(redactions, RedactedOrHashedArraySlice{From: currentIndex, To: r.From})
+			}
+			currentIndex = r.To
+		}
+		redactions = append(redactions, RedactedOrHashedArraySlice{From: currentIndex, To: len(response)})
+	}
+
+	// include hashed reveals if any
+	for _, r := range reveals {
+		if r.Hash != nil {
+			redactions = append(redactions, r)
+		}
+	}
+
+	sort.Slice(redactions, func(i, j int) bool { return redactions[i].To < redactions[j].To })
+	return redactions, nil
 }

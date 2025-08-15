@@ -6,7 +6,9 @@ require (
 	cloud.google.com/go/kms v1.22.0
 	cloud.google.com/go/secretmanager v1.15.0
 	github.com/anjuna-security/go-nitro-attestation v0.0.0-20250527214750-dc507eadb414
+	github.com/antchfx/xpath v1.3.3
 	github.com/austinast/nitro-enclaves-sdk-go v0.0.2
+	github.com/coreos/go-json v0.0.0-20231102161613-e49c8866685a
 	github.com/go-acme/lego/v4 v4.25.2
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
@@ -14,11 +16,12 @@ require (
 	github.com/hf/nsm v0.0.0-20220930140112-cd181bd646b9
 	github.com/joho/godotenv v1.5.1
 	github.com/mdlayher/vsock v1.2.1
-	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
+	github.com/reclaimprotocol/jsonpathplus-go v0.0.0-20250815002525-fa349ee7148b
+	github.com/xeipuuv/gojsonschema v1.2.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.41.0
+	golang.org/x/net v0.43.0
 	google.golang.org/protobuf v1.36.7
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -40,6 +43,8 @@ require (
 	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/miekg/dns v1.1.68 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f // indirect
+	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.62.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 // indirect
@@ -48,7 +53,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/mod v0.27.0 // indirect
-	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
