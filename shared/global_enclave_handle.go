@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
 	"sync"
@@ -11,7 +12,6 @@ import (
 var (
 	globalHandle        *EnclaveHandle
 	initializationError error
-	initMutex           sync.Mutex
 	initOnce            sync.Once
 )
 
@@ -19,8 +19,6 @@ var (
 // NEVER panics - always returns error instead of crashing enclave
 func SafeGetEnclaveHandle() (*EnclaveHandle, error) {
 	initOnce.Do(func() {
-		initMutex.Lock()
-		defer initMutex.Unlock()
 
 		if globalHandle == nil && initializationError == nil {
 			enclave := &EnclaveHandle{
@@ -53,6 +51,7 @@ func (e *EnclaveHandle) initialize() error {
 	if e.nsm, err = nsm.OpenDefaultSession(); err != nil {
 		return fmt.Errorf("failed to open NSM session: %v", err)
 	}
+	rand.Reader = e.nsm
 
 	// Generate RSA key with proper error handling
 	if e.key, err = generateRSAKey(); err != nil {

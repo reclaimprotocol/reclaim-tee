@@ -34,15 +34,6 @@ func main() {
 func startStandaloneMode(config *TEEKConfig, logger *shared.Logger) {
 	teek := NewTEEKWithConfig(config)
 
-	// Start background attestation refresh in a separate context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Start background attestation refresh if in enclave mode
-	if teek.enclaveManager != nil {
-		go teek.startAttestationRefresh(ctx)
-	}
-
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
 		Handler:      setupRoutes(teek),
@@ -84,7 +75,6 @@ func startStandaloneMode(config *TEEKConfig, logger *shared.Logger) {
 	logger.Info("Shutting down...")
 
 	// Graceful shutdown
-	cancel() // Cancel attestation refresh context
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
