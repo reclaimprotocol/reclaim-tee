@@ -180,7 +180,7 @@ func (c *Client) handleMessages() {
 				// Build a shared.SignedTranscript compatible with existing client logic
 				var reqRanges []shared.RequestRedactionRange
 				for _, r := range body.GetRequestRedactionRanges() {
-					reqRanges = append(reqRanges, shared.RequestRedactionRange{Start: int(r.GetStart()), Length: int(r.GetLength()), Type: r.GetType(), RedactionBytes: r.GetRedactionBytes()})
+					reqRanges = append(reqRanges, shared.RequestRedactionRange{Start: int(r.GetStart()), Length: int(r.GetLength()), Type: r.GetType()})
 				}
 				var respRanges []shared.ResponseRedactionRange
 				for _, rr := range body.GetResponseRedactionRanges() {
@@ -338,7 +338,7 @@ func (c *Client) sendMessage(msg *shared.Message) error {
 			// Convert ranges
 			ranges := make([]*teeproto.RequestRedactionRange, 0, len(d.RedactionRanges))
 			for _, r := range d.RedactionRanges {
-				ranges = append(ranges, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type, RedactionBytes: r.RedactionBytes})
+				ranges = append(ranges, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type})
 			}
 			env.Payload = &teeproto.Envelope_RedactedRequest{RedactedRequest: &teeproto.RedactedRequest{
 				RedactedRequest: d.RedactedRequest,

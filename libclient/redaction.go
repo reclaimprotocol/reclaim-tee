@@ -237,9 +237,6 @@ func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 	}
 
 	c.logger.Info("Generated redaction spec", zap.Int("ranges_count", len(redactionRanges)))
-	// for i, r := range redactionRanges {
-	// 	log.Printf("[Client] Range %d: [%d:%d] (%d redaction bytes)", i+1, r.Start, r.Start+r.Length-1, len(r.RedactionBytes))
-	// }
 
 	return spec
 }

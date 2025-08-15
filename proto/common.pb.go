@@ -27,10 +27,9 @@ type RequestRedactionRange struct {
 	Start  int32                  `protobuf:"varint,1,opt,name=start,proto3" json:"start,omitempty"`
 	Length int32                  `protobuf:"varint,2,opt,name=length,proto3" json:"length,omitempty"`
 	// Values: "sensitive" or "sensitive_proof"
-	Type           string `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
-	RedactionBytes []byte `protobuf:"bytes,4,opt,name=redaction_bytes,json=redactionBytes,proto3" json:"redaction_bytes,omitempty"` // Optional
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	Type          string `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RequestRedactionRange) Reset() {
@@ -82,13 +81,6 @@ func (x *RequestRedactionRange) GetType() string {
 		return x.Type
 	}
 	return ""
-}
-
-func (x *RequestRedactionRange) GetRedactionBytes() []byte {
-	if x != nil {
-		return x.RedactionBytes
-	}
-	return nil
 }
 
 type ResponseRedactionRange struct {
@@ -333,12 +325,11 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\bteeproto\"\x82\x01\n" +
+	"\fcommon.proto\x12\bteeproto\"Y\n" +
 	"\x15RequestRedactionRange\x12\x14\n" +
 	"\x05start\x18\x01 \x01(\x05R\x05start\x12\x16\n" +
 	"\x06length\x18\x02 \x01(\x05R\x06length\x12\x12\n" +
-	"\x04type\x18\x03 \x01(\tR\x04type\x12'\n" +
-	"\x0fredaction_bytes\x18\x04 \x01(\fR\x0eredactionBytes\"F\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\"F\n" +
 	"\x16ResponseRedactionRange\x12\x14\n" +
 	"\x05start\x18\x01 \x01(\x05R\x05start\x12\x16\n" +
 	"\x06length\x18\x02 \x01(\x05R\x06length\"|\n" +

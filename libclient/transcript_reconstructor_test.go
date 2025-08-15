@@ -10,7 +10,7 @@ import (
 
 func TestReconstructTranscriptForClaimTunnel(t *testing.T) {
 	// Create a minimal test bundle
-	bundle := &teeproto.VerificationBundlePB{
+	bundle := &teeproto.VerificationBundle{
 		TeekSigned: &teeproto.SignedMessage{
 			Body: createTestKOutput(),
 		},
@@ -50,7 +50,7 @@ func TestReconstructTranscriptForClaimTunnel(t *testing.T) {
 
 func TestExtractHostFromBundle(t *testing.T) {
 	// Create a test bundle
-	bundle := &teeproto.VerificationBundlePB{
+	bundle := &teeproto.VerificationBundle{
 		TeekSigned: &teeproto.SignedMessage{
 			Body: createTestKOutput(),
 		},
