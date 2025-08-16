@@ -158,7 +158,6 @@ type Client struct {
 	protocolStartTime            time.Time                       // When protocol started
 	lastResponseData             *HTTPResponse                   // Last received HTTP response
 	lastRedactionRanges          []shared.ResponseRedactionRange // Last redaction ranges from callback
-	lastRedactedResponse         []byte                          // Last redacted response from callback
 	responseReconstructed        bool                            // Flag to prevent multiple response reconstruction
 	transcriptValidationResults  *TranscriptValidationResults    // Cached validation results
 	attestationValidationResults *AttestationValidationResults   // Cached attestation results
@@ -1207,9 +1206,6 @@ func (c *Client) ContinueToPhase2() error {
 		} else if result != nil {
 			c.logger.Info("Response callback returned redaction ranges", zap.Int("count", len(result.RedactionRanges)))
 			c.lastRedactionRanges = result.RedactionRanges
-			if result.RedactedBody != nil {
-				c.lastRedactedResponse = result.RedactedBody
-			}
 		}
 	}
 
@@ -1232,38 +1228,6 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 	privateKey, err := crypto.GenerateKey()
 	if err != nil {
 		c.logger.Fatal("Failed to generate private key:", zap.Error(err))
-	}
-
-	// Example: Submit for HTTP provider claim
-	httpParams := map[string]interface{}{
-		"method": "GET",
-		"url":    "https://github.com",
-		"responseMatches": []map[string]interface{}{
-			{
-				"type":  "regex",
-				"value": "github",
-			},
-		},
-		"responseRedactions": []map[string]interface{}{
-			{
-				"jsonPath": "$.cardano.usd",
-				"regex":    "",
-				"xPath":    "",
-			},
-			{
-				"jsonPath": "$.solana.usd",
-				"regex":    "",
-				"xPath":    "",
-			},
-		},
-	}
-
-	params = ClaimTeeBundleParams{
-		Provider:   "http",
-		Parameters: httpParams,
-		Context: map[string]interface{}{
-			"purpose": "github_identity_proof",
-		},
 	}
 
 	// Submit to attestor-core
@@ -1301,8 +1265,7 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 	}
 
 	c.logger.Info("Submitting verification bundle to attestor-core",
-		zap.String("attestor_url", attestorURL),
-		zap.String("provider", params.Provider))
+		zap.String("attestor_url", attestorURL))
 
 	// Create attestor client and submit
 	attestorClient := NewAttestorClient(attestorURL, privateKey, c.logger)

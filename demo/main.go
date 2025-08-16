@@ -7,6 +7,7 @@ import (
 	"strings"
 	clientlib "tee-mpc/libclient"
 	"tee-mpc/proofverifier" // add new import
+	"tee-mpc/providers"
 	"tee-mpc/shared"
 	"time"
 
@@ -70,13 +71,33 @@ func main() {
 	teetURL := autoDetectTEETURL(teekURL)
 	logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
 
-	// Create demo request and redaction ranges
-	demoRequest := createDemoRequest("github.com")
-	demoRanges := createDemoRedactionRanges(demoRequest)
+	publicParams := providers.HTTPProviderParams{
+		URL:    "https://vpic.nhtsa.dot.gov/api/vehicles/getallmanufacturers?format=json",
+		Method: "GET",
+		ResponseMatches: []providers.ResponseMatch{
+			{
+				Value: "TESLA, INC.",
+			},
+		},
+		ResponseRedactions: []providers.ResponseRedaction{
+			{
+				JSONPath: "$.Results[*].Mfr_Name",
+			},
+		},
+	}
 
-	logger.Info("Demo request created",
-		zap.Int("request_length", len(demoRequest)),
-		zap.Int("redaction_ranges", len(demoRanges)))
+	secretParams := providers.HTTPProviderSecretParams{
+		Headers: map[string]string{
+			"accept": "application/json, text/plain, */*",
+		},
+	}
+
+	req, ranges, err := initParams(publicParams, secretParams)
+	if err != nil {
+		log.Fatalf("initParams: %s", err.Error())
+	}
+
+	logger.Info("Demo request created")
 
 	// Create client configuration (without RequestRedactions since we'll set ranges directly)
 	config := clientlib.ClientConfig{
@@ -84,7 +105,7 @@ func main() {
 		TEETURL:          teetURL,
 		Timeout:          clientlib.DefaultConnectionTimeout,
 		Mode:             clientlib.ModeAuto,
-		ResponseCallback: &DemoResponseCallback{},
+		ResponseCallback: &DemoResponseCallback{Params: publicParams},
 		ForceTLSVersion:  forceTLSVersion,
 		ForceCipherSuite: forceCipherSuite,
 	}
@@ -101,11 +122,11 @@ func main() {
 	}
 
 	// Set the demo request data and redaction ranges directly
-	client.SetRequestData(demoRequest)
-	client.SetRequestRedactionRanges(demoRanges)
+	client.SetRequestData(req)
+	client.SetRequestRedactionRanges(ranges)
 
 	// Request HTTP to github.com (supports all cipher suites)
-	if err := client.RequestHTTP("github.com", 443); err != nil {
+	if err := client.RequestHTTP("vpic.nhtsa.dot.gov", 443); err != nil {
 		logger.Error("Failed to request HTTP", zap.Error(err))
 		fmt.Printf("❌ Failed to request HTTP: %v\n", err)
 		return
@@ -230,19 +251,9 @@ func main() {
 		log.Fatalf("Failed to generate private key: %v", err)
 	}
 
-	// Set up HTTP provider parameters for testing
-	httpParams := clientlib.HTTPProviderParams(
-		"https://github.com",
-		"GET",
-		nil,
-		"",
-		[]map[string]string{{"type": "regex", "value": "github"}},
-		nil,
-	)
-
 	claimParams := clientlib.ClaimTeeBundleParams{
 		Provider:   "http",
-		Parameters: httpParams,
+		Parameters: publicParams,
 		Context:    map[string]interface{}{"test": "demo"},
 	}
 
@@ -285,197 +296,10 @@ func autoDetectTEETURL(teekURL string) string {
 	}
 }
 
-// PatternMatch represents a pattern match result (moved from libclient)
-type PatternMatch struct {
-	Start  int
-	Length int
-	Value  string
-}
-
-// findPatternMatches finds all matches for a pattern in the request string (moved from libclient)
-// This is demo-specific pattern matching logic
-func findPatternMatches(request, pattern string) []PatternMatch {
-	var matches []PatternMatch
-
-	// For now, implement simple literal matching
-	// In a full implementation, this would use regex
-	if strings.Contains(pattern, "Authorization: Bearer") {
-		// Handle Authorization header pattern
-		start := strings.Index(request, "Authorization: Bearer ")
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			if lineEnd != -1 {
-				// Extract just the token part
-				tokenStart := start + len("Authorization: Bearer ")
-				tokenEnd := start + lineEnd
-				matches = append(matches, PatternMatch{
-					Start:  tokenStart,
-					Length: tokenEnd - tokenStart,
-					Value:  request[tokenStart:tokenEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "X-Account-ID:") {
-		// Handle X-Account-ID header pattern
-		start := strings.Index(request, "X-Account-ID: ")
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			if lineEnd != -1 {
-				// Extract just the account ID part
-				idStart := start + len("X-Account-ID: ")
-				idEnd := start + lineEnd
-				matches = append(matches, PatternMatch{
-					Start:  idStart,
-					Length: idEnd - idStart,
-					Value:  request[idStart:idEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "User-Agent") {
-		// Handle User-Agent header pattern
-		start := strings.Index(request, "User-Agent: ")
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			if lineEnd != -1 {
-				// Extract just the user agent part
-				uaStart := start + len("User-Agent: ")
-				uaEnd := start + lineEnd
-				matches = append(matches, PatternMatch{
-					Start:  uaStart,
-					Length: uaEnd - uaStart,
-					Value:  request[uaStart:uaEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "Accept:") {
-		// Handle Accept header pattern
-		start := strings.Index(request, "Accept: ")
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			if lineEnd != -1 {
-				// Extract just the accept part
-				acceptStart := start + len("Accept: ")
-				acceptEnd := start + lineEnd
-				matches = append(matches, PatternMatch{
-					Start:  acceptStart,
-					Length: acceptEnd - acceptStart,
-					Value:  request[acceptStart:acceptEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "X-Session-Token:") {
-		// Handle X-Session-Token header pattern
-		start := strings.Index(request, "X-Session-Token: ")
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			if lineEnd != -1 {
-				// Extract just the session token part
-				tokenStart := start + len("X-Session-Token: ")
-				tokenEnd := start + lineEnd
-				matches = append(matches, PatternMatch{
-					Start:  tokenStart,
-					Length: tokenEnd - tokenStart,
-					Value:  request[tokenStart:tokenEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "X-API-Key:") {
-		// Handle X-API-Key header pattern
-		start := strings.Index(request, "X-API-Key: ")
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			if lineEnd != -1 {
-				// Extract just the API key part
-				keyStart := start + len("X-API-Key: ")
-				keyEnd := start + lineEnd
-				matches = append(matches, PatternMatch{
-					Start:  keyStart,
-					Length: keyEnd - keyStart,
-					Value:  request[keyStart:keyEnd],
-				})
-			}
-		}
-	} else if strings.Contains(pattern, "X-User-ID:") {
-		// Handle X-User-ID header pattern
-		start := strings.Index(request, "X-User-ID: ")
-		if start != -1 {
-			lineEnd := strings.Index(request[start:], "\r\n")
-			if lineEnd == -1 {
-				lineEnd = strings.Index(request[start:], "\n")
-			}
-			if lineEnd != -1 {
-				// Extract just the user ID part
-				userIdStart := start + len("X-User-ID: ")
-				userIdEnd := start + lineEnd
-				matches = append(matches, PatternMatch{
-					Start:  userIdStart,
-					Length: userIdEnd - userIdStart,
-					Value:  request[userIdStart:userIdEnd],
-				})
-			}
-		}
-	}
-
-	return matches
-}
-
-// createDemoRedactionRanges creates redaction ranges for the demo request
-// This function applies demo-specific redaction specifications to create ranges
-func createDemoRedactionRanges(httpRequest []byte) []shared.RequestRedactionRange {
-	var ranges []shared.RequestRedactionRange
-	requestStr := string(httpRequest)
-
-	// Demo redaction specifications
-	demoSpecs := []clientlib.RedactionSpec{
-		{Pattern: "Authorization: Bearer", Type: shared.RedactionTypeSensitiveProof},
-		{Pattern: "X-Account-ID:", Type: shared.RedactionTypeSensitive},
-		{Pattern: "X-Session-Token:", Type: shared.RedactionTypeSensitiveProof},
-		{Pattern: "X-API-Key:", Type: shared.RedactionTypeSensitiveProof},
-		{Pattern: "X-User-ID:", Type: shared.RedactionTypeSensitiveProof},
-	}
-
-	// Apply demo redaction specifications
-	for _, spec := range demoSpecs {
-		matches := findPatternMatches(requestStr, spec.Pattern)
-		for _, match := range matches {
-			ranges = append(ranges, shared.RequestRedactionRange{
-				Start:  match.Start,
-				Length: match.Length,
-				Type:   spec.Type,
-			})
-		}
-	}
-
-	return ranges
-}
-
-// createDemoRequest creates the demo HTTP request
-func createDemoRequest(host string) []byte {
-	// Create HTTP request with test sensitive data including multiple R_SP headers
-	testRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer secret_auth_token_12345\r\nX-Account-ID: ACC987654321\r\nX-Session-Token: sess_abc123def456\r\nX-API-Key: api_key_xyz789uvw012\r\nX-User-ID: user_987654321\r\nConnection: close\r\n\r\n", host)
-	return []byte(testRequest)
-}
-
 // DemoResponseCallback provides a demo implementation showing response redaction
-type DemoResponseCallback struct{}
+type DemoResponseCallback struct {
+	Params providers.HTTPProviderParams
+}
 
 // OnResponseReceived implements the ResponseCallback interface with demo redactions
 func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPResponse) (*clientlib.RedactionResult, error) {
@@ -484,144 +308,39 @@ func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPRespon
 
 	fmt.Printf("[DemoCallback] Processing full HTTP response (%d bytes)\n", len(fullHTTPResponse))
 
-	// Apply redaction logic (moved from applyRedactionForDisplay)
-	redactedResponse := d.applyDemoRedaction(fullHTTPResponse)
+	ctx := providers.ProviderCtx{Version: providers.ATTESTOR_VERSION_2_0_1}
 
-	// Calculate redaction ranges based on differences between original and redacted
-	redactionRanges := d.calculateRedactionRanges(fullHTTPResponse, redactedResponse)
+	ranges, err := providers.GetResponseRedactions(response.FullResponse, d.Params, ctx)
+	if err != nil {
+		return nil, err
+	}
+	var respRanges []shared.ResponseRedactionRange
+	for _, r := range ranges {
+		respRanges = append(respRanges, shared.ResponseRedactionRange{
+			Start:  r.From,
+			Length: r.To - r.From,
+		})
+	}
 
 	return &clientlib.RedactionResult{
-		RedactedBody:    []byte(redactedResponse),
-		RedactionRanges: redactionRanges,
+		RedactionRanges: respRanges,
 	}, nil
 }
 
-// applyDemoRedaction applies the demo redaction logic (moved from applyRedactionForDisplay)
-func (d *DemoResponseCallback) applyDemoRedaction(httpResponse string) string {
-	// Find the end of headers (double CRLF)
-	headerEndIndex := strings.Index(httpResponse, "\r\n\r\n")
-	if headerEndIndex == -1 {
-		// Try with just LF
-		headerEndIndex = strings.Index(httpResponse, "\n\n")
-		if headerEndIndex != -1 {
-			headerEndIndex += 2 // Account for \n\n
-		}
-	} else {
-		headerEndIndex += 4 // Account for \r\n\r\n
+func initParams(params providers.HTTPProviderParams, secretParams providers.HTTPProviderSecretParams) ([]byte, []shared.RequestRedactionRange, error) {
+
+	req, err := providers.CreateRequest(secretParams, params)
+	if err != nil {
+		return nil, []shared.RequestRedactionRange{}, err
 	}
 
-	if headerEndIndex == -1 {
-		// No clear header/body separation found, preserve everything (might be just headers)
-		return httpResponse
+	var ranges []shared.RequestRedactionRange
+	for _, r := range req.Redactions {
+		ranges = append(ranges, shared.RequestRedactionRange{
+			Start:  r.From,
+			Length: r.To - r.From,
+			Type:   "sensitive",
+		})
 	}
-
-	// Split into headers and body
-	headers := httpResponse[:headerEndIndex]
-	bodyContent := httpResponse[headerEndIndex:]
-
-	if len(bodyContent) == 0 {
-		// Only headers, nothing to redact
-		return httpResponse
-	}
-
-	// Find ALL title content within the body to preserve (only text between tags)
-	titleStartTag := "<title>"
-	titleEndTag := "</title>"
-
-	// Find all title tag pairs
-	type titleRange struct {
-		contentStart int
-		contentEnd   int
-		textContent  string
-	}
-
-	var titleRanges []titleRange
-	searchStart := 0
-
-	for {
-		titleStartIndex := strings.Index(bodyContent[searchStart:], titleStartTag)
-		if titleStartIndex == -1 {
-			break // No more title tags
-		}
-
-		titleStartIndex += searchStart // Adjust for search offset
-		titleContentStartIndex := titleStartIndex + len(titleStartTag)
-
-		titleEndIndex := strings.Index(bodyContent[titleContentStartIndex:], titleEndTag)
-		if titleEndIndex != -1 {
-			titleEndIndex = titleContentStartIndex + titleEndIndex
-
-			// Extract the text content only
-			titleText := bodyContent[titleContentStartIndex:titleEndIndex]
-
-			titleRanges = append(titleRanges, titleRange{
-				contentStart: titleContentStartIndex,
-				contentEnd:   titleEndIndex,
-				textContent:  titleText,
-			})
-
-			// Continue searching after this closing tag
-			searchStart = titleEndIndex + len(titleEndTag)
-		} else {
-			// Found opening tag but no closing tag, skip it
-			searchStart = titleContentStartIndex
-		}
-	}
-
-	var redactedBody string
-	if len(titleRanges) > 0 {
-		// Build redacted body with all title texts preserved
-		var result strings.Builder
-		lastEnd := 0
-
-		for _, tr := range titleRanges {
-			// Redact from lastEnd to start of this title content
-			if tr.contentStart > lastEnd {
-				result.WriteString(strings.Repeat("*", tr.contentStart-lastEnd))
-			}
-
-			// Preserve the title text content
-			result.WriteString(tr.textContent)
-
-			lastEnd = tr.contentEnd
-		}
-
-		// Redact everything after the last title
-		if lastEnd < len(bodyContent) {
-			result.WriteString(strings.Repeat("*", len(bodyContent)-lastEnd))
-		}
-
-		redactedBody = result.String()
-	} else {
-		// No title tags found, redact entire body
-		redactedBody = strings.Repeat("*", len(bodyContent))
-	}
-
-	return headers + redactedBody
-}
-
-// calculateRedactionRanges calculates redaction ranges based on differences between original and redacted responses
-func (d *DemoResponseCallback) calculateRedactionRanges(original, redacted string) []shared.ResponseRedactionRange {
-	var ranges []shared.ResponseRedactionRange
-
-	// Simple implementation: find ranges where characters were replaced with asterisks
-	i := 0
-	for i < len(original) && i < len(redacted) {
-		if original[i] != redacted[i] && redacted[i] == '*' {
-			// Start of a redacted range
-			start := i
-			// Find the end of this redacted range
-			for i < len(original) && i < len(redacted) && redacted[i] == '*' {
-				i++
-			}
-			ranges = append(ranges, shared.ResponseRedactionRange{
-				Start:  start,
-				Length: i - start,
-			})
-		} else {
-			i++
-		}
-	}
-
-	return ranges
+	return req.Data, ranges, nil
 }

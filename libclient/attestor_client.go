@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"tee-mpc/providers"
 	"time"
 
 	teeproto "tee-mpc/proto"
@@ -177,9 +178,9 @@ func (ac *AttestorClient) Close() error {
 
 // ClaimTeeBundleParams contains parameters for claim submission
 type ClaimTeeBundleParams struct {
-	Provider   string                 // Provider name (e.g., "http", "github")
-	Parameters map[string]interface{} // Provider-specific parameters
-	Context    map[string]interface{} // Optional context
+	Provider   string                       // Provider name (e.g., "http")
+	Parameters providers.HTTPProviderParams // Provider-specific parameters
+	Context    map[string]interface{}       // Optional context
 }
 
 // SubmitTeeBundle submits a TEE verification bundle to attestor-core for claim validation
@@ -366,30 +367,4 @@ func (ac *AttestorClient) sendRPCMessage(request *teeproto.ClaimTeeBundleRequest
 
 	ac.logger.Info("ClaimTeeBundleRequest completed successfully")
 	return response, nil
-}
-
-// HTTPProviderParams creates parameters for HTTP provider claims
-func HTTPProviderParams(url, method string, headers map[string]string, body string, responseMatches []map[string]string, responseRedactions []map[string]string) map[string]interface{} {
-	params := map[string]interface{}{
-		"url":    url,
-		"method": method,
-	}
-
-	if headers != nil {
-		params["headers"] = headers
-	}
-
-	if body != "" {
-		params["body"] = body
-	}
-
-	if responseMatches != nil {
-		params["responseMatches"] = responseMatches
-	}
-
-	if responseRedactions != nil {
-		params["responseRedactions"] = responseRedactions
-	}
-
-	return params
 }

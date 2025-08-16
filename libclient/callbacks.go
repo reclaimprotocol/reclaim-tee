@@ -29,17 +29,5 @@ type ResponseMetadata struct {
 
 // RedactionResult contains the result of response redaction
 type RedactionResult struct {
-	RedactedBody    []byte                          `json:"redacted_body"`
 	RedactionRanges []shared.ResponseRedactionRange `json:"redaction_ranges"`
-}
-
-// DefaultResponseCallback provides a simple default implementation
-type DefaultResponseCallback struct{}
-
-// OnResponseReceived implements the ResponseCallback interface with no redactions
-func (d *DefaultResponseCallback) OnResponseReceived(response *HTTPResponse) (*RedactionResult, error) {
-	return &RedactionResult{
-		RedactedBody:    response.Body,
-		RedactionRanges: []shared.ResponseRedactionRange{},
-	}, nil
 }

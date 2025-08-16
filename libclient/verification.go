@@ -229,17 +229,9 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 
 					// Store results for use in redaction spec generation
 					c.lastRedactionRanges = result.RedactionRanges
-					c.lastRedactedResponse = result.RedactedBody
 
 					c.logger.Info("Stored callback results",
-						zap.Int("ranges_count", len(result.RedactionRanges)),
-						zap.Int("redacted_response_bytes", len(result.RedactedBody)))
-
-					// Log redaction ranges
-					// for i, r := range result.RedactionRanges {
-					// 	fmt.Printf("[Client] Redaction range %d: start=%d, length=%d, type=%s\n",
-					// 		i+1, r.Start, r.Length, r.Type)
-					// }
+						zap.Int("ranges_count", len(result.RedactionRanges)))
 
 				}
 			} else if c.responseCallback != nil {

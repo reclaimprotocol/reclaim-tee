@@ -120,19 +120,9 @@ func Validate(bundlePath string) error {
 
 	// Work directly with protobuf format - no legacy conversion needed!
 
-	// --- Proof stream application (commitment verification handled by TEE_T) ---
-	if bundlePB.Opening != nil && bundlePB.Opening.ProofStream != nil && bundlePB.TeekSigned != nil {
-		fmt.Printf("[Verifier] Proof stream available ✅ (len=%d\n",
-			len(bundlePB.Opening.ProofStream))
-		fmt.Printf("[Verifier] Note: Commitment verification performed by TEE_T during protocol execution\n")
-
-		// Apply proof stream to reveal original sensitive_proof data
-		if err := verifyAndRevealProofDataProtobuf(&bundlePB); err != nil {
-			return fmt.Errorf("failed to apply proof stream: %v", err)
-		}
-	} else {
+	if bundlePB.TeekSigned == nil {
 		// SECURITY: Missing proof components compromise verification integrity
-		return fmt.Errorf("critical security failure: proof stream/key or TEE_K transcript missing - cannot perform proof stream application")
+		return fmt.Errorf("critical security failure: TEE_K transcript missing - cannot perform proof stream application")
 	}
 
 	// --- Redacted response reconstruction check ---
