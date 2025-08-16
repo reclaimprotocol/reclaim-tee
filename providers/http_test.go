@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -204,18 +205,25 @@ func TestShouldPerformComplexRedactions(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(redactions) == 0 {
-		t.Fatal("expected complex redactions")
+	// TS-expected numeric ranges
+	expected := [][2]int{
+		{15, 81}, {85, 122}, {124, 135}, {137, 148}, {150, 191}, {193, 204}, {206, 217}, {219, 260}, {262, 273}, {275, 286}, {288, 307},
+	}
+	if len(redactions) != len(expected) {
+		t.Fatalf("expected %d redactions, got %d", len(expected), len(redactions))
+	}
+	for i, e := range expected {
+		expectRedactionAt(t, redactions, i, e[0], e[1]-e[0])
 	}
 
 	// Verify the revealed parts make sense
 	revealed := ""
 	start := 0
 	for _, red := range redactions {
-		if red.From > start {
-			revealed += string(response[start:red.From])
+		if red.Start > start {
+			revealed += string(response[start:red.Start])
 		}
-		start = red.To
+		start = red.Start + red.Length
 	}
 	if start < len(response) {
 		revealed += string(response[start:])
@@ -251,18 +259,25 @@ func TestShouldPerformComplexRedactions2(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(redactions) == 0 {
-		t.Fatal("expected complex redactions")
+	// TS-expected numeric ranges
+	expected := [][2]int{
+		{15, 80}, {84, 101}, {103, 114}, {116, 127}, {129, 135},
+	}
+	if len(redactions) != len(expected) {
+		t.Fatalf("expected %d redactions, got %d", len(expected), len(redactions))
+	}
+	for i, e := range expected {
+		expectRedactionAt(t, redactions, i, e[0], e[1]-e[0])
 	}
 
 	// Verify the revealed parts
 	revealed := ""
 	start := 0
 	for _, red := range redactions {
-		if red.From > start {
-			revealed += string(response[start:red.From])
+		if red.Start > start {
+			revealed += string(response[start:red.Start])
 		}
-		start = red.To
+		start = red.Start + red.Length
 	}
 	if start < len(response) {
 		revealed += string(response[start:])
@@ -293,16 +308,23 @@ func TestShouldPerformComplexRedactions3(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(redactions) == 0 {
-		t.Fatal("expected complex redactions")
+	// TS-expected numeric ranges
+	expected := [][2]int{
+		{15, 81}, {85, 115}, {125, 184}, {194, 253}, {263, 307},
+	}
+	if len(redactions) != len(expected) {
+		t.Fatalf("expected %d redactions, got %d", len(expected), len(redactions))
+	}
+	for i, e := range expected {
+		expectRedactionAt(t, redactions, i, e[0], e[1]-e[0])
 	}
 
 	t.Logf("Complex redactions 3 test passed with %d redactions", len(redactions))
 }
 
 func TestShouldHideChunkedPartsFromResponse(t *testing.T) {
-	// Simple chunked response
-	simpleChunk := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n9\r\nchunk 1, \r\n7\r\nchunk 2\r\n0\r\n\r\n")
+	// Simple chunked response (match TS exactly: no final CRLF)
+	simpleChunk := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n9\r\nchunk 1, \r\n7\r\nchunk 2\r\n0\r\n")
 
 	params := HTTPProviderParams{
 		URL:    "https://test.com",
@@ -322,14 +344,29 @@ func TestShouldHideChunkedPartsFromResponse(t *testing.T) {
 		t.Fatal("expected chunked redactions")
 	}
 
+	for i, r := range redactions {
+		t.Logf("Got redaction %d: [%d:%d]", i, r.Start, r.Start+r.Length)
+	}
+
+	// TS-expected numeric ranges
+	expected := [][2]int{
+		{15, 88}, {92, 95}, {104, 109},
+	}
+	if len(redactions) != len(expected) {
+		t.Fatalf("expected %d redactions, got %d", len(expected), len(redactions))
+	}
+	for i, e := range expected {
+		expectRedactionAt(t, redactions, i, e[0], e[1]-e[0])
+	}
+
 	// Verify the revealed parts form the expected content
 	revealed := ""
 	start := 0
 	for _, red := range redactions {
-		if red.From > start {
-			revealed += string(simpleChunk[start:red.From])
+		if red.Start > start {
+			revealed += string(simpleChunk[start:red.Start])
 		}
-		start = red.To
+		start = red.Start + red.Length
 	}
 	if start < len(simpleChunk) {
 		revealed += string(simpleChunk[start:])
@@ -473,21 +510,26 @@ func TestShouldHandleOPRFReplacementsInChunkedResponse(t *testing.T) {
 		t.Fatal("expected OPRF redactions in chunked response")
 	}
 
-	// Find the hashed redaction
-	foundOPRFHash := false
-	for _, redaction := range redactions {
-		if redaction.Hash != nil && *redaction.Hash == "oprf" {
-			foundOPRFHash = true
-			// Should contain the name field
-			segment := string(response[redaction.From:redaction.To])
-			if !strings.Contains(segment, "John") {
-				t.Errorf("OPRF redaction should contain 'John', got: %q", segment)
-			}
+	// Mirror TS: build redacted string where hashed ranges are replaced with "AAAA"
+	sort.Slice(redactions, func(i, j int) bool { return redactions[i].Start < redactions[j].Start })
+	var b strings.Builder
+	pos := 0
+	for _, r := range redactions {
+		if pos < r.Start {
+			b.Write(response[pos:r.Start])
 		}
+		if r.Hash != nil && *r.Hash == "oprf" {
+			b.WriteString("AAAA")
+		}
+		pos = r.Start + r.Length
 	}
+	if pos < len(response) {
+		b.Write(response[pos:])
+	}
+	redactedStr := b.String()
 
-	if !foundOPRFHash {
-		t.Error("expected to find OPRF hash redaction in chunked response")
+	if !strings.Contains(redactedStr, "\"name\":\"AAAA\"") {
+		t.Errorf("Expected redacted string to contain '"+"\"name\":\"AAAA\"'"+", got: %q", redactedStr)
 	}
 
 	t.Logf("OPRF chunked response test passed with %d redactions", len(redactions))
@@ -571,7 +613,8 @@ func TestCreateRequest_ReplacesParamsInBodyCorrectly(t *testing.T) {
 	}
 
 	expectRedaction := func(index int, expected string) {
-		actual := string(res.Data[res.Redactions[index].From:res.Redactions[index].To])
+		redaction := res.Redactions[index]
+		actual := string(res.Data[redaction.Start : redaction.Start+redaction.Length])
 		if actual != expected {
 			t.Errorf("redaction %d: expected %q, got %q", index, expected, actual)
 		}
@@ -622,7 +665,7 @@ func TestCreateRequest_ReplacesParamsInBodyCase2(t *testing.T) {
 	}
 
 	expectRedaction := func(index int, expected string) {
-		actual := string(res.Data[res.Redactions[index].From:res.Redactions[index].To])
+		actual := string(res.Data[res.Redactions[index].Start : res.Redactions[index].Start+res.Redactions[index].Length])
 		if actual != expected {
 			t.Errorf("redaction %d: expected %q, got %q", index, expected, actual)
 		}
@@ -667,7 +710,7 @@ func TestCreateRequest_ReplacesSecretParamsInURL(t *testing.T) {
 	}
 
 	expectRedaction := func(index int, expected string) {
-		actual := string(res.Data[res.Redactions[index].From:res.Redactions[index].To])
+		actual := string(res.Data[res.Redactions[index].Start : res.Redactions[index].Start+res.Redactions[index].Length])
 		if actual != expected {
 			t.Errorf("redaction %d: expected %q, got %q", index, expected, actual)
 		}
@@ -800,8 +843,8 @@ func TestGetResponseRedactions_BadRegex_ShouldThrow(t *testing.T) {
 }
 
 func TestGetResponseRedactions_RegexRedaction(t *testing.T) {
-	// Example HTML response
-	htmlResponse := `HTTP/1.1 200 OK
+	// Test simple regex redaction
+	response := []byte(`HTTP/1.1 200 OK
 Content-Type: text/html; charset=UTF-8
 Content-Length: 157
 
@@ -814,14 +857,18 @@ Content-Length: 157
     <h1>Example Domain</h1>
     <p>This domain is for use in illustrative examples.</p>
 </body>
-</html>`
+</html>`)
 
-	response := []byte(strings.ReplaceAll(htmlResponse, "\n", "\r\n"))
+	response = []byte(strings.ReplaceAll(string(response), "\n", "\r\n"))
+
 	params := HTTPProviderParams{
 		URL:    "https://example.com/",
 		Method: "GET",
+		ResponseMatches: []ResponseMatch{
+			{Value: `<title>.*</title>`, Type: "regex"},
+		},
 		ResponseRedactions: []ResponseRedaction{
-			{Regex: `<title>([^<]+)</title>`},
+			{Regex: `<title>.*</title>`},
 		},
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
@@ -831,9 +878,22 @@ Content-Length: 157
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should have reveals for headers, CRLF, date header (if any), and redactions for the rest
-	if len(redactions) == 0 {
-		t.Fatal("expected at least some redactions")
+	// Check exact redaction positions (like TS tests)
+	expectedRedactions := []struct {
+		start  int
+		length int
+	}{
+		{15, 61},   // Headers
+		{80, 37},   // Part before title
+		{146, 125}, // Part after title
+	}
+
+	if len(redactions) != len(expectedRedactions) {
+		t.Fatalf("expected %d redactions, got %d", len(expectedRedactions), len(redactions))
+	}
+
+	for i, expected := range expectedRedactions {
+		expectRedactionAt(t, redactions, i, expected.start, expected.length)
 	}
 
 	// Debug: print all redactions to understand the behavior
@@ -843,8 +903,8 @@ Content-Length: 157
 
 	foundTitleRedaction := false
 	for i, redaction := range redactions {
-		segment := responseStr[redaction.From:redaction.To]
-		t.Logf("Redaction %d [%d:%d]: %q", i, redaction.From, redaction.To, segment)
+		segment := responseStr[redaction.Start : redaction.Start+redaction.Length]
+		t.Logf("Redaction %d [%d:%d]: %q", i, redaction.Start, redaction.Start+redaction.Length, segment)
 
 		// Check if this redaction contains the title match
 		if strings.Contains(segment, "Example Domain") {
@@ -889,8 +949,8 @@ Content-Length: 45
 	// Should have proper redaction structure
 	t.Logf("Got %d redactions", len(redactions))
 	for i, redaction := range redactions {
-		segment := string(response[redaction.From:redaction.To])
-		t.Logf("Redaction %d [%d:%d]: %q", i, redaction.From, redaction.To, segment)
+		segment := string(response[redaction.Start : redaction.Start+redaction.Length])
+		t.Logf("Redaction %d [%d:%d]: %q", i, redaction.Start, redaction.Start+redaction.Length, segment)
 	}
 }
 
@@ -932,8 +992,8 @@ Content-Length: 200
 
 	t.Logf("Got %d redactions", len(redactions))
 	for i, redaction := range redactions {
-		segment := string(response[redaction.From:redaction.To])
-		t.Logf("Redaction %d [%d:%d]: %q", i, redaction.From, redaction.To, segment)
+		segment := string(response[redaction.Start : redaction.Start+redaction.Length])
+		t.Logf("Redaction %d [%d:%d]: %q", i, redaction.Start, redaction.Start+redaction.Length, segment)
 	}
 }
 
@@ -958,7 +1018,7 @@ Content-Length: 120
 		URL:    "https://example.com/",
 		Method: "GET",
 		ResponseMatches: []ResponseMatch{
-			{Value: `<title>(?P<domain>.+)</title>`},
+			{Value: `<title>(?P<domain>.+)</title>`, Type: "regex"},
 		},
 		ResponseRedactions: []ResponseRedaction{
 			{Regex: `<title>(?P<domain>.+)</title>`, Hash: stringPtr("oprf")},
@@ -977,10 +1037,11 @@ Content-Length: 120
 		if redaction.Hash != nil {
 			foundHash = true
 			// Should contain the title tag
-			segment := string(response[redaction.From:redaction.To])
+			segment := string(response[redaction.Start : redaction.Start+redaction.Length])
 			if !strings.Contains(segment, "Example Domain") {
 				t.Errorf("hashed redaction should contain 'Example Domain', got: %q", segment)
 			}
+			break
 		}
 	}
 
@@ -1020,8 +1081,8 @@ func TestGetResponseRedactions_ChunkedResponse(t *testing.T) {
 
 	t.Logf("Got %d redactions for chunked response", len(redactions))
 	for i, redaction := range redactions {
-		segment := string(response[redaction.From:redaction.To])
-		t.Logf("Redaction %d [%d:%d]: %q", i, redaction.From, redaction.To, segment)
+		segment := string(response[redaction.Start : redaction.Start+redaction.Length])
+		t.Logf("Redaction %d [%d:%d]: %q", i, redaction.Start, redaction.Start+redaction.Length, segment)
 	}
 
 	// The key test: chunked response parsing worked without errors
@@ -1416,4 +1477,52 @@ func TestShouldNotMatchBadRedactedStrings(t *testing.T) {
 	// { a: '{{yy', b: '*' } -> should not match (malformed template)
 	// { a: '{{abc}}d{{abwewewewec}}', b: 'a*d*' } -> should not match
 	// { a: '{abc}}', b: '************' } -> should not match (malformed template)
+}
+
+// Helper function to check exact redaction positions (like TS tests)
+func expectRedactionAt(t *testing.T, redactions []RedactedOrHashedArraySlice, index int, expectedStart int, expectedLength int) {
+	if index >= len(redactions) {
+		t.Errorf("Expected redaction at index %d, but only have %d redactions", index, len(redactions))
+		return
+	}
+
+	redaction := redactions[index]
+	if redaction.Start != expectedStart {
+		t.Errorf("Redaction %d: expected Start=%d, got Start=%d", index, expectedStart, redaction.Start)
+	}
+	if redaction.Length != expectedLength {
+		t.Errorf("Redaction %d: expected Length=%d, got Length=%d", index, expectedLength, redaction.Length)
+	}
+
+	// Also log the actual content for debugging (like our current tests)
+	// This would need the response data to be passed in, so let's make it optional
+}
+
+func TestGetResponseRedactions_BookfaceChunked(t *testing.T) {
+	// This mirrors the TS 'should get redactions from chunked response' numbers
+	// We don't have the full chunkedResp fixture; this test assumes our Go provider produces identical ranges
+	// when fed the same chunkedResp payload. Once available, replace placeholder with real fixture.
+	// Skipping if fixture unavailable would be an option, but here we structure the assertion.
+	// NOTE: This is a placeholder to keep parity scaffold; provide the actual response to enable.
+	response := []byte{}
+	if len(response) == 0 {
+		t.Skip("Bookface chunked fixture not available in Go; provide chunkedResp to enable numeric assertions")
+	}
+	params := HTTPProviderParams{URL: "https://bookface.ycombinator.com/home", Method: "GET", ResponseRedactions: []ResponseRedaction{
+		{XPath: "//script[@id='js-react-on-rails-context']", JSONPath: "$.currentUser"},
+		{XPath: "//script[@data-component-name='BookfaceCsrApp']", JSONPath: "$.hasBookface"},
+		{Regex: "code_version:\\s\"[0-9a-f]{40}\\sruby"},
+	}}
+	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
+	reds, err := GetResponseRedactions(response, &params, &ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := [][2]int{{15, 17}, {52, 4290}, {4294, 4760}, {4820, 53268}, {53507, 58705}, {58723, 64093}}
+	if len(reds) != len(expected) {
+		t.Fatalf("expected %d redactions, got %d", len(expected), len(reds))
+	}
+	for i, e := range expected {
+		expectRedactionAt(t, reds, i, e[0], e[1]-e[0])
+	}
 }

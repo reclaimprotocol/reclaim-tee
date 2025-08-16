@@ -124,9 +124,9 @@ func convertResponsePosToAbsolutePos(pos int, bodyStartIdx int, chunks []Redacte
 	if len(chunks) > 0 {
 		chunkBodyStart := 0
 		for _, ch := range chunks {
-			chunkSize := ch.To - ch.From
+			chunkSize := ch.Length
 			if pos >= chunkBodyStart && pos <= chunkBodyStart+chunkSize {
-				return pos - chunkBodyStart + ch.From
+				return pos - chunkBodyStart + ch.Start
 			}
 			chunkBodyStart += chunkSize
 		}
@@ -143,8 +143,9 @@ func getRedactionsForChunkHeaders(from, to int, chunks []RedactedOrHashedArraySl
 	}
 	for i := 1; i < len(chunks); i++ {
 		ch := chunks[i]
-		if ch.From > from && ch.From < to {
-			res = append(res, RedactedOrHashedArraySlice{From: chunks[i-1].To, To: ch.From})
+		if ch.Start > from && ch.Start < to {
+			previousEnd := chunks[i-1].Start + chunks[i-1].Length
+			res = append(res, RedactedOrHashedArraySlice{Start: previousEnd, Length: ch.Start - previousEnd, Type: "sensitive"})
 		}
 	}
 	return res
@@ -203,7 +204,7 @@ func parseHTTPResponseBytes(data []byte) (*httpParsedResponse, error) {
 		if colon > 0 {
 			name := strings.ToLower(string(line[:colon]))
 			// store full header line range
-			res.HeaderLowerToRanges[name] = RedactedOrHashedArraySlice{From: pos, To: pos + len(line)}
+			res.HeaderLowerToRanges[name] = RedactedOrHashedArraySlice{Start: pos, Length: len(line), Type: "sensitive"}
 		}
 		pos += len(line) + 2
 	}
@@ -222,7 +223,7 @@ func parseHTTPResponseBytes(data []byte) (*httpParsedResponse, error) {
 		// Reconstruct the actual body content from chunks (without chunk headers/separators)
 		var bodyContent []byte
 		for _, chunk := range chunks {
-			bodyContent = append(bodyContent, data[chunk.From:chunk.To]...)
+			bodyContent = append(bodyContent, data[chunk.Start:chunk.Start+chunk.Length]...)
 		}
 		res.Body = bodyContent
 	}
@@ -270,13 +271,12 @@ func parseChunkBodyRanges(data []byte, bodyStart int) ([]RedactedOrHashedArraySl
 			break
 		}
 
-		from := idx
-		to := idx + int(chunkSize)
-		if to > len(data) {
+		start := idx
+		if start+int(chunkSize) > len(data) {
 			return nil, errors.New("invalid chunk size exceeding response length")
 		}
-		res = append(res, RedactedOrHashedArraySlice{From: from, To: to})
-		idx = to
+		res = append(res, RedactedOrHashedArraySlice{Start: start, Length: int(chunkSize), Type: "sensitive"})
+		idx = start + int(chunkSize)
 
 		// skip the CRLF after the chunk data
 		if idx+2 > len(data) || !bytes.Equal(data[idx:idx+2], []byte("\r\n")) {
@@ -307,7 +307,7 @@ func applyRegexWindow(
 			return
 		}
 		reveal := getReveal(sAbs, eAbs-sAbs, bodyStartIdx, resChunks, hash)
-		items = append(items, RedactionItem{Reveal: reveal, Redactions: getRedactionsForChunkHeaders(reveal.From, reveal.To, resChunks)})
+		items = append(items, RedactionItem{Reveal: reveal, Redactions: getRedactionsForChunkHeaders(reveal.Start, reveal.Start+reveal.Length, resChunks)})
 	}
 
 	segment := body[startAbs:endAbs]
@@ -369,7 +369,7 @@ func applyRegexWindow(
 	}
 	// group (hashed) — must not span chunks
 	reveal := getReveal(grpFrom, grpTo-grpFrom, bodyStartIdx, resChunks, rs.Hash)
-	chunkReds := getRedactionsForChunkHeaders(reveal.From, reveal.To, resChunks)
+	chunkReds := getRedactionsForChunkHeaders(reveal.Start, reveal.Start+reveal.Length, resChunks)
 	if len(chunkReds) > 0 {
 		return nil, fmt.Errorf("Hash redactions cannot be performed if the redacted string is split between 2 or more HTTP chunks")
 	}
@@ -386,5 +386,11 @@ func applyRegexWindow(
 func getReveal(startIdx, length, bodyStartIdx int, resChunks []RedactedOrHashedArraySlice, hash *string) RedactedOrHashedArraySlice {
 	from := convertResponsePosToAbsolutePos(startIdx, bodyStartIdx, resChunks)
 	to := convertResponsePosToAbsolutePos(startIdx+length, bodyStartIdx, resChunks)
-	return RedactedOrHashedArraySlice{From: from, To: to, Hash: hash}
+
+	return RedactedOrHashedArraySlice{
+		Start:  from,
+		Length: to - from,
+		Type:   "sensitive",
+		Hash:   hash,
+	}
 }
