@@ -198,19 +198,14 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 }
 
 // GetHostPort extracts the host:port from the URL params after parameter substitution
-func GetHostPort(params *HTTPProviderParams, secretParams *HTTPProviderSecretParams) (hostPort string, err error) {
-	// Handle panics from substituteParamValues and convert to errors
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("parameter substitution failed: %v", r)
-		}
-	}()
+func GetHostPort(params *HTTPProviderParams, secretParams *HTTPProviderSecretParams) (string, error) {
+	// Use simple URL-only parameter substitution (mirrors TS getURL)
+	urlStr, err := getURL(params, secretParams)
+	if err != nil {
+		return "", err
+	}
 
-	// Substitute parameters in the URL (like getURL in TS)
-	sp := substituteParamValues(params, secretParams, false)
-	urlStr := sp.NewParams.URL
-
-	// Parse the URL to extract host
+	// Parse the URL to extract host (mirrors TS getHostPort)
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return "", fmt.Errorf("url is incorrect: %w", err)
