@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	teeproto "tee-mpc/proto"
-	"tee-mpc/shared"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -54,37 +53,6 @@ func reconstructRequest(kPayload *teeproto.KOutputPayload, opening *teeproto.Ope
 	// Create a copy of the redacted request
 	revealedRequest := make([]byte, len(kPayload.RedactedRequest))
 	copy(revealedRequest, kPayload.RedactedRequest)
-	proofStream := opening.ProofStream
-
-	// Apply proof stream ONLY to sensitive_proof ranges (XOR operation)
-	proofStreamOffset := 0
-	proofRangesFound := 0
-
-	for _, r := range kPayload.RequestRedactionRanges {
-		// Only reveal ranges marked as proof-relevant (sensitive_proof)
-		if r.Type == shared.RedactionTypeSensitiveProof {
-			start := int(r.Start)
-			length := int(r.Length)
-
-			// Validate range bounds
-			if start+length > len(revealedRequest) {
-				return nil, fmt.Errorf("proof range [%d:%d] exceeds request length %d", start, start+length, len(revealedRequest))
-			}
-
-			// Check if we have enough proof stream data
-			if proofStreamOffset+length > len(proofStream) {
-				return nil, fmt.Errorf("insufficient proof stream data for range %d (need %d bytes, have %d)", proofRangesFound, length, len(proofStream)-proofStreamOffset)
-			}
-
-			// Apply XOR to reveal original sensitive_proof data
-			for i := 0; i < length; i++ {
-				revealedRequest[start+i] ^= proofStream[proofStreamOffset+i]
-			}
-
-			proofStreamOffset += length
-			proofRangesFound++
-		}
-	}
 
 	// Apply response redaction ranges for display (keep sensitive data as '*')
 	prettyRequest := make([]byte, len(revealedRequest))

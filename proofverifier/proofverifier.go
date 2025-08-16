@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	teeproto "tee-mpc/proto"
@@ -156,8 +157,9 @@ func Validate(bundlePath string) error {
 		if len(pkt) < 5+16 {
 			continue
 		}
-		// Skip non-ApplicationData packets, but allow Alert packets (0x15) for completeness
-		if pkt[0] != 0x17 && pkt[0] != 0x15 {
+		// Only process ApplicationData packets (0x17) - skip handshake messages like session tickets
+		// TEE_K only generates redacted streams for application data, not TLS handshake messages
+		if pkt[0] != 0x17 {
 			continue
 		}
 
@@ -179,25 +181,31 @@ func Validate(bundlePath string) error {
 		ciphertexts = append(ciphertexts, pkt[startOffset:startOffset+ctLen])
 	}
 
-	// Reconstruct plaintext by walking streams and finding the next ciphertext with matching length
+	// Reconstruct plaintext by matching streams to ciphertexts by sequence order
 	var reconstructed []byte
-	cipherIdx := 0
 	if len(kPayload.GetRedactedStreams()) > 0 {
-		for _, stream := range kPayload.GetRedactedStreams() {
-			// advance cipherIdx until length matches
-			for cipherIdx < len(ciphertexts) && len(ciphertexts[cipherIdx]) != len(stream.GetRedactedStream()) {
-				cipherIdx++
+		// Sort streams by sequence number to ensure correct order
+		streams := kPayload.GetRedactedStreams()
+		sort.Slice(streams, func(i, j int) bool {
+			return streams[i].GetSeqNum() < streams[j].GetSeqNum()
+		})
+
+		// Match streams to ciphertexts by position (both should be in sequence number order)
+		for i, stream := range streams {
+			if i >= len(ciphertexts) {
+				return fmt.Errorf("not enough ciphertexts for stream seq %d (have %d ciphertexts, need %d)", stream.GetSeqNum(), len(ciphertexts), i+1)
 			}
-			if cipherIdx >= len(ciphertexts) {
-				return fmt.Errorf("no ciphertext of length %d found for stream seq %d", len(stream.GetRedactedStream()), stream.GetSeqNum())
+
+			cipher := ciphertexts[i]
+			if len(cipher) != len(stream.GetRedactedStream()) {
+				return fmt.Errorf("ciphertext length mismatch for stream seq %d: expected %d, got %d", stream.GetSeqNum(), len(stream.GetRedactedStream()), len(cipher))
 			}
-			cipher := ciphertexts[cipherIdx]
+
 			plain := make([]byte, len(cipher))
-			for i := range cipher {
-				plain[i] = cipher[i] ^ stream.GetRedactedStream()[i]
+			for j := range cipher {
+				plain[j] = cipher[j] ^ stream.GetRedactedStream()[j]
 			}
 			reconstructed = append(reconstructed, plain...)
-			cipherIdx++
 		}
 
 		// Replace random garbage with asterisks using response redaction ranges
@@ -233,95 +241,6 @@ func Validate(bundlePath string) error {
 	// which shows the proper revealed version with proof data visible and sensitive data hidden
 
 	fmt.Println("[Verifier] Offline verification complete – success 🥳")
-	return nil
-}
-
-// verifyAndRevealProofDataProtobuf applies the proof stream to reveal original sensitive_proof data (protobuf version)
-func verifyAndRevealProofDataProtobuf(bundlePB *teeproto.VerificationBundle) error {
-	// Extract TEE_K payload
-	var kPayload teeproto.KOutputPayload
-	if err := proto.Unmarshal(bundlePB.TeekSigned.GetBody(), &kPayload); err != nil {
-		return fmt.Errorf("failed to unmarshal TEE_K body: %v", err)
-	}
-
-	redactedRequest := kPayload.GetRedactedRequest()
-	redactionRanges := kPayload.GetRequestRedactionRanges()
-
-	if bundlePB.Opening == nil || bundlePB.Opening.ProofStream == nil {
-		fmt.Println("[Verifier] No proof stream available for SP revelation")
-		return nil
-	}
-
-	proofStream := bundlePB.Opening.ProofStream
-
-	if len(redactedRequest) == 0 || len(proofStream) == 0 {
-		fmt.Println("[Verifier] No proof stream or redacted request available for SP revelation")
-		return nil
-	}
-
-	// Create a copy of the redacted request to apply proof stream
-	revealedRequest := make([]byte, len(redactedRequest))
-	copy(revealedRequest, redactedRequest)
-
-	// Apply proof stream ONLY to sensitive_proof ranges
-	proofStreamOffset := 0
-	proofRangesFound := 0
-
-	for _, r := range redactionRanges {
-		// Only reveal ranges marked as proof-relevant (sensitive_proof)
-		if r.GetType() == shared.RedactionTypeSensitiveProof {
-			// Check bounds
-			start := int(r.GetStart())
-			length := int(r.GetLength())
-			if start+length > len(revealedRequest) {
-				return fmt.Errorf("proof range [%d:%d] exceeds request length %d", start, start+length, len(revealedRequest))
-			}
-
-			// Check if we have enough proof stream data
-			if proofStreamOffset+length > len(proofStream) {
-				return fmt.Errorf("insufficient proof stream data for range %d (need %d bytes, have %d)",
-					proofRangesFound, length, len(proofStream)-proofStreamOffset)
-			}
-
-			// Apply XOR to reveal original sensitive_proof data
-			for i := 0; i < length; i++ {
-				revealedRequest[start+i] ^= proofStream[proofStreamOffset+i]
-			}
-
-			fmt.Printf("[Verifier] Revealed proof range [%d:%d] type=%s (%d bytes)\n",
-				start, start+length, r.GetType(), length)
-
-			proofStreamOffset += length
-			proofRangesFound++
-		}
-	}
-
-	if proofRangesFound == 0 {
-		fmt.Println("[Verifier] No proof ranges found to reveal")
-		return nil
-	}
-
-	// Display the request with proof data revealed (but other sensitive data still redacted)
-	fmt.Printf("[Verifier] Request with proof data revealed (sensitive data remains hidden):\n---\n")
-
-	// Create pretty display: show revealed proof data, but keep other sensitive data as '*'
-	prettyRequest := make([]byte, len(revealedRequest))
-	copy(prettyRequest, revealedRequest)
-
-	for _, r := range redactionRanges {
-		// Keep non-proof sensitive data as '*' for display
-		if !strings.Contains(r.GetType(), "proof") {
-			start := int(r.GetStart())
-			length := int(r.GetLength())
-			for i := 0; i < length && start+i < len(prettyRequest); i++ {
-				prettyRequest[start+i] = '*'
-			}
-		}
-	}
-
-	fmt.Printf("%s\n---\n", collapseAsterisks(string(prettyRequest)))
-	fmt.Printf("[Verifier] Successfully revealed %d proof ranges while keeping sensitive data hidden ✅\n", proofRangesFound)
-
 	return nil
 }
 
