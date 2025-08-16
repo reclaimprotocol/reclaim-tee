@@ -178,9 +178,9 @@ func (ac *AttestorClient) Close() error {
 
 // ClaimTeeBundleParams contains parameters for claim submission
 type ClaimTeeBundleParams struct {
-	Provider   string                       // Provider name (e.g., "http")
-	Parameters providers.HTTPProviderParams // Provider-specific parameters
-	Context    map[string]interface{}       // Optional context
+	Provider   string                        // Provider name (e.g., "http")
+	Parameters *providers.HTTPProviderParams // Provider-specific parameters
+	Context    map[string]interface{}        // Optional context
 }
 
 // SubmitTeeBundle submits a TEE verification bundle to attestor-core for claim validation

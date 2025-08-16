@@ -71,7 +71,7 @@ func main() {
 	teetURL := autoDetectTEETURL(teekURL)
 	logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
 
-	publicParams := providers.HTTPProviderParams{
+	publicParams := &providers.HTTPProviderParams{
 		URL:    "https://vpic.nhtsa.dot.gov/api/vehicles/getallmanufacturers?format=json",
 		Method: "GET",
 		ResponseMatches: []providers.ResponseMatch{
@@ -86,7 +86,7 @@ func main() {
 		},
 	}
 
-	secretParams := providers.HTTPProviderSecretParams{
+	secretParams := &providers.HTTPProviderSecretParams{
 		Headers: map[string]string{
 			"accept": "application/json, text/plain, */*",
 		},
@@ -298,7 +298,7 @@ func autoDetectTEETURL(teekURL string) string {
 
 // DemoResponseCallback provides a demo implementation showing response redaction
 type DemoResponseCallback struct {
-	Params providers.HTTPProviderParams
+	Params *providers.HTTPProviderParams
 }
 
 // OnResponseReceived implements the ResponseCallback interface with demo redactions
@@ -308,7 +308,7 @@ func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPRespon
 
 	fmt.Printf("[DemoCallback] Processing full HTTP response (%d bytes)\n", len(fullHTTPResponse))
 
-	ctx := providers.ProviderCtx{Version: providers.ATTESTOR_VERSION_2_0_1}
+	ctx := &providers.ProviderCtx{Version: providers.ATTESTOR_VERSION_2_0_1}
 
 	ranges, err := providers.GetResponseRedactions(response.FullResponse, d.Params, ctx)
 	if err != nil {
@@ -327,7 +327,7 @@ func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPRespon
 	}, nil
 }
 
-func initParams(params providers.HTTPProviderParams, secretParams providers.HTTPProviderSecretParams) ([]byte, []shared.RequestRedactionRange, error) {
+func initParams(params *providers.HTTPProviderParams, secretParams *providers.HTTPProviderSecretParams) ([]byte, []shared.RequestRedactionRange, error) {
 
 	req, err := providers.CreateRequest(secretParams, params)
 	if err != nil {
