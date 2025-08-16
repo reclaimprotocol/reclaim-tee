@@ -22,7 +22,7 @@ func TestShouldParseXPathAndJSONPath(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestShouldExtractComplexJSONPath(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestShouldGetInnerAndOuterTagContents(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestShouldGetMultipleElements(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestShouldGetMultipleJSONPaths(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestShouldErrorOnIncorrectJSONPath(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	_, err := GetResponseRedactions(response, params, ctx)
+	_, err := GetResponseRedactions(response, &params, &ctx)
 	if err == nil {
 		t.Fatal("expected error for invalid JSONPath")
 	}
@@ -199,7 +199,7 @@ func TestShouldPerformComplexRedactions(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestShouldPerformComplexRedactions2(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestShouldPerformComplexRedactions3(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestShouldHideChunkedPartsFromResponse(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(simpleChunk, params, ctx)
+	redactions, err := GetResponseRedactions(simpleChunk, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestShouldThrowOnBadRegexMatch(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	_, err := GetResponseRedactions(response, params, ctx)
+	_, err := GetResponseRedactions(response, &params, &ctx)
 	if err == nil {
 		t.Fatal("expected error for regex that doesn't match")
 	}
@@ -464,7 +464,7 @@ func TestShouldHandleOPRFReplacementsInChunkedResponse(t *testing.T) {
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
 	response := []byte(chunkedResponse.String())
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestShouldGracefullyErrorWhenOPRFSpansMultipleChunks(t *testing.T) {
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
 	response := []byte(chunkedResponse)
-	_, err := GetResponseRedactions(response, params, ctx)
+	_, err := GetResponseRedactions(response, &params, &ctx)
 	if err == nil {
 		t.Fatal("expected error for OPRF spanning multiple chunks")
 	}
@@ -528,7 +528,7 @@ func TestShouldGracefullyErrorWhenOPRFSpansMultipleChunks(t *testing.T) {
 func TestCreateRequest_AuthRequired(t *testing.T) {
 	params := HTTPProviderParams{URL: "https://example.com", Method: "GET"}
 	secret := HTTPProviderSecretParams{}
-	if _, err := CreateRequest(secret, params); err == nil {
+	if _, err := CreateRequest(&secret, &params); err == nil {
 		t.Fatalf("expected error for missing auth, got nil")
 	}
 }
@@ -557,7 +557,7 @@ func TestCreateRequest_ReplacesParamsInBodyCorrectly(t *testing.T) {
 			"h2":             "crazy2",
 		},
 	}
-	res, err := CreateRequest(secret, params)
+	res, err := CreateRequest(&secret, &params)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -608,7 +608,7 @@ func TestCreateRequest_ReplacesParamsInBodyCase2(t *testing.T) {
 			"REQ_SECRET": "false",
 		},
 	}
-	res, err := CreateRequest(secret, params)
+	res, err := CreateRequest(&secret, &params)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestCreateRequest_ReplacesSecretParamsInURL(t *testing.T) {
 			"param_request": "select * from users",
 		},
 	}
-	res, err := CreateRequest(secret, params)
+	res, err := CreateRequest(&secret, &params)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -692,7 +692,7 @@ func TestCreateRequest_ShouldPanicOnNonPresentSecretParam(t *testing.T) {
 	secret := HTTPProviderSecretParams{
 		AuthorisationHeader: "test",
 	}
-	CreateRequest(secret, params)
+	CreateRequest(&secret, &params)
 }
 
 // GetResponseRedactions Tests
@@ -707,7 +707,7 @@ func TestGetResponseRedactions_EmptyRedactions(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -727,7 +727,7 @@ func TestGetResponseRedactions_EmptyBody_ShouldThrow(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	_, err := GetResponseRedactions(response, params, ctx)
+	_, err := GetResponseRedactions(response, &params, &ctx)
 	if err == nil {
 		t.Fatal("expected error for regex that doesn't match in empty body")
 	}
@@ -748,7 +748,7 @@ func TestGetResponseRedactions_BadXPath_ShouldThrow(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	_, err := GetResponseRedactions(response, params, ctx)
+	_, err := GetResponseRedactions(response, &params, &ctx)
 	if err == nil {
 		t.Fatal("expected error for bad XPath")
 	}
@@ -768,7 +768,7 @@ func TestGetResponseRedactions_BadJSONPath_ShouldThrow(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	_, err := GetResponseRedactions(response, params, ctx)
+	_, err := GetResponseRedactions(response, &params, &ctx)
 	if err == nil {
 		t.Fatal("expected error for bad JSONPath")
 	}
@@ -789,7 +789,7 @@ func TestGetResponseRedactions_BadRegex_ShouldThrow(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	_, err := GetResponseRedactions(response, params, ctx)
+	_, err := GetResponseRedactions(response, &params, &ctx)
 	if err == nil {
 		t.Fatal("expected error for regex that doesn't match")
 	}
@@ -826,7 +826,7 @@ Content-Length: 157
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -877,7 +877,7 @@ Content-Length: 45
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -921,7 +921,7 @@ Content-Length: 200
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -966,7 +966,7 @@ Content-Length: 120
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1009,7 +1009,7 @@ func TestGetResponseRedactions_ChunkedResponse(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1048,7 +1048,7 @@ func TestGetResponseRedactions_NonSuccess_ShouldThrow(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	_, err := GetResponseRedactions(response, params, ctx)
+	_, err := GetResponseRedactions(response, &params, &ctx)
 	if err == nil {
 		t.Fatal("expected error for non-2xx status code")
 	}
@@ -1312,7 +1312,7 @@ func TestShouldReturnEmptyRedactions(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	redactions, err := GetResponseRedactions(response, params, ctx)
+	redactions, err := GetResponseRedactions(response, &params, &ctx)
 	if err != nil {
 		t.Fatalf("unexpected error for empty redactions: %v", err)
 	}
@@ -1334,7 +1334,7 @@ func TestShouldThrowOnEmptyBody(t *testing.T) {
 	}
 	ctx := ProviderCtx{Version: ATTESTOR_VERSION_2_0_1}
 
-	_, err := GetResponseRedactions(response, params, ctx)
+	_, err := GetResponseRedactions(response, &params, &ctx)
 	if err == nil {
 		t.Fatal("expected error when applying redactions to empty body")
 	}
@@ -1360,7 +1360,7 @@ func TestShouldThrowOnInvalidSecretParams(t *testing.T) {
 		Headers:             nil, // Nil
 	}
 
-	_, err := CreateRequest(secretParams, params)
+	_, err := CreateRequest(&secretParams, &params)
 	if err == nil {
 		t.Fatal("expected error for missing auth parameters")
 	}

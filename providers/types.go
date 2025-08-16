@@ -68,7 +68,7 @@ type ProviderCtx struct {
 	Version AttestorVersion `json:"version"`
 }
 
-func shouldRevealCrlf(ctx ProviderCtx) bool {
+func shouldRevealCrlf(ctx *ProviderCtx) bool {
 	return ctx.Version >= ATTESTOR_VERSION_2_0_1
 }
 
