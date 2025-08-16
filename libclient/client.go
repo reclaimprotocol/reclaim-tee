@@ -1,7 +1,6 @@
 package clientlib
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/anjuna-security/go-nitro-attestation/verifier"
 )
@@ -592,91 +590,8 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 	return nil
 }
 
-// buildProtocolResult constructs the complete protocol execution results
-func (c *Client) buildProtocolResult() (*ProtocolResult, error) {
-	transcripts, _ := c.buildTranscriptResults()
-	validation, _ := c.buildValidationResults()
-	attestation, _ := c.buildAttestationResults()
-	response, _ := c.buildResponseResults()
-
-	success := transcripts.BothReceived && transcripts.BothSignaturesValid &&
-		validation.AllValidationsPassed && c.httpResponseReceived
-
-	var errorMessage string
-	if !success {
-		if !transcripts.BothReceived {
-			errorMessage = "Not all transcripts received"
-		} else if !transcripts.BothSignaturesValid {
-			errorMessage = "Invalid transcript signatures"
-		} else if !validation.AllValidationsPassed {
-			errorMessage = "Validation failed"
-		} else if !c.httpResponseReceived {
-			errorMessage = "HTTP response not received"
-		}
-	}
-
-	return &ProtocolResult{
-		SessionID:         c.sessionID,
-		StartTime:         c.protocolStartTime,
-		CompletionTime:    time.Now(),
-		Success:           success,
-		ErrorMessage:      errorMessage,
-		RequestTarget:     c.targetHost,
-		RequestPort:       c.targetPort,
-		RequestRedactions: nil, // No longer used - ranges are set directly
-		Transcripts:       *transcripts,
-		Validation:        *validation,
-		Attestation:       *attestation,
-		Response:          *response,
-	}, nil
-}
-
 // buildTranscriptResults constructs the transcript results from SignedMessage data
-func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
-	var teekTranscript, teetTranscript *SignedTranscriptData
-
-	// Build TEE_K transcript data from SignedMessage
-	if c.teekSignedMessage != nil {
-		// Extract packets from the protobuf payload
-		var kPayload teeproto.KOutputPayload
-		if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err == nil {
-			packets := kPayload.GetPackets()
-			teekTranscript = &SignedTranscriptData{
-				Packets:    packets, // Get TLS packets from protobuf
-				Signature:  c.teekSignedMessage.GetSignature(),
-				EthAddress: extractEthAddressFromSignedMessage(c.teekSignedMessage),
-			}
-		} else {
-			fmt.Printf("DEBUG: TEE_K failed to unmarshal payload: %v\n", err)
-		}
-	}
-
-	// Build TEE_T transcript data from SignedMessage
-	if c.teetSignedMessage != nil {
-		// Extract packets from the protobuf payload
-		var tPayload teeproto.TOutputPayload
-		if err := proto.Unmarshal(c.teetSignedMessage.GetBody(), &tPayload); err == nil {
-			packets := tPayload.GetPackets()
-			teetTranscript = &SignedTranscriptData{
-				Packets:    packets, // Get TLS packets from protobuf
-				Signature:  c.teetSignedMessage.GetSignature(),
-				EthAddress: extractEthAddressFromSignedMessage(c.teetSignedMessage),
-			}
-		} else {
-			fmt.Printf("DEBUG: TEE_T failed to unmarshal payload: %v\n", err)
-		}
-	}
-
-	bothReceived := c.teekSignedMessage != nil && c.teetSignedMessage != nil
-	bothValid := bothReceived // If we have them, they're already verified (verification happens in websocket.go)
-
-	return &TranscriptResults{
-		TEEK:                teekTranscript,
-		TEET:                teetTranscript,
-		BothReceived:        bothReceived,
-		BothSignaturesValid: bothValid,
-	}, nil
-}
+// moved to results_build.go
 
 // extractEthAddressFromSignedMessage extracts the ETH address from a SignedMessage (attestation or direct address)
 func extractEthAddressFromSignedMessage(signedMsg *teeproto.SignedMessage) []byte {
@@ -690,186 +605,22 @@ func extractEthAddressFromSignedMessage(signedMsg *teeproto.SignedMessage) []byt
 }
 
 // buildValidationResults constructs the validation results
-func (c *Client) buildValidationResults() (*ValidationResults, error) {
-	// Build transcript validation results
-	transcriptValidation := c.buildTranscriptValidationResults()
-
-	// Build attestation validation results
-	attestationValidation := c.buildAttestationValidationResults()
-
-	allValid := transcriptValidation.OverallValid && attestationValidation.OverallValid
-
-	var summary string
-	if allValid {
-		summary = "All validations passed successfully"
-	} else {
-		summary = "Some validations failed"
-	}
-
-	return &ValidationResults{
-		TranscriptValidation:  *transcriptValidation,
-		AttestationValidation: *attestationValidation,
-		AllValidationsPassed:  allValid,
-		ValidationSummary:     summary,
-	}, nil
-}
+// moved to results_build.go
 
 // buildAttestationResults constructs the attestation results (legacy compatibility)
-func (c *Client) buildAttestationResults() (*AttestationResults, error) {
-	verification := c.buildAttestationValidationResults()
-
-	return &AttestationResults{
-		TEEKPublicKey: nil,
-		TEETPublicKey: nil,
-		Verification:  *verification,
-	}, nil
-}
+// moved to results_build.go
 
 // buildResponseResults constructs the response results
-func (c *Client) buildResponseResults() (*ResponseResults, error) {
-	var responseTimestamp time.Time
-	if c.httpResponseReceived {
-		responseTimestamp = time.Now()
-	}
-
-	// Use batched response processing success flags
-	batchedSuccess := c.responseProcessingSuccessful
-	batchedDataSize := c.reconstructedResponseSize
-
-	// Use batched response processing data size (batching always runs)
-	finalDataSize := batchedDataSize
-
-	return &ResponseResults{
-		HTTPResponse:         c.lastResponseData,
-		ResponseReceived:     batchedSuccess || c.httpResponseReceived,
-		CallbackExecuted:     batchedSuccess || (c.responseCallback != nil && c.httpResponseReceived),
-		DecryptionSuccessful: batchedSuccess || (finalDataSize > 0),
-		DecryptedDataSize:    finalDataSize,
-		ResponseTimestamp:    responseTimestamp,
-	}, nil
-}
+// moved to results_build.go
 
 // buildTranscriptValidationResults constructs detailed transcript validation results
-func (c *Client) buildTranscriptValidationResults() *TranscriptValidationResults {
-	// Simple validation based on what we actually have - signed message reception and verification
-	bothReceived := c.transcriptsReceived >= 2
-	teekValid := c.teekSignedMessage != nil
-	teetValid := c.teetSignedMessage != nil
-
-	return &TranscriptValidationResults{
-		ClientCapturedPackets: 0, // Could be implemented if traffic capture is needed
-		ClientCapturedBytes:   0, // Could be implemented if traffic capture is needed
-		TEEKValidation: TranscriptPacketValidation{
-			PacketsReceived:  1, // We have signed message
-			PacketsMatched:   1, // If we have it, it's valid (already verified)
-			ValidationPassed: teekValid,
-		},
-		TEETValidation: TranscriptPacketValidation{
-			PacketsReceived:  1, // We have signed message
-			PacketsMatched:   1, // If we have it, it's valid (already verified)
-			ValidationPassed: teetValid,
-		},
-		OverallValid: bothReceived && teekValid && teetValid,
-		Summary:      "Transcript validation based on SignedMessage reception and verification",
-	}
-}
+// moved to results_build.go
 
 // buildAttestationValidationResults constructs attestation validation results
-func (c *Client) buildAttestationValidationResults() *AttestationValidationResults {
-	// Simple validation based on whether we have valid signed messages with attestations
-	teekHasAttestation := c.teekSignedMessage != nil && c.teekSignedMessage.GetAttestationReport() != nil
-	teetHasAttestation := c.teetSignedMessage != nil && c.teetSignedMessage.GetAttestationReport() != nil
-
-	// In standalone mode, we use ETH addresses instead of attestations
-	teekValid := c.teekSignedMessage != nil && (teekHasAttestation || len(c.teekSignedMessage.GetEthAddress()) > 0)
-	teetValid := c.teetSignedMessage != nil && (teetHasAttestation || len(c.teetSignedMessage.GetEthAddress()) > 0)
-
-	return &AttestationValidationResults{
-		TEEKAttestation: AttestationVerificationResult{
-			AttestationReceived: teekHasAttestation,
-			RootOfTrustValid:    teekValid,
-			PublicKeyExtracted:  teekValid,
-			PublicKeySize:       32, // Typical ECDSA key size
-		},
-		TEETAttestation: AttestationVerificationResult{
-			AttestationReceived: teetHasAttestation,
-			RootOfTrustValid:    teetValid,
-			PublicKeyExtracted:  teetValid,
-			PublicKeySize:       32, // Typical ECDSA key size
-		},
-		PublicKeyComparison: PublicKeyComparisonResult{
-			ComparisonPerformed: false, // We no longer compare keys - they're extracted from attestations
-			TEEKKeysMatch:       true,  // Always true since we verify signatures
-			TEETKeysMatch:       true,  // Always true since we verify signatures
-			BothTEEsMatch:       teekValid && teetValid,
-		},
-		OverallValid: teekValid && teetValid,
-		Summary:      "Attestation validation based on embedded attestation reports in SignedMessages",
-	}
-}
+// moved to results_build.go
 
 // buildTEEValidationDetails constructs validation details for one TEE's transcript
-func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) TranscriptPacketValidation {
-	// All transcript packets are now TLS records
-
-	if packets == nil {
-		return TranscriptPacketValidation{
-			PacketsReceived:  0,
-			PacketsMatched:   0,
-			ValidationPassed: false,
-			PacketDetails:    []PacketValidationDetail{},
-		}
-	}
-
-	var details []PacketValidationDetail
-	packetsMatched := 0
-
-	for i, packet := range packets {
-		// With the new structure, all packets in the Packets array are TLS records
-		var packetType string
-		if len(packet) > 0 {
-			packetType = fmt.Sprintf("0x%02x", packet[0])
-		} else {
-			packetType = "empty"
-		}
-
-		// Check if this packet matches any captured traffic
-		matchedCapture := false
-		captureIndex := -1
-
-		for j, capturedChunk := range c.capturedTraffic {
-			if len(packet) == len(capturedChunk) && bytes.Equal(packet, capturedChunk) {
-				matchedCapture = true
-				captureIndex = j
-				packetsMatched++
-				break
-			}
-		}
-
-		detail := PacketValidationDetail{
-			PacketIndex:    i,
-			PacketSize:     len(packet),
-			PacketType:     packetType,
-			MatchedCapture: matchedCapture,
-		}
-
-		if matchedCapture {
-			detail.CaptureIndex = captureIndex
-		}
-
-		details = append(details, detail)
-	}
-
-	// All packets are now TLS records and should be matched
-	requiredMatches := len(packets)
-
-	return TranscriptPacketValidation{
-		PacketsReceived:  len(packets),
-		PacketsMatched:   packetsMatched,
-		ValidationPassed: packetsMatched == requiredMatches,
-		PacketDetails:    details,
-	}
-}
+// moved to results_build.go
 
 // EnableTwoPhaseMode enables 2-phase operation mode
 func (c *Client) EnableTwoPhaseMode() {
