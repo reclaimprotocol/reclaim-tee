@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/url"
 	"sort"
+	"tee-mpc/shared"
 )
 
 // CreateRequest builds the HTTP/1.1 request bytes and redaction ranges
@@ -85,24 +86,24 @@ func CreateRequest(secret *HTTPProviderSecretParams, params *HTTPProviderParams)
 	data := append(headerBytes, bodyBytes...)
 
 	// redactions: hide all secret headers block
-	redactions := []RedactedOrHashedArraySlice{}
+	redactions := []shared.RequestRedactionRange{}
 	if len(secHeadersList) > 0 {
 		secHeadersStr := joinCRLF(secHeadersList)
 		idx := bytes.Index(data, []byte(secHeadersStr))
 		if idx >= 0 {
-			redactions = append(redactions, RedactedOrHashedArraySlice{Start: idx, Length: len(secHeadersStr), Type: "sensitive"})
+			redactions = append(redactions, shared.RequestRedactionRange{Start: idx, Length: len(secHeadersStr), Type: "sensitive"})
 		}
 	}
 	// hidden body parts
 	for _, hb := range sp.HiddenBodyParts {
 		if hb.Length > 0 {
-			redactions = append(redactions, RedactedOrHashedArraySlice{Start: len(headerBytes) + hb.Index, Length: hb.Length, Type: "sensitive"})
+			redactions = append(redactions, shared.RequestRedactionRange{Start: len(headerBytes) + hb.Index, Length: hb.Length, Type: "sensitive"})
 		}
 	}
 	// hidden URL parts
 	for _, hu := range sp.HiddenURLParts {
 		if hu.Length > 0 {
-			redactions = append(redactions, RedactedOrHashedArraySlice{Start: hu.Index, Length: hu.Length, Type: "sensitive"})
+			redactions = append(redactions, shared.RequestRedactionRange{Start: hu.Index, Length: hu.Length, Type: "sensitive"})
 		}
 	}
 	sort.Slice(redactions, func(i, j int) bool {
@@ -112,14 +113,14 @@ func CreateRequest(secret *HTTPProviderSecretParams, params *HTTPProviderParams)
 }
 
 // GetResponseRedactions computes redaction ranges for an HTTP response based on responseRedactions in params
-func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *ProviderCtx) ([]RedactedOrHashedArraySlice, error) {
+func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *ProviderCtx) ([]shared.RequestRedactionRange, error) {
 	res, err := parseHTTPResponseBytes(response)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(rawParams.ResponseRedactions) == 0 {
-		return []RedactedOrHashedArraySlice{}, nil
+		return []shared.RequestRedactionRange{}, nil
 	}
 
 	if res.StatusCode/100 != 2 {
@@ -136,7 +137,7 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		return nil, errors.New("Failed to find response body")
 	}
 
-	reveals := []RedactedOrHashedArraySlice{{Start: 0, Length: headerEndIndex, Type: "sensitive"}}
+	reveals := []shared.RequestRedactionRange{{Start: 0, Length: headerEndIndex, Type: "sensitive"}}
 
 	// CRLF boundary: only verify and reveal when client supports it
 	if shouldRevealCrlf(ctx) {
@@ -149,7 +150,7 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 	}
 
 	// always reveal the double CRLF which separates headers from body (mirror TS)
-	reveals = append(reveals, RedactedOrHashedArraySlice{Start: res.HeaderEndIdx, Length: 4, Type: "sensitive"})
+	reveals = append(reveals, shared.RequestRedactionRange{Start: res.HeaderEndIdx, Length: 4, Type: "sensitive"})
 
 	// reveal Date header if present
 	if rng, ok := res.HeaderLowerToRanges["date"]; ok && rng.Start+rng.Length > rng.Start {
@@ -157,7 +158,7 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 	}
 
 	bodyStr := uint8ArrayToStr(res.Body)
-	redactions := []RedactedOrHashedArraySlice{}
+	redactions := []shared.RequestRedactionRange{}
 
 	for _, rs := range params.ResponseRedactions {
 		proc, err := processRedactionRequest(bodyStr, &rs, bodyStartIdx, res.Chunks)
@@ -176,7 +177,7 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		currentIndex := 0
 		for _, r := range reveals {
 			if currentIndex < r.Start {
-				redactions = append(redactions, RedactedOrHashedArraySlice{Start: currentIndex, Length: r.Start - currentIndex, Type: "sensitive"})
+				redactions = append(redactions, shared.RequestRedactionRange{Start: currentIndex, Length: r.Start - currentIndex, Type: "sensitive"})
 			}
 			currentIndex = r.Start + r.Length
 		}
@@ -186,14 +187,7 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 			endIndex = last.Start + last.Length
 		}
 		if currentIndex < endIndex {
-			redactions = append(redactions, RedactedOrHashedArraySlice{Start: currentIndex, Length: endIndex - currentIndex, Type: "sensitive"})
-		}
-	}
-
-	// include hashed reveals if any
-	for _, r := range reveals {
-		if r.Hash != nil {
-			redactions = append(redactions, r)
+			redactions = append(redactions, shared.RequestRedactionRange{Start: currentIndex, Length: endIndex - currentIndex, Type: "sensitive"})
 		}
 	}
 
@@ -201,4 +195,30 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		return redactions[i].Start+redactions[i].Length < redactions[j].Start+redactions[j].Length
 	})
 	return redactions, nil
+}
+
+// GetHostPort extracts the host:port from the URL params after parameter substitution
+func GetHostPort(params *HTTPProviderParams, secretParams *HTTPProviderSecretParams) (hostPort string, err error) {
+	// Handle panics from substituteParamValues and convert to errors
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("parameter substitution failed: %v", r)
+		}
+	}()
+
+	// Substitute parameters in the URL (like getURL in TS)
+	sp := substituteParamValues(params, secretParams, false)
+	urlStr := sp.NewParams.URL
+
+	// Parse the URL to extract host
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return "", fmt.Errorf("url is incorrect: %w", err)
+	}
+
+	if u.Host == "" {
+		return "", fmt.Errorf("url is incorrect: no host found")
+	}
+
+	return u.Host, nil
 }

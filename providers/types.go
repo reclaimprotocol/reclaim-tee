@@ -2,6 +2,7 @@ package providers
 
 import (
 	"encoding/json"
+	"tee-mpc/shared"
 )
 
 type TLSConnectionOptions struct {
@@ -42,16 +43,10 @@ type HTTPProviderSecretParams struct {
 }
 
 // Use shared redaction range types
-type RedactedOrHashedArraySlice struct {
-	Start  int     `json:"start"`          // Start position in the decryption stream
-	Length int     `json:"length"`         // Length of the range to redact
-	Type   string  `json:"type"`           // Use RedactionTypeSensitive or RedactionTypeSensitiveProof
-	Hash   *string `json:"hash,omitempty"` // Hash of the redaction bytes
-}
 
 type CreateRequestResult struct {
-	Data       []byte                       `json:"data"`
-	Redactions []RedactedOrHashedArraySlice `json:"redactions"`
+	Data       []byte                         `json:"data"`
+	Redactions []shared.RequestRedactionRange `json:"redactions"`
 }
 
 // ProviderCtx and AttestorVersion mirror TS types for CRLF gating
