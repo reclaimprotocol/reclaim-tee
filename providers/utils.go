@@ -8,11 +8,12 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 const DEFAULT_USER_AGENT = "reclaim-attestor"
-const DEFAULT_HTTPS_PORT = "443"
+const DEFAULT_HTTPS_PORT = 443
 
 func equalsFoldUserAgent(s string) bool { return strings.EqualFold(s, "user-agent") }
 
@@ -34,7 +35,7 @@ func buildHeadersList(h map[string]string) []string {
 
 func getHostHeaderString(u *url.URL) string {
 	port := u.Port()
-	if port != "" && port != DEFAULT_HTTPS_PORT {
+	if port != "" && port != strconv.Itoa(DEFAULT_HTTPS_PORT) {
 		return u.Host
 	}
 	return u.Hostname()

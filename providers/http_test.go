@@ -1510,14 +1510,18 @@ func TestGetHostPort_Success(t *testing.T) {
 	}
 	secret := HTTPProviderSecretParams{}
 
-	hostPort, err := GetHostPort(&params, &secret)
+	host, port, err := GetHostPort(&params, &secret)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := "api.example.com"
-	if hostPort != expected {
-		t.Errorf("expected %q, got %q", expected, hostPort)
+	expectedHost := "api.example.com"
+	expectedPort := 443 // Default HTTPS port
+	if host != expectedHost {
+		t.Errorf("expected host %q, got %q", expectedHost, host)
+	}
+	if port != expectedPort {
+		t.Errorf("expected port %d, got %d", expectedPort, port)
 	}
 }
 
@@ -1528,14 +1532,18 @@ func TestGetHostPort_WithPort(t *testing.T) {
 	}
 	secret := HTTPProviderSecretParams{}
 
-	hostPort, err := GetHostPort(&params, &secret)
+	host, port, err := GetHostPort(&params, &secret)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := "example.com:8443"
-	if hostPort != expected {
-		t.Errorf("expected %q, got %q", expected, hostPort)
+	expectedHost := "example.com"
+	expectedPort := 8443
+	if host != expectedHost {
+		t.Errorf("expected host %q, got %q", expectedHost, host)
+	}
+	if port != expectedPort {
+		t.Errorf("expected port %d, got %d", expectedPort, port)
 	}
 }
 
@@ -1550,14 +1558,18 @@ func TestGetHostPort_SecretParams(t *testing.T) {
 		},
 	}
 
-	hostPort, err := GetHostPort(&params, &secret)
+	host, port, err := GetHostPort(&params, &secret)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := "secret.example.com"
-	if hostPort != expected {
-		t.Errorf("expected %q, got %q", expected, hostPort)
+	expectedHost := "secret.example.com"
+	expectedPort := 443 // Default HTTPS port
+	if host != expectedHost {
+		t.Errorf("expected host %q, got %q", expectedHost, host)
+	}
+	if port != expectedPort {
+		t.Errorf("expected port %d, got %d", expectedPort, port)
 	}
 }
 
@@ -1568,7 +1580,7 @@ func TestGetHostPort_InvalidURL(t *testing.T) {
 	}
 	secret := HTTPProviderSecretParams{}
 
-	_, err := GetHostPort(&params, &secret)
+	_, _, err := GetHostPort(&params, &secret)
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
 	}
@@ -1584,12 +1596,115 @@ func TestGetHostPort_MissingParam(t *testing.T) {
 	}
 	secret := HTTPProviderSecretParams{}
 
-	_, err := GetHostPort(&params, &secret)
+	_, _, err := GetHostPort(&params, &secret)
 	if err == nil {
 		t.Fatal("expected error for missing parameter")
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestGetHostPort_HTTPNotSupported(t *testing.T) {
+	params := HTTPProviderParams{
+		URL:    "http://example.com/path",
+		Method: "GET",
+	}
+	secret := HTTPProviderSecretParams{}
+
+	_, _, err := GetHostPort(&params, &secret)
+	if err == nil {
+		t.Fatal("expected error for HTTP URL")
+	}
+	if !strings.Contains(err.Error(), "only HTTPS URLs are supported") {
+		t.Errorf("expected 'only HTTPS URLs are supported' error, got: %v", err)
+	}
+}
+
+func TestGetHostPort_WithSecretHostAndPort(t *testing.T) {
+	params := HTTPProviderParams{
+		URL:    "https://{{host}}:{{port}}/path",
+		Method: "GET",
+	}
+	secret := HTTPProviderSecretParams{
+		ParamValues: map[string]string{
+			"host": "api.secret.com",
+			"port": "9443",
+		},
+	}
+
+	host, port, err := GetHostPort(&params, &secret)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedHost := "api.secret.com"
+	expectedPort := 9443
+	if host != expectedHost {
+		t.Errorf("expected host %q, got %q", expectedHost, host)
+	}
+	if port != expectedPort {
+		t.Errorf("expected port %d, got %d", expectedPort, port)
+	}
+}
+
+func TestGetHostPort_InvalidPort(t *testing.T) {
+	params := HTTPProviderParams{
+		URL:    "https://example.com:invalid/path",
+		Method: "GET",
+	}
+	secret := HTTPProviderSecretParams{}
+
+	_, _, err := GetHostPort(&params, &secret)
+	if err == nil {
+		t.Fatal("expected error for invalid port")
+	}
+	if !strings.Contains(err.Error(), "url is incorrect") {
+		t.Errorf("expected 'url is incorrect' error, got: %v", err)
+	}
+}
+
+func TestGetHostPort_IPv6(t *testing.T) {
+	params := HTTPProviderParams{
+		URL:    "https://[2001:db8::1]:8443/path",
+		Method: "GET",
+	}
+	secret := HTTPProviderSecretParams{}
+
+	host, port, err := GetHostPort(&params, &secret)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedHost := "2001:db8::1"
+	expectedPort := 8443
+	if host != expectedHost {
+		t.Errorf("expected host %q, got %q", expectedHost, host)
+	}
+	if port != expectedPort {
+		t.Errorf("expected port %d, got %d", expectedPort, port)
+	}
+}
+
+func TestGetHostPort_IPv6WithoutPort(t *testing.T) {
+	params := HTTPProviderParams{
+		URL:    "https://[2001:db8::1]/path",
+		Method: "GET",
+	}
+	secret := HTTPProviderSecretParams{}
+
+	host, port, err := GetHostPort(&params, &secret)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedHost := "[2001:db8::1]"
+	expectedPort := 443 // HTTPS default
+	if host != expectedHost {
+		t.Errorf("expected host %q, got %q", expectedHost, host)
+	}
+	if port != expectedPort {
+		t.Errorf("expected port %d, got %d", expectedPort, port)
 	}
 }
 

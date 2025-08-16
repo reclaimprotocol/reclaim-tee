@@ -199,15 +199,12 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 	return redactions, nil
 }
 
-// GetHostPort extracts the host:port from the URL params after parameter substitution
 func GetHostPort(params *HTTPProviderParams, secretParams *HTTPProviderSecretParams) (string, int, error) {
-	// Use simple URL-only parameter substitution (mirrors TS getURL)
 	urlStr, err := getURL(params, secretParams)
 	if err != nil {
 		return "", -1, err
 	}
 
-	// Parse the URL to extract host (mirrors TS getHostPort)
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return "", -1, fmt.Errorf("url is incorrect: %w", err)
@@ -217,19 +214,24 @@ func GetHostPort(params *HTTPProviderParams, secretParams *HTTPProviderSecretPar
 		return "", -1, fmt.Errorf("url is incorrect: no host found")
 	}
 
+	// Only support HTTPS
+	if u.Scheme != "https" {
+		return "", -1, fmt.Errorf("only HTTPS URLs are supported, got: %s", u.Scheme)
+	}
+
 	host, port, err := net.SplitHostPort(u.Host)
 	if err != nil {
 		var addrError *net.AddrError
 		if errors.As(err, &addrError) {
-			return u.Host, 443, nil
+			// No port specified, use HTTPS default
+			return u.Host, DEFAULT_HTTPS_PORT, nil
 		}
 		return "", -1, fmt.Errorf("url is incorrect: %w", err)
 	}
 
 	intPort, err := strconv.Atoi(port)
 	if err != nil {
-
-		return "", -1, fmt.Errorf("url is incorrect: %w", err)
+		return "", -1, fmt.Errorf("url is incorrect: invalid port %q: %w", port, err)
 	}
 
 	return host, intPort, nil
