@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"tee-mpc/shared"
 )
 
 // internal structure mirroring the TS parseHttpResponse return
@@ -18,14 +19,14 @@ type httpParsedResponse struct {
 	HeaderEndIdx        int
 	BodyStartIndex      int
 	Body                []byte
-	HeaderLowerToRanges map[string]RedactedOrHashedArraySlice
-	Chunks              []RedactedOrHashedArraySlice // slice ranges for each chunk body (absolute positions)
+	HeaderLowerToRanges map[string]shared.RequestRedactionRange
+	Chunks              []shared.RequestRedactionRange // slice ranges for each chunk body (absolute positions)
 }
 
 // RedactionItem mirrors TS: an item with a reveal and accompanying redactions
 type RedactionItem struct {
-	Reveal     RedactedOrHashedArraySlice
-	Redactions []RedactedOrHashedArraySlice
+	Reveal     shared.RequestRedactionRange
+	Redactions []shared.RequestRedactionRange
 }
 
 // makeRegex mirrors the TS makeRegex: enable dotAll and case-insensitive, and
@@ -47,7 +48,7 @@ func processRedactionRequest(
 	body string,
 	rs *ResponseRedaction,
 	bodyStartIdx int,
-	resChunks []RedactedOrHashedArraySlice,
+	resChunks []shared.RequestRedactionRange,
 ) ([]RedactionItem, error) {
 	items := []RedactionItem{}
 
@@ -120,7 +121,7 @@ func processRedactionRequest(
 
 // convertResponsePosToAbsolutePos converts a position within the response body to absolute position in the full response,
 // accounting for chunked transfer encoding.
-func convertResponsePosToAbsolutePos(pos int, bodyStartIdx int, chunks []RedactedOrHashedArraySlice) int {
+func convertResponsePosToAbsolutePos(pos int, bodyStartIdx int, chunks []shared.RequestRedactionRange) int {
 	if len(chunks) > 0 {
 		chunkBodyStart := 0
 		for _, ch := range chunks {
@@ -136,8 +137,8 @@ func convertResponsePosToAbsolutePos(pos int, bodyStartIdx int, chunks []Redacte
 }
 
 // getRedactionsForChunkHeaders returns redaction ranges for chunk headers between chunk bodies if a reveal spans across them.
-func getRedactionsForChunkHeaders(from, to int, chunks []RedactedOrHashedArraySlice) []RedactedOrHashedArraySlice {
-	res := []RedactedOrHashedArraySlice{}
+func getRedactionsForChunkHeaders(from, to int, chunks []shared.RequestRedactionRange) []shared.RequestRedactionRange {
+	res := []shared.RequestRedactionRange{}
 	if len(chunks) == 0 {
 		return res
 	}
@@ -145,7 +146,7 @@ func getRedactionsForChunkHeaders(from, to int, chunks []RedactedOrHashedArraySl
 		ch := chunks[i]
 		if ch.Start > from && ch.Start < to {
 			previousEnd := chunks[i-1].Start + chunks[i-1].Length
-			res = append(res, RedactedOrHashedArraySlice{Start: previousEnd, Length: ch.Start - previousEnd, Type: "sensitive"})
+			res = append(res, shared.RequestRedactionRange{Start: previousEnd, Length: ch.Start - previousEnd, Type: "sensitive"})
 		}
 	}
 	return res
@@ -159,7 +160,7 @@ func parseHTTPResponseBytes(data []byte) (*httpParsedResponse, error) {
 		StatusLineEndIndex:  -1,
 		HeaderEndIdx:        -1,
 		BodyStartIndex:      -1,
-		HeaderLowerToRanges: map[string]RedactedOrHashedArraySlice{},
+		HeaderLowerToRanges: map[string]shared.RequestRedactionRange{},
 	}
 
 	// find status line end
@@ -204,7 +205,7 @@ func parseHTTPResponseBytes(data []byte) (*httpParsedResponse, error) {
 		if colon > 0 {
 			name := strings.ToLower(string(line[:colon]))
 			// store full header line range
-			res.HeaderLowerToRanges[name] = RedactedOrHashedArraySlice{Start: pos, Length: len(line), Type: "sensitive"}
+			res.HeaderLowerToRanges[name] = shared.RequestRedactionRange{Start: pos, Length: len(line), Type: "sensitive"}
 		}
 		pos += len(line) + 2
 	}
@@ -245,8 +246,8 @@ func findHeaderValue(lowerHeaders []byte, lowerKey []byte) string {
 }
 
 // parseChunkBodyRanges parses chunked transfer-encoding body and returns absolute ranges for each chunk body.
-func parseChunkBodyRanges(data []byte, bodyStart int) ([]RedactedOrHashedArraySlice, error) {
-	res := []RedactedOrHashedArraySlice{}
+func parseChunkBodyRanges(data []byte, bodyStart int) ([]shared.RequestRedactionRange, error) {
+	res := []shared.RequestRedactionRange{}
 	idx := bodyStart
 	for {
 		// read size line (hex) up to CRLF
@@ -275,7 +276,7 @@ func parseChunkBodyRanges(data []byte, bodyStart int) ([]RedactedOrHashedArraySl
 		if start+int(chunkSize) > len(data) {
 			return nil, errors.New("invalid chunk size exceeding response length")
 		}
-		res = append(res, RedactedOrHashedArraySlice{Start: start, Length: int(chunkSize), Type: "sensitive"})
+		res = append(res, shared.RequestRedactionRange{Start: start, Length: int(chunkSize), Type: "sensitive"})
 		idx = start + int(chunkSize)
 
 		// skip the CRLF after the chunk data
@@ -297,7 +298,7 @@ func applyRegexWindow(
 	startAbs int,
 	endAbs int,
 	bodyStartIdx int,
-	resChunks []RedactedOrHashedArraySlice,
+	resChunks []shared.RequestRedactionRange,
 ) ([]RedactionItem, error) {
 	items := []RedactionItem{}
 
@@ -383,14 +384,13 @@ func applyRegexWindow(
 	return items, nil
 }
 
-func getReveal(startIdx, length, bodyStartIdx int, resChunks []RedactedOrHashedArraySlice, hash *string) RedactedOrHashedArraySlice {
+func getReveal(startIdx, length, bodyStartIdx int, resChunks []shared.RequestRedactionRange, hash *string) shared.RequestRedactionRange {
 	from := convertResponsePosToAbsolutePos(startIdx, bodyStartIdx, resChunks)
 	to := convertResponsePosToAbsolutePos(startIdx+length, bodyStartIdx, resChunks)
 
-	return RedactedOrHashedArraySlice{
+	return shared.RequestRedactionRange{
 		Start:  from,
 		Length: to - from,
 		Type:   "sensitive",
-		Hash:   hash,
 	}
 }

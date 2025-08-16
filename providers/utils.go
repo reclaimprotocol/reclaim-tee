@@ -226,3 +226,52 @@ func extractAndReplaceTemplateValues(param string, params *HTTPProviderParams, s
 }
 
 func mustParseURL(s string) *url.URL { u, _ := url.Parse(s); return u }
+
+// getURL mirrors the TypeScript getURL function - only processes URL string with parameter substitution
+func getURL(params *HTTPProviderParams, secretParams *HTTPProviderSecretParams) (string, error) {
+	urlStr := params.URL
+	if urlStr == "" {
+		return "", fmt.Errorf("url is required")
+	}
+
+	// Extract parameter names from URL (mirror TS paramsRegex behavior)
+	paramNames := make(map[string]bool)
+	re := regexp.MustCompile(`\{\{([^{}]+)\}\}`)
+	matches := re.FindAllStringSubmatch(urlStr, -1)
+	for _, match := range matches {
+		if len(match) > 1 {
+			paramNames[match[1]] = true
+		}
+	}
+
+	// Substitute parameters in URL only
+	for paramName := range paramNames {
+		placeholder := fmt.Sprintf("{{%s}}", paramName)
+		var value string
+		var found bool
+
+		// Check public params first
+		if params.ParamValues != nil {
+			if val, exists := params.ParamValues[paramName]; exists {
+				value = val
+				found = true
+			}
+		}
+
+		// Check secret params if not found in public
+		if !found && secretParams != nil && secretParams.ParamValues != nil {
+			if val, exists := secretParams.ParamValues[paramName]; exists {
+				value = val
+				found = true
+			}
+		}
+
+		if !found {
+			return "", fmt.Errorf("parameter \"%s\" value not found in templateParams", paramName)
+		}
+
+		urlStr = strings.ReplaceAll(urlStr, placeholder, value)
+	}
+
+	return urlStr, nil
+}
