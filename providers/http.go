@@ -90,22 +90,24 @@ func CreateRequest(secret *HTTPProviderSecretParams, params *HTTPProviderParams)
 		secHeadersStr := joinCRLF(secHeadersList)
 		idx := bytes.Index(data, []byte(secHeadersStr))
 		if idx >= 0 {
-			redactions = append(redactions, RedactedOrHashedArraySlice{From: idx, To: idx + len(secHeadersStr)})
+			redactions = append(redactions, RedactedOrHashedArraySlice{Start: idx, Length: len(secHeadersStr), Type: "sensitive"})
 		}
 	}
 	// hidden body parts
 	for _, hb := range sp.HiddenBodyParts {
 		if hb.Length > 0 {
-			redactions = append(redactions, RedactedOrHashedArraySlice{From: len(headerBytes) + hb.Index, To: len(headerBytes) + hb.Index + hb.Length})
+			redactions = append(redactions, RedactedOrHashedArraySlice{Start: len(headerBytes) + hb.Index, Length: hb.Length, Type: "sensitive"})
 		}
 	}
 	// hidden URL parts
 	for _, hu := range sp.HiddenURLParts {
 		if hu.Length > 0 {
-			redactions = append(redactions, RedactedOrHashedArraySlice{From: hu.Index, To: hu.Index + hu.Length})
+			redactions = append(redactions, RedactedOrHashedArraySlice{Start: hu.Index, Length: hu.Length, Type: "sensitive"})
 		}
 	}
-	sort.Slice(redactions, func(i, j int) bool { return redactions[i].To < redactions[j].To })
+	sort.Slice(redactions, func(i, j int) bool {
+		return redactions[i].Start+redactions[i].Length < redactions[j].Start+redactions[j].Length
+	})
 	return CreateRequestResult{Data: data, Redactions: redactions}, nil
 }
 
@@ -134,7 +136,7 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		return nil, errors.New("Failed to find response body")
 	}
 
-	reveals := []RedactedOrHashedArraySlice{{From: 0, To: headerEndIndex}}
+	reveals := []RedactedOrHashedArraySlice{{Start: 0, Length: headerEndIndex, Type: "sensitive"}}
 
 	// CRLF boundary: only verify and reveal when client supports it
 	if shouldRevealCrlf(ctx) {
@@ -147,10 +149,10 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 	}
 
 	// always reveal the double CRLF which separates headers from body (mirror TS)
-	reveals = append(reveals, RedactedOrHashedArraySlice{From: res.HeaderEndIdx, To: res.HeaderEndIdx + 4})
+	reveals = append(reveals, RedactedOrHashedArraySlice{Start: res.HeaderEndIdx, Length: 4, Type: "sensitive"})
 
 	// reveal Date header if present
-	if rng, ok := res.HeaderLowerToRanges["date"]; ok && rng.To > rng.From {
+	if rng, ok := res.HeaderLowerToRanges["date"]; ok && rng.Start+rng.Length > rng.Start {
 		reveals = append(reveals, rng)
 	}
 
@@ -168,17 +170,24 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		}
 	}
 
-	sort.Slice(reveals, func(i, j int) bool { return reveals[i].To < reveals[j].To })
+	sort.Slice(reveals, func(i, j int) bool { return reveals[i].Start+reveals[i].Length < reveals[j].Start+reveals[j].Length })
 
 	if len(reveals) > 1 {
 		currentIndex := 0
 		for _, r := range reveals {
-			if currentIndex < r.From {
-				redactions = append(redactions, RedactedOrHashedArraySlice{From: currentIndex, To: r.From})
+			if currentIndex < r.Start {
+				redactions = append(redactions, RedactedOrHashedArraySlice{Start: currentIndex, Length: r.Start - currentIndex, Type: "sensitive"})
 			}
-			currentIndex = r.To
+			currentIndex = r.Start + r.Length
 		}
-		redactions = append(redactions, RedactedOrHashedArraySlice{From: currentIndex, To: len(response)})
+		endIndex := len(response)
+		if len(res.Chunks) > 0 {
+			last := res.Chunks[len(res.Chunks)-1]
+			endIndex = last.Start + last.Length
+		}
+		if currentIndex < endIndex {
+			redactions = append(redactions, RedactedOrHashedArraySlice{Start: currentIndex, Length: endIndex - currentIndex, Type: "sensitive"})
+		}
 	}
 
 	// include hashed reveals if any
@@ -188,6 +197,8 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		}
 	}
 
-	sort.Slice(redactions, func(i, j int) bool { return redactions[i].To < redactions[j].To })
+	sort.Slice(redactions, func(i, j int) bool {
+		return redactions[i].Start+redactions[i].Length < redactions[j].Start+redactions[j].Length
+	})
 	return redactions, nil
 }

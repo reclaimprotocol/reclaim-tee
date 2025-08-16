@@ -9,9 +9,9 @@ type TLSConnectionOptions struct {
 }
 
 type ResponseMatch struct {
-	Value    string `json:"value,omitempty"`
-	XPath    string `json:"xPath,omitempty"`
-	JSONPath string `json:"jsonPath,omitempty"`
+	Value  string `json:"value"`
+	Type   string `json:"type"`             // "regex" or "contains"
+	Invert *bool  `json:"invert,omitempty"` // Optional: inverses the matching logic
 }
 
 type ResponseRedaction struct {
@@ -41,10 +41,12 @@ type HTTPProviderSecretParams struct {
 	ParamValues         map[string]string `json:"paramValues,omitempty"`
 }
 
+// Use shared redaction range types
 type RedactedOrHashedArraySlice struct {
-	From int     `json:"fromIndex"`
-	To   int     `json:"toIndex"`
-	Hash *string `json:"hash,omitempty"`
+	Start  int     `json:"start"`          // Start position in the decryption stream
+	Length int     `json:"length"`         // Length of the range to redact
+	Type   string  `json:"type"`           // Use RedactionTypeSensitive or RedactionTypeSensitiveProof
+	Hash   *string `json:"hash,omitempty"` // Hash of the redaction bytes
 }
 
 type CreateRequestResult struct {
