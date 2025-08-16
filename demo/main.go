@@ -77,6 +77,7 @@ func main() {
 		ResponseMatches: []providers.ResponseMatch{
 			{
 				Value: "TESLA, INC.",
+				Type:  "contains",
 			},
 		},
 		ResponseRedactions: []providers.ResponseRedaction{
@@ -92,9 +93,9 @@ func main() {
 		},
 	}
 
-	req, ranges, err := initParams(publicParams, secretParams)
+	req, ranges, err := createRequest(publicParams, secretParams)
 	if err != nil {
-		log.Fatalf("initParams: %s", err.Error())
+		log.Fatalf("createRequest: %s", err.Error())
 	}
 
 	logger.Info("Demo request created")
@@ -317,8 +318,8 @@ func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPRespon
 	var respRanges []shared.ResponseRedactionRange
 	for _, r := range ranges {
 		respRanges = append(respRanges, shared.ResponseRedactionRange{
-			Start:  r.From,
-			Length: r.To - r.From,
+			Start:  r.Start,
+			Length: r.Length,
 		})
 	}
 
@@ -327,7 +328,7 @@ func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPRespon
 	}, nil
 }
 
-func initParams(params *providers.HTTPProviderParams, secretParams *providers.HTTPProviderSecretParams) ([]byte, []shared.RequestRedactionRange, error) {
+func createRequest(params *providers.HTTPProviderParams, secretParams *providers.HTTPProviderSecretParams) ([]byte, []shared.RequestRedactionRange, error) {
 
 	req, err := providers.CreateRequest(secretParams, params)
 	if err != nil {
@@ -337,8 +338,8 @@ func initParams(params *providers.HTTPProviderParams, secretParams *providers.HT
 	var ranges []shared.RequestRedactionRange
 	for _, r := range req.Redactions {
 		ranges = append(ranges, shared.RequestRedactionRange{
-			Start:  r.From,
-			Length: r.To - r.From,
+			Start:  r.Start,
+			Length: r.Length,
 			Type:   "sensitive",
 		})
 	}
