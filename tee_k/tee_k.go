@@ -37,74 +37,6 @@ type RedactionOperation struct {
 	Bytes  []byte // Redaction bytes to apply
 }
 
-// TEEKSessionState holds TEE_K specific session state
-type TEEKSessionState struct {
-	// TLS handshake data
-	HandshakeComplete bool
-	ClientHello       []byte
-	ServerHello       []byte
-	MasterSecret      []byte
-	KeyBlock          []byte
-	KeyShare          []byte
-	CipherSuite       uint16
-
-	// TLS client and connection state
-	TLSClient         *minitls.Client
-	WSConn2TLS        *WebSocketConn
-	CurrentConn       *websocket.Conn
-	CurrentRequest    *shared.RequestConnectionData
-	TCPReady          chan bool
-	CombinedKey       []byte
-	ServerSequenceNum uint64
-}
-
-// TEEKSessionManager extends shared session manager with TEE_K specific state
-type TEEKSessionManager struct {
-	*shared.SessionManager
-	teekStates map[string]*TEEKSessionState
-	stateMutex sync.Mutex
-}
-
-// NewTEEKSessionManager creates a new TEE_K session manager
-func NewTEEKSessionManager() *TEEKSessionManager {
-	return &TEEKSessionManager{
-		SessionManager: shared.NewSessionManager(),
-		teekStates:     make(map[string]*TEEKSessionState),
-	}
-}
-
-// GetTEEKSessionState gets TEE_K specific state for a session
-func (t *TEEKSessionManager) GetTEEKSessionState(sessionID string) (*TEEKSessionState, error) {
-	t.stateMutex.Lock()
-	defer t.stateMutex.Unlock()
-
-	state, exists := t.teekStates[sessionID]
-	if !exists {
-		return nil, fmt.Errorf("TEE_K session state not found for session %s", sessionID)
-	}
-	return state, nil
-}
-
-// SetTEEKSessionState sets TEE_K specific state for a session
-func (t *TEEKSessionManager) SetTEEKSessionState(sessionID string, state *TEEKSessionState) {
-	t.stateMutex.Lock()
-	defer t.stateMutex.Unlock()
-	t.teekStates[sessionID] = state
-}
-
-// RemoveTEEKSessionState removes TEE_K specific state for a session
-func (t *TEEKSessionManager) RemoveTEEKSessionState(sessionID string) {
-	t.stateMutex.Lock()
-	defer t.stateMutex.Unlock()
-	delete(t.teekStates, sessionID)
-}
-
-// Override CloseSession to also clean up TEE_K state
-func (t *TEEKSessionManager) CloseSession(sessionID string) error {
-	t.RemoveTEEKSessionState(sessionID)
-	return t.SessionManager.CloseSession(sessionID)
-}
-
 type TEEK struct {
 	port int
 
@@ -220,10 +152,8 @@ func createVSockWebSocketDialer(logger *shared.Logger) *websocket.Dialer {
 				return nil, fmt.Errorf("failed to send target address to proxy: %v", err)
 			}
 
-			logger.Info("VSock connection established via internet proxy", zap.String("target", addr))
 			return conn, nil
 		},
-		HandshakeTimeout: 30 * time.Second,
 	}
 }
 

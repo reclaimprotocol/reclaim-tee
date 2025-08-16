@@ -1,0 +1,58 @@
+package main
+
+import (
+	"fmt"
+	"sync"
+
+	"tee-mpc/shared"
+
+	"github.com/gorilla/websocket"
+)
+
+type TEETSessionState struct {
+	TEETClientConn          *websocket.Conn
+	KeyShare                []byte
+	CipherSuite             uint16
+	PendingEncryptedRequest *shared.EncryptedRequestData
+	TEETConnForPending      *websocket.Conn
+}
+
+type TEETSessionManager struct {
+	*shared.SessionManager
+	teetStates map[string]*TEETSessionState
+	stateMutex sync.Mutex
+}
+
+func NewTEETSessionManager() *TEETSessionManager {
+	return &TEETSessionManager{
+		SessionManager: shared.NewSessionManager(),
+		teetStates:     make(map[string]*TEETSessionState),
+	}
+}
+
+func (t *TEETSessionManager) GetTEETSessionState(sessionID string) (*TEETSessionState, error) {
+	t.stateMutex.Lock()
+	defer t.stateMutex.Unlock()
+	state, exists := t.teetStates[sessionID]
+	if !exists {
+		return nil, fmt.Errorf("TEE_T session state not found for session %s", sessionID)
+	}
+	return state, nil
+}
+
+func (t *TEETSessionManager) SetTEETSessionState(sessionID string, state *TEETSessionState) {
+	t.stateMutex.Lock()
+	t.teetStates[sessionID] = state
+	t.stateMutex.Unlock()
+}
+
+func (t *TEETSessionManager) RemoveTEETSessionState(sessionID string) {
+	t.stateMutex.Lock()
+	delete(t.teetStates, sessionID)
+	t.stateMutex.Unlock()
+}
+
+func (t *TEETSessionManager) CloseSession(sessionID string) error {
+	t.RemoveTEETSessionState(sessionID)
+	return t.SessionManager.CloseSession(sessionID)
+}
