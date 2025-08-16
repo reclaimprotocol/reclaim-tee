@@ -93,7 +93,7 @@ func main() {
 		},
 	}
 
-	req, ranges, err := createRequest(publicParams, secretParams)
+	req, err := providers.CreateRequest(secretParams, publicParams)
 	if err != nil {
 		log.Fatalf("createRequest: %s", err.Error())
 	}
@@ -123,11 +123,16 @@ func main() {
 	}
 
 	// Set the demo request data and redaction ranges directly
-	client.SetRequestData(req)
-	client.SetRequestRedactionRanges(ranges)
+	client.SetRequestData(req.Data)
+	client.SetRequestRedactionRanges(req.Redactions)
+
+	host, port, err := providers.GetHostPort(publicParams, secretParams)
+	if err != nil {
+		logger.Fatal("Failed to get host and port", zap.Error(err))
+	}
 
 	// Request HTTP to github.com (supports all cipher suites)
-	if err := client.RequestHTTP("vpic.nhtsa.dot.gov", 443); err != nil {
+	if err := client.RequestHTTP(host, port); err != nil {
 		logger.Error("Failed to request HTTP", zap.Error(err))
 		fmt.Printf("❌ Failed to request HTTP: %v\n", err)
 		return
@@ -326,22 +331,4 @@ func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPRespon
 	return &clientlib.RedactionResult{
 		RedactionRanges: respRanges,
 	}, nil
-}
-
-func createRequest(params *providers.HTTPProviderParams, secretParams *providers.HTTPProviderSecretParams) ([]byte, []shared.RequestRedactionRange, error) {
-
-	req, err := providers.CreateRequest(secretParams, params)
-	if err != nil {
-		return nil, []shared.RequestRedactionRange{}, err
-	}
-
-	var ranges []shared.RequestRedactionRange
-	for _, r := range req.Redactions {
-		ranges = append(ranges, shared.RequestRedactionRange{
-			Start:  r.Start,
-			Length: r.Length,
-			Type:   "sensitive",
-		})
-	}
-	return req.Data, ranges, nil
 }

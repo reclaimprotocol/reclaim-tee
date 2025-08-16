@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/url"
 	"sort"
+	"strconv"
 	"tee-mpc/shared"
 )
 
@@ -198,22 +200,37 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 }
 
 // GetHostPort extracts the host:port from the URL params after parameter substitution
-func GetHostPort(params *HTTPProviderParams, secretParams *HTTPProviderSecretParams) (string, error) {
+func GetHostPort(params *HTTPProviderParams, secretParams *HTTPProviderSecretParams) (string, int, error) {
 	// Use simple URL-only parameter substitution (mirrors TS getURL)
 	urlStr, err := getURL(params, secretParams)
 	if err != nil {
-		return "", err
+		return "", -1, err
 	}
 
 	// Parse the URL to extract host (mirrors TS getHostPort)
 	u, err := url.Parse(urlStr)
 	if err != nil {
-		return "", fmt.Errorf("url is incorrect: %w", err)
+		return "", -1, fmt.Errorf("url is incorrect: %w", err)
 	}
 
 	if u.Host == "" {
-		return "", fmt.Errorf("url is incorrect: no host found")
+		return "", -1, fmt.Errorf("url is incorrect: no host found")
 	}
 
-	return u.Host, nil
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		var addrError *net.AddrError
+		if errors.As(err, &addrError) {
+			return u.Host, 443, nil
+		}
+		return "", -1, fmt.Errorf("url is incorrect: %w", err)
+	}
+
+	intPort, err := strconv.Atoi(port)
+	if err != nil {
+
+		return "", -1, fmt.Errorf("url is incorrect: %w", err)
+	}
+
+	return host, intPort, nil
 }
