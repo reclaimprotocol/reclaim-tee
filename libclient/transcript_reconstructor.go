@@ -219,7 +219,6 @@ func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest
 	messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
 		Sender:  teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT,
 		Message: wrapInTlsRecord(revealedRequest, 0x17),
-		Reveal:  createTeeStreamReveal(revealedRequest, bundlePB),
 	})
 
 	// Add server response (reconstructed)
@@ -227,7 +226,6 @@ func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest
 		messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
 			Sender:  teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER,
 			Message: wrapInTlsRecord(reconstructedResponse, 0x17),
-			Reveal:  createTeeStreamReveal(reconstructedResponse, bundlePB),
 		})
 	}
 
@@ -257,18 +255,6 @@ func wrapInTlsRecord(data []byte, recordType byte) []byte {
 	record[4] = byte(len(data) & 0xFF) // Length low byte
 	copy(record[5:], data)
 	return record
-}
-
-func createTeeStreamReveal(data []byte, bundlePB *teeproto.VerificationBundle) *teeproto.MessageReveal {
-	return &teeproto.MessageReveal{
-		Reveal: &teeproto.MessageReveal_DirectReveal{
-			DirectReveal: &teeproto.MessageReveal_MessageRevealDirect{
-				Key:          bundlePB.HandshakeKeys.GetHandshakeKey(),
-				Iv:           bundlePB.HandshakeKeys.GetHandshakeIv(),
-				RecordNumber: 0,
-			},
-		},
-	}
 }
 
 // ExtractHostFromBundle extracts hostname from handshake packets
