@@ -10,7 +10,6 @@ import (
 // TestFullHandshakeAndHTTP runs a full handshake and a simple HTTP request
 // against a real server for a variety of cipher suites.
 func TestFullHandshakeAndHTTP(t *testing.T) {
-	// Note: You must have an internet connection for these tests to run.
 	testCases := []struct {
 		name        string
 		serverName  string

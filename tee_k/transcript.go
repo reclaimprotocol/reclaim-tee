@@ -103,8 +103,6 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 				requestMetadata = &shared.RequestMetadata{}
 			}
 			requestMetadata.RedactedRequest = packet
-		// Note: Commitments are no longer included in TEE_K transcript
-		// TEE_T verifies commitments and signs the proof stream
 		case "redaction_ranges":
 			if requestMetadata == nil {
 				requestMetadata = &shared.RequestMetadata{}

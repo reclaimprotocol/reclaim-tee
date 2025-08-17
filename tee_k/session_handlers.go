@@ -135,7 +135,6 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 		zap.Int("ranges_count", len(redactedRequest.RedactionRanges)),
 		zap.Int("bytes", len(redactionRangesBytes)))
 
-	// Note: Commitments are verified by TEE_T and not included in TEE_K transcript
 	// TEE_T signs the proof stream, providing sufficient cryptographic proof
 
 	t.logger.WithSession(sessionID).Info("Added redaction ranges to transcript for signing")

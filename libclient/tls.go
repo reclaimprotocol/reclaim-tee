@@ -179,10 +179,6 @@ func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
 	}
 }
 
-// NOTE: processCompleteRecords and processAllRemainingRecords functions removed
-// during atomic state machine refactoring. TLS record processing now happens
-// directly via processTLSRecordFromData() without buffering.
-
 // processSingleTLSRecord handles a single, complete TLS record
 func (c *Client) processSingleTLSRecord(record []byte, recordType byte, recordLength int) {
 	switch recordType {
@@ -417,8 +413,6 @@ func (c *Client) analyzeAlertMessage(data []byte) {
 		zap.Int("level_code", int(alertLevel)),
 		zap.String("description", descStr),
 		zap.Int("description_code", int(alertDescription)))
-
-	// Note: We don't signal completion on CLOSE_NOTIFY since TEEs may still be processing
 }
 
 // parseDecryptedAlert parses alert level and description from decrypted alert data

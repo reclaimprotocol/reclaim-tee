@@ -17,9 +17,6 @@ func TestReconstructTranscriptForClaimTunnel(t *testing.T) {
 		TeetSigned: &teeproto.SignedMessage{
 			Body: createTestTOutput(),
 		},
-		Opening: &teeproto.Opening{
-			ProofStream: []byte("test-proof-stream"),
-		},
 		HandshakeKeys: &teeproto.HandshakeSecrets{
 			HandshakeKey: []byte("test-key"),
 			HandshakeIv:  []byte("test-iv"),

@@ -24,7 +24,7 @@ func ReconstructTranscriptForClaimTunnel(bundlePB *teeproto.VerificationBundle) 
 	}
 
 	// Reconstruct request (copy from proofverifier.go lines 250-336)
-	revealedRequest, err := reconstructRequest(&kPayload, bundlePB.Opening)
+	revealedRequest, err := reconstructRequest(&kPayload, &tPayload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reconstruct request: %v", err)
 	}
@@ -39,10 +39,10 @@ func ReconstructTranscriptForClaimTunnel(bundlePB *teeproto.VerificationBundle) 
 	return createTranscriptMessages(&kPayload, revealedRequest, reconstructedResponse, bundlePB)
 }
 
-// reconstructRequest applies proof stream to reveal sensitive_proof data
-// Copied from proofverifier.go lines 272-336
-func reconstructRequest(kPayload *teeproto.KOutputPayload, opening *teeproto.Opening) ([]byte, error) {
-	if opening == nil || opening.ProofStream == nil {
+// reconstructRequest applies TEE_T-signed proof streams to reveal sensitive_proof data
+// Updated to use secure TEE_T-signed streams instead of client-provided opening
+func reconstructRequest(kPayload *teeproto.KOutputPayload, tPayload *teeproto.TOutputPayload) ([]byte, error) {
+	if len(tPayload.GetRequestProofStreams()) == 0 {
 		return kPayload.RedactedRequest, nil
 	}
 
@@ -50,27 +50,41 @@ func reconstructRequest(kPayload *teeproto.KOutputPayload, opening *teeproto.Ope
 		return kPayload.RedactedRequest, nil
 	}
 
-	// Create a copy of the redacted request
+	// Create a copy of the redacted request to apply proof streams
 	revealedRequest := make([]byte, len(kPayload.RedactedRequest))
 	copy(revealedRequest, kPayload.RedactedRequest)
 
-	// Apply response redaction ranges for display (keep sensitive data as '*')
-	prettyRequest := make([]byte, len(revealedRequest))
-	copy(prettyRequest, revealedRequest)
+	// Apply proof streams ONLY to sensitive_proof ranges
+	proofStreamIndex := 0
 
 	for _, r := range kPayload.RequestRedactionRanges {
-		// Keep non-proof sensitive data as '*' for display
-		if !strings.Contains(r.Type, "proof") {
-			start := int(r.Start)
-			length := int(r.Length)
-
-			for i := 0; i < length && start+i < len(prettyRequest); i++ {
-				prettyRequest[start+i] = 0x2A // ASCII asterisk '*'
+		if r.GetType() == "sensitive_proof" {
+			if proofStreamIndex >= len(tPayload.GetRequestProofStreams()) {
+				return nil, fmt.Errorf("insufficient TEE_T-signed proof streams for sensitive_proof range")
 			}
+
+			proofStream := tPayload.GetRequestProofStreams()[proofStreamIndex]
+			start := int(r.GetStart())
+			length := int(r.GetLength())
+
+			if start+length > len(revealedRequest) {
+				return nil, fmt.Errorf("proof range [%d:%d] exceeds request length %d", start, start+length, len(revealedRequest))
+			}
+
+			if length != len(proofStream) {
+				return nil, fmt.Errorf("proof stream length mismatch: range needs %d bytes, stream has %d", length, len(proofStream))
+			}
+
+			// Apply XOR to reveal original sensitive_proof data
+			for i := 0; i < length; i++ {
+				revealedRequest[start+i] ^= proofStream[i]
+			}
+
+			proofStreamIndex++
 		}
 	}
 
-	return prettyRequest, nil
+	return revealedRequest, nil
 }
 
 // reconstructResponse XORs redacted streams with ciphertexts

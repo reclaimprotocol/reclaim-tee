@@ -247,8 +247,6 @@ func (c *Client) processHandshakeBuffer() (bool, error) {
 			zap.Uint32("length", msgLen))
 
 		// Process the message.
-		// NOTE: The `processSingleHandshakeMessage` function now replaces the old `processHandshakeMessage`.
-		// It's responsible for updating transcripts and deriving keys.
 		done, err := c.processSingleHandshakeMessage(msg)
 		if err != nil {
 			return false, err

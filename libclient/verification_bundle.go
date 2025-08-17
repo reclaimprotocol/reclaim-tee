@@ -40,13 +40,6 @@ func (c *Client) BuildVerificationBundle(path string) error {
 	// TEE_T signed message (T_OUTPUT) - use original protobuf SignedMessage
 	bundle.TeetSigned = c.teetSignedMessage
 
-	// Proof commitment opening
-	if c.proofStream != nil || c.proofKey != nil {
-		bundle.Opening = &teeproto.Opening{
-			ProofStream: c.proofStream,
-		}
-	}
-
 	// Write protobuf to file
 	data, err := proto.Marshal(bundle)
 	if err != nil {

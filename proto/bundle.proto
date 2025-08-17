@@ -14,11 +14,6 @@ message HandshakeSecrets {
   string algorithm = 4;
 }
 
-// Commitment opening for proof stream
-message Opening {
-  bytes proof_stream = 1; // Str_SP
-}
-
 // Single artefact produced by client for offline verification
 message VerificationBundle {
   HandshakeSecrets handshake_keys = 1; // optional
@@ -26,9 +21,6 @@ message VerificationBundle {
   // Signed transcripts
   SignedMessage teek_signed = 2; // BODY_TYPE_K_OUTPUT
   SignedMessage teet_signed = 3; // BODY_TYPE_T_OUTPUT
-
-  // Commitment opening for proof ranges
-  Opening opening = 4; // optional
 
 }
 

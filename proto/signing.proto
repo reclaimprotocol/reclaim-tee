@@ -18,6 +18,7 @@ message KOutputPayload {
 
 message TOutputPayload {
   repeated bytes packets = 1; // TLS packets observed by TEE_T
+  repeated bytes request_proof_streams = 2; // R_SP streams signed by TEE_T for cryptographic verification
 }
 
 // Attestation report with structured data

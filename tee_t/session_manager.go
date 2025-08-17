@@ -15,6 +15,7 @@ type TEETSessionState struct {
 	CipherSuite             uint16
 	PendingEncryptedRequest *shared.EncryptedRequestData
 	TEETConnForPending      *websocket.Conn
+	RequestProofStreams     [][]byte // Store R_SP streams for cryptographic signing
 }
 
 type TEETSessionManager struct {

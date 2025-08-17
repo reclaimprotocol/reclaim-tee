@@ -19,7 +19,6 @@ type GoogleAttestor struct {
 }
 
 // A minimal set of root/intermediate certs used for verification.
-// NOTE: Replace with the appropriate Google attestation root(s) in production.
 const googleAttestationRootPEM = `-----BEGIN CERTIFICATE-----
 MIIGCDCCA/CgAwIBAgITYBvRy5g9aYYMh7tJS7pFwafL6jANBgkqhkiG9w0BAQsF
 ADCBizELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExFjAUBgNVBAcT

@@ -326,7 +326,7 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			msg := &shared.Message{SessionID: sessionID, Type: shared.MsgTCPData, Data: shared.TCPData{Data: p.TcpData.GetData()}}
 			t.handleTCPDataSession(sessionID, msg)
 		case *teeproto.Envelope_RedactedRequest:
-			// Inline conversion
+			// Convert protobuf ranges to shared ranges
 			var ranges []shared.RequestRedactionRange
 			for _, r := range p.RedactedRequest.GetRedactionRanges() {
 				ranges = append(ranges, shared.RequestRedactionRange{Start: int(r.GetStart()), Length: int(r.GetLength()), Type: r.GetType()})

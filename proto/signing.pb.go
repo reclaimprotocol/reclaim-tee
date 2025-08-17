@@ -150,10 +150,11 @@ func (x *KOutputPayload) GetResponseRedactionRanges() []*ResponseRedactionRange 
 }
 
 type TOutputPayload struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Packets       [][]byte               `protobuf:"bytes,1,rep,name=packets,proto3" json:"packets,omitempty"` // TLS packets observed by TEE_T
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Packets             [][]byte               `protobuf:"bytes,1,rep,name=packets,proto3" json:"packets,omitempty"`                                                      // TLS packets observed by TEE_T
+	RequestProofStreams [][]byte               `protobuf:"bytes,2,rep,name=request_proof_streams,json=requestProofStreams,proto3" json:"request_proof_streams,omitempty"` // R_SP streams signed by TEE_T for cryptographic verification
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TOutputPayload) Reset() {
@@ -189,6 +190,13 @@ func (*TOutputPayload) Descriptor() ([]byte, []int) {
 func (x *TOutputPayload) GetPackets() [][]byte {
 	if x != nil {
 		return x.Packets
+	}
+	return nil
+}
+
+func (x *TOutputPayload) GetRequestProofStreams() [][]byte {
+	if x != nil {
+		return x.RequestProofStreams
 	}
 	return nil
 }
@@ -332,9 +340,10 @@ const file_signing_proto_rawDesc = "" +
 	"\x18request_redaction_ranges\x18\x02 \x03(\v2\x1f.teeproto.RequestRedactionRangeR\x16requestRedactionRanges\x12S\n" +
 	"\x10redacted_streams\x18\x03 \x03(\v2(.teeproto.SignedRedactedDecryptionStreamR\x0fredactedStreams\x12\x18\n" +
 	"\apackets\x18\x04 \x03(\fR\apackets\x12\\\n" +
-	"\x19response_redaction_ranges\x18\x05 \x03(\v2 .teeproto.ResponseRedactionRangeR\x17responseRedactionRanges\"*\n" +
+	"\x19response_redaction_ranges\x18\x05 \x03(\v2 .teeproto.ResponseRedactionRangeR\x17responseRedactionRanges\"^\n" +
 	"\x0eTOutputPayload\x12\x18\n" +
-	"\apackets\x18\x01 \x03(\fR\apackets\"?\n" +
+	"\apackets\x18\x01 \x03(\fR\apackets\x122\n" +
+	"\x15request_proof_streams\x18\x02 \x03(\fR\x13requestProofStreams\"?\n" +
 	"\x11AttestationReport\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x16\n" +
 	"\x06report\x18\x02 \x01(\fR\x06report\"\xdf\x01\n" +

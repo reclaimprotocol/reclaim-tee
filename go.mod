@@ -8,8 +8,8 @@ require (
 	github.com/anjuna-security/go-nitro-attestation v0.0.0-20250527214750-dc507eadb414
 	github.com/antchfx/xpath v1.3.3
 	github.com/austinast/nitro-enclaves-sdk-go v0.0.2
-	github.com/ethereum/go-ethereum v1.16.2
 	github.com/coreos/go-json v0.0.0-20231102161613-e49c8866685a
+	github.com/ethereum/go-ethereum v1.16.2
 	github.com/go-acme/lego/v4 v4.25.2
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0

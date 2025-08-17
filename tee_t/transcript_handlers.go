@@ -111,7 +111,25 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			return
 		}
 		ethAddress := t.signingKeyPair.GetEthAddress()
-		tOutput := &teeproto.TOutputPayload{Packets: transcript}
+
+		// Get R_SP streams from session state for cryptographic signing
+		var teetState *TEETSessionState
+		teetState, err = t.getTEETSessionState(sessionID)
+		if err != nil {
+			t.logger.Error("Failed to get TEE_T session state for R_SP signing",
+				zap.String("session_id", sessionID), zap.Error(err))
+			teetState = &TEETSessionState{} // Use empty state if not available
+		}
+
+		tOutput := &teeproto.TOutputPayload{
+			Packets:             transcript,
+			RequestProofStreams: teetState.RequestProofStreams, // ✅ TEE_T signs R_SP streams
+		}
+
+		t.logger.InfoIf("Including R_SP streams in TEE_T signature",
+			zap.String("session_id", sessionID),
+			zap.Int("proof_streams_count", len(teetState.RequestProofStreams)))
+
 		body, err := proto.Marshal(tOutput)
 		if err != nil {
 			t.logger.Error("Failed to marshal TOutputPayload",

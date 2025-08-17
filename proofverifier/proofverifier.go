@@ -230,15 +230,61 @@ func Validate(bundlePath string) error {
 		fmt.Println("[Verifier] No redacted streams available for reconstruction")
 	}
 
+	// --- Request reconstruction using TEE_T-signed proof streams ---
+	if len(tPayload.GetRequestProofStreams()) > 0 {
+		fmt.Printf("[Verifier] Found %d R_SP proof streams signed by TEE_T ✅\n", len(tPayload.GetRequestProofStreams()))
+
+		redactedRequest := kPayload.GetRedactedRequest()
+		redactionRanges := kPayload.GetRequestRedactionRanges()
+
+		if len(redactedRequest) > 0 {
+			// Create a copy of the redacted request to apply proof streams
+			revealedRequest := make([]byte, len(redactedRequest))
+			copy(revealedRequest, redactedRequest)
+
+			// Apply proof streams ONLY to sensitive_proof ranges
+			proofStreamIndex := 0
+
+			for _, r := range redactionRanges {
+				if r.GetType() == "sensitive_proof" {
+					if proofStreamIndex >= len(tPayload.GetRequestProofStreams()) {
+						return fmt.Errorf("insufficient TEE_T-signed proof streams for sensitive_proof range")
+					}
+
+					proofStream := tPayload.GetRequestProofStreams()[proofStreamIndex]
+					start := int(r.GetStart())
+					length := int(r.GetLength())
+
+					if start+length > len(revealedRequest) {
+						return fmt.Errorf("proof range [%d:%d] exceeds request length %d", start, start+length, len(revealedRequest))
+					}
+
+					if length != len(proofStream) {
+						return fmt.Errorf("proof stream length mismatch: range needs %d bytes, stream has %d", length, len(proofStream))
+					}
+
+					// Apply XOR to reveal original sensitive_proof data
+					for i := 0; i < length; i++ {
+						revealedRequest[start+i] ^= proofStream[i]
+					}
+
+					fmt.Printf("[Verifier] ✅ Revealed sensitive_proof range [%d:%d] using TEE_T-signed stream\n", start, start+length)
+					proofStreamIndex++
+				}
+			}
+
+			fmt.Printf("[Verifier] Reconstructed request with TEE_T-signed proof streams:\n---\n%s\n---\n", string(revealedRequest))
+		}
+	} else {
+		fmt.Println("[Verifier] No R_SP proof streams - only R_S verification available (sensitive data remains redacted)")
+	}
+
 	// --- Verify redaction ranges authenticity ---
 	if len(kPayload.GetRequestRedactionRanges()) > 0 {
 		fmt.Printf("[Verifier] Redaction ranges verified ✅ (TEE_K signed %d ranges)\n", len(kPayload.GetRequestRedactionRanges()))
 	} else {
 		fmt.Println("[Verifier] Warning: No signed redaction ranges from TEE_K")
 	}
-
-	// NOTE: Request display is now handled in verifyAndRevealProofData() function above
-	// which shows the proper revealed version with proof data visible and sensitive data hidden
 
 	fmt.Println("[Verifier] Offline verification complete – success 🥳")
 	return nil

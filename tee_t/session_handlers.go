@@ -89,6 +89,31 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 
 	t.logger.InfoIf("Redaction streams stored for session", zap.String("session_id", sessionID))
 
+	// Capture R_SP (sensitive_proof) streams for cryptographic signing by TEE_T
+	teetState, teetErr := t.getTEETSessionState(sessionID)
+	if teetErr != nil {
+		t.logger.Error("Failed to get TEE_T session state for R_SP capture", zap.Error(teetErr))
+	} else {
+		teetState.RequestProofStreams = [][]byte{} // Reset proof streams
+
+		// Extract R_SP streams based on redaction ranges (if available)
+		if len(streamsData.Ranges) > 0 {
+			for i, r := range streamsData.Ranges {
+				if r.Type == "sensitive_proof" && i < len(streamsData.Streams) {
+					teetState.RequestProofStreams = append(teetState.RequestProofStreams, streamsData.Streams[i])
+					t.logger.InfoIf("Captured R_SP stream for TEE_T signing",
+						zap.String("session_id", sessionID),
+						zap.Int("stream_index", i),
+						zap.Int("stream_length", len(streamsData.Streams[i])))
+				}
+			}
+		}
+
+		t.logger.InfoIf("R_SP stream capture completed",
+			zap.String("session_id", sessionID),
+			zap.Int("proof_streams_count", len(teetState.RequestProofStreams)))
+	}
+
 	if err := t.verifyCommitmentsIfReady(sessionID); err != nil {
 		if t.sessionTerminator.CriticalError(sessionID, shared.ReasonCryptoCommitmentFailed, err,
 			zap.Int("commitment_count", len(session.RedactionState.ExpectedCommitments))) {
@@ -97,14 +122,14 @@ func (t *TEET) handleRedactionStreamsSession(sessionID string, msg *shared.Messa
 		return
 	}
 
-	teetState, err := t.getTEETSessionState(sessionID)
-	if err == nil && teetState.PendingEncryptedRequest != nil {
+	teetState2, err := t.getTEETSessionState(sessionID)
+	if err == nil && teetState2.PendingEncryptedRequest != nil {
 		t.logger.InfoIf("Processing pending encrypted request with newly received streams", zap.String("session_id", sessionID))
-		if teetState.TEETConnForPending != nil {
-			t.processEncryptedRequestWithStreamsForSession(sessionID, teetState.PendingEncryptedRequest, teetState.TEETConnForPending)
+		if teetState2.TEETConnForPending != nil {
+			t.processEncryptedRequestWithStreamsForSession(sessionID, teetState2.PendingEncryptedRequest, teetState2.TEETConnForPending)
 		}
-		teetState.PendingEncryptedRequest = nil
-		teetState.TEETConnForPending = nil
+		teetState2.PendingEncryptedRequest = nil
+		teetState2.TEETConnForPending = nil
 	}
 
 	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
@@ -612,7 +637,6 @@ func (t *TEET) processEncryptedRequestWithStreamsForSession(sessionID string, en
 	tlsRecord[3] = byte(recordLength >> 8)
 	tlsRecord[4] = byte(recordLength & 0xFF)
 	copy(tlsRecord[5:], payload)
-	// NOTE: Don't add request record to transcript - only response records should be included
 	// for verification against TEE_K's redacted streams
 	t.logger.InfoIf("Constructed TLS request record (not added to transcript for verification)",
 		zap.String("session_id", sessionID),

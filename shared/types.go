@@ -350,8 +350,9 @@ type RedactedRequestData struct {
 
 // RedactionStreamsData contains the XOR streams and commitment keys for revelation
 type RedactionStreamsData struct {
-	Streams        [][]byte `json:"streams"`         // [Str_S, Str_SP]
-	CommitmentKeys [][]byte `json:"commitment_keys"` // [K_S, K_SP]
+	Streams        [][]byte                `json:"streams"`         // [Str_S, Str_SP]
+	CommitmentKeys [][]byte                `json:"commitment_keys"` // [K_S, K_SP]
+	Ranges         []RequestRedactionRange `json:"ranges"`          // Redaction ranges to identify R_S vs R_SP
 }
 
 // RedactionVerificationData contains the result of redaction verification

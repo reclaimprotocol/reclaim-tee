@@ -704,13 +704,6 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 		}
 	}
 
-	// Add proof opening if available
-	if c.proofStream != nil || c.proofKey != nil {
-		bundle.Opening = &teeproto.Opening{
-			ProofStream: c.proofStream,
-		}
-	}
-
 	c.logger.Info("Submitting verification bundle to attestor-core",
 		zap.String("attestor_url", attestorURL))
 

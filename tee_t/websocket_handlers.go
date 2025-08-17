@@ -203,11 +203,12 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 		case *teeproto.Envelope_KeyShareRequest:
 			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgKeyShareRequest, Data: shared.KeyShareRequestData{KeyLength: int(p.KeyShareRequest.GetKeyLength()), IVLength: int(p.KeyShareRequest.GetIvLength())}}
 		case *teeproto.Envelope_EncryptedRequest:
-			var rr []shared.RequestRedactionRange
+			// Convert protobuf ranges to shared ranges
+			var ranges []shared.RequestRedactionRange
 			for _, r := range p.EncryptedRequest.GetRedactionRanges() {
-				rr = append(rr, shared.RequestRedactionRange{Start: int(r.GetStart()), Length: int(r.GetLength()), Type: r.GetType()})
+				ranges = append(ranges, shared.RequestRedactionRange{Start: int(r.GetStart()), Length: int(r.GetLength()), Type: r.GetType()})
 			}
-			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgEncryptedRequest, Data: shared.EncryptedRequestData{EncryptedData: p.EncryptedRequest.GetEncryptedData(), TagSecrets: p.EncryptedRequest.GetTagSecrets(), Commitments: p.EncryptedRequest.GetCommitments(), CipherSuite: uint16(p.EncryptedRequest.GetCipherSuite()), SeqNum: p.EncryptedRequest.GetSeqNum(), RedactionRanges: rr}}
+			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgEncryptedRequest, Data: shared.EncryptedRequestData{EncryptedData: p.EncryptedRequest.GetEncryptedData(), TagSecrets: p.EncryptedRequest.GetTagSecrets(), Commitments: p.EncryptedRequest.GetCommitments(), CipherSuite: uint16(p.EncryptedRequest.GetCipherSuite()), SeqNum: p.EncryptedRequest.GetSeqNum(), RedactionRanges: ranges}}
 		case *teeproto.Envelope_Finished:
 			msg = &shared.Message{SessionID: sessionID, Type: shared.MsgFinished, Data: shared.FinishedMessage{}}
 		case *teeproto.Envelope_BatchedTagSecrets:
