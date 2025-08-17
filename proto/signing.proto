@@ -14,11 +14,13 @@ message KOutputPayload {
   repeated SignedRedactedDecryptionStream redacted_streams = 3; // from TEE_K
   repeated bytes packets = 4; // TLS handshake packets observed by TEE_K
   repeated ResponseRedactionRange response_redaction_ranges = 5;
+  uint64 timestamp_ms = 6; // Unix timestamp in milliseconds when payload was created (SIGNED)
 }
 
 message TOutputPayload {
   repeated bytes packets = 1; // TLS packets observed by TEE_T
   repeated bytes request_proof_streams = 2; // R_SP streams signed by TEE_T for cryptographic verification
+  uint64 timestamp_ms = 3; // Unix timestamp in milliseconds when payload was created (SIGNED)
 }
 
 // Attestation report with structured data
@@ -36,7 +38,7 @@ enum BodyType {
 
 message SignedMessage {
   BodyType body_type = 1;
-  bytes body = 2; // serialized deterministic KOutputPayload or TOutputPayload
+  bytes body = 2; // serialized deterministic KOutputPayload or TOutputPayload (contains signed timestamp)
   bytes eth_address = 3; // ETH address (20 bytes, standalone mode only)
   bytes signature = 4; // signature over body bytes
   AttestationReport attestation_report = 5; // full attestation (enclave mode only)

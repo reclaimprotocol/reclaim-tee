@@ -127,7 +127,10 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	ethAddress := t.signingKeyPair.GetEthAddress()
 
 	// SECURITY FIX: Build KOutputPayload and sign it directly
-	kPayload := &teeproto.KOutputPayload{}
+	timestampMs := time.Now().UnixMilli()
+	kPayload := &teeproto.KOutputPayload{
+		TimestampMs: uint64(timestampMs), // Include signed timestamp
+	}
 	if requestMetadata != nil {
 		kPayload.RedactedRequest = requestMetadata.RedactedRequest
 		for _, r := range requestMetadata.RedactionRanges {
@@ -185,7 +188,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 			zap.String("eth_address", ethAddress.Hex()))
 	}
 
-	// Send the signed message to client
+	// Send the signed message to client (timestamp is now inside signed body)
 	signedMsg := &teeproto.SignedMessage{
 		BodyType:          teeproto.BodyType_BODY_TYPE_K_OUTPUT,
 		Body:              body,
@@ -194,7 +197,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		AttestationReport: attestationReport,
 	}
 
-	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
+	env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: timestampMs,
 		Payload: &teeproto.Envelope_SignedMessage{SignedMessage: signedMsg},
 	}
 	if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {

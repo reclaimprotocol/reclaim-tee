@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
@@ -117,6 +118,13 @@ func Validate(bundlePath string) error {
 	}
 
 	fmt.Println("[Verifier] Comprehensive signature verification successful")
+
+	// --- Timestamp validation ---
+	if err := validateTimestamps(bundlePB.TeekSigned, bundlePB.TeetSigned); err != nil {
+		return fmt.Errorf("timestamp validation failed: %v", err)
+	}
+
+	fmt.Println("[Verifier] Timestamp validation successful")
 
 	// Work directly with protobuf format - no legacy conversion needed!
 
@@ -403,6 +411,63 @@ func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error
 		}
 		fmt.Printf("[Verifier] %s body content validated: packets=%d\n", source, len(tPayload.GetPackets()))
 	}
+
+	return nil
+}
+
+// validateTimestamps checks that both TEE timestamps are within acceptable ranges
+// Requirements:
+// 1. TEE_K and TEE_T timestamps must be within 5 seconds of each other
+// 2. Neither timestamp can be older than 10 minutes in the past
+// NOTE: Timestamps are now extracted from the SIGNED payloads, not the wrapper
+func validateTimestamps(teekSigned, teetSigned *teeproto.SignedMessage) error {
+	// Extract TEE_K timestamp from signed KOutputPayload
+	var kPayload teeproto.KOutputPayload
+	if err := proto.Unmarshal(teekSigned.GetBody(), &kPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_K payload for timestamp: %v", err)
+	}
+	teekTimestamp := kPayload.GetTimestampMs()
+
+	// Extract TEE_T timestamp from signed TOutputPayload
+	var tPayload teeproto.TOutputPayload
+	if err := proto.Unmarshal(teetSigned.GetBody(), &tPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_T payload for timestamp: %v", err)
+	}
+	teetTimestamp := tPayload.GetTimestampMs()
+
+	now := time.Now().UnixMilli()
+
+	// Check if timestamps are present
+	if teekTimestamp == 0 {
+		return fmt.Errorf("TEE_K timestamp missing or invalid in signed payload")
+	}
+	if teetTimestamp == 0 {
+		return fmt.Errorf("TEE_T timestamp missing or invalid in signed payload")
+	}
+
+	// Check that neither timestamp is older than 10 minutes
+	maxAgeMs := int64(10 * 60 * 1000) // 10 minutes in milliseconds
+	if now-int64(teekTimestamp) > maxAgeMs {
+		return fmt.Errorf("TEE_K timestamp too old: %d minutes ago", (now-int64(teekTimestamp))/60000)
+	}
+	if now-int64(teetTimestamp) > maxAgeMs {
+		return fmt.Errorf("TEE_T timestamp too old: %d minutes ago", (now-int64(teetTimestamp))/60000)
+	}
+
+	// Check that TEE_K and TEE_T timestamps are within 5 seconds of each other
+	timeDiffMs := int64(teekTimestamp) - int64(teetTimestamp)
+	if timeDiffMs < 0 {
+		timeDiffMs = -timeDiffMs
+	}
+	maxDiffMs := int64(5 * 1000) // 5 seconds in milliseconds
+	if timeDiffMs > maxDiffMs {
+		return fmt.Errorf("TEE_K and TEE_T timestamps differ by %d seconds (max allowed: 5 seconds)", timeDiffMs/1000)
+	}
+
+	fmt.Printf("[Verifier] Timestamp validation passed (SIGNED timestamps):\n")
+	fmt.Printf("  TEE_K: %s\n", time.UnixMilli(int64(teekTimestamp)).UTC().Format("2006-01-02 15:04:05.000 UTC"))
+	fmt.Printf("  TEE_T: %s\n", time.UnixMilli(int64(teetTimestamp)).UTC().Format("2006-01-02 15:04:05.000 UTC"))
+	fmt.Printf("  Time difference: %d ms\n", timeDiffMs)
 
 	return nil
 }

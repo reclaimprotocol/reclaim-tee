@@ -80,6 +80,7 @@ type KOutputPayload struct {
 	RedactedStreams         []*SignedRedactedDecryptionStream `protobuf:"bytes,3,rep,name=redacted_streams,json=redactedStreams,proto3" json:"redacted_streams,omitempty"` // from TEE_K
 	Packets                 [][]byte                          `protobuf:"bytes,4,rep,name=packets,proto3" json:"packets,omitempty"`                                        // TLS handshake packets observed by TEE_K
 	ResponseRedactionRanges []*ResponseRedactionRange         `protobuf:"bytes,5,rep,name=response_redaction_ranges,json=responseRedactionRanges,proto3" json:"response_redaction_ranges,omitempty"`
+	TimestampMs             uint64                            `protobuf:"varint,6,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"` // Unix timestamp in milliseconds when payload was created (SIGNED)
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -149,10 +150,18 @@ func (x *KOutputPayload) GetResponseRedactionRanges() []*ResponseRedactionRange 
 	return nil
 }
 
+func (x *KOutputPayload) GetTimestampMs() uint64 {
+	if x != nil {
+		return x.TimestampMs
+	}
+	return 0
+}
+
 type TOutputPayload struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	Packets             [][]byte               `protobuf:"bytes,1,rep,name=packets,proto3" json:"packets,omitempty"`                                                      // TLS packets observed by TEE_T
 	RequestProofStreams [][]byte               `protobuf:"bytes,2,rep,name=request_proof_streams,json=requestProofStreams,proto3" json:"request_proof_streams,omitempty"` // R_SP streams signed by TEE_T for cryptographic verification
+	TimestampMs         uint64                 `protobuf:"varint,3,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"`                          // Unix timestamp in milliseconds when payload was created (SIGNED)
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -199,6 +208,13 @@ func (x *TOutputPayload) GetRequestProofStreams() [][]byte {
 		return x.RequestProofStreams
 	}
 	return nil
+}
+
+func (x *TOutputPayload) GetTimestampMs() uint64 {
+	if x != nil {
+		return x.TimestampMs
+	}
+	return 0
 }
 
 // Attestation report with structured data
@@ -257,7 +273,7 @@ func (x *AttestationReport) GetReport() []byte {
 type SignedMessage struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	BodyType          BodyType               `protobuf:"varint,1,opt,name=body_type,json=bodyType,proto3,enum=teeproto.BodyType" json:"body_type,omitempty"`
-	Body              []byte                 `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`                                                    // serialized deterministic KOutputPayload or TOutputPayload
+	Body              []byte                 `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`                                                    // serialized deterministic KOutputPayload or TOutputPayload (contains signed timestamp)
 	EthAddress        []byte                 `protobuf:"bytes,3,opt,name=eth_address,json=ethAddress,proto3" json:"eth_address,omitempty"`                      // ETH address (20 bytes, standalone mode only)
 	Signature         []byte                 `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`                                          // signature over body bytes
 	AttestationReport *AttestationReport     `protobuf:"bytes,5,opt,name=attestation_report,json=attestationReport,proto3" json:"attestation_report,omitempty"` // full attestation (enclave mode only)
@@ -334,16 +350,18 @@ var File_signing_proto protoreflect.FileDescriptor
 
 const file_signing_proto_rawDesc = "" +
 	"\n" +
-	"\rsigning.proto\x12\bteeproto\x1a\fcommon.proto\"\xe3\x02\n" +
+	"\rsigning.proto\x12\bteeproto\x1a\fcommon.proto\"\x86\x03\n" +
 	"\x0eKOutputPayload\x12)\n" +
 	"\x10redacted_request\x18\x01 \x01(\fR\x0fredactedRequest\x12Y\n" +
 	"\x18request_redaction_ranges\x18\x02 \x03(\v2\x1f.teeproto.RequestRedactionRangeR\x16requestRedactionRanges\x12S\n" +
 	"\x10redacted_streams\x18\x03 \x03(\v2(.teeproto.SignedRedactedDecryptionStreamR\x0fredactedStreams\x12\x18\n" +
 	"\apackets\x18\x04 \x03(\fR\apackets\x12\\\n" +
-	"\x19response_redaction_ranges\x18\x05 \x03(\v2 .teeproto.ResponseRedactionRangeR\x17responseRedactionRanges\"^\n" +
+	"\x19response_redaction_ranges\x18\x05 \x03(\v2 .teeproto.ResponseRedactionRangeR\x17responseRedactionRanges\x12!\n" +
+	"\ftimestamp_ms\x18\x06 \x01(\x04R\vtimestampMs\"\x81\x01\n" +
 	"\x0eTOutputPayload\x12\x18\n" +
 	"\apackets\x18\x01 \x03(\fR\apackets\x122\n" +
-	"\x15request_proof_streams\x18\x02 \x03(\fR\x13requestProofStreams\"?\n" +
+	"\x15request_proof_streams\x18\x02 \x03(\fR\x13requestProofStreams\x12!\n" +
+	"\ftimestamp_ms\x18\x03 \x01(\x04R\vtimestampMs\"?\n" +
 	"\x11AttestationReport\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x16\n" +
 	"\x06report\x18\x02 \x01(\fR\x06report\"\xdf\x01\n" +

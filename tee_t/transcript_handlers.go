@@ -121,9 +121,11 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 			teetState = &TEETSessionState{} // Use empty state if not available
 		}
 
+		timestampMs := time.Now().UnixMilli()
 		tOutput := &teeproto.TOutputPayload{
 			Packets:             transcript,
 			RequestProofStreams: teetState.RequestProofStreams, // ✅ TEE_T signs R_SP streams
+			TimestampMs:         uint64(timestampMs),           // Include signed timestamp
 		}
 
 		t.logger.InfoIf("Including R_SP streams in TEE_T signature",
@@ -167,8 +169,15 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 				zap.String("session_id", sessionID),
 				zap.String("eth_address", ethAddress.Hex()))
 		}
-		sm := &teeproto.SignedMessage{BodyType: teeproto.BodyType_BODY_TYPE_T_OUTPUT, Body: body, EthAddress: publicKeyForStandalone, Signature: signature, AttestationReport: attestationReport}
-		env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(), Payload: &teeproto.Envelope_SignedMessage{SignedMessage: sm}}
+		// Create signed message (timestamp is now inside signed body)
+		sm := &teeproto.SignedMessage{
+			BodyType:          teeproto.BodyType_BODY_TYPE_T_OUTPUT,
+			Body:              body,
+			EthAddress:        publicKeyForStandalone,
+			Signature:         signature,
+			AttestationReport: attestationReport,
+		}
+		env := &teeproto.Envelope{SessionId: sessionID, TimestampMs: timestampMs, Payload: &teeproto.Envelope_SignedMessage{SignedMessage: sm}}
 		if err := t.sessionManager.RouteToClient(sessionID, env); err != nil {
 			t.logger.Error("Failed to send SignedMessage (T_OUTPUT) to client",
 				zap.String("session_id", sessionID),
