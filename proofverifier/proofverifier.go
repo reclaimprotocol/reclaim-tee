@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 
 	teeproto "tee-mpc/proto"
@@ -184,13 +183,11 @@ func Validate(bundlePath string) error {
 	// Reconstruct plaintext by matching streams to ciphertexts by sequence order
 	var reconstructed []byte
 	if len(kPayload.GetRedactedStreams()) > 0 {
-		// Sort streams by sequence number to ensure correct order
+		// Both streams (from TEE_K) and ciphertexts (from TEE_T) are already in sequence order
+		// TEE_K now sorts seqNumbers before processing, TEE_T sorts responses before transcript
 		streams := kPayload.GetRedactedStreams()
-		sort.Slice(streams, func(i, j int) bool {
-			return streams[i].GetSeqNum() < streams[j].GetSeqNum()
-		})
 
-		// Match streams to ciphertexts by position (both should be in sequence number order)
+		// Match streams to ciphertexts by position (both are in sequence number order)
 		for i, stream := range streams {
 			if i >= len(ciphertexts) {
 				return fmt.Errorf("not enough ciphertexts for stream seq %d (have %d ciphertexts, need %d)", stream.GetSeqNum(), len(ciphertexts), i+1)

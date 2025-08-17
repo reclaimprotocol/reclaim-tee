@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	"tee-mpc/minitls"
 	"tee-mpc/shared"
@@ -433,6 +434,11 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		totalLength += int(length) // Convert from uint32 to int
 		seqNumbers = append(seqNumbers, seqNum)
 	}
+
+	// Sort sequence numbers to ensure deterministic processing order (matches TEE_T transcript order)
+	sort.Slice(seqNumbers, func(i, j int) bool {
+		return seqNumbers[i] < seqNumbers[j]
+	})
 
 	if totalLength == 0 {
 		return fmt.Errorf("no response data available for redaction in session %s", sessionID)
