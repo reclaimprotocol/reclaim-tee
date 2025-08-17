@@ -461,26 +461,9 @@ func (c *Client) getProtocolState() (ProtocolPhase, int) {
 	return c.protocolPhase, c.transcriptsReceived
 }
 
-// fetchAndVerifyAttestations is deprecated - attestations are now included in SignedMessage
-func (c *Client) fetchAndVerifyAttestations() error {
-	// Attestation requests removed - attestations are now included directly in SignedMessage
-	c.logger.Info("Skipping separate attestation requests - attestations now included in SignedMessage")
-
-	// Wait for session ID from TEE_K (indicates successful session coordination)
-	// This is still needed for session management
-	maxWait := 30 * time.Second
-	waitStart := time.Now()
-
-	for c.sessionID == "" {
-		if time.Since(waitStart) > maxWait {
-			return fmt.Errorf("timeout waiting for session coordination")
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	c.logger.Info("Session coordinated, ready for protocol", zap.String("session_id", c.sessionID))
-	return nil
-}
+// NOTE: Session coordination removed - handled naturally by RequestHTTP()
+// The client receives sessionID asynchronously via handleSessionReady() and
+// RequestHTTP() automatically waits for it before sending connection requests.
 
 // verifyAttestationReportETH verifies a protobuf AttestationReport and extracts the ETH address from the report itself
 func (c *Client) verifyAttestationReportETH(report *teeproto.AttestationReport, expectedSource string) (common.Address, error) {
