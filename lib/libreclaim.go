@@ -25,15 +25,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
 	clientlib "tee-mpc/libclient"
+	"tee-mpc/providers"
 	"tee-mpc/shared"
+
+	"github.com/ethereum/go-ethereum/crypto"
 )
+
+// Library-wide constants
+const ATTESTOR_URL = "ws://localhost:8001/ws"
+const ATTESTOR_CONTEXT_PURPOSE = "demo"
 
 // Global session registry with cleanup
 var (
@@ -53,13 +58,14 @@ type ProtocolSession struct {
 	CleanupTime  time.Time
 	Mutex        sync.Mutex
 	CleanedUp    bool
+	PublicParams *providers.HTTPProviderParams       // For automatic response redactions
+	SecretParams *providers.HTTPProviderSecretParams // For automatic response redactions
 }
 
-// RequestData represents the JSON structure for request data
-type RequestData struct {
-	Host                   string                         `json:"host"`
-	RawRequest             []byte                         `json:"raw_request"`
-	RequestRedactionRanges []shared.RequestRedactionRange `json:"request_redaction_ranges"`
+// ProviderRequestData represents the JSON structure for provider-based request data
+type ProviderRequestData struct {
+	PublicParams *providers.HTTPProviderParams       `json:"public_params"`
+	SecretParams *providers.HTTPProviderSecretParams `json:"secret_params"`
 }
 
 // ResponseData represents the JSON structure for response data
@@ -69,11 +75,6 @@ type ResponseData struct {
 	ResponseLength int    `json:"response_length"`
 	Success        bool   `json:"success"`
 	Error          string `json:"error,omitempty"`
-}
-
-// ResponseRedactionData represents the JSON structure for response redaction data
-type ResponseRedactionData struct {
-	ResponseRedactionRanges []shared.ResponseRedactionRange `json:"response_redaction_ranges"`
 }
 
 // VerificationBundleData represents the JSON structure for verification bundle data
@@ -161,11 +162,13 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 
 	goRequestJSON := C.GoString(request_json)
 
-	// Parse request JSON
-	var requestData RequestData
-	if err := json.Unmarshal([]byte(goRequestJSON), &requestData); err != nil {
+	// Parse provider-based format
+	var providerData ProviderRequestData
+	if err := json.Unmarshal([]byte(goRequestJSON), &providerData); err != nil || providerData.PublicParams == nil {
 		return C.RECLAIM_ERROR_INVALID_ARGS
 	}
+
+	fmt.Printf("[Lib] Using provider-based request format\n")
 
 	// Create new session
 	sessionMutex.Lock()
@@ -173,8 +176,10 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 	nextSessionID++
 
 	session := &ProtocolSession{
-		ID:          sessionID,
-		CleanupTime: time.Now(),
+		ID:           sessionID,
+		CleanupTime:  time.Now(),
+		PublicParams: providerData.PublicParams,
+		SecretParams: providerData.SecretParams,
 	}
 
 	// Create protocol handle (just use the session pointer as handle)
@@ -209,25 +214,37 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 		return C.RECLAIM_ERROR_CONNECTION_FAILED
 	}
 
-	// Set request data
-	if err := session.Client.SetRequestData(requestData.RawRequest); err != nil {
+	// Generate request automatically using providers
+	req, err := providers.CreateRequest(providerData.SecretParams, providerData.PublicParams)
+	if err != nil {
 		sessionMutex.Lock()
 		delete(sessions, handle)
 		sessionMutex.Unlock()
 		return C.RECLAIM_ERROR_PROTOCOL_FAILED
 	}
 
-	// Set redaction ranges directly
-	session.Client.SetRequestRedactionRanges(requestData.RequestRedactionRanges)
-
-	// Extract hostname and port from host string
-	hostname, portStr := parseHost(requestData.Host)
-	port := 443 // Default port
-	if portStr != "443" {
-		if p, err := strconv.Atoi(portStr); err == nil {
-			port = p
-		}
+	// Set automatically generated request data
+	if err := session.Client.SetRequestData(req.Data); err != nil {
+		sessionMutex.Lock()
+		delete(sessions, handle)
+		sessionMutex.Unlock()
+		return C.RECLAIM_ERROR_PROTOCOL_FAILED
 	}
+
+	// Set automatically generated redaction ranges
+	session.Client.SetRequestRedactionRanges(req.Redactions)
+
+	// Extract hostname and port from provider URL
+	hostname, port, err := providers.GetHostPort(providerData.PublicParams, providerData.SecretParams)
+	if err != nil {
+		sessionMutex.Lock()
+		delete(sessions, handle)
+		sessionMutex.Unlock()
+		return C.RECLAIM_ERROR_PROTOCOL_FAILED
+	}
+
+	fmt.Printf("[Lib] Generated automatic request to %s:%d (%d bytes, %d redaction ranges)\n",
+		hostname, port, len(req.Data), len(req.Redactions))
 
 	// Send HTTP request
 	if err := session.Client.RequestHTTP(hostname, port); err != nil {
@@ -340,16 +357,11 @@ func reclaim_finish_protocol(protocol_handle C.reclaim_protocol_t, response_reda
 		return C.RECLAIM_ERROR_PROTOCOL_FAILED
 	}
 
-	// Parse response redaction JSON
-	goResponseRedactionJSON := C.GoString(response_redaction_json)
-	var redactionData ResponseRedactionData
-	if err := json.Unmarshal([]byte(goResponseRedactionJSON), &redactionData); err != nil {
-		return C.RECLAIM_ERROR_INVALID_ARGS
-	}
-
-	// Set up response callback with the provided redaction ranges
+	// Set up automatic provider-based response callback (response_redaction_json ignored)
+	fmt.Printf("[Lib] Using automatic provider-based response redactions\n")
 	callback := &ResponseCallbackImpl{
-		Ranges: redactionData.ResponseRedactionRanges,
+		PublicParams: session.PublicParams,
+		SecretParams: session.SecretParams,
 	}
 	session.Client.SetResponseCallback(callback)
 
@@ -403,11 +415,30 @@ func reclaim_finish_protocol(protocol_handle C.reclaim_protocol_t, response_reda
 	session.Completed = true
 	session.CleanupTime = time.Now()
 
-	claim, err := session.Client.SubmitToAttestorCore("", nil, clientlib.ClaimTeeBundleParams{})
+	// Generate private key for attestor submission
+	privateKey, err := crypto.GenerateKey()
 	if err != nil {
-		panic(err)
+		return C.RECLAIM_ERROR_PROTOCOL_FAILED
 	}
-	fmt.Println(claim)
+
+	// Create proper claim params using stored provider data
+	claimParams := clientlib.ClaimTeeBundleParams{
+		Provider:   "http",               // Required for attestor compatibility
+		Parameters: session.PublicParams, // Use stored provider params
+		Context: map[string]interface{}{
+			"purpose": ATTESTOR_CONTEXT_PURPOSE,
+		},
+	}
+
+	// Submit to attestor with proper parameters
+	claim, err := session.Client.SubmitToAttestorCore(ATTESTOR_URL, privateKey, claimParams)
+	if err != nil {
+		// Don't panic - return error code instead
+		return C.RECLAIM_ERROR_PROTOCOL_FAILED
+	}
+
+	// Log successful attestor submission
+	fmt.Printf("[Lib] Attestor submission successful: %s\n", claim.Identifier)
 
 	return C.RECLAIM_SUCCESS
 }
@@ -488,30 +519,35 @@ func reclaim_get_version() *C.char {
 
 // Helper functions
 
-// parseHost extracts hostname and port from host string
-func parseHost(host string) (string, string) {
-	// Default to port 443 if not specified
-	if !strings.Contains(host, ":") {
-		return host, "443"
-	}
-
-	parts := strings.Split(host, ":")
-	if len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-
-	return host, "443"
-}
-
-// ResponseCallbackImpl implements the response callback interface
+// ResponseCallbackImpl implements the response callback interface with automatic provider-based redactions
 type ResponseCallbackImpl struct {
-	Ranges []shared.ResponseRedactionRange
+	PublicParams *providers.HTTPProviderParams
+	SecretParams *providers.HTTPProviderSecretParams
 }
 
 func (r *ResponseCallbackImpl) OnResponseReceived(response *clientlib.HTTPResponse) (*clientlib.RedactionResult, error) {
-	// Consolidate ranges to reduce transmission overhead (same as standalone client)
-	originalCount := len(r.Ranges)
-	consolidatedRanges := shared.ConsolidateResponseRedactionRanges(r.Ranges)
+	// Use automatic provider-based redactions like the demo
+	fmt.Printf("[Lib] Processing full HTTP response (%d bytes) with automatic provider redactions\n", len(response.FullResponse))
+
+	ctx := &providers.ProviderCtx{Version: providers.ATTESTOR_VERSION_2_0_1}
+
+	ranges, err := providers.GetResponseRedactions(response.FullResponse, r.PublicParams, ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get automatic response redactions: %v", err)
+	}
+
+	// Convert to shared.ResponseRedactionRange format
+	var respRanges []shared.ResponseRedactionRange
+	for _, r := range ranges {
+		respRanges = append(respRanges, shared.ResponseRedactionRange{
+			Start:  r.Start,
+			Length: r.Length,
+		})
+	}
+
+	// Consolidate ranges to reduce transmission overhead
+	originalCount := len(respRanges)
+	consolidatedRanges := shared.ConsolidateResponseRedactionRanges(respRanges)
 	consolidatedCount := len(consolidatedRanges)
 
 	// Log consolidation results (if ranges were consolidated)
@@ -520,8 +556,9 @@ func (r *ResponseCallbackImpl) OnResponseReceived(response *clientlib.HTTPRespon
 			originalCount, consolidatedCount, float64(originalCount-consolidatedCount)/float64(originalCount)*100)
 	}
 
+	fmt.Printf("[Lib] Generated %d automatic redaction ranges from provider config\n", len(consolidatedRanges))
+
 	return &clientlib.RedactionResult{
-		RedactedBody:    response.FullResponse,
 		RedactionRanges: consolidatedRanges,
 	}, nil
 }
