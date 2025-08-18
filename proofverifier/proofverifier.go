@@ -228,7 +228,8 @@ func Validate(bundlePath string) error {
 	}
 
 	// --- Display certificate info ---
-	certInfo := bundlePB.GetCertificateInfo()
+	// SECURITY: Extract certificate info from signed TEE_K payload, not unsigned bundle field
+	certInfo := kPayload.GetCertificateInfo()
 	if certInfo != nil {
 		fmt.Printf("[Verifier] Certificate: %s (issued by %s)\n",
 			certInfo.GetCommonName(), certInfo.GetIssuerCommonName())

@@ -24,13 +24,8 @@ func (c *Client) BuildVerificationBundle(path string) error {
 		return fmt.Errorf("SECURITY ERROR: missing TEE_T signed message - protocol incomplete")
 	}
 
-	// NEW: Extract certificate info from TEE_K payload
-	var kPayload teeproto.KOutputPayload
-	if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err != nil {
-		return fmt.Errorf("failed to unmarshal TEE_K payload: %v", err)
-	}
-
-	bundle.CertificateInfo = kPayload.GetCertificateInfo() // NEW
+	// SECURITY: Certificate info is already included in the signed TEE_K payload
+	// No need to duplicate it in unsigned bundle field - removed for security
 
 	// TEE_K signed message (K_OUTPUT) - use original protobuf SignedMessage
 	bundle.TeekSigned = c.teekSignedMessage

@@ -23,11 +23,10 @@ const (
 
 // Single artefact produced by client for offline verification
 type VerificationBundle struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	CertificateInfo *CertificateInfo       `protobuf:"bytes,1,opt,name=certificate_info,json=certificateInfo,proto3" json:"certificate_info,omitempty"` // Structured cert data instead of handshake packets
+	state protoimpl.MessageState `protogen:"open.v1"`
 	// Signed transcripts
-	TeekSigned    *SignedMessage `protobuf:"bytes,2,opt,name=teek_signed,json=teekSigned,proto3" json:"teek_signed,omitempty"` // BODY_TYPE_K_OUTPUT
-	TeetSigned    *SignedMessage `protobuf:"bytes,3,opt,name=teet_signed,json=teetSigned,proto3" json:"teet_signed,omitempty"` // BODY_TYPE_T_OUTPUT
+	TeekSigned    *SignedMessage `protobuf:"bytes,1,opt,name=teek_signed,json=teekSigned,proto3" json:"teek_signed,omitempty"` // BODY_TYPE_K_OUTPUT (contains signed certificate_info)
+	TeetSigned    *SignedMessage `protobuf:"bytes,2,opt,name=teet_signed,json=teetSigned,proto3" json:"teet_signed,omitempty"` // BODY_TYPE_T_OUTPUT
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -62,13 +61,6 @@ func (*VerificationBundle) Descriptor() ([]byte, []int) {
 	return file_bundle_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *VerificationBundle) GetCertificateInfo() *CertificateInfo {
-	if x != nil {
-		return x.CertificateInfo
-	}
-	return nil
-}
-
 func (x *VerificationBundle) GetTeekSigned() *SignedMessage {
 	if x != nil {
 		return x.TeekSigned
@@ -87,12 +79,11 @@ var File_bundle_proto protoreflect.FileDescriptor
 
 const file_bundle_proto_rawDesc = "" +
 	"\n" +
-	"\fbundle.proto\x12\bteeproto\x1a\rsigning.proto\x1a\fcommon.proto\"\xce\x01\n" +
-	"\x12VerificationBundle\x12D\n" +
-	"\x10certificate_info\x18\x01 \x01(\v2\x19.teeproto.CertificateInfoR\x0fcertificateInfo\x128\n" +
-	"\vteek_signed\x18\x02 \x01(\v2\x17.teeproto.SignedMessageR\n" +
+	"\fbundle.proto\x12\bteeproto\x1a\rsigning.proto\"\x88\x01\n" +
+	"\x12VerificationBundle\x128\n" +
+	"\vteek_signed\x18\x01 \x01(\v2\x17.teeproto.SignedMessageR\n" +
 	"teekSigned\x128\n" +
-	"\vteet_signed\x18\x03 \x01(\v2\x17.teeproto.SignedMessageR\n" +
+	"\vteet_signed\x18\x02 \x01(\v2\x17.teeproto.SignedMessageR\n" +
 	"teetSignedB\x18Z\x16tee-mpc/proto;teeprotob\x06proto3"
 
 var (
@@ -110,18 +101,16 @@ func file_bundle_proto_rawDescGZIP() []byte {
 var file_bundle_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_bundle_proto_goTypes = []any{
 	(*VerificationBundle)(nil), // 0: teeproto.VerificationBundle
-	(*CertificateInfo)(nil),    // 1: teeproto.CertificateInfo
-	(*SignedMessage)(nil),      // 2: teeproto.SignedMessage
+	(*SignedMessage)(nil),      // 1: teeproto.SignedMessage
 }
 var file_bundle_proto_depIdxs = []int32{
-	1, // 0: teeproto.VerificationBundle.certificate_info:type_name -> teeproto.CertificateInfo
-	2, // 1: teeproto.VerificationBundle.teek_signed:type_name -> teeproto.SignedMessage
-	2, // 2: teeproto.VerificationBundle.teet_signed:type_name -> teeproto.SignedMessage
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	1, // 0: teeproto.VerificationBundle.teek_signed:type_name -> teeproto.SignedMessage
+	1, // 1: teeproto.VerificationBundle.teet_signed:type_name -> teeproto.SignedMessage
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_bundle_proto_init() }
@@ -130,7 +119,6 @@ func file_bundle_proto_init() {
 		return
 	}
 	file_signing_proto_init()
-	file_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

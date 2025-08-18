@@ -16,7 +16,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/anjuna-security/go-nitro-attestation/verifier"
 )
@@ -678,13 +677,8 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 		TeetSigned: c.teetSignedMessage,
 	}
 
-	// NEW: Extract certificate info from TEE_K payload
-	var kPayload teeproto.KOutputPayload
-	if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal TEE_K payload: %v", err)
-	}
-
-	bundle.CertificateInfo = kPayload.GetCertificateInfo() // NEW
+	// SECURITY: Certificate info is already included in the signed TEE_K payload
+	// No need to duplicate it in unsigned bundle field - removed for security
 
 	c.logger.Info("Submitting verification bundle to attestor-core",
 		zap.String("attestor_url", attestorURL))

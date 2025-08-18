@@ -176,20 +176,25 @@ func wrapInTlsRecord(data []byte, recordType byte) []byte {
 	return record
 }
 
-// ExtractHostFromBundle extracts hostname from certificate info
+// ExtractHostFromBundle extracts hostname from certificate info in signed TEE_K payload
 func ExtractHostFromBundle(bundle *teeproto.VerificationBundle) string {
-	// NEW: Use structured certificate info instead of packet parsing
-	if bundle.GetCertificateInfo() != nil {
-		certInfo := bundle.GetCertificateInfo()
-
-		// Prefer DNS names if available
-		if len(certInfo.GetDnsNames()) > 0 {
-			return certInfo.GetDnsNames()[0]
+	// SECURITY: Extract certificate info from signed TEE_K payload, not unsigned bundle field
+	if bundle.GetTeekSigned() != nil {
+		var kPayload teeproto.KOutputPayload
+		if err := proto.Unmarshal(bundle.GetTeekSigned().GetBody(), &kPayload); err != nil {
+			return "example.com" // Fallback on unmarshal error
 		}
 
-		// Fall back to common name
-		if certInfo.GetCommonName() != "" {
-			return certInfo.GetCommonName()
+		if certInfo := kPayload.GetCertificateInfo(); certInfo != nil {
+			// Prefer DNS names if available
+			if len(certInfo.GetDnsNames()) > 0 {
+				return certInfo.GetDnsNames()[0]
+			}
+
+			// Fall back to common name
+			if certInfo.GetCommonName() != "" {
+				return certInfo.GetCommonName()
+			}
 		}
 	}
 

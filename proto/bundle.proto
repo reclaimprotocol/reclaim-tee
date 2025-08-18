@@ -5,17 +5,16 @@ package teeproto;
 option go_package = "tee-mpc/proto;teeproto";
 
 import "signing.proto";
-import "common.proto";
 
 
 
 // Single artefact produced by client for offline verification
 message VerificationBundle {
-  CertificateInfo certificate_info = 1; // Structured cert data instead of handshake packets
-
+  // SECURITY: certificate_info must come from signed teek_signed.body.certificate_info, not unsigned field
+  
   // Signed transcripts
-  SignedMessage teek_signed = 2; // BODY_TYPE_K_OUTPUT
-  SignedMessage teet_signed = 3; // BODY_TYPE_T_OUTPUT
+  SignedMessage teek_signed = 1; // BODY_TYPE_K_OUTPUT (contains signed certificate_info)
+  SignedMessage teet_signed = 2; // BODY_TYPE_T_OUTPUT
 
 }
 
