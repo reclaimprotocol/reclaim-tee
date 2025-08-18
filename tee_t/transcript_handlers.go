@@ -37,25 +37,7 @@ func (t *TEET) addToTranscriptForSession(sessionID string, packet []byte) {
 	t.addToTranscriptForSessionWithType(sessionID, packet, shared.TranscriptPacketTypeTLSRecord)
 }
 
-// getTranscriptForSession safely returns a copy of the session's transcript
-func (t *TEET) getTranscriptForSession(sessionID string) [][]byte {
-	session, err := t.sessionManager.GetSession(sessionID)
-	if err != nil {
-		t.logger.Error("Failed to get session for transcript retrieval",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-		return nil
-	}
-	session.TranscriptMutex.Lock()
-	defer session.TranscriptMutex.Unlock()
-	transcriptCopy := make([][]byte, len(session.TranscriptPackets))
-	for i, packet := range session.TranscriptPackets {
-		packetCopy := make([]byte, len(packet))
-		copy(packetCopy, packet)
-		transcriptCopy[i] = packetCopy
-	}
-	return transcriptCopy
-}
+// REMOVED: getTranscriptForSession function - no longer needed with consolidated approach
 
 // handleFinishedFromTEEKSession handles finished message from TEE_K and triggers transcript signing
 func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {
@@ -99,9 +81,17 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 	if teekFinished {
 		t.logger.InfoIf("TEE_K has sent finished - starting transcript signing",
 			zap.String("session_id", sessionID))
-		transcript := t.getTranscriptForSession(sessionID)
-		if len(transcript) == 0 {
-			t.logger.WarnIf("No transcript packets to sign for session",
+
+		// Get TEE_T session state for consolidated ciphertext
+		teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
+		if err != nil {
+			t.logger.Error("Failed to get TEE_T session state for transcript signing",
+				zap.String("session_id", sessionID), zap.Error(err))
+			return
+		}
+
+		if len(teetState.ConsolidatedResponseCiphertext) == 0 {
+			t.logger.WarnIf("No consolidated response ciphertext to sign for session",
 				zap.String("session_id", sessionID))
 			return
 		}
@@ -112,24 +102,18 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 		}
 		ethAddress := t.signingKeyPair.GetEthAddress()
 
-		// Get R_SP streams from session state for cryptographic signing
-		var teetState *TEETSessionState
-		teetState, err = t.getTEETSessionState(sessionID)
-		if err != nil {
-			t.logger.Error("Failed to get TEE_T session state for R_SP signing",
-				zap.String("session_id", sessionID), zap.Error(err))
-			teetState = &TEETSessionState{} // Use empty state if not available
-		}
+		// teetState already obtained above for consolidated ciphertext check
 
 		timestampMs := time.Now().UnixMilli()
 		tOutput := &teeproto.TOutputPayload{
-			Packets:             transcript,
-			RequestProofStreams: teetState.RequestProofStreams, // ✅ TEE_T signs R_SP streams
-			TimestampMs:         uint64(timestampMs),           // Include signed timestamp
+			ConsolidatedResponseCiphertext: teetState.ConsolidatedResponseCiphertext, // NEW: Consolidated response ciphertext
+			RequestProofStreams:            teetState.RequestProofStreams,            // ✅ TEE_T signs R_SP streams
+			TimestampMs:                    uint64(timestampMs),                      // Include signed timestamp
 		}
 
-		t.logger.InfoIf("Including R_SP streams in TEE_T signature",
+		t.logger.InfoIf("Including consolidated response ciphertext and R_SP streams in TEE_T signature",
 			zap.String("session_id", sessionID),
+			zap.Int("consolidated_response_ciphertext_bytes", len(teetState.ConsolidatedResponseCiphertext)),
 			zap.Int("proof_streams_count", len(teetState.RequestProofStreams)))
 
 		body, err := proto.Marshal(tOutput)
@@ -148,7 +132,7 @@ func (t *TEET) checkFinishedCondition(sessionID string) {
 		}
 		t.logger.InfoIf("Successfully signed protobuf body",
 			zap.String("session_id", sessionID),
-			zap.Int("total_packets", len(transcript)),
+			zap.Int("consolidated_response_ciphertext_bytes", len(teetState.ConsolidatedResponseCiphertext)),
 			zap.Int("body_bytes", len(body)),
 			zap.Int("signature_bytes", len(signature)))
 		var attestationReport *teeproto.AttestationReport

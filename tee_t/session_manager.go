@@ -10,12 +10,13 @@ import (
 )
 
 type TEETSessionState struct {
-	TEETClientConn          *websocket.Conn
-	KeyShare                []byte
-	CipherSuite             uint16
-	PendingEncryptedRequest *shared.EncryptedRequestData
-	TEETConnForPending      *websocket.Conn
-	RequestProofStreams     [][]byte // Store R_SP streams for cryptographic signing
+	TEETClientConn                 *websocket.Conn
+	KeyShare                       []byte
+	CipherSuite                    uint16
+	PendingEncryptedRequest        *shared.EncryptedRequestData
+	TEETConnForPending             *websocket.Conn
+	RequestProofStreams            [][]byte // Store R_SP streams for cryptographic signing
+	ConsolidatedResponseCiphertext []byte   // NEW: Response ciphertext consolidation
 }
 
 type TEETSessionManager struct {
@@ -56,4 +57,14 @@ func (t *TEETSessionManager) RemoveTEETSessionState(sessionID string) {
 func (t *TEETSessionManager) CloseSession(sessionID string) error {
 	t.RemoveTEETSessionState(sessionID)
 	return t.SessionManager.CloseSession(sessionID)
+}
+
+// AppendResponseCiphertext adds response ciphertext to the consolidated stream
+func (s *TEETSessionState) AppendResponseCiphertext(ciphertext []byte) {
+	s.ConsolidatedResponseCiphertext = append(s.ConsolidatedResponseCiphertext, ciphertext...)
+}
+
+// AddRequestProofStream adds an R_SP stream for cryptographic verification
+func (s *TEETSessionState) AddRequestProofStream(stream []byte) {
+	s.RequestProofStreams = append(s.RequestProofStreams, stream)
 }

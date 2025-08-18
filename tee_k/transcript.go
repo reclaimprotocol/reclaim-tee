@@ -85,8 +85,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	session.StreamsMutex.Lock()
 	defer session.StreamsMutex.Unlock()
 
-	// Separate TLS packets from metadata
-	tlsPackets := make([][]byte, 0)
+	// SIMPLIFIED: Only extract request metadata, no TLS packet processing
 	var requestMetadata *shared.RequestMetadata
 
 	for i, packet := range session.TranscriptPackets {
@@ -96,8 +95,6 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 		}
 
 		switch packetType {
-		case shared.TranscriptPacketTypeTLSRecord:
-			tlsPackets = append(tlsPackets, packet)
 		case shared.TranscriptPacketTypeHTTPRequestRedacted:
 			if requestMetadata == nil {
 				requestMetadata = &shared.RequestMetadata{}
@@ -115,9 +112,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 				requestMetadata.RedactionRanges = ranges
 				t.logger.WithSession(sessionID).Info("Loaded redaction ranges from transcript", zap.Int("ranges", len(ranges)))
 			}
-		default:
-			// Default to TLS record for unknown types
-			tlsPackets = append(tlsPackets, packet)
+			// REMOVED: TLS packet processing - no longer needed for consolidated approach
 		}
 	}
 
@@ -137,12 +132,11 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 			kPayload.RequestRedactionRanges = append(kPayload.RequestRedactionRanges, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type})
 		}
 	}
-	for _, s := range session.RedactedStreams {
-		kPayload.RedactedStreams = append(kPayload.RedactedStreams, &teeproto.SignedRedactedDecryptionStream{RedactedStream: s.RedactedStream, SeqNum: s.SeqNum})
-	}
-	for _, p := range tlsPackets {
-		kPayload.Packets = append(kPayload.Packets, p)
-	}
+	// NEW: Consolidate response keystreams - use consolidated keystream from session
+	kPayload.ConsolidatedResponseKeystream = session.ConsolidatedResponseKeystream
+
+	// NEW: Include certificate info in signed payload
+	kPayload.CertificateInfo = session.CertificateInfo
 	if session.ResponseState != nil && len(session.ResponseState.ResponseRedactionRanges) > 0 {
 		for _, rr := range session.ResponseState.ResponseRedactionRanges {
 			kPayload.ResponseRedactionRanges = append(kPayload.ResponseRedactionRanges, &teeproto.ResponseRedactionRange{Start: int32(rr.Start), Length: int32(rr.Length)})
@@ -163,8 +157,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	}
 
 	t.logger.WithSession(sessionID).Info("Generated comprehensive signature over protobuf body",
-		zap.Int("tls_packets", len(tlsPackets)),
-		zap.Int("redacted_streams", len(session.RedactedStreams)),
+		zap.Int("consolidated_response_keystream_bytes", len(session.ConsolidatedResponseKeystream)),
 		zap.Bool("metadata_present", requestMetadata != nil),
 		zap.Int("body_bytes", len(body)),
 		zap.Int("signature_bytes", len(comprehensiveSignature)))
@@ -205,8 +198,7 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	}
 
 	t.logger.WithSession(sessionID).Info("Sent SignedMessage (KOutput) to client",
-		zap.Int("packets", len(tlsPackets)),
-		zap.Int("redacted_streams", len(session.RedactedStreams)))
+		zap.Int("consolidated_response_keystream_bytes", len(session.ConsolidatedResponseKeystream)))
 
 	return nil
 }

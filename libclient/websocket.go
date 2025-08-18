@@ -128,12 +128,9 @@ func (c *Client) handleMessages() {
 			msg := &shared.Message{Type: shared.MsgSendTCPData, SessionID: env.GetSessionId(), Data: shared.TCPData{Data: p.TcpData.GetData()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleSendTCPData(msg)
 		case *teeproto.Envelope_HandshakeComplete:
-			msg := &shared.Message{Type: shared.MsgHandshakeComplete, SessionID: env.GetSessionId(), Data: shared.HandshakeCompleteData{Success: p.HandshakeComplete.GetSuccess(), CertificateChain: p.HandshakeComplete.GetCertificateChain()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
+			msg := &shared.Message{Type: shared.MsgHandshakeComplete, SessionID: env.GetSessionId(), Data: shared.HandshakeCompleteData{Success: p.HandshakeComplete.GetSuccess(), CertificateChain: p.HandshakeComplete.GetCertificateChain(), CipherSuite: uint16(p.HandshakeComplete.GetCipherSuite())}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleHandshakeComplete(msg)
-		case *teeproto.Envelope_HandshakeKeyDisclosure:
-			hd := p.HandshakeKeyDisclosure
-			msg := &shared.Message{Type: shared.MsgHandshakeKeyDisclosure, SessionID: env.GetSessionId(), Data: shared.HandshakeKeyDisclosureData{HandshakeKey: hd.GetHandshakeKey(), HandshakeIV: hd.GetHandshakeIv(), CertificatePacket: hd.GetCertificatePacket(), CipherSuite: uint16(hd.GetCipherSuite()), Algorithm: hd.GetAlgorithm(), Success: hd.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
-			c.handleHandshakeKeyDisclosure(msg)
+		// REMOVED: HandshakeKeyDisclosure handling - now using simplified HandshakeComplete message
 		case *teeproto.Envelope_HttpResponse:
 			msg := &shared.Message{Type: shared.MsgHTTPResponse, SessionID: env.GetSessionId(), Data: shared.HTTPResponseData{Response: p.HttpResponse.GetResponse(), Success: p.HttpResponse.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleHTTPResponse(msg)
@@ -173,10 +170,16 @@ func (c *Client) handleMessages() {
 					c.logger.Error("Failed to unmarshal KOutputPayload", zap.Error(err))
 					break
 				}
-				// Map redacted streams into client collection first
-				for _, s := range body.GetRedactedStreams() {
-					c.signedRedactedStreams = append(c.signedRedactedStreams, shared.SignedRedactedDecryptionStream{RedactedStream: s.GetRedactedStream(), SeqNum: s.GetSeqNum()})
+				// NEW: Use consolidated keystream instead of individual streams
+				consolidatedKeystream := body.GetConsolidatedResponseKeystream()
+				if len(consolidatedKeystream) > 0 {
+					// Convert to single stream for compatibility
+					c.signedRedactedStreams = append(c.signedRedactedStreams, shared.SignedRedactedDecryptionStream{
+						RedactedStream: consolidatedKeystream,
+						SeqNum:         0, // Single consolidated stream
+					})
 				}
+
 				// Build a shared.SignedTranscript compatible with existing client logic
 				var reqRanges []shared.RequestRedactionRange
 				for _, r := range body.GetRequestRedactionRanges() {
@@ -187,7 +190,7 @@ func (c *Client) handleMessages() {
 					respRanges = append(respRanges, shared.ResponseRedactionRange{Start: int(rr.GetStart()), Length: int(rr.GetLength())})
 				}
 				st := shared.SignedTranscript{
-					Packets: body.GetPackets(),
+					Packets: [][]byte{}, // REMOVED: No longer using TLS packets
 					RequestMetadata: &shared.RequestMetadata{
 						RedactedRequest: body.GetRedactedRequest(),
 						RedactionRanges: reqRanges,
@@ -281,7 +284,7 @@ func (c *Client) handleTEETMessages() {
 					break
 				}
 				st := shared.SignedTranscript{
-					Packets:    body.GetPackets(),
+					Packets:    [][]byte{body.GetConsolidatedResponseCiphertext()}, // NEW: Use consolidated ciphertext
 					Signature:  sm.GetSignature(),
 					EthAddress: sm.GetEthAddress(),
 				}
@@ -516,8 +519,8 @@ func (c *Client) handleEncryptedData(sessionID string, encData *teeproto.Encrypt
 	var payload []byte
 
 	// Check if this is TLS 1.2 AES-GCM (needs explicit IV)
-	isTLS12AESGCMCipher := c.handshakeDisclosure != nil &&
-		shared.IsTLS12AESGCMCipherSuite(c.handshakeDisclosure.CipherSuite)
+	isTLS12AESGCMCipher := c.cipherSuite != 0 &&
+		shared.IsTLS12AESGCMCipherSuite(c.cipherSuite)
 
 	if isTLS12AESGCMCipher {
 		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)

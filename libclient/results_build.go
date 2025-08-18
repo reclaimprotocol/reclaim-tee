@@ -36,14 +36,24 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 	if c.teekSignedMessage != nil {
 		var kPayload teeproto.KOutputPayload
 		if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err == nil {
-			packets := kPayload.GetPackets()
+			// NEW: Use consolidated keystream instead of individual packets
+			consolidatedKeystream := kPayload.GetConsolidatedResponseKeystream()
+			var packets [][]byte
+			if len(consolidatedKeystream) > 0 {
+				packets = append(packets, consolidatedKeystream) // Single consolidated stream
+			}
 			teekTranscript = &SignedTranscriptData{Packets: packets, Signature: c.teekSignedMessage.GetSignature(), EthAddress: extractEthAddressFromSignedMessage(c.teekSignedMessage)}
 		}
 	}
 	if c.teetSignedMessage != nil {
 		var tPayload teeproto.TOutputPayload
 		if err := proto.Unmarshal(c.teetSignedMessage.GetBody(), &tPayload); err == nil {
-			packets := tPayload.GetPackets()
+			// NEW: Use consolidated ciphertext instead of individual packets
+			consolidatedCiphertext := tPayload.GetConsolidatedResponseCiphertext()
+			var packets [][]byte
+			if len(consolidatedCiphertext) > 0 {
+				packets = append(packets, consolidatedCiphertext) // Single consolidated stream
+			}
 			teetTranscript = &SignedTranscriptData{Packets: packets, Signature: c.teetSignedMessage.GetSignature(), EthAddress: extractEthAddressFromSignedMessage(c.teetSignedMessage)}
 		}
 	}

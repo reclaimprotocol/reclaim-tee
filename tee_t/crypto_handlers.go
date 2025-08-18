@@ -93,6 +93,18 @@ func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.Encr
 				zap.Binary("expected_tag", encryptedResp.Tag))
 		}
 	}
+
+	// NEW: Consolidate response ciphertext immediately after successful verification
+	if success {
+		teetState.AppendResponseCiphertext(encryptedResp.EncryptedData)
+
+		t.logger.DebugIf("Appended response ciphertext to consolidated stream",
+			zap.String("session_id", sessionID),
+			zap.Uint64("seq_num", tagSecretsData.SeqNum),
+			zap.Int("response_ciphertext_bytes", len(encryptedResp.EncryptedData)),
+			zap.Int("total_consolidated_response_bytes", len(teetState.ConsolidatedResponseCiphertext)))
+	}
+
 	verificationData := shared.ResponseTagVerificationData{Success: success, SeqNum: tagSecretsData.SeqNum}
 	if !success {
 		verificationData.Message = "Authentication tag verification failed"

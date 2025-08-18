@@ -59,37 +59,35 @@ func (c *Client) handleHandshakeComplete(msg *shared.Message) {
 	}
 
 	if completeData.Success {
-		c.logger.Info("Handshake completed successfully")
+		c.logger.Info("Handshake completed successfully",
+			zap.Uint16("cipher_suite", completeData.CipherSuite))
+
+		// NEW: Store cipher suite for consolidated verification (replaces handshakeDisclosure)
+		c.cipherSuite = completeData.CipherSuite
+
+		// NEW: Move essential logic from handleHandshakeKeyDisclosure here
+		// Mark handshake as complete for response handling
+		c.handshakeComplete = true
+
+		c.advanceToPhase(PhaseCollectingResponses)
+
+		// Initialize response sequence number to 1 (first application data after handshake)
+		c.responseSeqNum = 1
+
+		// REMOVED: Store disclosure for verification bundle - no longer needed with consolidated approach
+
+		// Phase 3: Redaction System - Send redacted HTTP request to TEE_K for encryption
+		c.sendRedactedRequest()
+
 	} else {
 		c.logger.Error("Handshake completed with errors")
 	}
 }
 
-// handleHandshakeKeyDisclosure handles key disclosure for certificate verification
-func (c *Client) handleHandshakeKeyDisclosure(msg *shared.Message) {
-	var disclosureData shared.HandshakeKeyDisclosureData
-	if err := msg.UnmarshalData(&disclosureData); err != nil {
-		c.logger.Error("Failed to unmarshal handshake key disclosure data", zap.Error(err))
-		return
-	}
+// REMOVED: handleHandshakeKeyDisclosure function - replaced with sendRedactedRequest
 
-	c.logger.Info("Handshake complete",
-		zap.String("algorithm", disclosureData.Algorithm),
-		zap.Uint16("cipher_suite", disclosureData.CipherSuite))
-
-	// Mark handshake as complete for response handling
-	c.handshakeComplete = true
-
-	c.advanceToPhase(PhaseCollectingResponses)
-
-	// Initialize response sequence number to 1 (first application data after handshake)
-	c.responseSeqNum = 1
-
-	// Store disclosure for verification bundle
-	c.handshakeDisclosure = &disclosureData
-
-	// Phase 3: Redaction System - Send redacted HTTP request to TEE_K for encryption
-
+// sendRedactedRequest creates and sends the redacted HTTP request to TEE_K
+func (c *Client) sendRedactedRequest() {
 	// Create redacted HTTP request using the redaction system
 	redactedData, streamsData, err := c.createRedactedRequest(nil)
 	if err != nil {
@@ -226,8 +224,8 @@ func (c *Client) processTLSRecord(record []byte) {
 	var explicitIV []byte
 
 	// Check if this is TLS 1.2 AES-GCM response (needs explicit IV extraction)
-	isTLS12AESGCMResponse := c.handshakeDisclosure != nil &&
-		shared.IsTLS12AESGCMCipherSuite(c.handshakeDisclosure.CipherSuite)
+	isTLS12AESGCMResponse := c.cipherSuite != 0 &&
+		shared.IsTLS12AESGCMCipherSuite(c.cipherSuite)
 
 	if isTLS12AESGCMResponse {
 		// TLS 1.2 AES-GCM: explicit_iv(8) + encrypted_data + auth_tag(16)
@@ -468,7 +466,7 @@ func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 	}
 
 	// Check TLS version from cipher suite in handshake disclosure
-	isTLS12 := c.handshakeDisclosure != nil && shared.IsTLS12CipherSuite(c.handshakeDisclosure.CipherSuite)
+	isTLS12 := c.cipherSuite != 0 && shared.IsTLS12CipherSuite(c.cipherSuite)
 
 	if isTLS12 {
 		// TLS 1.2: No inner content type or padding, content type comes from record header

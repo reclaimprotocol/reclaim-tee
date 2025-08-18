@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	teeproto "tee-mpc/proto"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -167,10 +168,12 @@ type Session struct {
 	FinishedStateMutex sync.Mutex // Protect finished state
 
 	// Master signature generation
-	RedactedStreams             []SignedRedactedDecryptionStream `json:"-"` // Collect streams for master signature
-	RedactionProcessingComplete bool                             `json:"-"` // Flag to track when redaction processing is complete
-	SignatureSent               bool                             `json:"-"` // Flag to prevent duplicate signature generation
-	StreamsMutex                sync.Mutex                       // Protect streams collection
+	RedactedStreams               []SignedRedactedDecryptionStream `json:"-"` // Collect streams for master signature
+	ConsolidatedResponseKeystream []byte                           `json:"-"` // NEW: Consolidated response keystream for simplified verification
+	CertificateInfo               *teeproto.CertificateInfo        `json:"-"` // NEW: Structured certificate data
+	RedactionProcessingComplete   bool                             `json:"-"` // Flag to track when redaction processing is complete
+	SignatureSent                 bool                             `json:"-"` // Flag to prevent duplicate signature generation
+	StreamsMutex                  sync.Mutex                       // Protect streams collection
 
 	// Cache for original decryption streams to avoid regeneration during redaction
 	CachedDecryptionStreams map[uint64][]byte `json:"-"` // Cache original streams by seqNum for redaction reuse
@@ -289,6 +292,7 @@ type TCPData struct {
 type HandshakeCompleteData struct {
 	Success          bool     `json:"success"`
 	CertificateChain [][]byte `json:"certificate_chain"`
+	CipherSuite      uint16   `json:"cipher_suite"` // Negotiated cipher suite
 }
 
 // TEE_K to Client: Handshake key disclosure for certificate verification

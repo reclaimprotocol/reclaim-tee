@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/anjuna-security/go-nitro-attestation/verifier"
 )
@@ -158,7 +159,7 @@ type Client struct {
 	attestationValidationResults *AttestationValidationResults   // Cached attestation results
 
 	// Verification bundle tracking fields
-	handshakeDisclosure     *shared.HandshakeKeyDisclosureData      // store handshake keys
+	cipherSuite             uint16                                  // negotiated cipher suite (replaces handshakeDisclosure)
 	teekSignedMessage       *teeproto.SignedMessage                 // original protobuf SignedMessage from TEE_K
 	teetSignedMessage       *teeproto.SignedMessage                 // original protobuf SignedMessage from TEE_T
 	signedRedactedStreams   []shared.SignedRedactedDecryptionStream // ordered collection of redacted streams
@@ -677,15 +678,13 @@ func (c *Client) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.Priv
 		TeetSigned: c.teetSignedMessage,
 	}
 
-	// Add handshake keys if available
-	if c.handshakeDisclosure != nil {
-		bundle.HandshakeKeys = &teeproto.HandshakeSecrets{
-			HandshakeKey: c.handshakeDisclosure.HandshakeKey,
-			HandshakeIv:  c.handshakeDisclosure.HandshakeIV,
-			CipherSuite:  uint32(c.handshakeDisclosure.CipherSuite),
-			Algorithm:    c.handshakeDisclosure.Algorithm,
-		}
+	// NEW: Extract certificate info from TEE_K payload
+	var kPayload teeproto.KOutputPayload
+	if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal TEE_K payload: %v", err)
 	}
+
+	bundle.CertificateInfo = kPayload.GetCertificateInfo() // NEW
 
 	c.logger.Info("Submitting verification bundle to attestor-core",
 		zap.String("attestor_url", attestorURL))

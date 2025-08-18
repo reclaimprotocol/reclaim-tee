@@ -83,6 +83,7 @@ message TCPData { bytes data = 1; }
 message HandshakeComplete {
   bool success = 1;
   repeated bytes certificate_chain = 2;
+  uint32 cipher_suite = 3;  // Negotiated cipher suite for consolidated verification
 }
 
 message HandshakeKeyDisclosure {

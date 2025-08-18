@@ -542,8 +542,26 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		session.StreamsMutex.Unlock()
 	}
 
-	// Instead of immediately sending signature, mark redaction processing as complete
+	// NEW: Consolidate individual redacted streams into single keystream for simplified verification
 	session.StreamsMutex.Lock()
+
+	// Sort streams by sequence number to ensure correct order
+	sort.Slice(session.RedactedStreams, func(i, j int) bool {
+		return session.RedactedStreams[i].SeqNum < session.RedactedStreams[j].SeqNum
+	})
+
+	// Consolidate all RedactedStream bytes into single keystream
+	var consolidatedKeystream []byte
+	for _, stream := range session.RedactedStreams {
+		consolidatedKeystream = append(consolidatedKeystream, stream.RedactedStream...)
+	}
+	session.ConsolidatedResponseKeystream = consolidatedKeystream
+
+	t.logger.WithSession(sessionID).Info("Consolidated response keystreams",
+		zap.Int("individual_streams", len(session.RedactedStreams)),
+		zap.Int("consolidated_keystream_bytes", len(consolidatedKeystream)))
+
+	// Mark redaction processing as complete
 	session.RedactionProcessingComplete = true
 	session.StreamsMutex.Unlock()
 

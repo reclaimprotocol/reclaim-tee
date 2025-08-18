@@ -157,7 +157,7 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 				var actualContent []byte
 				var contentType byte
 
-				if c.handshakeDisclosure != nil && shared.IsTLS12CipherSuite(c.handshakeDisclosure.CipherSuite) {
+				if c.cipherSuite != 0 && shared.IsTLS12CipherSuite(c.cipherSuite) {
 					// TLS 1.2: No inner content type, use record type
 					actualContent = plaintext
 					contentType = recordType

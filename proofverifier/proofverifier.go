@@ -133,107 +133,50 @@ func Validate(bundlePath string) error {
 		return fmt.Errorf("critical security failure: TEE_K transcript missing - cannot perform proof stream application")
 	}
 
-	// --- Redacted response reconstruction check ---
-	if bundlePB.TeetSigned == nil {
-		// SECURITY: TEET transcript is required for proper verification
-		return fmt.Errorf("critical security failure: TEET transcript missing - cannot perform stream verification")
-	}
-	// Extract TEE_T payload for redacted response reconstruction
-	var tPayload teeproto.TOutputPayload
-	if err := proto.Unmarshal(bundlePB.TeetSigned.GetBody(), &tPayload); err != nil {
-		return fmt.Errorf("failed to unmarshal TEE_T body: %v", err)
-	}
-
-	// Extract TEE_K payload for redacted streams and redaction ranges
+	// --- Extract payloads ---
 	var kPayload teeproto.KOutputPayload
 	if err := proto.Unmarshal(bundlePB.TeekSigned.GetBody(), &kPayload); err != nil {
-		return fmt.Errorf("failed to unmarshal TEE_K body: %v", err)
+		return fmt.Errorf("failed to unmarshal TEE_K payload: %v", err)
 	}
 
-	// Build ordered slice of ciphertexts (application data) from TEET transcript
-	var ciphertexts [][]byte
-
-	// Check if this is TLS 1.2 AES-GCM (has explicit IV)
-	var cipherSuite uint16
-	if bundlePB.HandshakeKeys != nil {
-		cipherSuite = uint16(bundlePB.HandshakeKeys.GetCipherSuite())
-	}
-	isTLS12AESGCM := shared.IsTLS12AESGCMCipherSuite(cipherSuite)
-
-	for _, pkt := range tPayload.GetPackets() {
-		if len(pkt) < 5+16 {
-			continue
-		}
-		// Only process ApplicationData packets (0x17) - skip handshake messages like session tickets
-		// TEE_K only generates redacted streams for application data, not TLS handshake messages
-		if pkt[0] != 0x17 {
-			continue
-		}
-
-		var ctLen int
-		var startOffset int
-		if isTLS12AESGCM {
-			// TLS 1.2 AES-GCM (both ApplicationData and Alert): Header(5) + ExplicitIV(8) + EncryptedData + Tag(16)
-			ctLen = len(pkt) - 5 - 8 - 16 // Skip explicit IV and tag
-			startOffset = 5 + 8           // Skip header and explicit IV
-		} else {
-			// TLS 1.3: Header(5) + EncryptedData + Tag(16)
-			ctLen = len(pkt) - 5 - 16 // Skip header and tag
-			startOffset = 5           // Skip header only
-		}
-
-		if ctLen <= 0 {
-			continue
-		}
-		ciphertexts = append(ciphertexts, pkt[startOffset:startOffset+ctLen])
+	var tPayload teeproto.TOutputPayload
+	if err := proto.Unmarshal(bundlePB.TeetSigned.GetBody(), &tPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_T payload: %v", err)
 	}
 
-	// Reconstruct plaintext by matching streams to ciphertexts by sequence order
-	var reconstructed []byte
-	if len(kPayload.GetRedactedStreams()) > 0 {
-		// Both streams (from TEE_K) and ciphertexts (from TEE_T) are already in sequence order
-		// TEE_K now sorts seqNumbers before processing, TEE_T sorts responses before transcript
-		streams := kPayload.GetRedactedStreams()
+	// --- SIMPLIFIED RESPONSE RECONSTRUCTION ---
+	consolidatedKeystream := kPayload.GetConsolidatedResponseKeystream()
+	consolidatedCiphertext := tPayload.GetConsolidatedResponseCiphertext()
 
-		// Match streams to ciphertexts by position (both are in sequence number order)
-		for i, stream := range streams {
-			if i >= len(ciphertexts) {
-				return fmt.Errorf("not enough ciphertexts for stream seq %d (have %d ciphertexts, need %d)", stream.GetSeqNum(), len(ciphertexts), i+1)
-			}
-
-			cipher := ciphertexts[i]
-			if len(cipher) != len(stream.GetRedactedStream()) {
-				return fmt.Errorf("ciphertext length mismatch for stream seq %d: expected %d, got %d", stream.GetSeqNum(), len(stream.GetRedactedStream()), len(cipher))
-			}
-
-			plain := make([]byte, len(cipher))
-			for j := range cipher {
-				plain[j] = cipher[j] ^ stream.GetRedactedStream()[j]
-			}
-			reconstructed = append(reconstructed, plain...)
-		}
-
-		// Replace random garbage with asterisks using response redaction ranges
-		if len(kPayload.GetResponseRedactionRanges()) > 0 {
-			// Convert protobuf ranges to shared format for consolidation
-			var respRanges []shared.ResponseRedactionRange
-			for _, rr := range kPayload.GetResponseRedactionRanges() {
-				respRanges = append(respRanges, shared.ResponseRedactionRange{
-					Start:  int(rr.GetStart()),
-					Length: int(rr.GetLength()),
-				})
-			}
-			// Consolidate ranges for display (same as client)
-			consolidatedRanges := shared.ConsolidateResponseRedactionRanges(respRanges)
-			reconstructed = replaceRandomGarbageWithAsterisks(reconstructed, consolidatedRanges)
-			fmt.Printf("[Verifier] Applied %d consolidated response redaction ranges to replace random garbage with asterisks\n", len(consolidatedRanges))
-		}
-
-		fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + collapseAsterisks(string(reconstructed)) + "\n---")
-		fmt.Println("[Verifier] Redacted streams applied successfully ✅")
-	} else {
-		fmt.Println("[Verifier] No redacted streams available for reconstruction")
+	if len(consolidatedKeystream) != len(consolidatedCiphertext) {
+		return fmt.Errorf("response keystream/ciphertext length mismatch: %d vs %d",
+			len(consolidatedKeystream), len(consolidatedCiphertext))
 	}
+
+	// Direct XOR - NO PACKET PARSING FOR RESPONSE!
+	reconstructedResponse := make([]byte, len(consolidatedCiphertext))
+	for i := range consolidatedCiphertext {
+		reconstructedResponse[i] = consolidatedCiphertext[i] ^ consolidatedKeystream[i]
+	}
+
+	fmt.Printf("[Verifier] Reconstructed %d response bytes via direct XOR\n", len(reconstructedResponse))
+
+	// --- Apply response redactions (UNCHANGED) ---
+	if len(kPayload.GetResponseRedactionRanges()) > 0 {
+		var respRanges []shared.ResponseRedactionRange
+		for _, rr := range kPayload.GetResponseRedactionRanges() {
+			respRanges = append(respRanges, shared.ResponseRedactionRange{
+				Start:  int(rr.GetStart()),
+				Length: int(rr.GetLength()),
+			})
+		}
+		consolidatedRanges := shared.ConsolidateResponseRedactionRanges(respRanges)
+		reconstructedResponse = replaceRandomGarbageWithAsterisks(reconstructedResponse, consolidatedRanges)
+		fmt.Printf("[Verifier] Applied %d response redaction ranges\n", len(consolidatedRanges))
+	}
+
+	// --- Display response ---
+	fmt.Println("[Verifier] Reconstructed response:\n---\n" + collapseAsterisks(string(reconstructedResponse)) + "\n---")
 
 	// --- Request reconstruction using TEE_T-signed proof streams ---
 	if len(tPayload.GetRequestProofStreams()) > 0 {
@@ -284,14 +227,22 @@ func Validate(bundlePath string) error {
 		fmt.Println("[Verifier] No R_SP proof streams - only R_S verification available (sensitive data remains redacted)")
 	}
 
+	// --- Display certificate info ---
+	certInfo := bundlePB.GetCertificateInfo()
+	if certInfo != nil {
+		fmt.Printf("[Verifier] Certificate: %s (issued by %s)\n",
+			certInfo.GetCommonName(), certInfo.GetIssuerCommonName())
+		fmt.Printf("[Verifier] Valid: %s to %s\n",
+			time.Unix(int64(certInfo.GetNotBeforeUnix()), 0).Format(time.RFC3339),
+			time.Unix(int64(certInfo.GetNotAfterUnix()), 0).Format(time.RFC3339))
+	}
+
 	// --- Verify redaction ranges authenticity ---
 	if len(kPayload.GetRequestRedactionRanges()) > 0 {
 		fmt.Printf("[Verifier] Redaction ranges verified ✅ (TEE_K signed %d ranges)\n", len(kPayload.GetRequestRedactionRanges()))
-	} else {
-		fmt.Println("[Verifier] Warning: No signed redaction ranges from TEE_K")
 	}
 
-	fmt.Println("[Verifier] Offline verification complete – success 🥳")
+	fmt.Println("[Verifier] Verification complete – success 🥳")
 	return nil
 }
 
@@ -401,15 +352,15 @@ func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error
 		if err := proto.Unmarshal(signedMsg.GetBody(), &kPayload); err != nil {
 			return fmt.Errorf("SECURITY ERROR: %s body parsing failed after signature verification: %v", source, err)
 		}
-		fmt.Printf("[Verifier] %s body content validated: redacted_request=%d bytes, ranges=%d, streams=%d, packets=%d\n",
+		fmt.Printf("[Verifier] %s body content validated: redacted_request=%d bytes, ranges=%d, consolidated_keystream=%d bytes\n",
 			source, len(kPayload.GetRedactedRequest()), len(kPayload.GetRequestRedactionRanges()),
-			len(kPayload.GetRedactedStreams()), len(kPayload.GetPackets()))
+			len(kPayload.GetConsolidatedResponseKeystream()))
 	case teeproto.BodyType_BODY_TYPE_T_OUTPUT:
 		var tPayload teeproto.TOutputPayload
 		if err := proto.Unmarshal(signedMsg.GetBody(), &tPayload); err != nil {
 			return fmt.Errorf("SECURITY ERROR: %s body parsing failed after signature verification: %v", source, err)
 		}
-		fmt.Printf("[Verifier] %s body content validated: packets=%d\n", source, len(tPayload.GetPackets()))
+		fmt.Printf("[Verifier] %s body content validated: consolidated_ciphertext=%d bytes\n", source, len(tPayload.GetConsolidatedResponseCiphertext()))
 	}
 
 	return nil

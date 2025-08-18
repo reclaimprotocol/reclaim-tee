@@ -115,35 +115,30 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	// Update TEE_K session state to mark handshake complete
 	tlsState.HandshakeComplete = true
 
-	// Get crypto material for certificate verification
-	hsKey := tlsClient.GetHandshakeKey()
-	hsIV := tlsClient.GetHandshakeIV()
-	certPacket := tlsClient.GetCertificatePacket()
+	// NEW: Extract certificate info from TLS client for structured storage
+	session, sessionErr := t.sessionManager.GetSession(sessionID)
+	if sessionErr == nil && tlsClient.GetCertificateInfo() != nil {
+		session.CertificateInfo = tlsClient.GetCertificateInfo()
+		t.logger.WithSession(sessionID).Info("Captured certificate info for structured verification",
+			zap.String("common_name", session.CertificateInfo.CommonName),
+			zap.String("issuer", session.CertificateInfo.IssuerCommonName))
+	}
+
+	// Store cipher suite for session
 	cipherSuite := tlsClient.GetCipherSuite()
-	algorithm := getCipherSuiteAlgorithm(cipherSuite)
 	tlsState.CipherSuite = cipherSuite
 
-	// Send handshake key disclosure to Client
-	envDisclosure := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_HandshakeKeyDisclosure{HandshakeKeyDisclosure: &teeproto.HandshakeKeyDisclosure{
-			HandshakeKey:      hsKey,
-			HandshakeIv:       hsIV,
-			CertificatePacket: certPacket,
-			CipherSuite:       uint32(cipherSuite),
-			Algorithm:         algorithm,
-			Success:           true,
-		}},
-	}
-	if err := t.sessionManager.RouteToClient(sessionID, envDisclosure); err != nil {
-		t.logger.WithSession(sessionID).Error("Failed to send handshake key disclosure", zap.Error(err))
-		return
-	}
+	// REMOVED: Handshake key disclosure - no longer needed with consolidated approach
+	// Certificate info is now stored as structured data in session
 
 	t.logger.WithSession(sessionID).Info("Handshake finished - ready for split AEAD")
 
 	// Send handshake complete message
 	envHandshake := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_HandshakeComplete{HandshakeComplete: &teeproto.HandshakeComplete{Success: true}},
+		Payload: &teeproto.Envelope_HandshakeComplete{HandshakeComplete: &teeproto.HandshakeComplete{
+			Success:     true,
+			CipherSuite: uint32(cipherSuite), // Include cipher suite for consolidated verification
+		}},
 	}
 
 	if err := t.sessionManager.RouteToClient(sessionID, envHandshake); err != nil {

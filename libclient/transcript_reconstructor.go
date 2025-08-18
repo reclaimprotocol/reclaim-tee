@@ -2,7 +2,6 @@ package clientlib
 
 import (
 	"fmt"
-	"strings"
 
 	teeproto "tee-mpc/proto"
 
@@ -90,88 +89,30 @@ func reconstructRequest(kPayload *teeproto.KOutputPayload, tPayload *teeproto.TO
 // reconstructResponse XORs redacted streams with ciphertexts
 // Copied from proofverifier.go lines 170-230
 func reconstructResponse(kPayload *teeproto.KOutputPayload, tPayload *teeproto.TOutputPayload) ([]byte, error) {
-	if len(kPayload.RedactedStreams) == 0 {
+	// NEW: Direct XOR with consolidated streams - NO PACKET PARSING!
+	consolidatedKeystream := kPayload.GetConsolidatedResponseKeystream()
+	consolidatedCiphertext := tPayload.GetConsolidatedResponseCiphertext()
+
+	if len(consolidatedKeystream) == 0 || len(consolidatedCiphertext) == 0 {
 		return []byte{}, nil
 	}
 
-	// Extract ciphertexts from TEE_T application data packets
-	ciphertexts := extractCiphertexts(tPayload)
-
-	// Reconstruct plaintext by walking streams and finding the next ciphertext with matching length
-	var reconstructed [][]byte
-	cipherIdx := 0
-
-	for _, stream := range kPayload.RedactedStreams {
-		// Skip empty streams
-		if len(stream.RedactedStream) == 0 {
-			continue
-		}
-
-		// Advance cipherIdx until length matches
-		for cipherIdx < len(ciphertexts) && len(ciphertexts[cipherIdx]) != len(stream.RedactedStream) {
-			cipherIdx++
-		}
-
-		if cipherIdx >= len(ciphertexts) {
-			continue // Skip this stream instead of failing
-		}
-
-		cipher := ciphertexts[cipherIdx]
-		plain := make([]byte, len(cipher))
-
-		// XOR ciphertext with redacted stream to get plaintext
-		for i, cipherByte := range cipher {
-			plain[i] = cipherByte ^ stream.RedactedStream[i]
-		}
-
-		reconstructed = append(reconstructed, plain)
-		cipherIdx++
+	if len(consolidatedKeystream) != len(consolidatedCiphertext) {
+		return nil, fmt.Errorf("consolidated keystream/ciphertext length mismatch: %d vs %d",
+			len(consolidatedKeystream), len(consolidatedCiphertext))
 	}
 
-	// Combine all reconstructed parts
-	totalLength := 0
-	for _, part := range reconstructed {
-		totalLength += len(part)
-	}
-
-	result := make([]byte, totalLength)
-	offset := 0
-	for _, part := range reconstructed {
-		copy(result[offset:], part)
-		offset += len(part)
+	// Direct XOR - dramatically simpler!
+	result := make([]byte, len(consolidatedCiphertext))
+	for i := range consolidatedCiphertext {
+		result[i] = consolidatedCiphertext[i] ^ consolidatedKeystream[i]
 	}
 
 	// Apply response redaction ranges to replace random garbage with asterisks
 	return applyResponseRedactionRanges(result, kPayload.ResponseRedactionRanges), nil
 }
 
-// extractCiphertexts extracts application data ciphertexts from TEE_T packets
-func extractCiphertexts(tPayload *teeproto.TOutputPayload) [][]byte {
-	var ciphertexts [][]byte
-
-	for _, pkt := range tPayload.Packets {
-		if len(pkt) < 5+16 { // Minimum TLS record size
-			continue
-		}
-
-		// Skip non-ApplicationData packets
-		if pkt[0] != 0x17 && pkt[0] != 0x15 { // ApplicationData or Alert
-			continue
-		}
-
-		// Extract ciphertext (assume TLS 1.3 format for simplicity)
-		// TLS 1.3: Header(5) + EncryptedData + Tag(16)
-		ctLen := len(pkt) - 5 - 16
-		if ctLen <= 0 {
-			continue
-		}
-
-		startOffset := 5 // Skip header
-		ciphertexts = append(ciphertexts, pkt[startOffset:startOffset+ctLen])
-	}
-
-	return ciphertexts
-}
+// REMOVED: extractCiphertexts function - no longer needed with consolidated approach
 
 // applyResponseRedactionRanges replaces random garbage with asterisks
 func applyResponseRedactionRanges(response []byte, redactionRanges []*teeproto.ResponseRedactionRange) []byte {
@@ -206,14 +147,8 @@ func applyResponseRedactionRanges(response []byte, redactionRanges []*teeproto.R
 func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest, reconstructedResponse []byte, bundlePB *teeproto.VerificationBundle) ([]*teeproto.ClaimTunnelRequest_TranscriptMessage, error) {
 	var messages []*teeproto.ClaimTunnelRequest_TranscriptMessage
 
-	// Add handshake packets
-	for _, packet := range kPayload.GetPackets() {
-		messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
-			Sender:  determinePacketSender(packet),
-			Message: packet,
-			// No reveal needed for handshake
-		})
-	}
+	// REMOVED: Handshake packet processing - no longer storing TLS packets
+	// Certificate info is now available as structured data in CertificateInfo field
 
 	// Add client request (revealed)
 	messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
@@ -232,18 +167,7 @@ func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest
 	return messages, nil
 }
 
-// Helper functions
-
-func determinePacketSender(packet []byte) teeproto.TranscriptMessageSenderType {
-	// Simple heuristic: ClientHello = 0x01, ServerHello = 0x02
-	if len(packet) >= 6 {
-		handshakeType := packet[5]
-		if handshakeType == 0x01 {
-			return teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT
-		}
-	}
-	return teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER
-}
+// Helper functions for transcript reconstruction
 
 func wrapInTlsRecord(data []byte, recordType byte) []byte {
 	// Create TLS record: Type(1) + Version(2) + Length(2) + Data
@@ -257,38 +181,24 @@ func wrapInTlsRecord(data []byte, recordType byte) []byte {
 	return record
 }
 
-// ExtractHostFromBundle extracts hostname from handshake packets
+// ExtractHostFromBundle extracts hostname from certificate info
 func ExtractHostFromBundle(bundle *teeproto.VerificationBundle) string {
-	// Extract payloads
-	var kPayload teeproto.KOutputPayload
-	if err := proto.Unmarshal(bundle.TeekSigned.GetBody(), &kPayload); err != nil {
-		return "example.com" // Fallback
-	}
+	// NEW: Use structured certificate info instead of packet parsing
+	if bundle.GetCertificateInfo() != nil {
+		certInfo := bundle.GetCertificateInfo()
 
-	// Look for SNI in handshake packets
-	for _, packet := range kPayload.GetPackets() {
-		if host := extractSNIFromHandshake(packet); host != "" {
-			return host
+		// Prefer DNS names if available
+		if len(certInfo.GetDnsNames()) > 0 {
+			return certInfo.GetDnsNames()[0]
+		}
+
+		// Fall back to common name
+		if certInfo.GetCommonName() != "" {
+			return certInfo.GetCommonName()
 		}
 	}
 
 	return "example.com" // Fallback
 }
 
-// extractSNIFromHandshake attempts to extract SNI from TLS handshake packet
-func extractSNIFromHandshake(packet []byte) string {
-	// This is a simplified SNI extraction
-	// In a full implementation, you'd parse the TLS handshake properly
-	if len(packet) < 50 {
-		return ""
-	}
-
-	// Look for common patterns that might indicate a hostname
-	data := string(packet)
-	if strings.Contains(data, "example.com") {
-		return "example.com"
-	}
-
-	// Add more sophisticated SNI parsing here if needed
-	return ""
-}
+// REMOVED: extractSNIFromHandshake function - no longer needed with structured certificate info

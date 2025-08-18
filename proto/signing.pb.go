@@ -75,14 +75,16 @@ func (BodyType) EnumDescriptor() ([]byte, []int) {
 type KOutputPayload struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// For single request-response mode
-	RedactedRequest         []byte                            `protobuf:"bytes,1,opt,name=redacted_request,json=redactedRequest,proto3" json:"redacted_request,omitempty"` // R_red
-	RequestRedactionRanges  []*RequestRedactionRange          `protobuf:"bytes,2,rep,name=request_redaction_ranges,json=requestRedactionRanges,proto3" json:"request_redaction_ranges,omitempty"`
-	RedactedStreams         []*SignedRedactedDecryptionStream `protobuf:"bytes,3,rep,name=redacted_streams,json=redactedStreams,proto3" json:"redacted_streams,omitempty"` // from TEE_K
-	Packets                 [][]byte                          `protobuf:"bytes,4,rep,name=packets,proto3" json:"packets,omitempty"`                                        // TLS handshake packets observed by TEE_K
-	ResponseRedactionRanges []*ResponseRedactionRange         `protobuf:"bytes,5,rep,name=response_redaction_ranges,json=responseRedactionRanges,proto3" json:"response_redaction_ranges,omitempty"`
-	TimestampMs             uint64                            `protobuf:"varint,6,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"` // Unix timestamp in milliseconds when payload was created (SIGNED)
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	RedactedRequest        []byte                   `protobuf:"bytes,1,opt,name=redacted_request,json=redactedRequest,proto3" json:"redacted_request,omitempty"` // R_red
+	RequestRedactionRanges []*RequestRedactionRange `protobuf:"bytes,2,rep,name=request_redaction_ranges,json=requestRedactionRanges,proto3" json:"request_redaction_ranges,omitempty"`
+	// REPLACED: repeated SignedRedactedDecryptionStream redacted_streams = 3; (individual response streams - CONSOLIDATE)
+	// REPLACED: repeated bytes packets = 4; (TLS handshake packets - REMOVE)
+	ConsolidatedResponseKeystream []byte                    `protobuf:"bytes,3,opt,name=consolidated_response_keystream,json=consolidatedResponseKeystream,proto3" json:"consolidated_response_keystream,omitempty"` // NEW: Single response decryption keystream
+	CertificateInfo               *CertificateInfo          `protobuf:"bytes,4,opt,name=certificate_info,json=certificateInfo,proto3" json:"certificate_info,omitempty"`                                             // NEW: Structured cert data instead of handshake packets
+	ResponseRedactionRanges       []*ResponseRedactionRange `protobuf:"bytes,5,rep,name=response_redaction_ranges,json=responseRedactionRanges,proto3" json:"response_redaction_ranges,omitempty"`
+	TimestampMs                   uint64                    `protobuf:"varint,6,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"` // Unix timestamp in milliseconds when payload was created (SIGNED)
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
 }
 
 func (x *KOutputPayload) Reset() {
@@ -129,16 +131,16 @@ func (x *KOutputPayload) GetRequestRedactionRanges() []*RequestRedactionRange {
 	return nil
 }
 
-func (x *KOutputPayload) GetRedactedStreams() []*SignedRedactedDecryptionStream {
+func (x *KOutputPayload) GetConsolidatedResponseKeystream() []byte {
 	if x != nil {
-		return x.RedactedStreams
+		return x.ConsolidatedResponseKeystream
 	}
 	return nil
 }
 
-func (x *KOutputPayload) GetPackets() [][]byte {
+func (x *KOutputPayload) GetCertificateInfo() *CertificateInfo {
 	if x != nil {
-		return x.Packets
+		return x.CertificateInfo
 	}
 	return nil
 }
@@ -158,10 +160,12 @@ func (x *KOutputPayload) GetTimestampMs() uint64 {
 }
 
 type TOutputPayload struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Packets             [][]byte               `protobuf:"bytes,1,rep,name=packets,proto3" json:"packets,omitempty"`                                                      // TLS packets observed by TEE_T
-	RequestProofStreams [][]byte               `protobuf:"bytes,2,rep,name=request_proof_streams,json=requestProofStreams,proto3" json:"request_proof_streams,omitempty"` // R_SP streams signed by TEE_T for cryptographic verification
-	TimestampMs         uint64                 `protobuf:"varint,3,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"`                          // Unix timestamp in milliseconds when payload was created (SIGNED)
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// REPLACED: repeated bytes packets = 1; (TLS packets for BOTH request and response - REMOVE ALL)
+	ConsolidatedResponseCiphertext []byte `protobuf:"bytes,1,opt,name=consolidated_response_ciphertext,json=consolidatedResponseCiphertext,proto3" json:"consolidated_response_ciphertext,omitempty"` // NEW: Single response ciphertext stream
+	// PRESERVE: Individual R_SP streams for R_S vs R_SP distinction
+	RequestProofStreams [][]byte `protobuf:"bytes,2,rep,name=request_proof_streams,json=requestProofStreams,proto3" json:"request_proof_streams,omitempty"` // UNCHANGED: Individual R_SP streams for revealing sensitive_proof ranges
+	TimestampMs         uint64   `protobuf:"varint,3,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"`                          // UNCHANGED
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -196,9 +200,9 @@ func (*TOutputPayload) Descriptor() ([]byte, []int) {
 	return file_signing_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *TOutputPayload) GetPackets() [][]byte {
+func (x *TOutputPayload) GetConsolidatedResponseCiphertext() []byte {
 	if x != nil {
-		return x.Packets
+		return x.ConsolidatedResponseCiphertext
 	}
 	return nil
 }
@@ -350,16 +354,16 @@ var File_signing_proto protoreflect.FileDescriptor
 
 const file_signing_proto_rawDesc = "" +
 	"\n" +
-	"\rsigning.proto\x12\bteeproto\x1a\fcommon.proto\"\x86\x03\n" +
+	"\rsigning.proto\x12\bteeproto\x1a\fcommon.proto\"\xa5\x03\n" +
 	"\x0eKOutputPayload\x12)\n" +
 	"\x10redacted_request\x18\x01 \x01(\fR\x0fredactedRequest\x12Y\n" +
-	"\x18request_redaction_ranges\x18\x02 \x03(\v2\x1f.teeproto.RequestRedactionRangeR\x16requestRedactionRanges\x12S\n" +
-	"\x10redacted_streams\x18\x03 \x03(\v2(.teeproto.SignedRedactedDecryptionStreamR\x0fredactedStreams\x12\x18\n" +
-	"\apackets\x18\x04 \x03(\fR\apackets\x12\\\n" +
+	"\x18request_redaction_ranges\x18\x02 \x03(\v2\x1f.teeproto.RequestRedactionRangeR\x16requestRedactionRanges\x12F\n" +
+	"\x1fconsolidated_response_keystream\x18\x03 \x01(\fR\x1dconsolidatedResponseKeystream\x12D\n" +
+	"\x10certificate_info\x18\x04 \x01(\v2\x19.teeproto.CertificateInfoR\x0fcertificateInfo\x12\\\n" +
 	"\x19response_redaction_ranges\x18\x05 \x03(\v2 .teeproto.ResponseRedactionRangeR\x17responseRedactionRanges\x12!\n" +
-	"\ftimestamp_ms\x18\x06 \x01(\x04R\vtimestampMs\"\x81\x01\n" +
-	"\x0eTOutputPayload\x12\x18\n" +
-	"\apackets\x18\x01 \x03(\fR\apackets\x122\n" +
+	"\ftimestamp_ms\x18\x06 \x01(\x04R\vtimestampMs\"\xb1\x01\n" +
+	"\x0eTOutputPayload\x12H\n" +
+	" consolidated_response_ciphertext\x18\x01 \x01(\fR\x1econsolidatedResponseCiphertext\x122\n" +
 	"\x15request_proof_streams\x18\x02 \x03(\fR\x13requestProofStreams\x12!\n" +
 	"\ftimestamp_ms\x18\x03 \x01(\x04R\vtimestampMs\"?\n" +
 	"\x11AttestationReport\x12\x12\n" +
@@ -392,18 +396,18 @@ func file_signing_proto_rawDescGZIP() []byte {
 var file_signing_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_signing_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_signing_proto_goTypes = []any{
-	(BodyType)(0),                          // 0: teeproto.BodyType
-	(*KOutputPayload)(nil),                 // 1: teeproto.KOutputPayload
-	(*TOutputPayload)(nil),                 // 2: teeproto.TOutputPayload
-	(*AttestationReport)(nil),              // 3: teeproto.AttestationReport
-	(*SignedMessage)(nil),                  // 4: teeproto.SignedMessage
-	(*RequestRedactionRange)(nil),          // 5: teeproto.RequestRedactionRange
-	(*SignedRedactedDecryptionStream)(nil), // 6: teeproto.SignedRedactedDecryptionStream
-	(*ResponseRedactionRange)(nil),         // 7: teeproto.ResponseRedactionRange
+	(BodyType)(0),                  // 0: teeproto.BodyType
+	(*KOutputPayload)(nil),         // 1: teeproto.KOutputPayload
+	(*TOutputPayload)(nil),         // 2: teeproto.TOutputPayload
+	(*AttestationReport)(nil),      // 3: teeproto.AttestationReport
+	(*SignedMessage)(nil),          // 4: teeproto.SignedMessage
+	(*RequestRedactionRange)(nil),  // 5: teeproto.RequestRedactionRange
+	(*CertificateInfo)(nil),        // 6: teeproto.CertificateInfo
+	(*ResponseRedactionRange)(nil), // 7: teeproto.ResponseRedactionRange
 }
 var file_signing_proto_depIdxs = []int32{
 	5, // 0: teeproto.KOutputPayload.request_redaction_ranges:type_name -> teeproto.RequestRedactionRange
-	6, // 1: teeproto.KOutputPayload.redacted_streams:type_name -> teeproto.SignedRedactedDecryptionStream
+	6, // 1: teeproto.KOutputPayload.certificate_info:type_name -> teeproto.CertificateInfo
 	7, // 2: teeproto.KOutputPayload.response_redaction_ranges:type_name -> teeproto.ResponseRedactionRange
 	0, // 3: teeproto.SignedMessage.body_type:type_name -> teeproto.BodyType
 	3, // 4: teeproto.SignedMessage.attestation_report:type_name -> teeproto.AttestationReport
