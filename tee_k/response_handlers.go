@@ -236,7 +236,7 @@ func (t *TEEK) checkAndSendSignatureIfReady(sessionID string) error {
 	session.StreamsMutex.Lock()
 
 	session.TranscriptMutex.Lock()
-	transcriptReady := len(session.TranscriptPackets) > 0
+	transcriptReady := len(session.TranscriptData) > 0
 	session.TranscriptMutex.Unlock()
 
 	redactionComplete := session.RedactionProcessingComplete

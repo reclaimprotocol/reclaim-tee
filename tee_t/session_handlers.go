@@ -698,7 +698,7 @@ func (t *TEET) addSingleResponseToTranscript(sessionID string, encryptedResp *sh
 	record[3] = byte(recordLength >> 8)
 	record[4] = byte(recordLength & 0xFF)
 	copy(record[5:], payload)
-	t.addToTranscriptForSessionWithType(sessionID, record, shared.TranscriptPacketTypeTLSRecord)
+	t.addToTranscriptForSessionWithType(sessionID, record, shared.TranscriptDataTypeTLSRecord)
 	t.logger.DebugIf("Added response packet to session transcript",
 		zap.String("session_id", sessionID),
 		zap.Uint64("seq_num", encryptedResp.SeqNum),

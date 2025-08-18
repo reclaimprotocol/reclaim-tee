@@ -121,7 +121,7 @@ func (t *TEEK) handleRedactedRequestSession(sessionID string, msg *shared.Messag
 	}
 
 	// --- Add redacted request, comm_sp, and redaction ranges to transcript before encryption ---
-	t.addToTranscriptForSessionWithType(sessionID, redactedRequest.RedactedRequest, shared.TranscriptPacketTypeHTTPRequestRedacted)
+	t.addToTranscriptForSessionWithType(sessionID, redactedRequest.RedactedRequest, shared.TranscriptDataTypeHTTPRequestRedacted)
 
 	// Store redaction ranges in transcript for signing using protobuf
 	redactionRangesBytes, err := shared.MarshalRequestRedactionRangesProtobuf(redactedRequest.RedactionRanges)

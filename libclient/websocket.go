@@ -130,7 +130,6 @@ func (c *Client) handleMessages() {
 		case *teeproto.Envelope_HandshakeComplete:
 			msg := &shared.Message{Type: shared.MsgHandshakeComplete, SessionID: env.GetSessionId(), Data: shared.HandshakeCompleteData{Success: p.HandshakeComplete.GetSuccess(), CertificateChain: p.HandshakeComplete.GetCertificateChain(), CipherSuite: uint16(p.HandshakeComplete.GetCipherSuite())}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleHandshakeComplete(msg)
-		// REMOVED: HandshakeKeyDisclosure handling - now using simplified HandshakeComplete message
 		case *teeproto.Envelope_HttpResponse:
 			msg := &shared.Message{Type: shared.MsgHTTPResponse, SessionID: env.GetSessionId(), Data: shared.HTTPResponseData{Response: p.HttpResponse.GetResponse(), Success: p.HttpResponse.GetSuccess()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleHTTPResponse(msg)
@@ -170,7 +169,7 @@ func (c *Client) handleMessages() {
 					c.logger.Error("Failed to unmarshal KOutputPayload", zap.Error(err))
 					break
 				}
-				// NEW: Use consolidated keystream instead of individual streams
+				// Use consolidated keystream from SignedMessage for final verification
 				consolidatedKeystream := body.GetConsolidatedResponseKeystream()
 				if len(consolidatedKeystream) > 0 {
 					// Convert to single stream for compatibility
@@ -190,7 +189,7 @@ func (c *Client) handleMessages() {
 					respRanges = append(respRanges, shared.ResponseRedactionRange{Start: int(rr.GetStart()), Length: int(rr.GetLength())})
 				}
 				st := shared.SignedTranscript{
-					Packets: [][]byte{}, // REMOVED: No longer using TLS packets
+					Data: [][]byte{}, // Consolidated stream data not needed in transcript signature
 					RequestMetadata: &shared.RequestMetadata{
 						RedactedRequest: body.GetRedactedRequest(),
 						RedactionRanges: reqRanges,
@@ -284,7 +283,7 @@ func (c *Client) handleTEETMessages() {
 					break
 				}
 				st := shared.SignedTranscript{
-					Packets:    [][]byte{body.GetConsolidatedResponseCiphertext()}, // NEW: Use consolidated ciphertext
+					Data:       [][]byte{body.GetConsolidatedResponseCiphertext()}, // Use consolidated ciphertext
 					Signature:  sm.GetSignature(),
 					EthAddress: sm.GetEthAddress(),
 				}

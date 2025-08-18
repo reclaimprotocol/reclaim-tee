@@ -10,8 +10,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// addToTranscriptForSessionWithType safely adds a packet with explicit type to the session's transcript
-func (t *TEET) addToTranscriptForSessionWithType(sessionID string, packet []byte, packetType string) {
+// addToTranscriptForSessionWithType safely adds data with explicit type to the session's transcript
+func (t *TEET) addToTranscriptForSessionWithType(sessionID string, data []byte, dataType string) {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		t.logger.Error("Failed to get session for transcript",
@@ -21,23 +21,23 @@ func (t *TEET) addToTranscriptForSessionWithType(sessionID string, packet []byte
 	}
 	session.TranscriptMutex.Lock()
 	defer session.TranscriptMutex.Unlock()
-	pktCopy := make([]byte, len(packet))
-	copy(pktCopy, packet)
-	session.TranscriptPackets = append(session.TranscriptPackets, pktCopy)
-	session.TranscriptPacketTypes = append(session.TranscriptPacketTypes, packetType)
-	t.logger.DebugIf("Added packet to session transcript",
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
+	session.TranscriptData = append(session.TranscriptData, dataCopy)
+	session.TranscriptDataTypes = append(session.TranscriptDataTypes, dataType)
+	t.logger.DebugIf("Added data to session transcript",
 		zap.String("session_id", sessionID),
-		zap.Int("packet_bytes", len(packet)),
-		zap.String("packet_type", packetType),
-		zap.Int("total_packets", len(session.TranscriptPackets)))
+		zap.Int("data_bytes", len(data)),
+		zap.String("data_type", dataType),
+		zap.Int("total_data", len(session.TranscriptData)))
 }
 
-// addToTranscriptForSession safely adds a packet to the session's transcript collection
-func (t *TEET) addToTranscriptForSession(sessionID string, packet []byte) {
-	t.addToTranscriptForSessionWithType(sessionID, packet, shared.TranscriptPacketTypeTLSRecord)
+// addToTranscriptForSession safely adds data to the session's transcript collection
+func (t *TEET) addToTranscriptForSession(sessionID string, data []byte) {
+	t.addToTranscriptForSessionWithType(sessionID, data, shared.TranscriptDataTypeTLSRecord)
 }
 
-// REMOVED: getTranscriptForSession function - no longer needed with consolidated approach
+// Transcript handling simplified - using structured data in SignedMessage
 
 // handleFinishedFromTEEKSession handles finished message from TEE_K and triggers transcript signing
 func (t *TEET) handleFinishedFromTEEKSession(msg *shared.Message) {

@@ -89,7 +89,7 @@ func reconstructRequest(kPayload *teeproto.KOutputPayload, tPayload *teeproto.TO
 // reconstructResponse XORs redacted streams with ciphertexts
 // Copied from proofverifier.go lines 170-230
 func reconstructResponse(kPayload *teeproto.KOutputPayload, tPayload *teeproto.TOutputPayload) ([]byte, error) {
-	// NEW: Direct XOR with consolidated streams - NO PACKET PARSING!
+	// Direct XOR with consolidated streams for verification
 	consolidatedKeystream := kPayload.GetConsolidatedResponseKeystream()
 	consolidatedCiphertext := tPayload.GetConsolidatedResponseCiphertext()
 
@@ -111,8 +111,6 @@ func reconstructResponse(kPayload *teeproto.KOutputPayload, tPayload *teeproto.T
 	// Apply response redaction ranges to replace random garbage with asterisks
 	return applyResponseRedactionRanges(result, kPayload.ResponseRedactionRanges), nil
 }
-
-// REMOVED: extractCiphertexts function - no longer needed with consolidated approach
 
 // applyResponseRedactionRanges replaces random garbage with asterisks
 func applyResponseRedactionRanges(response []byte, redactionRanges []*teeproto.ResponseRedactionRange) []byte {
@@ -146,9 +144,6 @@ func applyResponseRedactionRanges(response []byte, redactionRanges []*teeproto.R
 // createTranscriptMessages creates transcript messages matching attestor's logic
 func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest, reconstructedResponse []byte, bundlePB *teeproto.VerificationBundle) ([]*teeproto.ClaimTunnelRequest_TranscriptMessage, error) {
 	var messages []*teeproto.ClaimTunnelRequest_TranscriptMessage
-
-	// REMOVED: Handshake packet processing - no longer storing TLS packets
-	// Certificate info is now available as structured data in CertificateInfo field
 
 	// Add client request (revealed)
 	messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
@@ -200,5 +195,3 @@ func ExtractHostFromBundle(bundle *teeproto.VerificationBundle) string {
 
 	return "example.com" // Fallback
 }
-
-// REMOVED: extractSNIFromHandshake function - no longer needed with structured certificate info

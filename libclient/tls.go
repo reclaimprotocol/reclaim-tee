@@ -74,8 +74,6 @@ func (c *Client) handleHandshakeComplete(msg *shared.Message) {
 		// Initialize response sequence number to 1 (first application data after handshake)
 		c.responseSeqNum = 1
 
-		// REMOVED: Store disclosure for verification bundle - no longer needed with consolidated approach
-
 		// Phase 3: Redaction System - Send redacted HTTP request to TEE_K for encryption
 		c.sendRedactedRequest()
 
@@ -83,8 +81,6 @@ func (c *Client) handleHandshakeComplete(msg *shared.Message) {
 		c.logger.Error("Handshake completed with errors")
 	}
 }
-
-// REMOVED: handleHandshakeKeyDisclosure function - replaced with sendRedactedRequest
 
 // sendRedactedRequest creates and sends the redacted HTTP request to TEE_K
 func (c *Client) sendRedactedRequest() {

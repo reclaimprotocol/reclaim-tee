@@ -36,25 +36,25 @@ func (c *Client) buildTranscriptResults() (*TranscriptResults, error) {
 	if c.teekSignedMessage != nil {
 		var kPayload teeproto.KOutputPayload
 		if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err == nil {
-			// NEW: Use consolidated keystream instead of individual packets
+			// Use consolidated keystream from SignedMessage
 			consolidatedKeystream := kPayload.GetConsolidatedResponseKeystream()
-			var packets [][]byte
+			var data [][]byte
 			if len(consolidatedKeystream) > 0 {
-				packets = append(packets, consolidatedKeystream) // Single consolidated stream
+				data = append(data, consolidatedKeystream) // Consolidated keystream for verification
 			}
-			teekTranscript = &SignedTranscriptData{Packets: packets, Signature: c.teekSignedMessage.GetSignature(), EthAddress: extractEthAddressFromSignedMessage(c.teekSignedMessage)}
+			teekTranscript = &SignedTranscriptData{Data: data, Signature: c.teekSignedMessage.GetSignature(), EthAddress: extractEthAddressFromSignedMessage(c.teekSignedMessage)}
 		}
 	}
 	if c.teetSignedMessage != nil {
 		var tPayload teeproto.TOutputPayload
 		if err := proto.Unmarshal(c.teetSignedMessage.GetBody(), &tPayload); err == nil {
-			// NEW: Use consolidated ciphertext instead of individual packets
+			// Use consolidated ciphertext from SignedMessage
 			consolidatedCiphertext := tPayload.GetConsolidatedResponseCiphertext()
-			var packets [][]byte
+			var data [][]byte
 			if len(consolidatedCiphertext) > 0 {
-				packets = append(packets, consolidatedCiphertext) // Single consolidated stream
+				data = append(data, consolidatedCiphertext) // Consolidated ciphertext for verification
 			}
-			teetTranscript = &SignedTranscriptData{Packets: packets, Signature: c.teetSignedMessage.GetSignature(), EthAddress: extractEthAddressFromSignedMessage(c.teetSignedMessage)}
+			teetTranscript = &SignedTranscriptData{Data: data, Signature: c.teetSignedMessage.GetSignature(), EthAddress: extractEthAddressFromSignedMessage(c.teetSignedMessage)}
 		}
 	}
 	bothReceived := c.teekSignedMessage != nil && c.teetSignedMessage != nil
@@ -95,7 +95,7 @@ func (c *Client) buildTranscriptValidationResults() *TranscriptValidationResults
 	bothReceived := c.transcriptsReceived >= 2
 	teekValid := c.teekSignedMessage != nil
 	teetValid := c.teetSignedMessage != nil
-	return &TranscriptValidationResults{ClientCapturedPackets: 0, ClientCapturedBytes: 0, TEEKValidation: TranscriptPacketValidation{PacketsReceived: 1, PacketsMatched: 1, ValidationPassed: teekValid}, TEETValidation: TranscriptPacketValidation{PacketsReceived: 1, PacketsMatched: 1, ValidationPassed: teetValid}, OverallValid: bothReceived && teekValid && teetValid, Summary: "Transcript validation based on SignedMessage reception and verification"}
+	return &TranscriptValidationResults{ClientCapturedData: 0, ClientCapturedBytes: 0, TEEKValidation: TranscriptDataValidation{DataReceived: 1, DataMatched: 1, ValidationPassed: teekValid}, TEETValidation: TranscriptDataValidation{DataReceived: 1, DataMatched: 1, ValidationPassed: teetValid}, OverallValid: bothReceived && teekValid && teetValid, Summary: "Transcript validation based on SignedMessage reception and verification"}
 }
 
 func (c *Client) buildAttestationValidationResults() *AttestationValidationResults {
@@ -106,35 +106,35 @@ func (c *Client) buildAttestationValidationResults() *AttestationValidationResul
 	return &AttestationValidationResults{TEEKAttestation: AttestationVerificationResult{AttestationReceived: teekHasAttestation, RootOfTrustValid: teekValid, PublicKeyExtracted: teekValid, PublicKeySize: 32}, TEETAttestation: AttestationVerificationResult{AttestationReceived: teetHasAttestation, RootOfTrustValid: teetValid, PublicKeyExtracted: teetValid, PublicKeySize: 32}, PublicKeyComparison: PublicKeyComparisonResult{ComparisonPerformed: false, TEEKKeysMatch: true, TEETKeysMatch: true, BothTEEsMatch: teekValid && teetValid}, OverallValid: teekValid && teetValid, Summary: "Attestation validation based on embedded attestation reports in SignedMessages"}
 }
 
-func (c *Client) buildTEEValidationDetails(source string, packets [][]byte) TranscriptPacketValidation {
-	if packets == nil {
-		return TranscriptPacketValidation{PacketsReceived: 0, PacketsMatched: 0, ValidationPassed: false, PacketDetails: []PacketValidationDetail{}}
+func (c *Client) buildTEEValidationDetails(source string, data [][]byte) TranscriptDataValidation {
+	if data == nil {
+		return TranscriptDataValidation{DataReceived: 0, DataMatched: 0, ValidationPassed: false, DataDetails: []DataValidationDetail{}}
 	}
-	var details []PacketValidationDetail
-	packetsMatched := 0
-	for i, packet := range packets {
-		var packetType string
-		if len(packet) > 0 {
-			packetType = fmt.Sprintf("0x%02x", packet[0])
+	var details []DataValidationDetail
+	dataMatched := 0
+	for i, dataEntry := range data {
+		var dataType string
+		if len(dataEntry) > 0 {
+			dataType = fmt.Sprintf("0x%02x", dataEntry[0])
 		} else {
-			packetType = "empty"
+			dataType = "empty"
 		}
 		matchedCapture := false
 		captureIndex := -1
 		for j, capturedChunk := range c.capturedTraffic {
-			if len(packet) == len(capturedChunk) && bytes.Equal(packet, capturedChunk) {
+			if len(dataEntry) == len(capturedChunk) && bytes.Equal(dataEntry, capturedChunk) {
 				matchedCapture = true
 				captureIndex = j
-				packetsMatched++
+				dataMatched++
 				break
 			}
 		}
-		detail := PacketValidationDetail{PacketIndex: i, PacketSize: len(packet), PacketType: packetType, MatchedCapture: matchedCapture}
+		detail := DataValidationDetail{DataIndex: i, DataSize: len(dataEntry), DataType: dataType, MatchedCapture: matchedCapture}
 		if matchedCapture {
 			detail.CaptureIndex = captureIndex
 		}
 		details = append(details, detail)
 	}
-	requiredMatches := len(packets)
-	return TranscriptPacketValidation{PacketsReceived: len(packets), PacketsMatched: packetsMatched, ValidationPassed: packetsMatched == requiredMatches, PacketDetails: details}
+	requiredMatches := len(data)
+	return TranscriptDataValidation{DataReceived: len(data), DataMatched: dataMatched, ValidationPassed: dataMatched == requiredMatches, DataDetails: details}
 }

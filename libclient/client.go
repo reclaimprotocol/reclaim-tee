@@ -138,8 +138,8 @@ type Client struct {
 	requestRedactionRanges []shared.RequestRedactionRange
 
 	// Transcript validation fields
-	teekTranscriptPackets [][]byte // Packets from TEE_K signed transcript for validation
-	teetTranscriptPackets [][]byte // Packets from TEE_T signed transcript for validation
+	teekTranscriptData [][]byte // Consolidated data from TEE_K signed transcript for validation
+	teetTranscriptData [][]byte // Consolidated data from TEE_T signed transcript for validation
 
 	// Library interface fields
 	responseCallback ResponseCallback // Response callback for redactions
@@ -219,11 +219,11 @@ func NewClient(teekURL string) *Client {
 		reconstructedResponseSize:    0,
 
 		// 2-phase operation support
-		twoPhaseMode:          false,
-		phase1Completed:       false,
-		phase1Completion:      make(chan struct{}),
-		teekTranscriptPackets: nil,
-		teetTranscriptPackets: nil,
+		twoPhaseMode:       false,
+		phase1Completed:    false,
+		phase1Completion:   make(chan struct{}),
+		teekTranscriptData: nil,
+		teetTranscriptData: nil,
 
 		responseCallback:             nil,
 		clientMode:                   ModeAuto, // Default to auto-detect

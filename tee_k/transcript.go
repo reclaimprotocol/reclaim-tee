@@ -11,8 +11,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// addToTranscriptForSessionWithType safely adds a packet with explicit type to the session's transcript.
-func (t *TEEK) addToTranscriptForSessionWithType(sessionID string, packet []byte, packetType string) {
+// addToTranscriptForSessionWithType safely adds data with explicit type to the session's transcript.
+func (t *TEEK) addToTranscriptForSessionWithType(sessionID string, data []byte, dataType string) {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		t.logger.WithSession(sessionID).Error("Failed to get session for transcript", zap.Error(err))
@@ -23,22 +23,22 @@ func (t *TEEK) addToTranscriptForSessionWithType(sessionID string, packet []byte
 	defer session.TranscriptMutex.Unlock()
 
 	// Copy buffer to avoid unexpected mutation
-	pktCopy := make([]byte, len(packet))
-	copy(pktCopy, packet)
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
 
-	session.TranscriptPackets = append(session.TranscriptPackets, pktCopy)
-	session.TranscriptPacketTypes = append(session.TranscriptPacketTypes, packetType)
+	session.TranscriptData = append(session.TranscriptData, dataCopy)
+	session.TranscriptDataTypes = append(session.TranscriptDataTypes, dataType)
 
-	t.logger.WithSession(sessionID).Info("Added packet to transcript",
-		zap.Int("bytes", len(packet)),
-		zap.String("type", packetType),
-		zap.Int("total_packets", len(session.TranscriptPackets)))
+	t.logger.WithSession(sessionID).Info("Added data to transcript",
+		zap.Int("bytes", len(data)),
+		zap.String("type", dataType),
+		zap.Int("total_data", len(session.TranscriptData)))
 }
 
-// addToTranscriptForSession safely adds a packet to the session's transcript collection
-func (t *TEEK) addToTranscriptForSession(sessionID string, packet []byte) {
+// addToTranscriptForSession safely adds data to the session's transcript collection
+func (t *TEEK) addToTranscriptForSession(sessionID string, data []byte) {
 	// Default to TLS record type
-	t.addToTranscriptForSessionWithType(sessionID, packet, shared.TranscriptPacketTypeTLSRecord)
+	t.addToTranscriptForSessionWithType(sessionID, data, shared.TranscriptDataTypeTLSRecord)
 }
 
 // getTranscriptForSession safely returns a copy of the session's transcript
@@ -53,11 +53,11 @@ func (t *TEEK) getTranscriptForSession(sessionID string) [][]byte {
 	defer session.TranscriptMutex.Unlock()
 
 	// Return a copy to avoid external modification
-	transcriptCopy := make([][]byte, len(session.TranscriptPackets))
-	for i, packet := range session.TranscriptPackets {
-		packetCopy := make([]byte, len(packet))
-		copy(packetCopy, packet)
-		transcriptCopy[i] = packetCopy
+	transcriptCopy := make([][]byte, len(session.TranscriptData))
+	for i, data := range session.TranscriptData {
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+		transcriptCopy[i] = dataCopy
 	}
 
 	return transcriptCopy
@@ -88,31 +88,31 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 	// SIMPLIFIED: Only extract request metadata, no TLS packet processing
 	var requestMetadata *shared.RequestMetadata
 
-	for i, packet := range session.TranscriptPackets {
-		packetType := ""
-		if i < len(session.TranscriptPacketTypes) {
-			packetType = session.TranscriptPacketTypes[i]
+	for i, data := range session.TranscriptData {
+		dataType := ""
+		if i < len(session.TranscriptDataTypes) {
+			dataType = session.TranscriptDataTypes[i]
 		}
 
-		switch packetType {
-		case shared.TranscriptPacketTypeHTTPRequestRedacted:
+		switch dataType {
+		case shared.TranscriptDataTypeHTTPRequestRedacted:
 			if requestMetadata == nil {
 				requestMetadata = &shared.RequestMetadata{}
 			}
-			requestMetadata.RedactedRequest = packet
+			requestMetadata.RedactedRequest = data
 		case "redaction_ranges":
 			if requestMetadata == nil {
 				requestMetadata = &shared.RequestMetadata{}
 			}
 			// Unmarshal the redaction ranges from protobuf
-			ranges, err := shared.UnmarshalRequestRedactionRangesProtobuf(packet)
+			ranges, err := shared.UnmarshalRequestRedactionRangesProtobuf(data)
 			if err != nil {
 				t.logger.WithSession(sessionID).Error("Failed to unmarshal redaction ranges from transcript", zap.Error(err))
 			} else {
 				requestMetadata.RedactionRanges = ranges
 				t.logger.WithSession(sessionID).Info("Loaded redaction ranges from transcript", zap.Int("ranges", len(ranges)))
 			}
-			// REMOVED: TLS packet processing - no longer needed for consolidated approach
+			// TLS packet data not included in transcript - using structured data instead
 		}
 	}
 
@@ -132,10 +132,10 @@ func (t *TEEK) generateComprehensiveSignatureAndSendTranscript(sessionID string)
 			kPayload.RequestRedactionRanges = append(kPayload.RequestRedactionRanges, &teeproto.RequestRedactionRange{Start: int32(r.Start), Length: int32(r.Length), Type: r.Type})
 		}
 	}
-	// NEW: Consolidate response keystreams - use consolidated keystream from session
+	// Use consolidated keystream from session for SignedMessage
 	kPayload.ConsolidatedResponseKeystream = session.ConsolidatedResponseKeystream
 
-	// NEW: Include certificate info in signed payload
+	// Include certificate info in signed payload
 	kPayload.CertificateInfo = session.CertificateInfo
 	if session.ResponseState != nil && len(session.ResponseState.ResponseRedactionRanges) > 0 {
 		for _, rr := range session.ResponseState.ResponseRedactionRanges {

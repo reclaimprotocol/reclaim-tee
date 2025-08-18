@@ -159,9 +159,9 @@ type Session struct {
 	ConnectionData interface{} // Store connection request data
 
 	// Per-session transcript storage
-	TranscriptPackets     [][]byte   `json:"-"` // Collect all packets for transcript signing
-	TranscriptPacketTypes []string   `json:"-"` // Parallel slice describing packet types
-	TranscriptMutex       sync.Mutex // Protect transcript collection
+	TranscriptData      [][]byte   `json:"-"` // Collect all data for transcript signing
+	TranscriptDataTypes []string   `json:"-"` // Parallel slice describing data types
+	TranscriptMutex     sync.Mutex // Protect transcript collection
 
 	// Per-session finished state tracking
 	TEEKFinished       bool       // Whether TEE_K has sent finished message
@@ -417,9 +417,9 @@ type ResponseDecryptionStreamData struct {
 type FinishedMessage struct {
 }
 
-// SignedTranscript represents a signed transcript with packets, signature, and public key
+// SignedTranscript represents a signed transcript with consolidated data, signature, and public key
 type SignedTranscript struct {
-	Packets [][]byte `json:"packets"` // TLS packets only (binary data)
+	Data [][]byte `json:"data"` // Consolidated streams (keystream/ciphertext data)
 
 	// Request metadata (formerly included in packets for TEE_K)
 	RequestMetadata *RequestMetadata `json:"request_metadata,omitempty"`
@@ -427,15 +427,15 @@ type SignedTranscript struct {
 	// Response redaction ranges for verifier display
 	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`
 
-	Signature  []byte `json:"signature"`   // Comprehensive signature over all data (TLS packets + metadata + streams)
+	Signature  []byte `json:"signature"`   // Comprehensive signature over all data (consolidated streams + metadata)
 	EthAddress []byte `json:"eth_address"` // ETH address (20 bytes)
 }
 
-// Transcript packet type constants – exported so both client and TEEs can reference them.
+// Transcript data type constants – exported so both client and TEEs can reference them.
 const (
-	TranscriptPacketTypeTLSRecord           = "tls_record"
-	TranscriptPacketTypeHTTPRequestRedacted = "http_request_redacted"
-	TranscriptPacketTypeCommitment          = "commitment"
+	TranscriptDataTypeTLSRecord           = "tls_record"
+	TranscriptDataTypeHTTPRequestRedacted = "http_request_redacted"
+	TranscriptDataTypeCommitment          = "commitment"
 )
 
 // RequestRedactionSpec specifies which parts of the request should be redacted

@@ -128,8 +128,7 @@ func (t *TEEK) performTLSHandshakeAndHTTPForSession(sessionID string) {
 	cipherSuite := tlsClient.GetCipherSuite()
 	tlsState.CipherSuite = cipherSuite
 
-	// REMOVED: Handshake key disclosure - no longer needed with consolidated approach
-	// Certificate info is now stored as structured data in session
+	// Certificate info is stored as structured data instead of raw handshake packets
 
 	t.logger.WithSession(sessionID).Info("Handshake finished - ready for split AEAD")
 
