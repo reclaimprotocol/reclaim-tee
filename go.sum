@@ -122,6 +122,8 @@ github.com/reclaimprotocol/jsonpathplus-go v1.1.4 h1:wU/xNdqG7qxUpwGH6EU54H9QpmE
 github.com/reclaimprotocol/jsonpathplus-go v1.1.4/go.mod h1:Pq/DDdclLHd3g09NNz/yyAQYRFHCZixLEq4c0Tv2YnY=
 github.com/reclaimprotocol/xpath-go v1.2.0 h1:0W3w53ZfcgjoNm/mxjv47qUnVlGwYQ+lcW+tijRuj6s=
 github.com/reclaimprotocol/xpath-go v1.2.0/go.mod h1:E3tnWAMImIR76J3ziTgyodqrlE1IZnLfAccFJUBk3MQ=
+github.com/reclaimprotocol/xpath-go v1.3.0 h1:exch8RbqiZxO3g0KFHiiGkF8DgBvaJQh9ZzCXVjyN1Q=
+github.com/reclaimprotocol/xpath-go v1.3.0/go.mod h1:E3tnWAMImIR76J3ziTgyodqrlE1IZnLfAccFJUBk3MQ=
 github.com/rivo/uniseg v0.2.0 h1:S1pD9weZBuJdFmowNwbpi7BJ8TNftyUImj/0WQi72jY=
 github.com/rivo/uniseg v0.2.0/go.mod h1:J6wj4VEh+S6ZtnVlnTBMWIodfgj8LQOQFoIToxlJtxc=
 github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible h1:Bn1aCHHRnjv4Bl16T8rcaFjYSrGrIZvpiGO6P3Q4GpU=
