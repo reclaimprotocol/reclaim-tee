@@ -17,7 +17,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/mdlayher/vsock v1.2.1
 	github.com/reclaimprotocol/jsonpathplus-go v1.1.4
-	github.com/reclaimprotocol/xpath-go v1.0.0
+	github.com/reclaimprotocol/xpath-go v1.2.0
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.41.0

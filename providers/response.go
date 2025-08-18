@@ -303,17 +303,17 @@ func applyRegexWindow(
 	items := []RedactionItem{}
 
 	// Helper to add a reveal for [startAbs, endAbs)
-	addRange := func(sAbs, eAbs int, hash *string) {
+	addRange := func(sAbs, eAbs int) {
 		if sAbs < 0 || eAbs <= sAbs {
 			return
 		}
-		reveal := getReveal(sAbs, eAbs-sAbs, bodyStartIdx, resChunks, hash)
+		reveal := getReveal(sAbs, eAbs-sAbs, bodyStartIdx, resChunks)
 		items = append(items, RedactionItem{Reveal: reveal, Redactions: getRedactionsForChunkHeaders(reveal.Start, reveal.Start+reveal.Length, resChunks)})
 	}
 
 	segment := body[startAbs:endAbs]
 	if rs.Regex == "" {
-		addRange(startAbs, endAbs, rs.Hash)
+		addRange(startAbs, endAbs)
 		return items, nil
 	}
 
@@ -330,7 +330,7 @@ func applyRegexWindow(
 		}
 		matchStart := startAbs + loc[0]
 		matchEnd := startAbs + loc[1]
-		addRange(matchStart, matchEnd, nil)
+		addRange(matchStart, matchEnd)
 		return items, nil
 	}
 
@@ -366,10 +366,10 @@ func applyRegexWindow(
 
 	// pre-group (unhashed)
 	if grpFrom > fullFrom {
-		addRange(fullFrom, grpFrom, nil)
+		addRange(fullFrom, grpFrom)
 	}
 	// group (hashed) — must not span chunks
-	reveal := getReveal(grpFrom, grpTo-grpFrom, bodyStartIdx, resChunks, rs.Hash)
+	reveal := getReveal(grpFrom, grpTo-grpFrom, bodyStartIdx, resChunks)
 	chunkReds := getRedactionsForChunkHeaders(reveal.Start, reveal.Start+reveal.Length, resChunks)
 	if len(chunkReds) > 0 {
 		return nil, fmt.Errorf("Hash redactions cannot be performed if the redacted string is split between 2 or more HTTP chunks")
@@ -378,13 +378,13 @@ func applyRegexWindow(
 
 	// post-group (unhashed)
 	if grpTo < fullTo {
-		addRange(grpTo, fullTo, nil)
+		addRange(grpTo, fullTo)
 	}
 
 	return items, nil
 }
 
-func getReveal(startIdx, length, bodyStartIdx int, resChunks []shared.RequestRedactionRange, hash *string) shared.RequestRedactionRange {
+func getReveal(startIdx, length, bodyStartIdx int, resChunks []shared.RequestRedactionRange) shared.RequestRedactionRange {
 	from := convertResponsePosToAbsolutePos(startIdx, bodyStartIdx, resChunks)
 	to := convertResponsePosToAbsolutePos(startIdx+length, bodyStartIdx, resChunks)
 
