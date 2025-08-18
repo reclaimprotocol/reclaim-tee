@@ -123,10 +123,21 @@ func processRedactionRequest(
 // accounting for chunked transfer encoding.
 func convertResponsePosToAbsolutePos(pos int, bodyStartIdx int, chunks []shared.RequestRedactionRange) int {
 	if len(chunks) > 0 {
+		// Handle positions that land exactly at the end of the reconstructed body
+		totalLen := 0
+		for _, ch := range chunks {
+			totalLen += ch.Length
+		}
+		if pos == totalLen {
+			last := chunks[len(chunks)-1]
+			return last.Start + last.Length
+		}
+
 		chunkBodyStart := 0
 		for _, ch := range chunks {
 			chunkSize := ch.Length
-			if pos >= chunkBodyStart && pos <= chunkBodyStart+chunkSize {
+			// Map strictly within the chunk body. Boundary positions map to the next chunk.
+			if pos >= chunkBodyStart && pos < chunkBodyStart+chunkSize {
 				return pos - chunkBodyStart + ch.Start
 			}
 			chunkBodyStart += chunkSize
