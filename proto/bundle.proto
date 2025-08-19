@@ -5,30 +5,17 @@ package teeproto;
 option go_package = "tee-mpc/proto;teeproto";
 
 import "signing.proto";
+import "common.proto";
 
-// Handshake secrets disclosed for verification/display
-message HandshakeSecrets {
-  bytes handshake_key = 1;
-  bytes handshake_iv = 2;
-  uint32 cipher_suite = 3; // uint16 fits here
-  string algorithm = 4;
-}
 
-// Commitment opening for proof stream
-message Opening {
-  bytes proof_stream = 1; // Str_SP
-}
 
 // Single artefact produced by client for offline verification
 message VerificationBundle {
-  HandshakeSecrets handshake_keys = 1; // optional
+  CertificateInfo certificate_info = 1; // Structured cert data instead of handshake packets
 
   // Signed transcripts
   SignedMessage teek_signed = 2; // BODY_TYPE_K_OUTPUT
   SignedMessage teet_signed = 3; // BODY_TYPE_T_OUTPUT
-
-  // Commitment opening for proof ranges
-  Opening opening = 4; // optional
 
 }
 

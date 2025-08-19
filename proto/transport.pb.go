@@ -823,6 +823,7 @@ type HandshakeComplete struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Success          bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
 	CertificateChain [][]byte               `protobuf:"bytes,2,rep,name=certificate_chain,json=certificateChain,proto3" json:"certificate_chain,omitempty"`
+	CipherSuite      uint32                 `protobuf:"varint,3,opt,name=cipher_suite,json=cipherSuite,proto3" json:"cipher_suite,omitempty"` // Negotiated cipher suite for consolidated verification
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -869,6 +870,13 @@ func (x *HandshakeComplete) GetCertificateChain() [][]byte {
 		return x.CertificateChain
 	}
 	return nil
+}
+
+func (x *HandshakeComplete) GetCipherSuite() uint32 {
+	if x != nil {
+		return x.CipherSuite
+	}
+	return 0
 }
 
 type HandshakeKeyDisclosure struct {
@@ -2335,10 +2343,11 @@ const file_transport_proto_rawDesc = "" +
 	"\bTCPReady\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\"\x1d\n" +
 	"\aTCPData\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data\"Z\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\"}\n" +
 	"\x11HandshakeComplete\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12+\n" +
-	"\x11certificate_chain\x18\x02 \x03(\fR\x10certificateChain\"\xea\x01\n" +
+	"\x11certificate_chain\x18\x02 \x03(\fR\x10certificateChain\x12!\n" +
+	"\fcipher_suite\x18\x03 \x01(\rR\vcipherSuite\"\xea\x01\n" +
 	"\x16HandshakeKeyDisclosure\x12#\n" +
 	"\rhandshake_key\x18\x01 \x01(\fR\fhandshakeKey\x12!\n" +
 	"\fhandshake_iv\x18\x02 \x01(\fR\vhandshakeIv\x12-\n" +

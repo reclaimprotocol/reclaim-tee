@@ -248,6 +248,83 @@ func (x *SignedRedactedDecryptionStream) GetSeqNum() uint64 {
 	return 0
 }
 
+// Certificate information extracted during TLS handshake
+type CertificateInfo struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	CommonName       string                 `protobuf:"bytes,1,opt,name=common_name,json=commonName,proto3" json:"common_name,omitempty"`
+	IssuerCommonName string                 `protobuf:"bytes,2,opt,name=issuer_common_name,json=issuerCommonName,proto3" json:"issuer_common_name,omitempty"`
+	NotBeforeUnix    uint64                 `protobuf:"varint,3,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
+	NotAfterUnix     uint64                 `protobuf:"varint,4,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
+	DnsNames         []string               `protobuf:"bytes,5,rep,name=dns_names,json=dnsNames,proto3" json:"dns_names,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *CertificateInfo) Reset() {
+	*x = CertificateInfo{}
+	mi := &file_common_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CertificateInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CertificateInfo) ProtoMessage() {}
+
+func (x *CertificateInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_common_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CertificateInfo.ProtoReflect.Descriptor instead.
+func (*CertificateInfo) Descriptor() ([]byte, []int) {
+	return file_common_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CertificateInfo) GetCommonName() string {
+	if x != nil {
+		return x.CommonName
+	}
+	return ""
+}
+
+func (x *CertificateInfo) GetIssuerCommonName() string {
+	if x != nil {
+		return x.IssuerCommonName
+	}
+	return ""
+}
+
+func (x *CertificateInfo) GetNotBeforeUnix() uint64 {
+	if x != nil {
+		return x.NotBeforeUnix
+	}
+	return 0
+}
+
+func (x *CertificateInfo) GetNotAfterUnix() uint64 {
+	if x != nil {
+		return x.NotAfterUnix
+	}
+	return 0
+}
+
+func (x *CertificateInfo) GetDnsNames() []string {
+	if x != nil {
+		return x.DnsNames
+	}
+	return nil
+}
+
 // Empty placeholders
 type FinishedMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -257,7 +334,7 @@ type FinishedMessage struct {
 
 func (x *FinishedMessage) Reset() {
 	*x = FinishedMessage{}
-	mi := &file_common_proto_msgTypes[4]
+	mi := &file_common_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -269,7 +346,7 @@ func (x *FinishedMessage) String() string {
 func (*FinishedMessage) ProtoMessage() {}
 
 func (x *FinishedMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_common_proto_msgTypes[4]
+	mi := &file_common_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -282,7 +359,7 @@ func (x *FinishedMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinishedMessage.ProtoReflect.Descriptor instead.
 func (*FinishedMessage) Descriptor() ([]byte, []int) {
-	return file_common_proto_rawDescGZIP(), []int{4}
+	return file_common_proto_rawDescGZIP(), []int{5}
 }
 
 type AttestationRequestData struct {
@@ -293,7 +370,7 @@ type AttestationRequestData struct {
 
 func (x *AttestationRequestData) Reset() {
 	*x = AttestationRequestData{}
-	mi := &file_common_proto_msgTypes[5]
+	mi := &file_common_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -305,7 +382,7 @@ func (x *AttestationRequestData) String() string {
 func (*AttestationRequestData) ProtoMessage() {}
 
 func (x *AttestationRequestData) ProtoReflect() protoreflect.Message {
-	mi := &file_common_proto_msgTypes[5]
+	mi := &file_common_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -318,7 +395,7 @@ func (x *AttestationRequestData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttestationRequestData.ProtoReflect.Descriptor instead.
 func (*AttestationRequestData) Descriptor() ([]byte, []int) {
-	return file_common_proto_rawDescGZIP(), []int{5}
+	return file_common_proto_rawDescGZIP(), []int{6}
 }
 
 var File_common_proto protoreflect.FileDescriptor
@@ -339,7 +416,14 @@ const file_common_proto_rawDesc = "" +
 	"\x06length\x18\x03 \x01(\x05R\x06length\"b\n" +
 	"\x1eSignedRedactedDecryptionStream\x12'\n" +
 	"\x0fredacted_stream\x18\x01 \x01(\fR\x0eredactedStream\x12\x17\n" +
-	"\aseq_num\x18\x02 \x01(\x04R\x06seqNum\"\x11\n" +
+	"\aseq_num\x18\x02 \x01(\x04R\x06seqNum\"\xcb\x01\n" +
+	"\x0fCertificateInfo\x12\x1f\n" +
+	"\vcommon_name\x18\x01 \x01(\tR\n" +
+	"commonName\x12,\n" +
+	"\x12issuer_common_name\x18\x02 \x01(\tR\x10issuerCommonName\x12&\n" +
+	"\x0fnot_before_unix\x18\x03 \x01(\x04R\rnotBeforeUnix\x12$\n" +
+	"\x0enot_after_unix\x18\x04 \x01(\x04R\fnotAfterUnix\x12\x1b\n" +
+	"\tdns_names\x18\x05 \x03(\tR\bdnsNames\"\x11\n" +
 	"\x0fFinishedMessage\"\x18\n" +
 	"\x16AttestationRequestDataB\x18Z\x16tee-mpc/proto;teeprotob\x06proto3"
 
@@ -355,14 +439,15 @@ func file_common_proto_rawDescGZIP() []byte {
 	return file_common_proto_rawDescData
 }
 
-var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_common_proto_goTypes = []any{
 	(*RequestRedactionRange)(nil),          // 0: teeproto.RequestRedactionRange
 	(*ResponseRedactionRange)(nil),         // 1: teeproto.ResponseRedactionRange
 	(*ResponseDecryptionStreamData)(nil),   // 2: teeproto.ResponseDecryptionStreamData
 	(*SignedRedactedDecryptionStream)(nil), // 3: teeproto.SignedRedactedDecryptionStream
-	(*FinishedMessage)(nil),                // 4: teeproto.FinishedMessage
-	(*AttestationRequestData)(nil),         // 5: teeproto.AttestationRequestData
+	(*CertificateInfo)(nil),                // 4: teeproto.CertificateInfo
+	(*FinishedMessage)(nil),                // 5: teeproto.FinishedMessage
+	(*AttestationRequestData)(nil),         // 6: teeproto.AttestationRequestData
 }
 var file_common_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -383,7 +468,7 @@ func file_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_common_proto_rawDesc), len(file_common_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
@@ -118,6 +119,13 @@ func Validate(bundlePath string) error {
 
 	fmt.Println("[Verifier] Comprehensive signature verification successful")
 
+	// --- Timestamp validation ---
+	if err := validateTimestamps(bundlePB.TeekSigned, bundlePB.TeetSigned); err != nil {
+		return fmt.Errorf("timestamp validation failed: %v", err)
+	}
+
+	fmt.Println("[Verifier] Timestamp validation successful")
+
 	// Work directly with protobuf format - no legacy conversion needed!
 
 	if bundlePB.TeekSigned == nil {
@@ -125,203 +133,116 @@ func Validate(bundlePath string) error {
 		return fmt.Errorf("critical security failure: TEE_K transcript missing - cannot perform proof stream application")
 	}
 
-	// --- Redacted response reconstruction check ---
-	if bundlePB.TeetSigned == nil {
-		// SECURITY: TEET transcript is required for proper verification
-		return fmt.Errorf("critical security failure: TEET transcript missing - cannot perform stream verification")
-	}
-	// Extract TEE_T payload for redacted response reconstruction
-	var tPayload teeproto.TOutputPayload
-	if err := proto.Unmarshal(bundlePB.TeetSigned.GetBody(), &tPayload); err != nil {
-		return fmt.Errorf("failed to unmarshal TEE_T body: %v", err)
-	}
-
-	// Extract TEE_K payload for redacted streams and redaction ranges
+	// --- Extract payloads ---
 	var kPayload teeproto.KOutputPayload
 	if err := proto.Unmarshal(bundlePB.TeekSigned.GetBody(), &kPayload); err != nil {
-		return fmt.Errorf("failed to unmarshal TEE_K body: %v", err)
+		return fmt.Errorf("failed to unmarshal TEE_K payload: %v", err)
 	}
 
-	// Build ordered slice of ciphertexts (application data) from TEET transcript
-	var ciphertexts [][]byte
-
-	// Check if this is TLS 1.2 AES-GCM (has explicit IV)
-	var cipherSuite uint16
-	if bundlePB.HandshakeKeys != nil {
-		cipherSuite = uint16(bundlePB.HandshakeKeys.GetCipherSuite())
-	}
-	isTLS12AESGCM := shared.IsTLS12AESGCMCipherSuite(cipherSuite)
-
-	for _, pkt := range tPayload.GetPackets() {
-		if len(pkt) < 5+16 {
-			continue
-		}
-		// Skip non-ApplicationData packets, but allow Alert packets (0x15) for completeness
-		if pkt[0] != 0x17 && pkt[0] != 0x15 {
-			continue
-		}
-
-		var ctLen int
-		var startOffset int
-		if isTLS12AESGCM {
-			// TLS 1.2 AES-GCM (both ApplicationData and Alert): Header(5) + ExplicitIV(8) + EncryptedData + Tag(16)
-			ctLen = len(pkt) - 5 - 8 - 16 // Skip explicit IV and tag
-			startOffset = 5 + 8           // Skip header and explicit IV
-		} else {
-			// TLS 1.3: Header(5) + EncryptedData + Tag(16)
-			ctLen = len(pkt) - 5 - 16 // Skip header and tag
-			startOffset = 5           // Skip header only
-		}
-
-		if ctLen <= 0 {
-			continue
-		}
-		ciphertexts = append(ciphertexts, pkt[startOffset:startOffset+ctLen])
+	var tPayload teeproto.TOutputPayload
+	if err := proto.Unmarshal(bundlePB.TeetSigned.GetBody(), &tPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_T payload: %v", err)
 	}
 
-	// Reconstruct plaintext by walking streams and finding the next ciphertext with matching length
-	var reconstructed []byte
-	cipherIdx := 0
-	if len(kPayload.GetRedactedStreams()) > 0 {
-		for _, stream := range kPayload.GetRedactedStreams() {
-			// advance cipherIdx until length matches
-			for cipherIdx < len(ciphertexts) && len(ciphertexts[cipherIdx]) != len(stream.GetRedactedStream()) {
-				cipherIdx++
-			}
-			if cipherIdx >= len(ciphertexts) {
-				return fmt.Errorf("no ciphertext of length %d found for stream seq %d", len(stream.GetRedactedStream()), stream.GetSeqNum())
-			}
-			cipher := ciphertexts[cipherIdx]
-			plain := make([]byte, len(cipher))
-			for i := range cipher {
-				plain[i] = cipher[i] ^ stream.GetRedactedStream()[i]
-			}
-			reconstructed = append(reconstructed, plain...)
-			cipherIdx++
-		}
+	// --- SIMPLIFIED RESPONSE RECONSTRUCTION ---
+	consolidatedKeystream := kPayload.GetConsolidatedResponseKeystream()
+	consolidatedCiphertext := tPayload.GetConsolidatedResponseCiphertext()
 
-		// Replace random garbage with asterisks using response redaction ranges
-		if len(kPayload.GetResponseRedactionRanges()) > 0 {
-			// Convert protobuf ranges to shared format for consolidation
-			var respRanges []shared.ResponseRedactionRange
-			for _, rr := range kPayload.GetResponseRedactionRanges() {
-				respRanges = append(respRanges, shared.ResponseRedactionRange{
-					Start:  int(rr.GetStart()),
-					Length: int(rr.GetLength()),
-				})
-			}
-			// Consolidate ranges for display (same as client)
-			consolidatedRanges := shared.ConsolidateResponseRedactionRanges(respRanges)
-			reconstructed = replaceRandomGarbageWithAsterisks(reconstructed, consolidatedRanges)
-			fmt.Printf("[Verifier] Applied %d consolidated response redaction ranges to replace random garbage with asterisks\n", len(consolidatedRanges))
-		}
+	if len(consolidatedKeystream) != len(consolidatedCiphertext) {
+		return fmt.Errorf("response keystream/ciphertext length mismatch: %d vs %d",
+			len(consolidatedKeystream), len(consolidatedCiphertext))
+	}
 
-		fmt.Println("[Verifier] Reconstructed redacted response:\n---\n" + collapseAsterisks(string(reconstructed)) + "\n---")
-		fmt.Println("[Verifier] Redacted streams applied successfully ✅")
+	// Direct XOR - NO PACKET PARSING FOR RESPONSE!
+	reconstructedResponse := make([]byte, len(consolidatedCiphertext))
+	for i := range consolidatedCiphertext {
+		reconstructedResponse[i] = consolidatedCiphertext[i] ^ consolidatedKeystream[i]
+	}
+
+	fmt.Printf("[Verifier] Reconstructed %d response bytes via direct XOR\n", len(reconstructedResponse))
+
+	// --- Apply response redactions (UNCHANGED) ---
+	if len(kPayload.GetResponseRedactionRanges()) > 0 {
+		var respRanges []shared.ResponseRedactionRange
+		for _, rr := range kPayload.GetResponseRedactionRanges() {
+			respRanges = append(respRanges, shared.ResponseRedactionRange{
+				Start:  int(rr.GetStart()),
+				Length: int(rr.GetLength()),
+			})
+		}
+		consolidatedRanges := shared.ConsolidateResponseRedactionRanges(respRanges)
+		reconstructedResponse = replaceRandomGarbageWithAsterisks(reconstructedResponse, consolidatedRanges)
+		fmt.Printf("[Verifier] Applied %d response redaction ranges\n", len(consolidatedRanges))
+	}
+
+	// --- Display response ---
+	fmt.Println("[Verifier] Reconstructed response:\n---\n" + collapseAsterisks(string(reconstructedResponse)) + "\n---")
+
+	// --- Request reconstruction using TEE_T-signed proof streams ---
+	if len(tPayload.GetRequestProofStreams()) > 0 {
+		fmt.Printf("[Verifier] Found %d R_SP proof streams signed by TEE_T ✅\n", len(tPayload.GetRequestProofStreams()))
+
+		redactedRequest := kPayload.GetRedactedRequest()
+		redactionRanges := kPayload.GetRequestRedactionRanges()
+
+		if len(redactedRequest) > 0 {
+			// Create a copy of the redacted request to apply proof streams
+			revealedRequest := make([]byte, len(redactedRequest))
+			copy(revealedRequest, redactedRequest)
+
+			// Apply proof streams ONLY to sensitive_proof ranges
+			proofStreamIndex := 0
+
+			for _, r := range redactionRanges {
+				if r.GetType() == "sensitive_proof" {
+					if proofStreamIndex >= len(tPayload.GetRequestProofStreams()) {
+						return fmt.Errorf("insufficient TEE_T-signed proof streams for sensitive_proof range")
+					}
+
+					proofStream := tPayload.GetRequestProofStreams()[proofStreamIndex]
+					start := int(r.GetStart())
+					length := int(r.GetLength())
+
+					if start+length > len(revealedRequest) {
+						return fmt.Errorf("proof range [%d:%d] exceeds request length %d", start, start+length, len(revealedRequest))
+					}
+
+					if length != len(proofStream) {
+						return fmt.Errorf("proof stream length mismatch: range needs %d bytes, stream has %d", length, len(proofStream))
+					}
+
+					// Apply XOR to reveal original sensitive_proof data
+					for i := 0; i < length; i++ {
+						revealedRequest[start+i] ^= proofStream[i]
+					}
+
+					fmt.Printf("[Verifier] ✅ Revealed sensitive_proof range [%d:%d] using TEE_T-signed stream\n", start, start+length)
+					proofStreamIndex++
+				}
+			}
+
+			fmt.Printf("[Verifier] Reconstructed request with TEE_T-signed proof streams:\n---\n%s\n---\n", string(revealedRequest))
+		}
 	} else {
-		fmt.Println("[Verifier] No redacted streams available for reconstruction")
+		fmt.Println("[Verifier] No R_SP proof streams - only R_S verification available (sensitive data remains redacted)")
+	}
+
+	// --- Display certificate info ---
+	certInfo := bundlePB.GetCertificateInfo()
+	if certInfo != nil {
+		fmt.Printf("[Verifier] Certificate: %s (issued by %s)\n",
+			certInfo.GetCommonName(), certInfo.GetIssuerCommonName())
+		fmt.Printf("[Verifier] Valid: %s to %s\n",
+			time.Unix(int64(certInfo.GetNotBeforeUnix()), 0).Format(time.RFC3339),
+			time.Unix(int64(certInfo.GetNotAfterUnix()), 0).Format(time.RFC3339))
 	}
 
 	// --- Verify redaction ranges authenticity ---
 	if len(kPayload.GetRequestRedactionRanges()) > 0 {
 		fmt.Printf("[Verifier] Redaction ranges verified ✅ (TEE_K signed %d ranges)\n", len(kPayload.GetRequestRedactionRanges()))
-	} else {
-		fmt.Println("[Verifier] Warning: No signed redaction ranges from TEE_K")
 	}
 
-	// NOTE: Request display is now handled in verifyAndRevealProofData() function above
-	// which shows the proper revealed version with proof data visible and sensitive data hidden
-
-	fmt.Println("[Verifier] Offline verification complete – success 🥳")
-	return nil
-}
-
-// verifyAndRevealProofDataProtobuf applies the proof stream to reveal original sensitive_proof data (protobuf version)
-func verifyAndRevealProofDataProtobuf(bundlePB *teeproto.VerificationBundle) error {
-	// Extract TEE_K payload
-	var kPayload teeproto.KOutputPayload
-	if err := proto.Unmarshal(bundlePB.TeekSigned.GetBody(), &kPayload); err != nil {
-		return fmt.Errorf("failed to unmarshal TEE_K body: %v", err)
-	}
-
-	redactedRequest := kPayload.GetRedactedRequest()
-	redactionRanges := kPayload.GetRequestRedactionRanges()
-
-	if bundlePB.Opening == nil || bundlePB.Opening.ProofStream == nil {
-		fmt.Println("[Verifier] No proof stream available for SP revelation")
-		return nil
-	}
-
-	proofStream := bundlePB.Opening.ProofStream
-
-	if len(redactedRequest) == 0 || len(proofStream) == 0 {
-		fmt.Println("[Verifier] No proof stream or redacted request available for SP revelation")
-		return nil
-	}
-
-	// Create a copy of the redacted request to apply proof stream
-	revealedRequest := make([]byte, len(redactedRequest))
-	copy(revealedRequest, redactedRequest)
-
-	// Apply proof stream ONLY to sensitive_proof ranges
-	proofStreamOffset := 0
-	proofRangesFound := 0
-
-	for _, r := range redactionRanges {
-		// Only reveal ranges marked as proof-relevant (sensitive_proof)
-		if r.GetType() == shared.RedactionTypeSensitiveProof {
-			// Check bounds
-			start := int(r.GetStart())
-			length := int(r.GetLength())
-			if start+length > len(revealedRequest) {
-				return fmt.Errorf("proof range [%d:%d] exceeds request length %d", start, start+length, len(revealedRequest))
-			}
-
-			// Check if we have enough proof stream data
-			if proofStreamOffset+length > len(proofStream) {
-				return fmt.Errorf("insufficient proof stream data for range %d (need %d bytes, have %d)",
-					proofRangesFound, length, len(proofStream)-proofStreamOffset)
-			}
-
-			// Apply XOR to reveal original sensitive_proof data
-			for i := 0; i < length; i++ {
-				revealedRequest[start+i] ^= proofStream[proofStreamOffset+i]
-			}
-
-			fmt.Printf("[Verifier] Revealed proof range [%d:%d] type=%s (%d bytes)\n",
-				start, start+length, r.GetType(), length)
-
-			proofStreamOffset += length
-			proofRangesFound++
-		}
-	}
-
-	if proofRangesFound == 0 {
-		fmt.Println("[Verifier] No proof ranges found to reveal")
-		return nil
-	}
-
-	// Display the request with proof data revealed (but other sensitive data still redacted)
-	fmt.Printf("[Verifier] Request with proof data revealed (sensitive data remains hidden):\n---\n")
-
-	// Create pretty display: show revealed proof data, but keep other sensitive data as '*'
-	prettyRequest := make([]byte, len(revealedRequest))
-	copy(prettyRequest, revealedRequest)
-
-	for _, r := range redactionRanges {
-		// Keep non-proof sensitive data as '*' for display
-		if !strings.Contains(r.GetType(), "proof") {
-			start := int(r.GetStart())
-			length := int(r.GetLength())
-			for i := 0; i < length && start+i < len(prettyRequest); i++ {
-				prettyRequest[start+i] = '*'
-			}
-		}
-	}
-
-	fmt.Printf("%s\n---\n", collapseAsterisks(string(prettyRequest)))
-	fmt.Printf("[Verifier] Successfully revealed %d proof ranges while keeping sensitive data hidden ✅\n", proofRangesFound)
-
+	fmt.Println("[Verifier] Verification complete – success 🥳")
 	return nil
 }
 
@@ -431,16 +352,73 @@ func verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error
 		if err := proto.Unmarshal(signedMsg.GetBody(), &kPayload); err != nil {
 			return fmt.Errorf("SECURITY ERROR: %s body parsing failed after signature verification: %v", source, err)
 		}
-		fmt.Printf("[Verifier] %s body content validated: redacted_request=%d bytes, ranges=%d, streams=%d, packets=%d\n",
+		fmt.Printf("[Verifier] %s body content validated: redacted_request=%d bytes, ranges=%d, consolidated_keystream=%d bytes\n",
 			source, len(kPayload.GetRedactedRequest()), len(kPayload.GetRequestRedactionRanges()),
-			len(kPayload.GetRedactedStreams()), len(kPayload.GetPackets()))
+			len(kPayload.GetConsolidatedResponseKeystream()))
 	case teeproto.BodyType_BODY_TYPE_T_OUTPUT:
 		var tPayload teeproto.TOutputPayload
 		if err := proto.Unmarshal(signedMsg.GetBody(), &tPayload); err != nil {
 			return fmt.Errorf("SECURITY ERROR: %s body parsing failed after signature verification: %v", source, err)
 		}
-		fmt.Printf("[Verifier] %s body content validated: packets=%d\n", source, len(tPayload.GetPackets()))
+		fmt.Printf("[Verifier] %s body content validated: consolidated_ciphertext=%d bytes\n", source, len(tPayload.GetConsolidatedResponseCiphertext()))
 	}
+
+	return nil
+}
+
+// validateTimestamps checks that both TEE timestamps are within acceptable ranges
+// Requirements:
+// 1. TEE_K and TEE_T timestamps must be within 5 seconds of each other
+// 2. Neither timestamp can be older than 10 minutes in the past
+// NOTE: Timestamps are now extracted from the SIGNED payloads, not the wrapper
+func validateTimestamps(teekSigned, teetSigned *teeproto.SignedMessage) error {
+	// Extract TEE_K timestamp from signed KOutputPayload
+	var kPayload teeproto.KOutputPayload
+	if err := proto.Unmarshal(teekSigned.GetBody(), &kPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_K payload for timestamp: %v", err)
+	}
+	teekTimestamp := kPayload.GetTimestampMs()
+
+	// Extract TEE_T timestamp from signed TOutputPayload
+	var tPayload teeproto.TOutputPayload
+	if err := proto.Unmarshal(teetSigned.GetBody(), &tPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_T payload for timestamp: %v", err)
+	}
+	teetTimestamp := tPayload.GetTimestampMs()
+
+	now := time.Now().UnixMilli()
+
+	// Check if timestamps are present
+	if teekTimestamp == 0 {
+		return fmt.Errorf("TEE_K timestamp missing or invalid in signed payload")
+	}
+	if teetTimestamp == 0 {
+		return fmt.Errorf("TEE_T timestamp missing or invalid in signed payload")
+	}
+
+	// Check that neither timestamp is older than 10 minutes
+	maxAgeMs := int64(10 * 60 * 1000) // 10 minutes in milliseconds
+	if now-int64(teekTimestamp) > maxAgeMs {
+		return fmt.Errorf("TEE_K timestamp too old: %d minutes ago", (now-int64(teekTimestamp))/60000)
+	}
+	if now-int64(teetTimestamp) > maxAgeMs {
+		return fmt.Errorf("TEE_T timestamp too old: %d minutes ago", (now-int64(teetTimestamp))/60000)
+	}
+
+	// Check that TEE_K and TEE_T timestamps are within 5 seconds of each other
+	timeDiffMs := int64(teekTimestamp) - int64(teetTimestamp)
+	if timeDiffMs < 0 {
+		timeDiffMs = -timeDiffMs
+	}
+	maxDiffMs := int64(5 * 1000) // 5 seconds in milliseconds
+	if timeDiffMs > maxDiffMs {
+		return fmt.Errorf("TEE_K and TEE_T timestamps differ by %d seconds (max allowed: 5 seconds)", timeDiffMs/1000)
+	}
+
+	fmt.Printf("[Verifier] Timestamp validation passed (SIGNED timestamps):\n")
+	fmt.Printf("  TEE_K: %s\n", time.UnixMilli(int64(teekTimestamp)).UTC().Format("2006-01-02 15:04:05.000 UTC"))
+	fmt.Printf("  TEE_T: %s\n", time.UnixMilli(int64(teetTimestamp)).UTC().Format("2006-01-02 15:04:05.000 UTC"))
+	fmt.Printf("  Time difference: %d ms\n", timeDiffMs)
 
 	return nil
 }

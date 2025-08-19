@@ -3,7 +3,7 @@ package clientlib
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"tee-mpc/proto"
+	teeproto "tee-mpc/proto"
 	"tee-mpc/shared"
 	"time"
 )
@@ -102,14 +102,8 @@ func (r *ReclaimClientImpl) Connect() error {
 		return NewConnectionError("TEE_T", err)
 	}
 
-	// Fetch and verify attestations (only in enclave mode)
-	if r.config.Mode == ModeEnclave {
-		if err := r.Client.fetchAndVerifyAttestations(); err != nil {
-			return NewAttestationError(err)
-		}
-	} else {
-		r.logger.Info("Skipping attestation verification in standalone mode")
-	}
+	// Session coordination happens automatically in background via WebSocket messages
+	r.logger.Info("Connection established - session coordination will happen naturally")
 
 	return nil
 }

@@ -124,7 +124,7 @@ func (ks *TLS12KeySchedule) DeriveMasterSecretExtended(preMasterSecret []byte, s
 //
 //	SecurityParameters.server_random + SecurityParameters.client_random)
 func (ks *TLS12KeySchedule) DeriveKeyBlock(keyBlockLength int) []byte {
-	// Note: for key derivation, we use server_random + client_random (opposite order from master secret)
+	// for key derivation, we use server_random + client_random (opposite order from master secret)
 	randomBytes := make([]byte, len(ks.serverRandom)+len(ks.clientRandom))
 	copy(randomBytes, ks.serverRandom)
 	copy(randomBytes[len(ks.serverRandom):], ks.clientRandom)

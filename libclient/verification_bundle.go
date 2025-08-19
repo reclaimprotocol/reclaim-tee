@@ -24,28 +24,19 @@ func (c *Client) BuildVerificationBundle(path string) error {
 		return fmt.Errorf("SECURITY ERROR: missing TEE_T signed message - protocol incomplete")
 	}
 
-	// Handshake keys (may be nil in standalone mode until enclave support)
-	if c.handshakeDisclosure != nil {
-		bundle.HandshakeKeys = &teeproto.HandshakeSecrets{
-			HandshakeKey: c.handshakeDisclosure.HandshakeKey,
-			HandshakeIv:  c.handshakeDisclosure.HandshakeIV,
-			CipherSuite:  uint32(c.handshakeDisclosure.CipherSuite),
-			Algorithm:    c.handshakeDisclosure.Algorithm,
-		}
+	// NEW: Extract certificate info from TEE_K payload
+	var kPayload teeproto.KOutputPayload
+	if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_K payload: %v", err)
 	}
+
+	bundle.CertificateInfo = kPayload.GetCertificateInfo() // NEW
 
 	// TEE_K signed message (K_OUTPUT) - use original protobuf SignedMessage
 	bundle.TeekSigned = c.teekSignedMessage
 
 	// TEE_T signed message (T_OUTPUT) - use original protobuf SignedMessage
 	bundle.TeetSigned = c.teetSignedMessage
-
-	// Proof commitment opening
-	if c.proofStream != nil || c.proofKey != nil {
-		bundle.Opening = &teeproto.Opening{
-			ProofStream: c.proofStream,
-		}
-	}
 
 	// Write protobuf to file
 	data, err := proto.Marshal(bundle)

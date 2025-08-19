@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	teeproto "tee-mpc/proto"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -158,19 +159,21 @@ type Session struct {
 	ConnectionData interface{} // Store connection request data
 
 	// Per-session transcript storage
-	TranscriptPackets     [][]byte   `json:"-"` // Collect all packets for transcript signing
-	TranscriptPacketTypes []string   `json:"-"` // Parallel slice describing packet types
-	TranscriptMutex       sync.Mutex // Protect transcript collection
+	TranscriptData      [][]byte   `json:"-"` // Collect all data for transcript signing
+	TranscriptDataTypes []string   `json:"-"` // Parallel slice describing data types
+	TranscriptMutex     sync.Mutex // Protect transcript collection
 
 	// Per-session finished state tracking
 	TEEKFinished       bool       // Whether TEE_K has sent finished message
 	FinishedStateMutex sync.Mutex // Protect finished state
 
 	// Master signature generation
-	RedactedStreams             []SignedRedactedDecryptionStream `json:"-"` // Collect streams for master signature
-	RedactionProcessingComplete bool                             `json:"-"` // Flag to track when redaction processing is complete
-	SignatureSent               bool                             `json:"-"` // Flag to prevent duplicate signature generation
-	StreamsMutex                sync.Mutex                       // Protect streams collection
+	RedactedStreams               []SignedRedactedDecryptionStream `json:"-"` // Collect streams for master signature
+	ConsolidatedResponseKeystream []byte                           `json:"-"` // NEW: Consolidated response keystream for simplified verification
+	CertificateInfo               *teeproto.CertificateInfo        `json:"-"` // NEW: Structured certificate data
+	RedactionProcessingComplete   bool                             `json:"-"` // Flag to track when redaction processing is complete
+	SignatureSent                 bool                             `json:"-"` // Flag to prevent duplicate signature generation
+	StreamsMutex                  sync.Mutex                       // Protect streams collection
 
 	// Cache for original decryption streams to avoid regeneration during redaction
 	CachedDecryptionStreams map[uint64][]byte `json:"-"` // Cache original streams by seqNum for redaction reuse
@@ -289,6 +292,7 @@ type TCPData struct {
 type HandshakeCompleteData struct {
 	Success          bool     `json:"success"`
 	CertificateChain [][]byte `json:"certificate_chain"`
+	CipherSuite      uint16   `json:"cipher_suite"` // Negotiated cipher suite
 }
 
 // TEE_K to Client: Handshake key disclosure for certificate verification
@@ -350,8 +354,9 @@ type RedactedRequestData struct {
 
 // RedactionStreamsData contains the XOR streams and commitment keys for revelation
 type RedactionStreamsData struct {
-	Streams        [][]byte `json:"streams"`         // [Str_S, Str_SP]
-	CommitmentKeys [][]byte `json:"commitment_keys"` // [K_S, K_SP]
+	Streams        [][]byte                `json:"streams"`         // [Str_S, Str_SP]
+	CommitmentKeys [][]byte                `json:"commitment_keys"` // [K_S, K_SP]
+	Ranges         []RequestRedactionRange `json:"ranges"`          // Redaction ranges to identify R_S vs R_SP
 }
 
 // RedactionVerificationData contains the result of redaction verification
@@ -412,9 +417,9 @@ type ResponseDecryptionStreamData struct {
 type FinishedMessage struct {
 }
 
-// SignedTranscript represents a signed transcript with packets, signature, and public key
+// SignedTranscript represents a signed transcript with consolidated data, signature, and public key
 type SignedTranscript struct {
-	Packets [][]byte `json:"packets"` // TLS packets only (binary data)
+	Data [][]byte `json:"data"` // Consolidated streams (keystream/ciphertext data)
 
 	// Request metadata (formerly included in packets for TEE_K)
 	RequestMetadata *RequestMetadata `json:"request_metadata,omitempty"`
@@ -422,15 +427,15 @@ type SignedTranscript struct {
 	// Response redaction ranges for verifier display
 	ResponseRedactionRanges []ResponseRedactionRange `json:"response_redaction_ranges,omitempty"`
 
-	Signature  []byte `json:"signature"`   // Comprehensive signature over all data (TLS packets + metadata + streams)
+	Signature  []byte `json:"signature"`   // Comprehensive signature over all data (consolidated streams + metadata)
 	EthAddress []byte `json:"eth_address"` // ETH address (20 bytes)
 }
 
-// Transcript packet type constants – exported so both client and TEEs can reference them.
+// Transcript data type constants – exported so both client and TEEs can reference them.
 const (
-	TranscriptPacketTypeTLSRecord           = "tls_record"
-	TranscriptPacketTypeHTTPRequestRedacted = "http_request_redacted"
-	TranscriptPacketTypeCommitment          = "commitment"
+	TranscriptDataTypeTLSRecord           = "tls_record"
+	TranscriptDataTypeHTTPRequestRedacted = "http_request_redacted"
+	TranscriptDataTypeCommitment          = "commitment"
 )
 
 // RequestRedactionSpec specifies which parts of the request should be redacted

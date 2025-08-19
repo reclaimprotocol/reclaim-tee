@@ -43,7 +43,7 @@ type TranscriptResults struct {
 
 // SignedTranscriptData represents a signed transcript in the results
 type SignedTranscriptData struct {
-	Packets    [][]byte `json:"packets"`     // Array of TLS packets
+	Data       [][]byte `json:"data"`        // Consolidated streams (keystream/ciphertext)
 	Signature  []byte   `json:"signature"`   // Comprehensive cryptographic signature
 	EthAddress []byte   `json:"eth_address"` // ETH address (20 bytes)
 }
@@ -60,31 +60,31 @@ type ValidationResults struct {
 
 // TranscriptValidationResults contains validation of transcripts against captured traffic
 type TranscriptValidationResults struct {
-	ClientCapturedPackets int `json:"client_captured_packets"`
-	ClientCapturedBytes   int `json:"client_captured_bytes"`
+	ClientCapturedData  int `json:"client_captured_data"`
+	ClientCapturedBytes int `json:"client_captured_bytes"`
 
-	TEEKValidation TranscriptPacketValidation `json:"tee_k_validation"`
-	TEETValidation TranscriptPacketValidation `json:"tee_t_validation"`
+	TEEKValidation TranscriptDataValidation `json:"tee_k_validation"`
+	TEETValidation TranscriptDataValidation `json:"tee_t_validation"`
 
 	OverallValid bool   `json:"overall_valid"`
 	Summary      string `json:"summary"`
 }
 
-// TranscriptPacketValidation contains validation results for one TEE's transcript
-type TranscriptPacketValidation struct {
-	PacketsReceived  int  `json:"packets_received"`
-	PacketsMatched   int  `json:"packets_matched"`
+// TranscriptDataValidation contains validation results for one TEE's transcript
+type TranscriptDataValidation struct {
+	DataReceived     int  `json:"data_received"`
+	DataMatched      int  `json:"data_matched"`
 	ValidationPassed bool `json:"validation_passed"`
 
-	// Detailed packet information
-	PacketDetails []PacketValidationDetail `json:"packet_details"`
+	// Detailed data information
+	DataDetails []DataValidationDetail `json:"data_details"`
 }
 
-// PacketValidationDetail contains validation details for a single packet
-type PacketValidationDetail struct {
-	PacketIndex    int    `json:"packet_index"`
-	PacketSize     int    `json:"packet_size"`
-	PacketType     string `json:"packet_type"` // hex representation of first byte
+// DataValidationDetail contains validation details for a single data entry
+type DataValidationDetail struct {
+	DataIndex      int    `json:"data_index"`
+	DataSize       int    `json:"data_size"`
+	DataType       string `json:"data_type"` // hex representation of first byte
 	MatchedCapture bool   `json:"matched_capture"`
 	CaptureIndex   int    `json:"capture_index,omitempty"` // If matched, which capture index
 }

@@ -43,7 +43,7 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 	// Validate TEE_K transcript (should contain raw TCP chunks - bidirectional)
 	teekValidation := c.validateTEEKTranscriptRaw()
 
-	// Validate TEE_T transcript (should contain application data packets - bidirectional)
+	// Validate TEE_T transcript (should contain application data - bidirectional)
 	teetValidation := c.validateTEETTranscriptRaw()
 
 	// Summary
@@ -63,10 +63,10 @@ func (c *Client) validateTranscriptsAgainstCapturedTraffic() {
 
 // validateTEEKTranscriptRaw validates TEE_K transcript against client raw TCP chunks
 func (c *Client) validateTEEKTranscriptRaw() bool {
-	c.logger.Info("Validating TEE_K transcript against client captures", zap.Int("packets_count", len(c.teekTranscriptPackets)))
+	c.logger.Info("Validating TEE_K transcript against client captures", zap.Int("data_count", len(c.teekTranscriptData)))
 
-	if c.teekTranscriptPackets == nil {
-		c.logger.Error("TEE_K transcript packets not available")
+	if c.teekTranscriptData == nil {
+		c.logger.Error("TEE_K transcript data not available")
 		return false
 	}
 
@@ -74,67 +74,67 @@ func (c *Client) validateTEEKTranscriptRaw() bool {
 	// the raw TCP chunks we captured (not the individual TLS records from application phase)
 	c.logger.Info("TEE_K transcript analysis")
 
-	handshakePacketsMatched := 0
-	totalCompared := 0 // number of transcript packets that we actually compared against captures
-	for _, teekPacket := range c.teekTranscriptPackets {
+	handshakeDataMatched := 0
+	totalCompared := 0 // number of transcript data entries that we actually compared against captures
+	for _, teekData := range c.teekTranscriptData {
 
-		// All transcript packets are now TLS records by definition
+		// All transcript data entries are now consolidated streams by definition
 		totalCompared++
 
-		// Check if this packet matches any of the client's captured data
+		// Check if this data matches any of the client's captured data
 		found := false
 		for _, chunk := range c.capturedTraffic {
-			if len(teekPacket) == len(chunk) && bytes.Equal(teekPacket, chunk) {
-				handshakePacketsMatched++
+			if len(teekData) == len(chunk) && bytes.Equal(teekData, chunk) {
+				handshakeDataMatched++
 				found = true
 				break
 			}
 		}
 
 		if !found {
-			c.logger.Debug("Packet NOT found in client captures")
+			c.logger.Debug("Data NOT found in client captures")
 		}
 	}
 
-	c.logger.Info("TEE_K validation result", zap.Int("packets_matched", handshakePacketsMatched), zap.Int("total_compared", totalCompared))
+	c.logger.Info("TEE_K validation result", zap.Int("data_matched", handshakeDataMatched), zap.Int("total_compared", totalCompared))
 
-	return handshakePacketsMatched == totalCompared
+	return handshakeDataMatched == totalCompared
 }
 
 // validateTEETTranscriptRaw validates TEE_T transcript against client application data records
 func (c *Client) validateTEETTranscriptRaw() bool {
-	c.logger.Info("Validating TEE_T transcript against client captures", zap.Int("packets_count", len(c.teetTranscriptPackets)))
+	c.logger.Info("Validating TEE_T transcript against client captures", zap.Int("data_count", len(c.teetTranscriptData)))
 
-	if c.teetTranscriptPackets == nil {
-		c.logger.Error("TEE_T transcript packets not available")
+	if c.teetTranscriptData == nil {
+		c.logger.Error("TEE_T transcript data not available")
 		return false
 	}
 
 	c.logger.Info("TEE_T transcript analysis")
 
-	packetsMatched := 0
-	for _, teetPacket := range c.teetTranscriptPackets {
-		// fmt.Printf("[Client]   TEE_T packet %d: %d bytes (type: 0x%02x)\n",
-		// 	i+1, len(teetPacket), teetPacket[0])
+	dataMatched := 0
+	for _, teetData := range c.teetTranscriptData {
+		// fmt.Printf("[Client]   TEE_T data %d: %d bytes (type: 0x%02x)\n",
+		// 	i+1, len(teetData), teetData[0])
 
-		// Check if this packet matches any of our captured packets
+		// Check if this data matches any of our captured data
 		found := false
-		for _, clientPacket := range c.capturedTraffic {
-			if len(teetPacket) == len(clientPacket) && bytes.Equal(teetPacket, clientPacket) {
-				packetsMatched++
+		for _, clientData := range c.capturedTraffic {
+			if len(teetData) == len(clientData) && bytes.Equal(teetData, clientData) {
+				dataMatched++
 				found = true
 				break
 			}
 		}
 
 		if !found {
-			c.logger.Debug("Packet NOT found in client captures")
+			c.logger.Debug("Data NOT found in client captures")
 		}
 	}
 
-	c.logger.Info("TEE_T validation result", zap.Int("packets_matched", packetsMatched), zap.Int("total_packets", len(c.teetTranscriptPackets)))
+	c.logger.Info("TEE_T validation result", zap.Int("data_matched", dataMatched), zap.Int("total_data", len(c.teetTranscriptData)))
 
-	return packetsMatched == len(c.teetTranscriptPackets)
+	return dataMatched == len(c.teetTranscriptData)
 }
 
 // handleSignedTranscriptWithStreams processes combined transcript and streams from TEE_K
@@ -146,7 +146,7 @@ func (c *Client) handleSignedTranscriptWithStreams(msg *shared.Message) {
 	}
 
 	c.logger.Info("Received combined signed transcript with streams",
-		zap.Int("packets_count", len(combinedData.SignedTranscript.Packets)),
+		zap.Int("data_count", len(combinedData.SignedTranscript.Data)),
 		zap.Int("signature_bytes", len(combinedData.SignedTranscript.Signature)),
 		zap.Int("eth_address_bytes", len(combinedData.SignedTranscript.EthAddress)),
 		zap.Int("streams_count", len(combinedData.SignedRedactedStreams)))
@@ -177,7 +177,7 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 	}
 
 	c.logger.Info("Received signed transcript",
-		zap.Int("packets_count", len(signedTranscript.Packets)),
+		zap.Int("data_count", len(signedTranscript.Data)),
 		zap.Int("signature_bytes", len(signedTranscript.Signature)),
 		zap.Int("eth_address_bytes", len(signedTranscript.EthAddress)))
 
@@ -189,13 +189,13 @@ func (c *Client) handleSignedTranscript(msg *shared.Message) {
 
 // processSignedTranscriptDataWithStreams processes transcript data when streams are already available (combined message)
 func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared.SignedTranscript) {
-	// Store packets for validation
-	c.teekTranscriptPackets = signedTranscript.Packets
+	// Store data for validation
+	c.teekTranscriptData = signedTranscript.Data
 
-	// Calculate total size of all packets
+	// Calculate total size of all data
 	totalSize := 0
-	for _, packet := range signedTranscript.Packets {
-		totalSize += len(packet)
+	for _, data := range signedTranscript.Data {
+		totalSize += len(data)
 	}
 
 	c.logger.Info("Total transcript size", zap.Int("bytes", totalSize))
@@ -246,20 +246,20 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 // processSignedTranscriptData contains the shared logic for processing SignedTranscript data
 func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTranscript) {
 
-	// Store packets for validation
+	// Store data for validation
 	// Determine source based on transcript structure: TEE_K has RequestMetadata, TEE_T doesn't
 	if signedTranscript.RequestMetadata != nil {
 		// This is from TEE_K
-		c.teekTranscriptPackets = signedTranscript.Packets // Store packets for validation
+		c.teekTranscriptData = signedTranscript.Data // Store data for validation
 	} else {
 		// This is from TEE_T
-		c.teetTranscriptPackets = signedTranscript.Packets // Store packets for validation
+		c.teetTranscriptData = signedTranscript.Data // Store data for validation
 	}
 
-	// Calculate total size of all packets
+	// Calculate total size of all data
 	totalSize := 0
-	for _, packet := range signedTranscript.Packets {
-		totalSize += len(packet)
+	for _, data := range signedTranscript.Data {
+		totalSize += len(data)
 	}
 
 	c.logger.Info("Total transcript size", zap.Int("bytes", totalSize))
@@ -303,18 +303,18 @@ func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTran
 
 	// Show packet summary
 	c.logger.Info("Transcript summary", zap.String("source", sourceName))
-	// if len(signedTranscript.Packets) > 0 {
-	// 	// Display packet information
-	// 	for i, packet := range signedTranscript.Packets {
-	// 		fmt.Printf("[Client] TEE_K packet %d: %d bytes\n", i+1, len(packet))
+	// if len(signedTranscript.Data) > 0 {
+	// 	// Display data information
+	// 	for i, data := range signedTranscript.Data {
+	// 		fmt.Printf("[Client] TEE_K data %d: %d bytes\n", i+1, len(data))
 	// 	}
 	// }
 
-	// if len(signedTranscript.Packets) > 0 {
-	// 	// Display packet information
-	// 	for i, packet := range signedTranscript.Packets {
-	// 		fmt.Printf("[Client] TEE_T packet %d: %d bytes\n", i+1, len(packet))
-	// 	}[Client]   TEE_T packet 1
+	// if len(signedTranscript.Data) > 0 {
+	// 	// Display data information
+	// 	for i, data := range signedTranscript.Data {
+	// 		fmt.Printf("[Client] TEE_T data %d: %d bytes\n", i+1, len(data))
+	// 	}
 	// }
 
 	// Validation is now handled centrally by checkValidationAndCompletion()

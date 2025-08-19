@@ -434,6 +434,9 @@ func (c *Client) processServerCertificateTLS12(data []byte) error {
 
 	fmt.Printf(" Received %d certificates. Server's Common Name: %s\n", len(certs), certs[0].Subject.CommonName)
 
+	// NEW: Extract structured certificate info immediately
+	c.certificateInfo = c.extractCertificateInfo(certs)
+
 	// 3. Verify the certificate chain
 	serverCert := certs[0]
 	intermediates := x509.NewCertPool()

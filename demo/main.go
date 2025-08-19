@@ -182,20 +182,20 @@ func main() {
 
 		if transcripts.TEEK != nil {
 			totalTEEKBytes := 0
-			for _, packet := range transcripts.TEEK.Packets {
-				totalTEEKBytes += len(packet)
+			for _, data := range transcripts.TEEK.Data {
+				totalTEEKBytes += len(data)
 			}
-			fmt.Printf("   TEE_K: %d packets, %d bytes data\n",
-				len(transcripts.TEEK.Packets), totalTEEKBytes)
+			fmt.Printf("   TEE_K: %d data streams, %d bytes total\n",
+				len(transcripts.TEEK.Data), totalTEEKBytes)
 		}
 
 		if transcripts.TEET != nil {
 			totalTEETBytes := 0
-			for _, packet := range transcripts.TEET.Packets {
-				totalTEETBytes += len(packet)
+			for _, data := range transcripts.TEET.Data {
+				totalTEETBytes += len(data)
 			}
-			fmt.Printf("   TEE_T: %d packets, %d bytes data\n",
-				len(transcripts.TEET.Packets), totalTEETBytes)
+			fmt.Printf("   TEE_T: %d data streams, %d bytes total\n",
+				len(transcripts.TEET.Data), totalTEETBytes)
 		}
 	}
 

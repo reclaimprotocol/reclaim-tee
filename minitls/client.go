@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	teeproto "tee-mpc/proto"
 
 	"go.uber.org/zap"
 )
@@ -36,6 +37,9 @@ type Client struct {
 	handshakeBuffer    []byte // Buffer for reassembling handshake messages
 	cipherSuite        uint16 // Negotiated cipher suite
 
+	// NEW: Certificate info storage
+	certificateInfo *teeproto.CertificateInfo // Store structured certificate data
+
 	// Random values for TLS 1.2 key derivation
 	clientRandom []byte
 	serverRandom []byte
@@ -44,8 +48,7 @@ type Client struct {
 	extendedMasterSecret bool
 }
 
-// Data needed for handshake key disclosure
-var certificatePacket []byte // Store the encrypted certificate packet for disclosure
+// REMOVED: Certificate packet storage - now using structured certificate info
 
 func NewClient(conn net.Conn) *Client {
 	return &Client{
@@ -203,16 +206,8 @@ func (c *Client) processEncryptedHandshakeMessages() error {
 			return fmt.Errorf("expected handshake content type in encrypted record, got %d", contentType)
 		}
 
-		// Check if this is a certificate message by examining the handshake type
-		if len(actualData) >= 1 && HandshakeType(actualData[0]) == typeCertificate {
-			// Store the encrypted certificate packet for later disclosure
-			encryptedPacket := make([]byte, 5+len(payload))
-			copy(encryptedPacket[:5], header)
-			copy(encryptedPacket[5:], payload)
-			certificatePacket = encryptedPacket
-			c.logger.Debug("Captured encrypted certificate packet for key disclosure",
-				zap.Int("bytes", len(certificatePacket)))
-		}
+		// REMOVED: Certificate packet storage - now using structured certificate info
+		// Certificate info is extracted during processServerCertificate()
 
 		c.handshakeBuffer = append(c.handshakeBuffer, actualData...)
 	}
@@ -247,8 +242,6 @@ func (c *Client) processHandshakeBuffer() (bool, error) {
 			zap.Uint32("length", msgLen))
 
 		// Process the message.
-		// NOTE: The `processSingleHandshakeMessage` function now replaces the old `processHandshakeMessage`.
-		// It's responsible for updating transcripts and deriving keys.
 		done, err := c.processSingleHandshakeMessage(msg)
 		if err != nil {
 			return false, err
@@ -982,6 +975,9 @@ func (c *Client) processServerCertificate(data []byte) error {
 		zap.Int("count", len(certs)),
 		zap.String("common_name", leafCert.Subject.CommonName))
 
+	// NEW: Extract structured certificate info immediately
+	c.certificateInfo = c.extractCertificateInfo(certs)
+
 	// Basic chain validation
 	if len(certs) > 1 {
 		for i := 0; i < len(certs)-1; i++ {
@@ -1018,10 +1014,7 @@ func (c *Client) GetHandshakeIV() []byte {
 	return c.keySchedule.serverHandshakeIV
 }
 
-// GetCertificatePacket returns the encrypted certificate packet
-func (c *Client) GetCertificatePacket() []byte {
-	return certificatePacket
-}
+// REMOVED: GetCertificatePacket function - now using structured certificate info via GetCertificateInfo()
 
 // GetCipherSuite returns the negotiated cipher suite
 func (c *Client) GetCipherSuite() uint16 {
@@ -1433,4 +1426,33 @@ func (c *Client) parseResponseRecords(serverAEAD *AEAD) (appData []byte, consume
 	}
 
 	return nil, offset, nil // Processed the whole buffer, but no app data found yet
+}
+
+// extractCertificateInfo extracts structured certificate information for verification bundle
+func (c *Client) extractCertificateInfo(certs []*x509.Certificate) *teeproto.CertificateInfo {
+	if len(certs) == 0 {
+		return nil
+	}
+
+	leafCert := certs[0]
+
+	var issuerCN string
+	if len(certs) > 1 {
+		issuerCN = certs[1].Subject.CommonName
+	} else {
+		issuerCN = leafCert.Issuer.CommonName
+	}
+
+	return &teeproto.CertificateInfo{
+		CommonName:       leafCert.Subject.CommonName,
+		IssuerCommonName: issuerCN,
+		NotBeforeUnix:    uint64(leafCert.NotBefore.Unix()),
+		NotAfterUnix:     uint64(leafCert.NotAfter.Unix()),
+		DnsNames:         leafCert.DNSNames,
+	}
+}
+
+// GetCertificateInfo returns the stored certificate information
+func (c *Client) GetCertificateInfo() *teeproto.CertificateInfo {
+	return c.certificateInfo
 }

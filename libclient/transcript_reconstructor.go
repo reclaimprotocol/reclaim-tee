@@ -2,10 +2,8 @@ package clientlib
 
 import (
 	"fmt"
-	"strings"
 
 	teeproto "tee-mpc/proto"
-	"tee-mpc/shared"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -25,7 +23,7 @@ func ReconstructTranscriptForClaimTunnel(bundlePB *teeproto.VerificationBundle) 
 	}
 
 	// Reconstruct request (copy from proofverifier.go lines 250-336)
-	revealedRequest, err := reconstructRequest(&kPayload, bundlePB.Opening)
+	revealedRequest, err := reconstructRequest(&kPayload, &tPayload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reconstruct request: %v", err)
 	}
@@ -40,10 +38,10 @@ func ReconstructTranscriptForClaimTunnel(bundlePB *teeproto.VerificationBundle) 
 	return createTranscriptMessages(&kPayload, revealedRequest, reconstructedResponse, bundlePB)
 }
 
-// reconstructRequest applies proof stream to reveal sensitive_proof data
-// Copied from proofverifier.go lines 272-336
-func reconstructRequest(kPayload *teeproto.KOutputPayload, opening *teeproto.Opening) ([]byte, error) {
-	if opening == nil || opening.ProofStream == nil {
+// reconstructRequest applies TEE_T-signed proof streams to reveal sensitive_proof data
+// Updated to use secure TEE_T-signed streams instead of client-provided opening
+func reconstructRequest(kPayload *teeproto.KOutputPayload, tPayload *teeproto.TOutputPayload) ([]byte, error) {
+	if len(tPayload.GetRequestProofStreams()) == 0 {
 		return kPayload.RedactedRequest, nil
 	}
 
@@ -51,144 +49,67 @@ func reconstructRequest(kPayload *teeproto.KOutputPayload, opening *teeproto.Ope
 		return kPayload.RedactedRequest, nil
 	}
 
-	// Create a copy of the redacted request
+	// Create a copy of the redacted request to apply proof streams
 	revealedRequest := make([]byte, len(kPayload.RedactedRequest))
 	copy(revealedRequest, kPayload.RedactedRequest)
-	proofStream := opening.ProofStream
 
-	// Apply proof stream ONLY to sensitive_proof ranges (XOR operation)
-	proofStreamOffset := 0
-	proofRangesFound := 0
+	// Apply proof streams ONLY to sensitive_proof ranges
+	proofStreamIndex := 0
 
 	for _, r := range kPayload.RequestRedactionRanges {
-		// Only reveal ranges marked as proof-relevant (sensitive_proof)
-		if r.Type == shared.RedactionTypeSensitiveProof {
-			start := int(r.Start)
-			length := int(r.Length)
+		if r.GetType() == "sensitive_proof" {
+			if proofStreamIndex >= len(tPayload.GetRequestProofStreams()) {
+				return nil, fmt.Errorf("insufficient TEE_T-signed proof streams for sensitive_proof range")
+			}
 
-			// Validate range bounds
+			proofStream := tPayload.GetRequestProofStreams()[proofStreamIndex]
+			start := int(r.GetStart())
+			length := int(r.GetLength())
+
 			if start+length > len(revealedRequest) {
 				return nil, fmt.Errorf("proof range [%d:%d] exceeds request length %d", start, start+length, len(revealedRequest))
 			}
 
-			// Check if we have enough proof stream data
-			if proofStreamOffset+length > len(proofStream) {
-				return nil, fmt.Errorf("insufficient proof stream data for range %d (need %d bytes, have %d)", proofRangesFound, length, len(proofStream)-proofStreamOffset)
+			if length != len(proofStream) {
+				return nil, fmt.Errorf("proof stream length mismatch: range needs %d bytes, stream has %d", length, len(proofStream))
 			}
 
 			// Apply XOR to reveal original sensitive_proof data
 			for i := 0; i < length; i++ {
-				revealedRequest[start+i] ^= proofStream[proofStreamOffset+i]
+				revealedRequest[start+i] ^= proofStream[i]
 			}
 
-			proofStreamOffset += length
-			proofRangesFound++
+			proofStreamIndex++
 		}
 	}
 
-	// Apply response redaction ranges for display (keep sensitive data as '*')
-	prettyRequest := make([]byte, len(revealedRequest))
-	copy(prettyRequest, revealedRequest)
-
-	for _, r := range kPayload.RequestRedactionRanges {
-		// Keep non-proof sensitive data as '*' for display
-		if !strings.Contains(r.Type, "proof") {
-			start := int(r.Start)
-			length := int(r.Length)
-
-			for i := 0; i < length && start+i < len(prettyRequest); i++ {
-				prettyRequest[start+i] = 0x2A // ASCII asterisk '*'
-			}
-		}
-	}
-
-	return prettyRequest, nil
+	return revealedRequest, nil
 }
 
 // reconstructResponse XORs redacted streams with ciphertexts
 // Copied from proofverifier.go lines 170-230
 func reconstructResponse(kPayload *teeproto.KOutputPayload, tPayload *teeproto.TOutputPayload) ([]byte, error) {
-	if len(kPayload.RedactedStreams) == 0 {
+	// Direct XOR with consolidated streams for verification
+	consolidatedKeystream := kPayload.GetConsolidatedResponseKeystream()
+	consolidatedCiphertext := tPayload.GetConsolidatedResponseCiphertext()
+
+	if len(consolidatedKeystream) == 0 || len(consolidatedCiphertext) == 0 {
 		return []byte{}, nil
 	}
 
-	// Extract ciphertexts from TEE_T application data packets
-	ciphertexts := extractCiphertexts(tPayload)
-
-	// Reconstruct plaintext by walking streams and finding the next ciphertext with matching length
-	var reconstructed [][]byte
-	cipherIdx := 0
-
-	for _, stream := range kPayload.RedactedStreams {
-		// Skip empty streams
-		if len(stream.RedactedStream) == 0 {
-			continue
-		}
-
-		// Advance cipherIdx until length matches
-		for cipherIdx < len(ciphertexts) && len(ciphertexts[cipherIdx]) != len(stream.RedactedStream) {
-			cipherIdx++
-		}
-
-		if cipherIdx >= len(ciphertexts) {
-			continue // Skip this stream instead of failing
-		}
-
-		cipher := ciphertexts[cipherIdx]
-		plain := make([]byte, len(cipher))
-
-		// XOR ciphertext with redacted stream to get plaintext
-		for i, cipherByte := range cipher {
-			plain[i] = cipherByte ^ stream.RedactedStream[i]
-		}
-
-		reconstructed = append(reconstructed, plain)
-		cipherIdx++
+	if len(consolidatedKeystream) != len(consolidatedCiphertext) {
+		return nil, fmt.Errorf("consolidated keystream/ciphertext length mismatch: %d vs %d",
+			len(consolidatedKeystream), len(consolidatedCiphertext))
 	}
 
-	// Combine all reconstructed parts
-	totalLength := 0
-	for _, part := range reconstructed {
-		totalLength += len(part)
-	}
-
-	result := make([]byte, totalLength)
-	offset := 0
-	for _, part := range reconstructed {
-		copy(result[offset:], part)
-		offset += len(part)
+	// Direct XOR - dramatically simpler!
+	result := make([]byte, len(consolidatedCiphertext))
+	for i := range consolidatedCiphertext {
+		result[i] = consolidatedCiphertext[i] ^ consolidatedKeystream[i]
 	}
 
 	// Apply response redaction ranges to replace random garbage with asterisks
 	return applyResponseRedactionRanges(result, kPayload.ResponseRedactionRanges), nil
-}
-
-// extractCiphertexts extracts application data ciphertexts from TEE_T packets
-func extractCiphertexts(tPayload *teeproto.TOutputPayload) [][]byte {
-	var ciphertexts [][]byte
-
-	for _, pkt := range tPayload.Packets {
-		if len(pkt) < 5+16 { // Minimum TLS record size
-			continue
-		}
-
-		// Skip non-ApplicationData packets
-		if pkt[0] != 0x17 && pkt[0] != 0x15 { // ApplicationData or Alert
-			continue
-		}
-
-		// Extract ciphertext (assume TLS 1.3 format for simplicity)
-		// TLS 1.3: Header(5) + EncryptedData + Tag(16)
-		ctLen := len(pkt) - 5 - 16
-		if ctLen <= 0 {
-			continue
-		}
-
-		startOffset := 5 // Skip header
-		ciphertexts = append(ciphertexts, pkt[startOffset:startOffset+ctLen])
-	}
-
-	return ciphertexts
 }
 
 // applyResponseRedactionRanges replaces random garbage with asterisks
@@ -224,20 +145,10 @@ func applyResponseRedactionRanges(response []byte, redactionRanges []*teeproto.R
 func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest, reconstructedResponse []byte, bundlePB *teeproto.VerificationBundle) ([]*teeproto.ClaimTunnelRequest_TranscriptMessage, error) {
 	var messages []*teeproto.ClaimTunnelRequest_TranscriptMessage
 
-	// Add handshake packets
-	for _, packet := range kPayload.GetPackets() {
-		messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
-			Sender:  determinePacketSender(packet),
-			Message: packet,
-			// No reveal needed for handshake
-		})
-	}
-
 	// Add client request (revealed)
 	messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
 		Sender:  teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT,
 		Message: wrapInTlsRecord(revealedRequest, 0x17),
-		Reveal:  createTeeStreamReveal(revealedRequest, bundlePB),
 	})
 
 	// Add server response (reconstructed)
@@ -245,25 +156,13 @@ func createTranscriptMessages(kPayload *teeproto.KOutputPayload, revealedRequest
 		messages = append(messages, &teeproto.ClaimTunnelRequest_TranscriptMessage{
 			Sender:  teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER,
 			Message: wrapInTlsRecord(reconstructedResponse, 0x17),
-			Reveal:  createTeeStreamReveal(reconstructedResponse, bundlePB),
 		})
 	}
 
 	return messages, nil
 }
 
-// Helper functions
-
-func determinePacketSender(packet []byte) teeproto.TranscriptMessageSenderType {
-	// Simple heuristic: ClientHello = 0x01, ServerHello = 0x02
-	if len(packet) >= 6 {
-		handshakeType := packet[5]
-		if handshakeType == 0x01 {
-			return teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT
-		}
-	}
-	return teeproto.TranscriptMessageSenderType_TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER
-}
+// Helper functions for transcript reconstruction
 
 func wrapInTlsRecord(data []byte, recordType byte) []byte {
 	// Create TLS record: Type(1) + Version(2) + Length(2) + Data
@@ -277,50 +176,22 @@ func wrapInTlsRecord(data []byte, recordType byte) []byte {
 	return record
 }
 
-func createTeeStreamReveal(data []byte, bundlePB *teeproto.VerificationBundle) *teeproto.MessageReveal {
-	return &teeproto.MessageReveal{
-		Reveal: &teeproto.MessageReveal_DirectReveal{
-			DirectReveal: &teeproto.MessageReveal_MessageRevealDirect{
-				Key:          bundlePB.HandshakeKeys.GetHandshakeKey(),
-				Iv:           bundlePB.HandshakeKeys.GetHandshakeIv(),
-				RecordNumber: 0,
-			},
-		},
-	}
-}
-
-// ExtractHostFromBundle extracts hostname from handshake packets
+// ExtractHostFromBundle extracts hostname from certificate info
 func ExtractHostFromBundle(bundle *teeproto.VerificationBundle) string {
-	// Extract payloads
-	var kPayload teeproto.KOutputPayload
-	if err := proto.Unmarshal(bundle.TeekSigned.GetBody(), &kPayload); err != nil {
-		return "example.com" // Fallback
-	}
+	// NEW: Use structured certificate info instead of packet parsing
+	if bundle.GetCertificateInfo() != nil {
+		certInfo := bundle.GetCertificateInfo()
 
-	// Look for SNI in handshake packets
-	for _, packet := range kPayload.GetPackets() {
-		if host := extractSNIFromHandshake(packet); host != "" {
-			return host
+		// Prefer DNS names if available
+		if len(certInfo.GetDnsNames()) > 0 {
+			return certInfo.GetDnsNames()[0]
+		}
+
+		// Fall back to common name
+		if certInfo.GetCommonName() != "" {
+			return certInfo.GetCommonName()
 		}
 	}
 
 	return "example.com" // Fallback
-}
-
-// extractSNIFromHandshake attempts to extract SNI from TLS handshake packet
-func extractSNIFromHandshake(packet []byte) string {
-	// This is a simplified SNI extraction
-	// In a full implementation, you'd parse the TLS handshake properly
-	if len(packet) < 50 {
-		return ""
-	}
-
-	// Look for common patterns that might indicate a hostname
-	data := string(packet)
-	if strings.Contains(data, "example.com") {
-		return "example.com"
-	}
-
-	// Add more sophisticated SNI parsing here if needed
-	return ""
 }
