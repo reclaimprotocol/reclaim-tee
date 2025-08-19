@@ -184,8 +184,8 @@ func TestShouldErrorOnIncorrectJSONPath(t *testing.T) {
 // COMPLEX REDACTIONS TESTS (missing from Go)
 
 func TestShouldPerformComplexRedactions(t *testing.T) {
-	responseBody := `<body> <div id="c1">{"ages":[{"age":"26"},{"age":"27"},{"age":"28"}]}</div> <div id="c2">{"ages":[{"age":"27"},{"age":"28"},{"age":"29"}]}</div> <div id="c3">{"ages":[{"age":"29"},{"age":"30"},{"age":"31"}]}</div></body>`
-	response := []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\ncontent-length: %d\r\nConnection: close\r\n\r\n%s\r\n", len(responseBody), responseBody))
+	// Match TypeScript test data exactly - including \r\n at end making body 222 bytes total
+	response := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\ncontent-length: 222\r\nConnection: close\r\n\r\n<body> <div id=\"c1\">{\"ages\":[{\"age\":\"26\"},{\"age\":\"27\"},{\"age\":\"28\"}]}</div> <div id=\"c2\">{\"ages\":[{\"age\":\"27\"},{\"age\":\"28\"},{\"age\":\"29\"}]}</div> <div id=\"c3\">{\"ages\":[{\"age\":\"29\"},{\"age\":\"30\"},{\"age\":\"31\"}]}</div></body>\r\n")
 
 	params := HTTPProviderParams{
 		URL:    "https://test.com",
@@ -239,8 +239,8 @@ func TestShouldPerformComplexRedactions(t *testing.T) {
 }
 
 func TestShouldPerformComplexRedactions2(t *testing.T) {
-	responseBody := `{"ages":[{"age":"26"},{"age":"27"},{"age":"28"}]}`
-	response := []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\ncontent-length: %d\r\nConnection: close\r\n\r\n%s\r\n", len(responseBody), responseBody))
+	// Match TypeScript test data exactly - content-length: 51 includes \r\n at end
+	response := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\ncontent-length: 51\r\nConnection: close\r\n\r\n{\"ages\":[{\"age\":\"26\"},{\"age\":\"27\"},{\"age\":\"28\"}]}\r\n")
 
 	params := HTTPProviderParams{
 		URL:    "https://test.com",
@@ -288,8 +288,8 @@ func TestShouldPerformComplexRedactions2(t *testing.T) {
 }
 
 func TestShouldPerformComplexRedactions3(t *testing.T) {
-	responseBody := `<body> <div id="c1">{"ages":[{"age":"26"},{"age":"27"},{"age":"28"}]}</div> <div id="c2">{"ages":[{"age":"27"},{"age":"28"},{"age":"29"}]}</div> <div id="c3">{"ages":[{"age":"29"},{"age":"30"},{"age":"31"}]}</div></body>`
-	response := []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\ncontent-length: %d\r\nConnection: close\r\n\r\n%s\r\n", len(responseBody), responseBody))
+	// Match TypeScript test data exactly - content-length: 222 includes \r\n at end
+	response := []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\ncontent-length: 222\r\nConnection: close\r\n\r\n<body> <div id=\"c1\">{\"ages\":[{\"age\":\"26\"},{\"age\":\"27\"},{\"age\":\"28\"}]}</div> <div id=\"c2\">{\"ages\":[{\"age\":\"27\"},{\"age\":\"28\"},{\"age\":\"29\"}]}</div> <div id=\"c3\">{\"ages\":[{\"age\":\"29\"},{\"age\":\"30\"},{\"age\":\"31\"}]}</div></body>\r\n")
 
 	params := HTTPProviderParams{
 		URL:    "https://test.com",
@@ -919,7 +919,7 @@ func TestGetResponseRedactions_JSONPathRedaction(t *testing.T) {
 	// JSON response
 	jsonResponse := `HTTP/1.1 200 OK
 Content-Type: application/json
-Content-Length: 45
+Content-Length: 46
 
 {"name": "John Doe", "age": 30, "city": "NYC"}`
 
@@ -954,7 +954,7 @@ func TestGetResponseRedactions_XPathRedaction(t *testing.T) {
 	// HTML response with XPath target
 	htmlResponse := `HTTP/1.1 200 OK
 Content-Type: text/html; charset=UTF-8
-Content-Length: 200
+Content-Length: 174
 
 <!DOCTYPE html>
 <html>
