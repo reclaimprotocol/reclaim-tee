@@ -48,19 +48,26 @@ func (binaryFormatChecker) IsFormat(input interface{}) bool {
 
 // ValidateProviderParams mirrors TS assertValidateProviderParams
 func ValidateProviderParams(providerName string, params interface{}) error {
+	TraceStart("Validation", "ValidateProviderParams", "Provider", providerName)
+	
 	validatorMutex.RLock()
 	compiled, exists := providerValidatorMap[providerName]
 	validatorMutex.RUnlock()
+	
+	TraceDebug("Validation", "ValidateProviderParams", "Schema cached: %t", exists)
 
 	if !exists {
+		TraceStep("Validation", "ValidateProviderParams", 1, 2, "Compiling schema for provider")
 		sch, ok := PROVIDER_SCHEMAS[providerName]
 		if !ok {
+			TraceError("Validation", "ValidateProviderParams", "Unknown provider: %s", providerName)
 			return fmt.Errorf("invalid provider name \"%s\"", providerName)
 		}
 
 		schemaLoader := gojsonschema.NewGoLoader(sch.Parameters)
 		schema, err := gojsonschema.NewSchema(schemaLoader)
 		if err != nil {
+			TraceError("Validation", "ValidateProviderParams", "Schema compilation failed: %v", err)
 			return fmt.Errorf("failed to compile schema for %s: %w", providerName, err)
 		}
 
@@ -68,55 +75,73 @@ func ValidateProviderParams(providerName string, params interface{}) error {
 		providerValidatorMap[providerName] = schema
 		validatorMutex.Unlock()
 		compiled = schema
+		TraceDebug("Validation", "ValidateProviderParams", "Schema compiled and cached")
 	}
 
+	TraceStep("Validation", "ValidateProviderParams", 2, 2, "Validating parameters against schema")
 	docLoader := gojsonschema.NewGoLoader(params)
 	result, err := compiled.Validate(docLoader)
 	if err != nil {
+		TraceError("Validation", "ValidateProviderParams", "Validation execution failed: %v", err)
 		return fmt.Errorf("params validation failed: %w", err)
 	}
+	
 	if !result.Valid() {
+		TraceError("Validation", "ValidateProviderParams", "Validation failed with %d errors", len(result.Errors()))
 		// Aggregate errors similarly to TS message payload
 		var b strings.Builder
-		for _, e := range result.Errors() {
+		for i, e := range result.Errors() {
 			if b.Len() > 0 {
 				b.WriteString("; ")
 			}
 			b.WriteString(e.String())
+			TraceVerbose("Validation", "ValidateProviderParams", "Error %d: %s", i+1, e.String())
 		}
 		return fmt.Errorf("params validation failed: %s", b.String())
 	}
+	
+	TraceInfo("Validation", "ValidateProviderParams", "Parameters validated successfully")
 	return nil
 }
 
 // ValidateProviderSecretParams mirrors TS secret params validation
 func ValidateProviderSecretParams(providerName string, secretParams interface{}) error {
+	TraceStart("Validation", "ValidateProviderSecretParams", "Provider", providerName)
+	
 	sch, ok := PROVIDER_SCHEMAS[providerName]
 	if !ok {
+		TraceError("Validation", "ValidateProviderSecretParams", "Unknown provider: %s", providerName)
 		return fmt.Errorf("invalid provider name \"%s\"", providerName)
 	}
 
+	TraceDebug("Validation", "ValidateProviderSecretParams", "Compiling secret parameters schema")
 	schemaLoader := gojsonschema.NewGoLoader(sch.SecretParameters)
 	schema, err := gojsonschema.NewSchema(schemaLoader)
 	if err != nil {
+		TraceError("Validation", "ValidateProviderSecretParams", "Secret schema compilation failed: %v", err)
 		return fmt.Errorf("failed to compile secret schema for %s: %w", providerName, err)
 	}
 
+	TraceDebug("Validation", "ValidateProviderSecretParams", "Validating secret parameters against schema")
 	docLoader := gojsonschema.NewGoLoader(secretParams)
 	result, err := schema.Validate(docLoader)
 	if err != nil {
+		TraceError("Validation", "ValidateProviderSecretParams", "Secret validation execution failed: %v", err)
 		return fmt.Errorf("secret params validation failed: %w", err)
 	}
 	if !result.Valid() {
+		TraceError("Validation", "ValidateProviderSecretParams", "Secret validation failed with %d errors", len(result.Errors()))
 		var b strings.Builder
-		for _, e := range result.Errors() {
+		for i, e := range result.Errors() {
 			if b.Len() > 0 {
 				b.WriteString("; ")
 			}
 			b.WriteString(e.String())
+			TraceVerbose("Validation", "ValidateProviderSecretParams", "Error %d: %s", i+1, e.String())
 		}
 		return fmt.Errorf("secret params validation failed: %s", b.String())
 	}
+	TraceInfo("Validation", "ValidateProviderSecretParams", "Secret parameters validated successfully")
 	return nil
 }
 

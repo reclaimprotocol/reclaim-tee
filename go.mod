@@ -1,12 +1,11 @@
 module tee-mpc
 
-go 1.24.2
+go 1.24.6
 
 require (
 	cloud.google.com/go/kms v1.22.0
 	cloud.google.com/go/secretmanager v1.15.0
 	github.com/anjuna-security/go-nitro-attestation v0.0.0-20250527214750-dc507eadb414
-	github.com/antchfx/xpath v1.3.3
 	github.com/austinast/nitro-enclaves-sdk-go v0.0.2
 	github.com/coreos/go-json v0.0.0-20231102161613-e49c8866685a
 	github.com/ethereum/go-ethereum v1.16.2
@@ -17,11 +16,11 @@ require (
 	github.com/hf/nsm v0.0.0-20220930140112-cd181bd646b9
 	github.com/joho/godotenv v1.5.1
 	github.com/mdlayher/vsock v1.2.1
-	github.com/reclaimprotocol/jsonpathplus-go v0.0.0-20250815002525-fa349ee7148b
+	github.com/reclaimprotocol/jsonpathplus-go v1.1.4
+	github.com/reclaimprotocol/xpath-go v1.3.0
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.41.0
-	golang.org/x/net v0.43.0
 	google.golang.org/protobuf v1.36.7
 )
 
@@ -63,6 +62,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/mod v0.27.0 // indirect
+	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
