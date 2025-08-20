@@ -88,7 +88,7 @@ func (c *Client) buildResponseResults() (*ResponseResults, error) {
 	batchedSuccess := c.responseProcessingSuccessful
 	batchedDataSize := c.reconstructedResponseSize
 	finalDataSize := batchedDataSize
-	return &ResponseResults{HTTPResponse: c.lastResponseData, ResponseReceived: batchedSuccess || c.httpResponseReceived, CallbackExecuted: batchedSuccess || (c.responseCallback != nil && c.httpResponseReceived), DecryptionSuccessful: batchedSuccess || (finalDataSize > 0), DecryptedDataSize: finalDataSize, ResponseTimestamp: responseTimestamp}, nil
+	return &ResponseResults{HTTPResponse: c.lastResponseData, ResponseReceived: batchedSuccess || c.httpResponseReceived, CallbackExecuted: batchedSuccess || (len(c.lastRedactionRanges) > 0 && c.httpResponseReceived), DecryptionSuccessful: batchedSuccess || (finalDataSize > 0), DecryptedDataSize: finalDataSize, ResponseTimestamp: responseTimestamp}, nil
 }
 
 func (c *Client) buildTranscriptValidationResults() *TranscriptValidationResults {

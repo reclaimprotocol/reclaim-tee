@@ -31,7 +31,6 @@ import (
 
 	clientlib "tee-mpc/libclient"
 	"tee-mpc/providers"
-	"tee-mpc/shared"
 
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -193,11 +192,13 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 
 	// Create client configuration
 	config := &clientlib.ClientConfig{
-		TEEKURL:           "wss://tee-k.reclaimprotocol.org/ws",
-		TEETURL:           "wss://tee-t.reclaimprotocol.org/ws",
-		Timeout:           30 * time.Second,
-		Mode:              clientlib.ModeEnclave,
-		RequestRedactions: []clientlib.RedactionSpec{}, // Empty - ranges will be set directly
+		TEEKURL:              "wss://tee-k.reclaimprotocol.org/ws",
+		TEETURL:              "wss://tee-t.reclaimprotocol.org/ws",
+		Timeout:              30 * time.Second,
+		Mode:                 clientlib.ModeEnclave,
+		RequestRedactions:    []clientlib.RedactionSpec{}, // Empty - ranges will be set directly
+		ProviderParams:       providerData.PublicParams,
+		ProviderSecretParams: providerData.SecretParams,
 	}
 
 	// Create client
@@ -214,40 +215,10 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 		return C.RECLAIM_ERROR_CONNECTION_FAILED
 	}
 
-	// Generate request automatically using providers
-	req, err := providers.CreateRequest(providerData.SecretParams, providerData.PublicParams)
-	if err != nil {
-		sessionMutex.Lock()
-		delete(sessions, handle)
-		sessionMutex.Unlock()
-		return C.RECLAIM_ERROR_PROTOCOL_FAILED
-	}
+	fmt.Printf("[Lib] Starting automatic request using provider params\n")
 
-	// Set automatically generated request data
-	if err := session.Client.SetRequestData(req.Data); err != nil {
-		sessionMutex.Lock()
-		delete(sessions, handle)
-		sessionMutex.Unlock()
-		return C.RECLAIM_ERROR_PROTOCOL_FAILED
-	}
-
-	// Set automatically generated redaction ranges
-	session.Client.SetRequestRedactionRanges(req.Redactions)
-
-	// Extract hostname and port from provider URL
-	hostname, port, err := providers.GetHostPort(providerData.PublicParams, providerData.SecretParams)
-	if err != nil {
-		sessionMutex.Lock()
-		delete(sessions, handle)
-		sessionMutex.Unlock()
-		return C.RECLAIM_ERROR_PROTOCOL_FAILED
-	}
-
-	fmt.Printf("[Lib] Generated automatic request to %s:%d (%d bytes, %d redaction ranges)\n",
-		hostname, port, len(req.Data), len(req.Redactions))
-
-	// Send HTTP request
-	if err := session.Client.RequestHTTP(hostname, port); err != nil {
+	// Send HTTP request - everything is automatic from provider params!
+	if err := session.Client.RequestHTTP(); err != nil {
 		sessionMutex.Lock()
 		delete(sessions, handle)
 		sessionMutex.Unlock()
@@ -357,13 +328,8 @@ func reclaim_finish_protocol(protocol_handle C.reclaim_protocol_t, response_reda
 		return C.RECLAIM_ERROR_PROTOCOL_FAILED
 	}
 
-	// Set up automatic provider-based response callback (response_redaction_json ignored)
+	// Provider params are already set in the client config, no need for callback setup
 	fmt.Printf("[Lib] Using automatic provider-based response redactions\n")
-	callback := &ResponseCallbackImpl{
-		PublicParams: session.PublicParams,
-		SecretParams: session.SecretParams,
-	}
-	session.Client.SetResponseCallback(callback)
 
 	// Continue to phase 2 (this will resume the protocol from PhaseWaitingForRedactionRanges)
 	if err := session.Client.ContinueToPhase2(); err != nil {
@@ -518,50 +484,6 @@ func reclaim_get_version() *C.char {
 }
 
 // Helper functions
-
-// ResponseCallbackImpl implements the response callback interface with automatic provider-based redactions
-type ResponseCallbackImpl struct {
-	PublicParams *providers.HTTPProviderParams
-	SecretParams *providers.HTTPProviderSecretParams
-}
-
-func (r *ResponseCallbackImpl) OnResponseReceived(response *clientlib.HTTPResponse) (*clientlib.RedactionResult, error) {
-	// Use automatic provider-based redactions like the demo
-	fmt.Printf("[Lib] Processing full HTTP response (%d bytes) with automatic provider redactions\n", len(response.FullResponse))
-
-	ctx := &providers.ProviderCtx{Version: providers.ATTESTOR_VERSION_2_0_1}
-
-	ranges, err := providers.GetResponseRedactions(response.FullResponse, r.PublicParams, ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get automatic response redactions: %v", err)
-	}
-
-	// Convert to shared.ResponseRedactionRange format
-	var respRanges []shared.ResponseRedactionRange
-	for _, r := range ranges {
-		respRanges = append(respRanges, shared.ResponseRedactionRange{
-			Start:  r.Start,
-			Length: r.Length,
-		})
-	}
-
-	// Consolidate ranges to reduce transmission overhead
-	originalCount := len(respRanges)
-	consolidatedRanges := shared.ConsolidateResponseRedactionRanges(respRanges)
-	consolidatedCount := len(consolidatedRanges)
-
-	// Log consolidation results (if ranges were consolidated)
-	if originalCount != consolidatedCount {
-		fmt.Printf("[Lib] Consolidated redaction ranges: %d → %d (%.1f%% reduction)\n",
-			originalCount, consolidatedCount, float64(originalCount-consolidatedCount)/float64(originalCount)*100)
-	}
-
-	fmt.Printf("[Lib] Generated %d automatic redaction ranges from provider config\n", len(consolidatedRanges))
-
-	return &clientlib.RedactionResult{
-		RedactionRanges: consolidatedRanges,
-	}, nil
-}
 
 func main() {
 	// Required for CGO shared library

@@ -11,12 +11,9 @@ import (
 // ReclaimClient is the public interface for the Reclaim TEE+MPC client library
 type ReclaimClient interface {
 	Connect() error
-	RequestHTTP(hostname string, port int) error
-	SetRequestData(requestData []byte) error
-	SetRequestRedactionRanges(ranges []shared.RequestRedactionRange)
+	RequestHTTP() error
 	WaitForCompletion() <-chan struct{}
 	Close() error
-	SetResponseCallback(callback ResponseCallback)
 
 	// 2-phase operation methods
 	EnableTwoPhaseMode()
@@ -72,6 +69,10 @@ func NewReclaimClient(config ClientConfig) ReclaimClient {
 	client.forceCipherSuite = config.ForceCipherSuite
 	client.SetMode(config.Mode)
 
+	// Set provider params for automatic response redactions
+	client.providerParams = config.ProviderParams
+	client.providerSecretParams = config.ProviderSecretParams
+
 	// Initialize logger
 	logger, err := shared.NewLoggerFromEnv("client")
 	if err != nil {
@@ -109,13 +110,8 @@ func (r *ReclaimClientImpl) Connect() error {
 }
 
 // RequestHTTP initiates an HTTP request through the TEE+MPC protocol
-func (r *ReclaimClientImpl) RequestHTTP(hostname string, port int) error {
-	// Set response callback if provided
-	if r.config.ResponseCallback != nil {
-		r.Client.responseCallback = r.config.ResponseCallback
-	}
-
-	return r.Client.RequestHTTP(hostname, port)
+func (r *ReclaimClientImpl) RequestHTTP() error {
+	return r.Client.RequestHTTP()
 }
 
 // WaitForCompletion returns a channel that closes when the protocol is complete
@@ -127,14 +123,6 @@ func (r *ReclaimClientImpl) WaitForCompletion() <-chan struct{} {
 func (r *ReclaimClientImpl) Close() error {
 	r.Client.Close()
 	return nil
-}
-
-// SetResponseCallback sets the callback for handling response redactions
-func (r *ReclaimClientImpl) SetResponseCallback(callback ResponseCallback) {
-	r.config.ResponseCallback = callback
-	if r.Client != nil {
-		r.Client.responseCallback = callback
-	}
 }
 
 // EnableTwoPhaseMode enables 2-phase operation mode
@@ -190,16 +178,6 @@ func (r *ReclaimClientImpl) GetResponseResults() (*ResponseResults, error) {
 
 func (r *ReclaimClientImpl) BuildVerificationBundle(path string) error {
 	return r.Client.BuildVerificationBundle(path)
-}
-
-func (r *ReclaimClientImpl) SetRequestData(requestData []byte) error {
-	// Store the request data in the client for later use
-	r.Client.requestData = requestData
-	return nil
-}
-
-func (r *ReclaimClientImpl) SetRequestRedactionRanges(ranges []shared.RequestRedactionRange) {
-	r.Client.SetRequestRedactionRanges(ranges)
 }
 
 func (r *ReclaimClientImpl) SubmitToAttestorCore(attestorURL string, privateKey *ecdsa.PrivateKey, params ClaimTeeBundleParams) (*teeproto.ProviderClaimData, error) {

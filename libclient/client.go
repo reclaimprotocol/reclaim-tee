@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	teeproto "tee-mpc/proto"
+	"tee-mpc/providers"
 	"tee-mpc/shared"
 	"time"
 
@@ -142,8 +143,11 @@ type Client struct {
 	teetTranscriptData [][]byte // Consolidated data from TEE_T signed transcript for validation
 
 	// Library interface fields
-	responseCallback ResponseCallback // Response callback for redactions
-	clientMode       ClientMode       // Client operational mode (enclave vs standalone)
+	clientMode ClientMode // Client operational mode (enclave vs standalone)
+
+	// Provider parameters for automatic response redactions
+	providerParams       *providers.HTTPProviderParams
+	providerSecretParams *providers.HTTPProviderSecretParams
 
 	// 2-phase operation support
 	twoPhaseMode     bool          // Whether to operate in 2-phase mode
@@ -226,8 +230,9 @@ func NewClient(teekURL string) *Client {
 		teekTranscriptData: nil,
 		teetTranscriptData: nil,
 
-		responseCallback:             nil,
 		clientMode:                   ModeAuto, // Default to auto-detect
+		providerParams:               nil,
+		providerSecretParams:         nil,
 		protocolStartTime:            time.Now(),
 		lastResponseData:             nil,
 		transcriptValidationResults:  nil,
@@ -254,13 +259,24 @@ func (c *Client) SetRequestRedactionRanges(ranges []shared.RequestRedactionRange
 	c.requestRedactionRanges = ranges
 }
 
-func (c *Client) RequestHTTP(hostname string, port int) error {
+func (c *Client) RequestHTTP() error {
+	// Extract hostname and port from provider params
+	hostname, port, err := c.getHostPortFromProviderParams()
+	if err != nil {
+		return fmt.Errorf("failed to extract host and port from provider params: %v", err)
+	}
+
 	c.targetHost = hostname
 	c.targetPort = port
 
 	c.logger.Info("Requesting connection",
 		zap.String("hostname", hostname),
 		zap.Int("port", port))
+
+	// Generate request data and redaction ranges automatically from provider params
+	if err := c.generateAutomaticRequestData(); err != nil {
+		return fmt.Errorf("failed to generate automatic request data: %v", err)
+	}
 
 	// Store connection request data to be sent once session ID is received
 	c.pendingConnectionRequest = &shared.RequestConnectionData{
@@ -494,6 +510,77 @@ func (c *Client) getProtocolState() (ProtocolPhase, int) {
 	return c.protocolPhase, count
 }
 
+// getResponseRedactions generates automatic response redactions using provider params
+func (c *Client) getResponseRedactions(response *HTTPResponse) ([]shared.ResponseRedactionRange, error) {
+	if c.providerParams == nil {
+		c.logger.Debug("No provider params available for automatic redactions")
+		return []shared.ResponseRedactionRange{}, nil
+	}
+
+	if len(c.providerParams.ResponseRedactions) == 0 {
+		c.logger.Debug("No response redaction rules specified in provider params")
+		return []shared.ResponseRedactionRange{}, nil
+	}
+
+	ctx := &providers.ProviderCtx{Version: providers.ATTESTOR_VERSION_2_0_1}
+
+	ranges, err := providers.GetResponseRedactions(response.FullResponse, c.providerParams, ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get automatic response redactions: %v", err)
+	}
+
+	// Convert to shared.ResponseRedactionRange format
+	var respRanges []shared.ResponseRedactionRange
+	for _, r := range ranges {
+		respRanges = append(respRanges, shared.ResponseRedactionRange{
+			Start:  r.Start,
+			Length: r.Length,
+		})
+	}
+
+	// Consolidate ranges to reduce transmission overhead
+	consolidatedRanges := shared.ConsolidateResponseRedactionRanges(respRanges)
+
+	c.logger.Info("Generated automatic response redactions",
+		zap.Int("original_ranges", len(respRanges)),
+		zap.Int("consolidated_ranges", len(consolidatedRanges)))
+
+	return consolidatedRanges, nil
+}
+
+// generateAutomaticRequestData generates request data and redaction ranges automatically from provider params
+func (c *Client) generateAutomaticRequestData() error {
+	if c.providerParams == nil {
+		c.logger.Debug("No provider params available for automatic request generation")
+		return fmt.Errorf("provider params required for automatic request generation")
+	}
+
+	// Generate request using provider params
+	req, err := providers.CreateRequest(c.providerSecretParams, c.providerParams)
+	if err != nil {
+		return fmt.Errorf("failed to create request from provider params: %v", err)
+	}
+
+	// Set the generated request data and redaction ranges
+	c.requestData = req.Data
+	c.requestRedactionRanges = req.Redactions
+
+	c.logger.Info("Generated automatic request from provider params",
+		zap.Int("request_data_bytes", len(req.Data)),
+		zap.Int("redaction_ranges", len(req.Redactions)))
+
+	return nil
+}
+
+// getHostPortFromProviderParams extracts hostname and port from provider params
+func (c *Client) getHostPortFromProviderParams() (string, int, error) {
+	if c.providerParams == nil {
+		return "", 0, fmt.Errorf("provider params required to determine host and port")
+	}
+
+	return providers.GetHostPort(c.providerParams, c.providerSecretParams)
+}
+
 // NOTE: Session coordination removed - handled naturally by RequestHTTP()
 // The client receives sessionID asynchronously via handleSessionReady() and
 // RequestHTTP() automatically waits for it before sending connection requests.
@@ -660,15 +747,15 @@ func (c *Client) ContinueToPhase2() error {
 
 	c.logger.Info("Continuing to phase 2 (redaction and completion)")
 
-	// If we have a response callback and response data, call it to get redaction ranges
-	if c.responseCallback != nil && c.lastResponseData != nil {
-		c.logger.Info("Calling response callback to get redaction ranges")
-		result, err := c.responseCallback.OnResponseReceived(c.lastResponseData)
+	// If we have provider params and response data, get redaction ranges automatically
+	if c.lastResponseData != nil {
+		c.logger.Info("Getting automatic redaction ranges from provider params")
+		ranges, err := c.getResponseRedactions(c.lastResponseData)
 		if err != nil {
-			c.logger.Error("Response callback error", zap.Error(err))
-		} else if result != nil {
-			c.logger.Info("Response callback returned redaction ranges", zap.Int("count", len(result.RedactionRanges)))
-			c.lastRedactionRanges = result.RedactionRanges
+			c.logger.Error("Automatic response redaction error", zap.Error(err))
+		} else {
+			c.logger.Info("Automatic response redactions generated", zap.Int("count", len(ranges)))
+			c.lastRedactionRanges = ranges
 		}
 	}
 

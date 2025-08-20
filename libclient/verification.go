@@ -214,30 +214,26 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			httpResponse := c.parseHTTPResponse([]byte(actualHTTPResponse))
 			c.lastResponseData = httpResponse
 
-			// Call response callback now that we have complete HTTP response
-			if c.responseCallback != nil && len(c.lastRedactionRanges) == 0 {
-				c.logger.Info("Calling response callback with complete HTTP response", zap.Int("response_bytes", len(actualHTTPResponse)))
+			// Get automatic response redactions now that we have complete HTTP response
+			if len(c.lastRedactionRanges) == 0 {
+				c.logger.Info("Getting automatic response redactions", zap.Int("response_bytes", len(actualHTTPResponse)))
 
-				result, err := c.responseCallback.OnResponseReceived(httpResponse)
+				ranges, err := c.getResponseRedactions(httpResponse)
 
 				if err != nil {
-					c.logger.Error("Response callback error", zap.Error(err))
-				} else if result != nil {
-					c.logger.Info("Response callback completed",
-						zap.Int("redaction_ranges", len(result.RedactionRanges)))
+					c.logger.Error("Automatic response redaction error", zap.Error(err))
+				} else {
+					c.logger.Info("Automatic response redactions generated",
+						zap.Int("redaction_ranges", len(ranges)))
 
 					// Store results for use in redaction spec generation
-					c.lastRedactionRanges = result.RedactionRanges
+					c.lastRedactionRanges = ranges
 
-					c.logger.Info("Stored callback results",
-						zap.Int("ranges_count", len(result.RedactionRanges)))
-
+					c.logger.Info("Stored automatic redaction results",
+						zap.Int("ranges_count", len(ranges)))
 				}
-			} else if c.responseCallback != nil {
-				c.logger.Info("Response callback already executed", zap.Int("cached_ranges", len(c.lastRedactionRanges)))
 			} else {
-				// In 2-phase mode, store the response data for later retrieval
-				c.logger.Info("2-phase mode: Response data stored for later retrieval", zap.Int("response_bytes", len(actualHTTPResponse)))
+				c.logger.Info("Response redactions already generated", zap.Int("cached_ranges", len(c.lastRedactionRanges)))
 			}
 
 			// Display the raw HTTP response (redaction will be handled at TLS record level)

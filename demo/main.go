@@ -93,22 +93,18 @@ func main() {
 		},
 	}
 
-	req, err := providers.CreateRequest(secretParams, publicParams)
-	if err != nil {
-		log.Fatalf("createRequest: %s", err.Error())
-	}
+	logger.Info("Demo provider params configured")
 
-	logger.Info("Demo request created")
-
-	// Create client configuration (without RequestRedactions since we'll set ranges directly)
+	// Create client configuration with provider params for automatic request/response handling
 	config := clientlib.ClientConfig{
-		TEEKURL:          teekURL,
-		TEETURL:          teetURL,
-		Timeout:          clientlib.DefaultConnectionTimeout,
-		Mode:             clientlib.ModeAuto,
-		ResponseCallback: &DemoResponseCallback{Params: publicParams},
-		ForceTLSVersion:  forceTLSVersion,
-		ForceCipherSuite: forceCipherSuite,
+		TEEKURL:              teekURL,
+		TEETURL:              teetURL,
+		Timeout:              clientlib.DefaultConnectionTimeout,
+		Mode:                 clientlib.ModeAuto,
+		ProviderParams:       publicParams,
+		ProviderSecretParams: secretParams,
+		ForceTLSVersion:      forceTLSVersion,
+		ForceCipherSuite:     forceCipherSuite,
 	}
 
 	// Create client using library interface
@@ -122,17 +118,8 @@ func main() {
 		return
 	}
 
-	// Set the demo request data and redaction ranges directly
-	client.SetRequestData(req.Data)
-	client.SetRequestRedactionRanges(req.Redactions)
-
-	host, port, err := providers.GetHostPort(publicParams, secretParams)
-	if err != nil {
-		logger.Fatal("Failed to get host and port", zap.Error(err))
-	}
-
-	// Request HTTP to github.com (supports all cipher suites)
-	if err := client.RequestHTTP(host, port); err != nil {
+	// Request HTTP - everything is automatic from provider params!
+	if err := client.RequestHTTP(); err != nil {
 		logger.Error("Failed to request HTTP", zap.Error(err))
 		fmt.Printf("❌ Failed to request HTTP: %v\n", err)
 		return
@@ -300,35 +287,4 @@ func autoDetectTEETURL(teekURL string) string {
 			return "ws://localhost:8081/ws"
 		}
 	}
-}
-
-// DemoResponseCallback provides a demo implementation showing response redaction
-type DemoResponseCallback struct {
-	Params *providers.HTTPProviderParams
-}
-
-// OnResponseReceived implements the ResponseCallback interface with demo redactions
-func (d *DemoResponseCallback) OnResponseReceived(response *clientlib.HTTPResponse) (*clientlib.RedactionResult, error) {
-	// Work with the full HTTP response for redaction calculations
-	fullHTTPResponse := string(response.FullResponse)
-
-	fmt.Printf("[DemoCallback] Processing full HTTP response (%d bytes)\n", len(fullHTTPResponse))
-
-	ctx := &providers.ProviderCtx{Version: providers.ATTESTOR_VERSION_2_0_1}
-
-	ranges, err := providers.GetResponseRedactions(response.FullResponse, d.Params, ctx)
-	if err != nil {
-		return nil, err
-	}
-	var respRanges []shared.ResponseRedactionRange
-	for _, r := range ranges {
-		respRanges = append(respRanges, shared.ResponseRedactionRange{
-			Start:  r.Start,
-			Length: r.Length,
-		})
-	}
-
-	return &clientlib.RedactionResult{
-		RedactionRanges: respRanges,
-	}, nil
 }

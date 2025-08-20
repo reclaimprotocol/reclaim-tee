@@ -183,32 +183,6 @@ func (c *Client) validateRedactionRanges(ranges []shared.RequestRedactionRange, 
 	return nil
 }
 
-func (c *Client) triggerResponseCallback(responseData []byte) {
-	if c.responseCallback == nil {
-		return
-	}
-	response := c.parseHTTPResponse(responseData)
-	c.logger.Info("Triggering response callback", zap.Int("data_bytes", len(responseData)))
-	c.lastResponseData = response
-	result, err := c.responseCallback.OnResponseReceived(response)
-	if err != nil {
-		c.logger.Error("Response callback error", zap.Error(err))
-		return
-	}
-	if result != nil {
-		c.logger.Info("Response callback completed",
-			zap.Int("redaction_ranges", len(result.RedactionRanges)))
-		c.lastRedactionRanges = result.RedactionRanges
-		c.logger.Info("Stored redaction ranges from callback", zap.Int("count", len(result.RedactionRanges)))
-		for i, r := range result.RedactionRanges {
-			c.logger.Debug("Redaction range",
-				zap.Int("index", i+1),
-				zap.Int("start", r.Start),
-				zap.Int("end", r.Start+r.Length-1))
-		}
-	}
-}
-
 func (c *Client) parseHTTPResponse(data []byte) *HTTPResponse {
 	dataStr := string(data)
 	lines := strings.Split(dataStr, "\r\n")
