@@ -523,11 +523,13 @@ func (c *Client) processBatchedSignedRedactedDecryptionStreamsData(batchedStream
 			c.displayRedactedResponseFromRandomGarbage(consolidatedRanges)
 
 			// Check if we can now proceed with full protocol completion
-			transcriptsComplete := c.transcriptsReceived >= 2
+			c.protocolStateMutex.RLock()
+			bothTranscriptsReceived := c.teeKTranscriptReceived && c.teeTTranscriptReceived
+			c.protocolStateMutex.RUnlock()
 			signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
 			// Validation is now handled centrally by checkValidationAndCompletion()
-			if transcriptsComplete && signaturesValid {
+			if bothTranscriptsReceived && signaturesValid {
 				c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
 			}
 		}

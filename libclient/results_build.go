@@ -92,7 +92,9 @@ func (c *Client) buildResponseResults() (*ResponseResults, error) {
 }
 
 func (c *Client) buildTranscriptValidationResults() *TranscriptValidationResults {
-	bothReceived := c.transcriptsReceived >= 2
+	c.protocolStateMutex.RLock()
+	bothReceived := c.teeKTranscriptReceived && c.teeTTranscriptReceived
+	c.protocolStateMutex.RUnlock()
 	teekValid := c.teekSignedMessage != nil
 	teetValid := c.teetSignedMessage != nil
 	return &TranscriptValidationResults{ClientCapturedData: 0, ClientCapturedBytes: 0, TEEKValidation: TranscriptDataValidation{DataReceived: 1, DataMatched: 1, ValidationPassed: teekValid}, TEETValidation: TranscriptDataValidation{DataReceived: 1, DataMatched: 1, ValidationPassed: teetValid}, OverallValid: bothReceived && teekValid && teetValid, Summary: "Transcript validation based on SignedMessage reception and verification"}

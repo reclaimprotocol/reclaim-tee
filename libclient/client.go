@@ -107,9 +107,10 @@ type Client struct {
 
 	completionFlags int64 // Atomic bit flags for completion state tracking
 
-	protocolPhase       ProtocolPhase // Current protocol phase
-	transcriptsReceived int           // Count of transcripts received (0, 1, 2)
-	protocolStateMutex  sync.RWMutex  // Protect simple state
+	protocolPhase          ProtocolPhase // Current protocol phase
+	teeKTranscriptReceived bool          // TEE_K transcript received
+	teeTTranscriptReceived bool          // TEE_T transcript received
+	protocolStateMutex     sync.RWMutex  // Protect simple state
 
 	// Validation tracking to ensure validation runs exactly once
 	validationExecuted bool       // Track if transcript validation has been executed
@@ -196,7 +197,8 @@ func NewClient(teekURL string) *Client {
 		completionFlags:      0,
 
 		protocolPhase:          PhaseHandshaking,
-		transcriptsReceived:    0,
+		teeKTranscriptReceived: false,
+		teeTTranscriptReceived: false,
 		protocolStateMutex:     sync.RWMutex{},
 		validationExecuted:     false,
 		validationMutex:        sync.Mutex{},
@@ -363,23 +365,41 @@ func (c *Client) advanceToPhase(newPhase ProtocolPhase) {
 	}
 }
 
-// incrementTranscriptCount increments transcript count and advances to PhaseComplete if both received
-func (c *Client) incrementTranscriptCount() {
+// markTEEKTranscriptReceived marks TEE_K transcript as received and checks for completion
+func (c *Client) markTEEKTranscriptReceived() {
 	c.protocolStateMutex.Lock()
-	c.transcriptsReceived++
-	count := c.transcriptsReceived
+	c.teeKTranscriptReceived = true
+	both := c.teeKTranscriptReceived && c.teeTTranscriptReceived
 	c.protocolStateMutex.Unlock()
 
-	c.logger.Info("Transcript received", zap.Int("count", count), zap.Int("total", 2))
+	c.logger.Info("TEE_K transcript received", zap.Bool("tee_k", true), zap.Bool("tee_t", c.teeTTranscriptReceived), zap.Bool("both", both))
 
-	if count >= 2 {
-		// Check if comprehensive signature verification is also complete
-		if c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
-			c.logger.Info("Both transcripts received AND redacted streams processed - completing protocol")
-			c.advanceToPhase(PhaseComplete)
-		} else {
-			c.logger.Info("Both transcripts received but waiting for redacted streams processing...")
-		}
+	if both {
+		c.checkForProtocolCompletion()
+	}
+}
+
+// markTEETTranscriptReceived marks TEE_T transcript as received and checks for completion
+func (c *Client) markTEETTranscriptReceived() {
+	c.protocolStateMutex.Lock()
+	c.teeTTranscriptReceived = true
+	both := c.teeKTranscriptReceived && c.teeTTranscriptReceived
+	c.protocolStateMutex.Unlock()
+
+	c.logger.Info("TEE_T transcript received", zap.Bool("tee_k", c.teeKTranscriptReceived), zap.Bool("tee_t", true), zap.Bool("both", both))
+
+	if both {
+		c.checkForProtocolCompletion()
+	}
+}
+
+// checkForProtocolCompletion checks if protocol can be completed
+func (c *Client) checkForProtocolCompletion() {
+	if c.hasCompletionFlag(CompletionFlagTEEKSignatureValid) {
+		c.logger.Info("Both transcripts received AND redacted streams processed - completing protocol")
+		c.advanceToPhase(PhaseComplete)
+	} else {
+		c.logger.Info("Both transcripts received but waiting for redacted streams processing...")
 	}
 }
 
@@ -387,17 +407,19 @@ func (c *Client) incrementTranscriptCount() {
 // This ensures validation runs exactly once when both transcripts are ready, before completion
 func (c *Client) checkValidationAndCompletion(reason string) {
 	c.protocolStateMutex.Lock()
-	transcriptCount := c.transcriptsReceived
+	bothTranscriptsReceived := c.teeKTranscriptReceived && c.teeTTranscriptReceived
 	currentPhase := c.protocolPhase
 	c.protocolStateMutex.Unlock()
 
 	hasValidSignature := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
-	transcriptsComplete := transcriptCount >= 2
+	transcriptsComplete := bothTranscriptsReceived
 	signaturesValid := hasValidSignature
 
 	c.logger.Info("Checking validation and completion",
 		zap.String("reason", reason),
-		zap.Int("transcript_count", transcriptCount),
+		zap.Bool("tee_k_received", c.teeKTranscriptReceived),
+		zap.Bool("tee_t_received", c.teeTTranscriptReceived),
+		zap.Bool("both_received", bothTranscriptsReceived),
 		zap.Bool("has_valid_signature", hasValidSignature),
 		zap.String("current_phase", currentPhase.String()))
 
@@ -411,9 +433,10 @@ func (c *Client) checkValidationAndCompletion(reason string) {
 	if transcriptsComplete && signaturesValid && c.hasValidationRun() && currentPhase != PhaseComplete {
 		c.logger.Info("All completion conditions met (including validation) - advancing to complete phase")
 		c.advanceToPhase(PhaseComplete)
-	} else if transcriptCount < 2 {
+	} else if !bothTranscriptsReceived {
 		c.logger.Debug("Completion pending: waiting for more transcripts",
-			zap.Int("current", transcriptCount), zap.Int("needed", 2))
+			zap.Bool("tee_k_received", c.teeKTranscriptReceived),
+			zap.Bool("tee_t_received", c.teeTTranscriptReceived))
 	} else if !hasValidSignature {
 		c.logger.Debug("Completion pending: waiting for valid TEE_K signature")
 	} else if !c.hasValidationRun() {
@@ -458,7 +481,17 @@ func (c *Client) runValidationOnce() {
 func (c *Client) getProtocolState() (ProtocolPhase, int) {
 	c.protocolStateMutex.RLock()
 	defer c.protocolStateMutex.RUnlock()
-	return c.protocolPhase, c.transcriptsReceived
+
+	// Convert boolean flags to count for backward compatibility
+	count := 0
+	if c.teeKTranscriptReceived {
+		count++
+	}
+	if c.teeTTranscriptReceived {
+		count++
+	}
+
+	return c.protocolPhase, count
 }
 
 // NOTE: Session coordination removed - handled naturally by RequestHTTP()

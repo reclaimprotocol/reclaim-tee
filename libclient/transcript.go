@@ -217,15 +217,12 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 	c.logger.Info("Signature already verified on SignedMessage", zap.String("source", sourceName))
 	c.logger.Info("TEE_K comprehensive verification: have all expected redacted streams from combined message", zap.Int("streams_count", c.expectedRedactedStreams))
 
-	// Increment transcript count (parallel to existing logic)
-	c.incrementTranscriptCount()
-	// Always set signature as valid since we verified the SignedMessage upfront
+	// Set completion flag before marking transcript received (no race condition with boolean approach)
 	c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+	// Mark TEE_K transcript as received and check for completion
+	c.markTEEKTranscriptReceived()
 
 	c.logger.Info("Marked transcript as received", zap.String("source", sourceName), zap.Bool("signature_valid", true))
-
-	transcriptsComplete := c.transcriptsReceived >= 2
-	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
 	c.logger.Info("Signed transcript processed successfully", zap.String("source", sourceName))
 
@@ -233,14 +230,7 @@ func (c *Client) processSignedTranscriptDataWithStreams(signedTranscript *shared
 	c.logger.Info("Transcript summary", zap.String("source", sourceName))
 
 	// Validation is now handled centrally by checkValidationAndCompletion()
-
-	if transcriptsComplete {
-		if signaturesValid {
-			c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
-		} else {
-			c.logger.Error("Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
-		}
-	}
+	// Success logging is handled in the specific transcript received methods
 }
 
 // processSignedTranscriptData contains the shared logic for processing SignedTranscript data
@@ -286,18 +276,15 @@ func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTran
 	if signedTranscript.RequestMetadata != nil {
 		// This is TEE_K
 		c.logger.Info("TEE_K transcript received")
-		c.incrementTranscriptCount()
 		c.setCompletionFlag(CompletionFlagTEEKSignatureValid)
+		c.markTEEKTranscriptReceived()
 	} else {
 		// This is TEE_T
 		c.logger.Info("TEE_T transcript received")
-		c.incrementTranscriptCount()
+		c.markTEETTranscriptReceived()
 	}
 
 	c.logger.Info("Marked transcript as received", zap.String("source", sourceName), zap.Bool("signature_valid", true))
-
-	transcriptsComplete := c.transcriptsReceived >= 2
-	signaturesValid := c.hasCompletionFlag(CompletionFlagTEEKSignatureValid)
 
 	c.logger.Info("Signed transcript processed successfully", zap.String("source", sourceName))
 
@@ -318,13 +305,6 @@ func (c *Client) processSignedTranscriptData(signedTranscript *shared.SignedTran
 	// }
 
 	// Validation is now handled centrally by checkValidationAndCompletion()
-
-	if transcriptsComplete {
-		if signaturesValid {
-			c.logger.Info("Received signed transcripts from both TEE_K and TEE_T with VALID signatures!")
-		} else {
-			c.logger.Error("Received signed transcripts from both TEE_K and TEE_T but signatures are INVALID!")
-		}
-	}
+	// Success logging is handled in the specific transcript received methods
 
 }

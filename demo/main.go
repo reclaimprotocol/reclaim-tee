@@ -72,24 +72,24 @@ func main() {
 	logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
 
 	publicParams := &providers.HTTPProviderParams{
-		URL:    "https://vpic.nhtsa.dot.gov/api/vehicles/getallmanufacturers?format=json",
+		URL:    "https://vpic.nhtsa.dot.gov/",
 		Method: "GET",
 		ResponseMatches: []providers.ResponseMatch{
 			{
-				Value: "TESLA, INC.",
+				Value: "manufacturerinfo@dot.gov",
 				Type:  "contains",
 			},
 		},
 		ResponseRedactions: []providers.ResponseRedaction{
 			{
-				JSONPath: "$.Results[*].Mfr_Name",
+				XPath: "/html/body/div[2]/div[3]/div",
 			},
 		},
 	}
 
 	secretParams := &providers.HTTPProviderSecretParams{
 		Headers: map[string]string{
-			"accept": "application/json, text/plain, */*",
+			"Accept": "*/*",
 		},
 	}
 
