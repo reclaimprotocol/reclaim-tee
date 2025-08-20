@@ -50,30 +50,43 @@ func processRedactionRequest(
 	bodyStartIdx int,
 	resChunks []shared.RequestRedactionRange,
 ) ([]RedactionItem, error) {
+	TraceStart("Response", "processRedactionRequest", "XPath", rs.XPath, "JSONPath", rs.JSONPath, "Regex", rs.Regex)
 	items := []RedactionItem{}
 
 	// 1) XPath branch
 	if rs.XPath != "" {
+		TraceStep("Response", "processRedactionRequest", 1, 3, "Processing XPath extraction")
 		contentsOnly := rs.JSONPath != ""
+		TraceDebug("Response", "processRedactionRequest", "XPath: '%s', contents only: %t", rs.XPath, contentsOnly)
+
 		locs, err := extractHTMLElementsIndexes(body, rs.XPath, contentsOnly)
 		if err != nil {
+			TraceError("Response", "processRedactionRequest", "XPath extraction failed: %v", err)
 			return nil, err
 		}
-		for _, ix := range locs {
+		TraceDebug("Response", "processRedactionRequest", "XPath found %d elements", len(locs))
+		for i, ix := range locs {
 			startAbs := ix.start
 			endAbs := ix.end
+			TraceVerbose("Response", "processRedactionRequest", "Processing XPath element %d: [%d:%d]", i+1, startAbs, endAbs)
+
 			if rs.JSONPath != "" {
+				TraceDebug("Response", "processRedactionRequest", "Running JSONPath '%s' within XPath element", rs.JSONPath)
 				// run JSONPath within element
 				elem := body[startAbs:endAbs]
 				jlocs, err := extractJSONValueIndexes([]byte(elem), rs.JSONPath)
 				if err != nil {
+					TraceError("Response", "processRedactionRequest", "JSONPath within XPath failed: %v", err)
 					return nil, err
 				}
-				for _, j := range jlocs {
-					jStartAbs := startAbs + j.start
-					jEndAbs := startAbs + j.end
+				TraceDebug("Response", "processRedactionRequest", "JSONPath found %d values within XPath element", len(jlocs))
+				for j, jsonLoc := range jlocs {
+					jStartAbs := startAbs + jsonLoc.start
+					jEndAbs := startAbs + jsonLoc.end
+					TraceVerbose("Response", "processRedactionRequest", "Applying regex to JSON value %d: [%d:%d]", j+1, jStartAbs, jEndAbs)
 					proc, err := applyRegexWindow(body, *rs, jStartAbs, jEndAbs, bodyStartIdx, resChunks)
 					if err != nil {
+						TraceError("Response", "processRedactionRequest", "Regex application failed: %v", err)
 						return nil, err
 					}
 					items = append(items, proc...)
@@ -82,56 +95,89 @@ func processRedactionRequest(
 			}
 			proc, err := applyRegexWindow(body, *rs, startAbs, endAbs, bodyStartIdx, resChunks)
 			if err != nil {
+				TraceError("Response", "processRedactionRequest", "Regex application failed: %v", err)
 				return nil, err
 			}
 			items = append(items, proc...)
 		}
+		TraceInfo("Response", "processRedactionRequest", "XPath processing complete, produced %d items", len(items))
 		return items, nil
 	}
 
 	// 2) JSONPath-only branch
 	if rs.JSONPath != "" {
+		TraceStep("Response", "processRedactionRequest", 2, 3, "Processing JSONPath-only extraction")
+		TraceDebug("Response", "processRedactionRequest", "JSONPath: '%s'", rs.JSONPath)
+
 		locs, err := extractJSONValueIndexes([]byte(body), rs.JSONPath)
 		if err != nil {
+			TraceError("Response", "processRedactionRequest", "JSONPath extraction failed: %v", err)
 			return nil, err
 		}
-		for _, j := range locs {
-			startAbs := j.start
-			endAbs := j.end
+		TraceDebug("Response", "processRedactionRequest", "JSONPath found %d values", len(locs))
+
+		for i, jsonLoc := range locs {
+			startAbs := jsonLoc.start
+			endAbs := jsonLoc.end
+			TraceVerbose("Response", "processRedactionRequest", "Processing JSON value %d: [%d:%d]", i+1, startAbs, endAbs)
+
 			proc, err := applyRegexWindow(body, *rs, startAbs, endAbs, bodyStartIdx, resChunks)
 			if err != nil {
+				TraceError("Response", "processRedactionRequest", "Regex application failed: %v", err)
 				return nil, err
 			}
 			items = append(items, proc...)
 		}
+		TraceInfo("Response", "processRedactionRequest", "JSONPath processing complete, produced %d items", len(items))
 		return items, nil
 	}
 
 	// 3) Regex-only branch
 	if rs.Regex != "" {
+		TraceStep("Response", "processRedactionRequest", 3, 3, "Processing Regex-only extraction")
+		TraceDebug("Response", "processRedactionRequest", "Regex: '%s'", rs.Regex)
+
 		proc, err := applyRegexWindow(body, *rs, 0, len(body), bodyStartIdx, resChunks)
 		if err != nil {
+			TraceError("Response", "processRedactionRequest", "Regex processing failed: %v", err)
 			return nil, err
 		}
+		TraceInfo("Response", "processRedactionRequest", "Regex processing complete, produced %d items", len(proc))
 		return proc, nil
 	}
 
+	TraceError("Response", "processRedactionRequest", "No valid extraction method specified")
 	return nil, fmt.Errorf("Expected either xPath, jsonPath or regex for redaction")
 }
 
 // convertResponsePosToAbsolutePos converts a position within the response body to absolute position in the full response,
-// accounting for chunked transfer encoding.
+// accounting for chunked transfer encoding. This implementation exactly matches TypeScript behavior.
 func convertResponsePosToAbsolutePos(pos int, bodyStartIdx int, chunks []shared.RequestRedactionRange) int {
+	TraceVerbose("Response", "convertResponsePosToAbsolutePos", "Converting body pos %d, bodyStart %d, chunks %d", pos, bodyStartIdx, len(chunks))
 	if len(chunks) > 0 {
+
 		chunkBodyStart := 0
 		for _, ch := range chunks {
 			chunkSize := ch.Length
-			if pos >= chunkBodyStart && pos <= chunkBodyStart+chunkSize {
+
+			// Handle boundary positions exactly like TypeScript
+			if pos >= chunkBodyStart && pos < (chunkBodyStart+chunkSize) {
+				TraceVerbose("Response", "convertResponsePosToAbsolutePos", "Position %d maps to chunk at body offset %d, absolute pos %d",
+					pos, chunkBodyStart, pos-chunkBodyStart+ch.Start)
 				return pos - chunkBodyStart + ch.Start
 			}
+			// Handle positions exactly at chunk boundary (go to next chunk)
+			if pos == (chunkBodyStart + chunkSize) {
+				TraceVerbose("Response", "convertResponsePosToAbsolutePos", "Position %d at chunk boundary, mapping to end of current chunk: %d",
+					pos, ch.Start+ch.Length)
+				return ch.Start + ch.Length
+			}
+
 			chunkBodyStart += chunkSize
 		}
-		panic("position out of range")
+
+		TraceError("Response", "convertResponsePosToAbsolutePos", "Position %d out of range for %d chunks", pos, len(chunks))
+		return -1 // Match TypeScript error handling pattern
 	}
 	return bodyStartIdx + pos
 }
@@ -153,7 +199,46 @@ func getRedactionsForChunkHeaders(from, to int, chunks []shared.RequestRedaction
 }
 
 // parseHTTPResponseBytes parses an HTTP/1.1 response and returns structural metadata and chunk ranges.
+// This function now uses the new streaming parser internally but provides the same interface.
 func parseHTTPResponseBytes(data []byte) (*httpParsedResponse, error) {
+	TraceStart("Response", "parseHTTPResponseBytes", "Data size", len(data))
+
+	// Use the new streaming parser for complete HTTP/1.1 compliance
+	parser := NewHTTPResponseParser()
+
+	// Process all data at once
+	if err := parser.OnChunk(data); err != nil {
+		TraceError("Response", "parseHTTPResponseBytes", "Failed to process response data: %v", err)
+		return nil, err
+	}
+
+	// Signal end of stream
+	if err := parser.StreamEnded(); err != nil {
+		TraceError("Response", "parseHTTPResponseBytes", "Failed to finalize response: %v", err)
+		return nil, err
+	}
+
+	// Convert new format to legacy format for compatibility
+	res := &httpParsedResponse{
+		StatusCode:          parser.Response.StatusCode,
+		StatusMessage:       parser.Response.StatusMessage,
+		StatusLineEndIndex:  parser.Response.StatusLineEndIndex,
+		HeaderEndIdx:        parser.Response.HeaderEndIdx,
+		BodyStartIndex:      parser.Response.BodyStartIndex,
+		Body:                parser.Response.Body,
+		HeaderLowerToRanges: parser.Response.HeaderLowerToRanges,
+		Chunks:              parser.Response.Chunks,
+	}
+
+	TraceInfo("Response", "parseHTTPResponseBytes", "HTTP response parsed successfully - Status: %d, Body: %d bytes, Chunks: %d",
+		res.StatusCode, len(res.Body), len(res.Chunks))
+	return res, nil
+}
+
+// parseHTTPResponseBytesLegacy provides the old implementation for comparison/fallback
+func parseHTTPResponseBytesLegacy(data []byte) (*httpParsedResponse, error) {
+	TraceStart("Response", "parseHTTPResponseBytesLegacy", "Data size", len(data))
+
 	res := &httpParsedResponse{
 		StatusCode:          0,
 		StatusMessage:       "",
@@ -163,13 +248,17 @@ func parseHTTPResponseBytes(data []byte) (*httpParsedResponse, error) {
 		HeaderLowerToRanges: map[string]shared.RequestRedactionRange{},
 	}
 
+	TraceStep("Response", "parseHTTPResponseBytes", 1, 4, "Parsing status line")
 	// find status line end
 	statusLineEnd := bytes.Index(data, []byte("\r\n"))
 	if statusLineEnd == -1 {
+		TraceError("Response", "parseHTTPResponseBytes", "No CRLF found for status line")
 		return nil, errors.New("invalid HTTP response: no CRLF for status line")
 	}
 	res.StatusLineEndIndex = statusLineEnd
 	statusLine := string(data[:statusLineEnd])
+	TraceDebug("Response", "parseHTTPResponseBytes", "Status line: '%s'", statusLine)
+
 	// parse status code and message
 	parts := strings.SplitN(statusLine, " ", 3)
 	if len(parts) >= 2 {
@@ -178,16 +267,21 @@ func parseHTTPResponseBytes(data []byte) (*httpParsedResponse, error) {
 		if len(parts) >= 3 {
 			res.StatusMessage = parts[2]
 		}
+		TraceDebug("Response", "parseHTTPResponseBytes", "Parsed status: %d %s", res.StatusCode, res.StatusMessage)
 	}
 
+	TraceStep("Response", "parseHTTPResponseBytes", 2, 4, "Finding headers and body separator")
 	// find header end (double CRLF)
 	headerEnd := bytes.Index(data, []byte("\r\n\r\n"))
 	if headerEnd == -1 {
+		TraceError("Response", "parseHTTPResponseBytes", "No header/body separator found")
 		return nil, errors.New("invalid HTTP response: no header/body separator found")
 	}
 	res.HeaderEndIdx = headerEnd
 	res.BodyStartIndex = headerEnd + 4
+	TraceDebug("Response", "parseHTTPResponseBytes", "Header end: %d, Body start: %d", headerEnd, res.BodyStartIndex)
 
+	TraceStep("Response", "parseHTTPResponseBytes", 3, 4, "Parsing headers")
 	// locate headers and build header map (lower-case names)
 	headersSection := data[res.StatusLineEndIndex+2 : headerEnd]
 	lower := bytes.ToLower(headersSection)
@@ -196,6 +290,7 @@ func parseHTTPResponseBytes(data []byte) (*httpParsedResponse, error) {
 	offset := res.StatusLineEndIndex + 2
 	lines := bytes.Split(headersSection, []byte("\r\n"))
 	pos := offset
+	headerCount := 0
 	for _, line := range lines {
 		if len(line) == 0 {
 			pos += 2
@@ -206,29 +301,44 @@ func parseHTTPResponseBytes(data []byte) (*httpParsedResponse, error) {
 			name := strings.ToLower(string(line[:colon]))
 			// store full header line range
 			res.HeaderLowerToRanges[name] = shared.RequestRedactionRange{Start: pos, Length: len(line), Type: "sensitive"}
+			headerCount++
+			TraceVerbose("Response", "parseHTTPResponseBytes", "Header '%s': [%d:%d]", name, pos, pos+len(line))
 		}
 		pos += len(line) + 2
 	}
+	TraceDebug("Response", "parseHTTPResponseBytes", "Parsed %d headers", headerCount)
 
 	res.Body = data[res.BodyStartIndex:]
+	TraceDebug("Response", "parseHTTPResponseBytes", "Initial body size: %d bytes", len(res.Body))
 
+	TraceStep("Response", "parseHTTPResponseBytes", 4, 4, "Checking for chunked transfer encoding")
 	// detect chunked transfer-encoding
 	transfer := findHeaderValue(lower, []byte("transfer-encoding"))
 	if strings.Contains(strings.ToLower(transfer), "chunked") {
+		TraceDebug("Response", "parseHTTPResponseBytes", "Chunked transfer encoding detected")
 		chunks, err := parseChunkBodyRanges(data, res.BodyStartIndex)
 		if err != nil {
+			TraceError("Response", "parseHTTPResponseBytes", "Failed to parse chunks: %v", err)
 			return nil, err
 		}
 		res.Chunks = chunks
+		TraceDebug("Response", "parseHTTPResponseBytes", "Parsed %d chunks", len(chunks))
 
 		// Reconstruct the actual body content from chunks (without chunk headers/separators)
 		var bodyContent []byte
-		for _, chunk := range chunks {
+		for i, chunk := range chunks {
+			TraceVerbose("Response", "parseHTTPResponseBytes", "Chunk %d: [%d:%d] (%d bytes)",
+				i+1, chunk.Start, chunk.Start+chunk.Length, chunk.Length)
 			bodyContent = append(bodyContent, data[chunk.Start:chunk.Start+chunk.Length]...)
 		}
 		res.Body = bodyContent
+		TraceDebug("Response", "parseHTTPResponseBytes", "Reconstructed body size: %d bytes", len(res.Body))
+	} else {
+		TraceDebug("Response", "parseHTTPResponseBytes", "No chunked encoding, using body as-is")
 	}
 
+	TraceInfo("Response", "parseHTTPResponseBytes", "HTTP response parsed successfully - Status: %d, Body: %d bytes, Chunks: %d",
+		res.StatusCode, len(res.Body), len(res.Chunks))
 	return res, nil
 }
 
@@ -303,17 +413,17 @@ func applyRegexWindow(
 	items := []RedactionItem{}
 
 	// Helper to add a reveal for [startAbs, endAbs)
-	addRange := func(sAbs, eAbs int, hash *string) {
+	addRange := func(sAbs, eAbs int) {
 		if sAbs < 0 || eAbs <= sAbs {
 			return
 		}
-		reveal := getReveal(sAbs, eAbs-sAbs, bodyStartIdx, resChunks, hash)
+		reveal := getReveal(sAbs, eAbs-sAbs, bodyStartIdx, resChunks)
 		items = append(items, RedactionItem{Reveal: reveal, Redactions: getRedactionsForChunkHeaders(reveal.Start, reveal.Start+reveal.Length, resChunks)})
 	}
 
 	segment := body[startAbs:endAbs]
 	if rs.Regex == "" {
-		addRange(startAbs, endAbs, rs.Hash)
+		addRange(startAbs, endAbs)
 		return items, nil
 	}
 
@@ -330,7 +440,7 @@ func applyRegexWindow(
 		}
 		matchStart := startAbs + loc[0]
 		matchEnd := startAbs + loc[1]
-		addRange(matchStart, matchEnd, nil)
+		addRange(matchStart, matchEnd)
 		return items, nil
 	}
 
@@ -366,10 +476,10 @@ func applyRegexWindow(
 
 	// pre-group (unhashed)
 	if grpFrom > fullFrom {
-		addRange(fullFrom, grpFrom, nil)
+		addRange(fullFrom, grpFrom)
 	}
 	// group (hashed) — must not span chunks
-	reveal := getReveal(grpFrom, grpTo-grpFrom, bodyStartIdx, resChunks, rs.Hash)
+	reveal := getReveal(grpFrom, grpTo-grpFrom, bodyStartIdx, resChunks)
 	chunkReds := getRedactionsForChunkHeaders(reveal.Start, reveal.Start+reveal.Length, resChunks)
 	if len(chunkReds) > 0 {
 		return nil, fmt.Errorf("Hash redactions cannot be performed if the redacted string is split between 2 or more HTTP chunks")
@@ -378,15 +488,18 @@ func applyRegexWindow(
 
 	// post-group (unhashed)
 	if grpTo < fullTo {
-		addRange(grpTo, fullTo, nil)
+		addRange(grpTo, fullTo)
 	}
 
 	return items, nil
 }
 
-func getReveal(startIdx, length, bodyStartIdx int, resChunks []shared.RequestRedactionRange, hash *string) shared.RequestRedactionRange {
+func getReveal(startIdx, length, bodyStartIdx int, resChunks []shared.RequestRedactionRange) shared.RequestRedactionRange {
 	from := convertResponsePosToAbsolutePos(startIdx, bodyStartIdx, resChunks)
 	to := convertResponsePosToAbsolutePos(startIdx+length, bodyStartIdx, resChunks)
+
+	TraceVerbose("Response", "getReveal", "Body range [%d:%d] (length %d) -> Absolute range [%d:%d] (length %d)",
+		startIdx, startIdx+length, length, from, to, to-from)
 
 	return shared.RequestRedactionRange{
 		Start:  from,
