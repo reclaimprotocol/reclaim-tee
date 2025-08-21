@@ -2,14 +2,20 @@ package clientlib
 
 import (
 	"crypto/ecdsa"
+	"encoding/json"
 	"fmt"
 	teeproto "tee-mpc/proto"
+	"tee-mpc/providers"
 	"tee-mpc/shared"
 	"time"
 )
 
 // ReclaimClient is the public interface for the Reclaim TEE+MPC client library
 type ReclaimClient interface {
+	// Single-call protocol execution
+	StartProtocol(providerParamsJSON string) error
+
+	// Legacy methods for backward compatibility
 	Connect() error
 	RequestHTTP() error
 	WaitForCompletion() <-chan struct{}
@@ -91,6 +97,42 @@ func NewReclaimClient(config ClientConfig) ReclaimClient {
 	}
 }
 
+// NewReclaimClientFromJSON creates a new ReclaimClient with JSON-encoded provider params
+func NewReclaimClientFromJSON(teekURL, teetURL, providerParamsJSON string) (ReclaimClient, error) {
+	// Parse provider params from JSON
+	var providerData ProviderRequestData
+	if err := json.Unmarshal([]byte(providerParamsJSON), &providerData); err != nil {
+		return nil, fmt.Errorf("failed to parse provider params JSON: %v", err)
+	}
+
+	if providerData.Params == nil {
+		return nil, fmt.Errorf("params required in provider params JSON")
+	}
+
+	// Validate provider params using production validation functions
+	if err := providers.ValidateProviderParams(providerData.Name, providerData.Params); err != nil {
+		return nil, fmt.Errorf("invalid provider params: %v", err)
+	}
+
+	if providerData.SecretParams != nil {
+		if err := providers.ValidateProviderSecretParams(providerData.Name, providerData.SecretParams); err != nil {
+			return nil, fmt.Errorf("invalid provider secret params: %v", err)
+		}
+	}
+
+	// Create config with validated provider params
+	config := ClientConfig{
+		TEEKURL:              teekURL,
+		TEETURL:              teetURL,
+		Timeout:              30 * time.Second,
+		Mode:                 ModeAuto,
+		ProviderParams:       providerData.Params,
+		ProviderSecretParams: providerData.SecretParams,
+	}
+
+	return NewReclaimClient(config), nil
+}
+
 // Connect establishes connections to both TEE_K and TEE_T
 func (r *ReclaimClientImpl) Connect() error {
 	// Connect to TEE_K
@@ -105,6 +147,45 @@ func (r *ReclaimClientImpl) Connect() error {
 
 	// Session coordination happens automatically in background via WebSocket messages
 	r.logger.Info("Connection established - session coordination will happen naturally")
+
+	return nil
+}
+
+// StartProtocol executes the complete TEE+MPC protocol with JSON-encoded provider params
+func (r *ReclaimClientImpl) StartProtocol(providerParamsJSON string) error {
+	// Parse provider params from JSON
+	var providerData ProviderRequestData
+	if err := json.Unmarshal([]byte(providerParamsJSON), &providerData); err != nil {
+		return fmt.Errorf("failed to parse provider params JSON: %v", err)
+	}
+
+	if providerData.Params == nil {
+		return fmt.Errorf("params required in provider params JSON")
+	}
+
+	// Validate provider params using production validation functions
+	if err := providers.ValidateProviderParams(providerData.Name, providerData.Params); err != nil {
+		return fmt.Errorf("invalid provider params: %v", err)
+	}
+
+	if providerData.SecretParams != nil {
+		if err := providers.ValidateProviderSecretParams(providerData.Name, providerData.SecretParams); err != nil {
+			return fmt.Errorf("invalid provider secret params: %v", err)
+		}
+	}
+
+	// Update client with validated provider params
+	r.Client.providerParams = providerData.Params
+	r.Client.providerSecretParams = providerData.SecretParams
+
+	// Execute the complete protocol: Connect -> RequestHTTP
+	if err := r.Connect(); err != nil {
+		return fmt.Errorf("failed to connect: %v", err)
+	}
+
+	if err := r.RequestHTTP(); err != nil {
+		return fmt.Errorf("failed to request HTTP: %v", err)
+	}
 
 	return nil
 }

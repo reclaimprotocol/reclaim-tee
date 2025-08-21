@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -72,56 +73,60 @@ func main() {
 	logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
 
 	publicParams := &providers.HTTPProviderParams{
-		URL:    "https://vpic.nhtsa.dot.gov/",
+		URL:    "https://vpic.nhtsa.dot.gov/api/vehicles/getallmanufacturers?format=json",
 		Method: "GET",
 		ResponseMatches: []providers.ResponseMatch{
 			{
-				Value: "manufacturerinfo@dot.gov",
+				Value: "TESLA, INC.",
 				Type:  "contains",
 			},
 		},
 		ResponseRedactions: []providers.ResponseRedaction{
 			{
-				XPath: "/html/body/div[2]/div[3]/div",
+				JSONPath: "$.Results[*].Mfr_Name",
 			},
 		},
 	}
 
 	secretParams := &providers.HTTPProviderSecretParams{
 		Headers: map[string]string{
-			"Accept": "*/*",
+			"accept": "application/json, text/plain, */*",
 		},
+	}
+
+	// Create provider data structure for JSON encoding (production format)
+	providerData := clientlib.ProviderRequestData{
+		Name:         "http",
+		Params:       publicParams,
+		SecretParams: secretParams,
+	}
+
+	// Encode provider params as JSON
+	providerParamsJSON, err := json.Marshal(providerData)
+	if err != nil {
+		log.Fatalf("Failed to encode provider params as JSON: %v", err)
 	}
 
 	logger.Info("Demo provider params configured")
 
-	// Create client configuration with provider params for automatic request/response handling
+	// Create client configuration with basic settings
 	config := clientlib.ClientConfig{
-		TEEKURL:              teekURL,
-		TEETURL:              teetURL,
-		Timeout:              clientlib.DefaultConnectionTimeout,
-		Mode:                 clientlib.ModeAuto,
-		ProviderParams:       publicParams,
-		ProviderSecretParams: secretParams,
-		ForceTLSVersion:      forceTLSVersion,
-		ForceCipherSuite:     forceCipherSuite,
+		TEEKURL:          teekURL,
+		TEETURL:          teetURL,
+		Timeout:          clientlib.DefaultConnectionTimeout,
+		Mode:             clientlib.ModeAuto,
+		ForceTLSVersion:  forceTLSVersion,
+		ForceCipherSuite: forceCipherSuite,
 	}
 
 	// Create client using library interface
 	client := clientlib.NewReclaimClient(config)
 	defer client.Close()
 
-	// Connect to both TEE_K and TEE_T
-	if err := client.Connect(); err != nil {
-		logger.Error("Failed to connect", zap.Error(err))
-		fmt.Printf("❌ Failed to connect: %v\n", err)
-		return
-	}
-
-	// Request HTTP - everything is automatic from provider params!
-	if err := client.RequestHTTP(); err != nil {
-		logger.Error("Failed to request HTTP", zap.Error(err))
-		fmt.Printf("❌ Failed to request HTTP: %v\n", err)
+	// Execute complete protocol with one call!
+	if err := client.StartProtocol(string(providerParamsJSON)); err != nil {
+		logger.Error("Failed to start protocol", zap.Error(err))
+		fmt.Printf("❌ Failed to start protocol: %v\n", err)
 		return
 	}
 

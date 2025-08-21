@@ -44,3 +44,10 @@ type ResponseMetadata struct {
 	ServerName    string `json:"server_name"`
 	RequestID     string `json:"request_id"`
 }
+
+// ProviderRequestData represents the JSON structure for provider-based request data (production format)
+type ProviderRequestData struct {
+	Name         string                              `json:"name"`         // Provider name (e.g., "http")
+	Params       *providers.HTTPProviderParams       `json:"params"`       // Public provider parameters
+	SecretParams *providers.HTTPProviderSecretParams `json:"secretParams"` // Secret provider parameters
+}

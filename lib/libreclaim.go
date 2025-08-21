@@ -190,15 +190,12 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 	session.Mutex.Lock()
 	defer session.Mutex.Unlock()
 
-	// Create client configuration
+	// Create client configuration with basic settings
 	config := &clientlib.ClientConfig{
-		TEEKURL:              "wss://tee-k.reclaimprotocol.org/ws",
-		TEETURL:              "wss://tee-t.reclaimprotocol.org/ws",
-		Timeout:              30 * time.Second,
-		Mode:                 clientlib.ModeEnclave,
-		RequestRedactions:    []clientlib.RedactionSpec{}, // Empty - ranges will be set directly
-		ProviderParams:       providerData.PublicParams,
-		ProviderSecretParams: providerData.SecretParams,
+		TEEKURL: "wss://tee-k.reclaimprotocol.org/ws",
+		TEETURL: "wss://tee-t.reclaimprotocol.org/ws",
+		Timeout: 30 * time.Second,
+		Mode:    clientlib.ModeEnclave,
 	}
 
 	// Create client
@@ -207,18 +204,10 @@ func reclaim_start_protocol(host *C.char, request_json *C.char, protocol_handle 
 	// Enable 2-phase mode to allow manual control
 	session.Client.EnableTwoPhaseMode()
 
-	// Connect to TEEs
-	if err := session.Client.Connect(); err != nil {
-		sessionMutex.Lock()
-		delete(sessions, handle)
-		sessionMutex.Unlock()
-		return C.RECLAIM_ERROR_CONNECTION_FAILED
-	}
+	fmt.Printf("[Lib] Starting automatic protocol using provider params JSON\n")
 
-	fmt.Printf("[Lib] Starting automatic request using provider params\n")
-
-	// Send HTTP request - everything is automatic from provider params!
-	if err := session.Client.RequestHTTP(); err != nil {
+	// Execute complete protocol with one call using JSON params!
+	if err := session.Client.StartProtocol(goRequestJSON); err != nil {
 		sessionMutex.Lock()
 		delete(sessions, handle)
 		sessionMutex.Unlock()

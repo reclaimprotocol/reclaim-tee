@@ -49,11 +49,11 @@ func (binaryFormatChecker) IsFormat(input interface{}) bool {
 // ValidateProviderParams mirrors TS assertValidateProviderParams
 func ValidateProviderParams(providerName string, params interface{}) error {
 	TraceStart("Validation", "ValidateProviderParams", "Provider", providerName)
-	
+
 	validatorMutex.RLock()
 	compiled, exists := providerValidatorMap[providerName]
 	validatorMutex.RUnlock()
-	
+
 	TraceDebug("Validation", "ValidateProviderParams", "Schema cached: %t", exists)
 
 	if !exists {
@@ -85,7 +85,7 @@ func ValidateProviderParams(providerName string, params interface{}) error {
 		TraceError("Validation", "ValidateProviderParams", "Validation execution failed: %v", err)
 		return fmt.Errorf("params validation failed: %w", err)
 	}
-	
+
 	if !result.Valid() {
 		TraceError("Validation", "ValidateProviderParams", "Validation failed with %d errors", len(result.Errors()))
 		// Aggregate errors similarly to TS message payload
@@ -99,7 +99,7 @@ func ValidateProviderParams(providerName string, params interface{}) error {
 		}
 		return fmt.Errorf("params validation failed: %s", b.String())
 	}
-	
+
 	TraceInfo("Validation", "ValidateProviderParams", "Parameters validated successfully")
 	return nil
 }
@@ -107,7 +107,7 @@ func ValidateProviderParams(providerName string, params interface{}) error {
 // ValidateProviderSecretParams mirrors TS secret params validation
 func ValidateProviderSecretParams(providerName string, secretParams interface{}) error {
 	TraceStart("Validation", "ValidateProviderSecretParams", "Provider", providerName)
-	
+
 	sch, ok := PROVIDER_SCHEMAS[providerName]
 	if !ok {
 		TraceError("Validation", "ValidateProviderSecretParams", "Unknown provider: %s", providerName)
