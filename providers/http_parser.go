@@ -262,6 +262,13 @@ func (p *HTTPResponseParser) finishHeaders() error {
 			TraceError("Parser", "finishHeaders", "Invalid Content-Length: %s", contentLength)
 			return fmt.Errorf("invalid Content-Length %s: %w", contentLength, err)
 		}
+		
+		// Security check: Content-Length must be non-negative
+		if length < 0 {
+			TraceError("Parser", "finishHeaders", "Negative Content-Length not allowed: %d", length)
+			return fmt.Errorf("invalid Content-Length %s: negative values not allowed", contentLength)
+		}
+		
 		p.remainingBodyBytes = length
 		TraceDebug("Parser", "finishHeaders", "Using Content-Length: %d bytes", length)
 
