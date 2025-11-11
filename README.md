@@ -1,138 +1,391 @@
 # TEE + MPC Protocol Implementation
 
-This is a structured implementation of the TEE + MPC protocol for secure TLS communication with split AEAD processing.
+This is a production-grade implementation of the TEE + MPC protocol for secure TLS communication with split AEAD processing. The system enables users to prove data from HTTPS websites while maintaining privacy through redaction capabilities and zero-knowledge proofs.
 
 ## Project Structure
 
-The codebase has been organized into separate folders for better maintainability:
+The codebase is organized into multiple components for modularity and maintainability:
 
 ```
-tee-mpc/
-├── tee_k/          # TEE_K service implementation
-│   ├── main.go     # TEE_K service entry point
-│   ├── tee_k.go    # TEE_K implementation
-│   └── messages.go # Shared message types
-├── tee_t/          # TEE_T service implementation
-│   ├── main.go     # TEE_T service entry point
-│   ├── tee_t.go    # TEE_T implementation
-│   └── messages.go # Shared message types
-├── client/         # Client implementation
-│   ├── main.go     # Client entry point
-│   ├── client.go   # Client implementation
-│   └── messages.go # Shared message types
-├── minitls/        # Shared TLS implementation
-├── bin/            # Compiled executables (created by build.sh)
-│   ├── tee_k       # TEE_K executable
-│   ├── tee_t       # TEE_T executable
-│   └── client      # Client executable
-├── main.go         # Demo orchestrator
-├── demo.sh         # Bash script for running demo
-├── build.sh        # Build script for all services
-├── go.mod          # Go module configuration
-├── go.sum          # Go module dependencies  
-└── README.md       # This file
+reclaim-tee/
+├── tee_k/              # TEE_K service (key holder)
+│   ├── main.go         # Service entry point
+│   ├── tee_k.go        # Core TEE_K logic
+│   ├── session_manager.go
+│   ├── tls_handlers.go
+│   ├── crypto.go
+│   ├── attestation.go
+│   └── ...
+├── tee_t/              # TEE_T service (tag computation)
+│   ├── main.go         # Service entry point
+│   ├── tee_t.go        # Core TEE_T logic
+│   ├── crypto_handlers.go
+│   ├── attestation.go
+│   └── ...
+├── demo_standalone/    # Standalone client application
+│   └── main.go         # Client entry point
+├── client/             # Client library package
+│   └── client.go       # Client implementation
+├── minitls/            # Custom TLS implementation
+│   ├── client.go
+│   ├── client12.go
+│   ├── crypto12.go
+│   ├── handshake12.go
+│   └── ...
+├── shared/             # Shared utilities and services
+│   ├── attestation_*.go
+│   ├── kms_*.go
+│   ├── cert_*.go
+│   ├── logger.go
+│   └── ...
+├── lib/                # Shared C library (libreclaim.so)
+│   ├── libreclaim.go   # CGO implementation
+│   ├── libreclaim.h    # C header
+│   └── Makefile
+├── demo_lib/           # Sample app using shared library
+├── proxy/              # HTTP/HTTPS proxy service
+│   ├── main.go
+│   ├── http_router.go
+│   ├── https_router.go
+│   ├── kms_proxy.go
+│   └── go.mod          # Separate module
+├── proto/              # Protocol buffer definitions
+│   ├── common.proto
+│   ├── transport.proto
+│   ├── attestor_api.proto
+│   └── ...
+├── providers/          # Provider implementations
+│   ├── http.go
+│   ├── http_parser.go
+│   └── validation.go
+├── proofverifier/      # Proof verification logic
+├── circuits/           # ZK circuit files (proving keys, R1CS)
+├── deploy/             # Deployment configurations
+├── bin/                # Compiled executables (created by build.sh)
+│   ├── tee_k
+│   ├── tee_t
+│   ├── client
+│   └── proxy
+├── build.sh            # Build script for all services
+├── demo.sh             # Demo orchestration script
+├── lib.sh              # Shared library build/run script
+├── go.mod              # Go module configuration
+└── README.md           # This file
 ```
 
-## Usage
+## Components
 
-### Building the Services
+### Core Services
 
-First, build all services (recommended for better process control):
+- **TEE_K** (tee_k/) - Key holder TEE service that manages TLS connections
+  - Handles TLS handshake with target websites
+  - Performs encryption operations with actual keys
+  - Manages session state and WebSocket connections
+  - Provides attestation capabilities
+  - Runs on port 8080 by default
+
+- **TEE_T** (tee_t/) - Tag computation TEE service for authentication
+  - Computes and verifies authentication tags
+  - Assists in split AEAD processing without key access
+  - Handles transcript generation
+  - Provides independent attestation
+  - Runs on port 8081 by default
+
+- **Client** (demo_standalone/) - Orchestrates the protocol
+  - Establishes secure WebSocket connections with both TEEs
+  - Manages request redaction and response verification
+  - Initializes ZK circuits for OPRF proofs
+  - Generates final proof transcripts
+
+### Supporting Components
+
+- **Proxy** (proxy/) - HTTP/HTTPS proxy service for protocol mediation
+  - Routes requests between clients and TEE services
+  - Provides KMS and CloudWatch proxy functionality
+  - Separate Go module with independent deployment
+
+- **Shared Library** (lib/) - C-compatible library (libreclaim.so)
+  - Enables integration with non-Go applications
+  - Provides FFI bindings for core functionality
+
+- **MiniTLS** (minitls/) - Custom TLS 1.2/1.3 implementation
+  - Supports split AEAD modifications
+  - Implements required cipher suites
+  - Enables fine-grained control over TLS operations
+
+- **Providers** (providers/) - HTTP parsing and validation
+  - JSON/XML/XPath positioned parsing
+  - Response extraction and validation
+
+## Building
+
+### Build All Services
+
+The recommended way to build is using the build script, which builds all services and generates protobuf code:
 
 ```bash
 ./build.sh
 ```
 
-This creates compiled executables in the `bin/` folder.
+This will:
+1. Generate Go code from protocol buffer definitions
+2. Build TEE_K service → `bin/tee_k`
+3. Build TEE_T service → `bin/tee_t`
+4. Build Client → `bin/client`
+5. Build Proxy → `bin/proxy`
 
-### Running the Demo
+### Build Individual Services
 
-The demo can be started in two ways:
+You can also build services individually:
 
-#### Option 1: Using Go (builds and runs automatically)
 ```bash
-go run . demo
+# Build TEE_K
+cd tee_k && go build -o ../bin/tee_k . && cd ..
+
+# Build TEE_T
+cd tee_t && go build -o ../bin/tee_t . && cd ..
+
+# Build Client
+cd demo_standalone && go build -o ../bin/client . && cd ..
+
+# Build Proxy (has separate go.mod)
+cd proxy && go mod download && go build -o ../bin/proxy . && cd ..
 ```
 
-#### Option 2: Using the bash script (recommended)
+### Build Shared Library
+
+To build the shared library for C/Go interop:
+
+```bash
+./lib.sh build
+```
+
+This creates `lib/libreclaim.so` that can be used by other applications.
+
+### Generate Protobuf Code
+
+If you modify .proto files, regenerate Go code:
+
+```bash
+protoc -I proto --go_out=proto/ --go_opt=paths=source_relative proto/*.proto
+```
+
+## Running
+
+### Running the Demo (Recommended)
+
+The easiest way to run the complete system:
+
 ```bash
 ./demo.sh
 ```
 
-Both methods will:
-1. Build all services (if needed)
-2. Start TEE_K service on port 8080  
-3. Start TEE_T service on port 8081
+This script will:
+1. Build all services using `./build.sh`
+2. Start TEE_K service on port 8080 (logs to `/tmp/demo_teek.log`)
+3. Start TEE_T service on port 8081 (logs to `/tmp/demo_teet.log`)
 4. Run the Client which connects to both services
-5. Execute the full TEE + MPC protocol with example.com
-6. Shut down all services gracefully with proper cleanup
+5. Execute the full TEE + MPC protocol with a test request
+6. Display results and shut down gracefully
+
+You can pass additional arguments to configure the demo:
+```bash
+./demo.sh [client-args]
+```
 
 ### Running Individual Services
 
-Each service can be run independently:
+Each service can be run independently for development or testing:
 
-#### Option A: Using compiled executables (recommended)
 ```bash
-./bin/tee_k [port]       # Default port: 8080
-./bin/tee_t [port]       # Default port: 8081  
+# Run TEE_K service
+./bin/tee_k [port]       # Default: 8080
+
+# Run TEE_T service
+./bin/tee_t [port]       # Default: 8081
+
+# Run Client (requires TEE_K and TEE_T to be running)
 ./bin/client [teek_url]  # Default: ws://localhost:8080/ws
+
+# Run Proxy service
+./bin/proxy
 ```
 
-#### Option B: Using go run from service folders
+### Running with the Shared Library
+
+To run the demo using the shared library:
+
 ```bash
-cd tee_k && go run . [port]          # Default port: 8080
-cd tee_t && go run . [port]          # Default port: 8081
-cd client && go run . [teek_url]     # Default: ws://localhost:8080/ws
+./lib.sh run
+```
+
+Or manually:
+```bash
+# Build library first
+./lib.sh build
+
+# Set library path and run sample app
+cd demo_lib
+LD_LIBRARY_PATH=../bin:$LD_LIBRARY_PATH ./sample_app_shared
 ```
 
 ## Protocol Overview
 
-This implementation follows the TEE + MPC protocol as described in `tee+mpc.md`:
+This implementation follows the [TEE + MPC protocol](https://reclaimprotocol.notion.site/New-design-research-TEE-MPC-1f1275b816cb80caaa60fcb58a3e780d) for privacy-preserving TLS attestation.
 
-1. **Pre-initialization**: Establish secure channels between TEE_K, TEE_T, and Client
-2. **TLS Handshake**: TEE_K establishes TLS connection with target website
-3. **Request Handling**: Client sends redacted requests with split AEAD processing
-4. **Response Handling**: Split AEAD verification and decryption of responses
-5. **Transcript Generation**: Final transcript creation for proof verification
 
-## Key Features
-
-- **Split AEAD**: Encryption and authentication tag computation are separated between TEE_K and TEE_T
-- **Request Redaction**: Sensitive data in requests can be redacted with XOR streams
-- **Tag Verification**: Authentication tags are verified by TEE_T before decryption
-- **Secure Channels**: WebSocket connections provide secure communication between components
-- **Graceful Shutdown**: All services handle shutdown signals properly
 
 ## Dependencies
 
-- Go 1.24.2 or later
+### Core Dependencies
+
+- Go 1.25.3 or later
 - github.com/gorilla/websocket v1.5.3
-- golang.org/x/crypto v0.39.0
+- golang.org/x/crypto v0.43.0
+- google.golang.org/protobuf v1.36.10
 
-## Development
+### ZK and Cryptography
 
-The codebase maintains all original functionality while providing better organization:
+- github.com/reclaimprotocol/zk-symmetric-crypto/gnark
+- github.com/ethereum/go-ethereum v1.16.5
+- github.com/consensys/gnark v0.14.0
 
-- Each service is self-contained with its own entry point
-- Shared dependencies (messages, minitls) are referenced from the root module
-- Single go.mod file manages all dependencies 
-- The original `go run . demo` command continues to work as expected
+### Cloud Services
+
+- cloud.google.com/go/kms v1.23.2
+- cloud.google.com/go/secretmanager v1.16.0
+- cloud.google.com/go/logging v1.13.1
+
+### AWS Nitro Enclaves
+
+- github.com/anjuna-security/go-nitro-attestation
+- github.com/austinast/nitro-enclaves-sdk-go
+- github.com/hf/nsm
+- github.com/mdlayher/vsock v1.2.1
+
+See `go.mod` for complete dependency list.
 
 ## Testing
 
-To test the system:
+### Run Tests
 
 ```bash
-# Build all services
-./build.sh
+# Run all tests
+go test ./...
 
-# Test individual executables 
-./bin/tee_k --help    # Should show usage
-./bin/tee_t --help    # Should show usage
-./bin/client --help   # Should show usage
+# Run tests with coverage
+go test -cover ./...
 
-# Test full demo
+# Run specific package tests
+go test ./minitls/...
+go test ./tee_k/...
+go test ./tee_t/...
+go test ./providers/...
+
+# Run with verbose output
+go test -v ./...
+```
+
+### Integration Testing
+
+```bash
+# Full integration test via demo
 ./demo.sh
-# or
-go run . demo
-``` 
+
+# Test shared library
+./lib.sh run
+
+# Check service logs during demo
+tail -f /tmp/demo_teek.log
+tail -f /tmp/demo_teet.log
+```
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# Development mode (disables some security checks)
+export DEVELOPMENT=true
+
+# Google Cloud configuration
+export GCP_PROJECT_ID=your-project-id
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json
+
+# AWS configuration for KMS/Secrets Manager
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+
+# Nitro Enclave mode
+export NITRO_ENCLAVE=true
+export PARENT_VSOCK_PORT=5000
+
+# Logging
+export LOG_LEVEL=debug  # or info, warn, error
+```
+
+## Development
+
+### Project Organization
+
+- Monorepo structure with single `go.mod` at root (except proxy which has its own)
+- Each service is independently buildable
+- Shared packages (minitls, shared, providers) used across services
+- Protocol definitions centralized in `proto/`
+
+### Code Organization
+
+```
+Core Services:     tee_k/, tee_t/, demo_standalone/
+Libraries:         minitls/, shared/, providers/, client/
+Infrastructure:    proxy/, lib/, proto/
+ZK Circuits:       circuits/
+Verification:      proofverifier/
+```
+
+### Common Development Tasks
+
+```bash
+# Regenerate protobufs after .proto changes
+protoc -I proto --go_out=proto/ --go_opt=paths=source_relative proto/*.proto
+
+# Build and test
+./build.sh && go test ./...
+
+# Run with debug logging
+LOG_LEVEL=debug ./demo.sh
+
+# Format and vet code
+go fmt ./...
+go vet ./...
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**Service fails to start:**
+- Check if ports 8080/8081 are available
+- Verify protobuf files are generated: run `./build.sh`
+- Check logs: `/tmp/demo_teek.log` and `/tmp/demo_teet.log`
+
+**TLS connection failures:**
+- Ensure target website supports TLS 1.2 or 1.3
+- Verify cipher suite compatibility (AES-128-GCM, AES-256-GCM)
+- Check certificate validation settings
+
+**WebSocket connection errors:**
+- Ensure TEE services are running before starting client
+- Check firewall rules and network connectivity
+- Verify WebSocket URLs are correct (default: ws://localhost:8080/ws)
+
+**Build failures:**
+- Run `go mod download` to fetch dependencies
+- Ensure Go 1.25.3+ is installed
+- Check for missing protoc compiler installation
+
+**ZK circuit errors:**
+- Verify `circuits/` directory contains required proving key and R1CS files
+- Check that .pk and .r1cs files exist for configured algorithms
+- Ensure sufficient memory for proof generation 
