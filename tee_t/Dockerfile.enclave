@@ -1,0 +1,42 @@
+FROM golang:alpine AS app-builder
+ENV CGO_ENABLED=0
+RUN apk add --no-cache --update ca-certificates
+WORKDIR /app
+
+# Copy shared dependencies first
+COPY shared/ /app/shared/
+COPY minitls/ /app/minitls/
+COPY proto/*.go /app/proto/
+
+# Copy TEE_T source files
+COPY tee_t/*.go /app/tee_t/
+COPY go.mod /app/go.mod
+COPY go.sum /app/go.sum
+
+WORKDIR /app/tee_t
+
+# Build TEE_T enclave binary
+RUN go build --ldflags '-s -w -extldflags=-static' -tags 'enclave osusergo netgo static_build' -o tee_t_enclave .
+
+FROM scratch
+
+# Copy CA certificates for HTTPS
+COPY --from=app-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Copy TEE_T enclave binary
+COPY --from=app-builder /app/tee_t/tee_t_enclave /tee_t_enclave
+# Copy environment configuration
+COPY deploy/tee_t.env /.env
+
+# Declare environment variables that can be overridden at runtime
+# This is required for GCP Confidential Space
+ENV EXPECTED_TEEK_PCR0=""
+
+# GCP Confidential Space launch policy: allow this env var to be overridden
+LABEL "tee.launch_policy.allow_env_override"="EXPECTED_TEEK_PCR0"
+
+# Expose ports
+EXPOSE 80 443
+
+# Set entrypoint
+ENTRYPOINT ["/tee_t_enclave"] 

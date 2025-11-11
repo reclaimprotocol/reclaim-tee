@@ -1,0 +1,222 @@
+syntax = "proto3";
+
+package teeproto;
+
+option go_package = "tee-mpc/proto;teeproto";
+
+import "common.proto";
+import "signing.proto";
+import "attestor_api.proto";
+
+enum Sender {
+  SENDER_UNSPECIFIED = 0;
+  SENDER_USER = 1;
+  SENDER_TEE_K = 2;
+  SENDER_TEE_T = 3;
+}
+
+// Envelope for all websocket frames
+message Envelope {
+  string session_id = 1;
+  uint64 seq = 2;
+  string correlation_id = 3;
+  Sender sender = 4;
+  int64 timestamp_ms = 5;
+
+  oneof payload {
+    // Session and control
+    ConnectionReady connection_ready = 10;
+    TCPReady tcp_ready = 11;
+    ErrorData error = 12;
+    FinishedMessage finished = 13;
+    SessionCreated session_created = 14;
+    SessionReady session_ready = 15;
+
+    // Handshake
+    RequestConnection request_connection = 20;
+    TCPData tcp_data = 21;
+    HandshakeComplete handshake_complete = 22;
+    HandshakeKeyDisclosure handshake_key_disclosure = 23;
+
+    // Split AEAD
+    KeyShareRequest key_share_request = 30;
+    EncryptedRequest encrypted_request = 31;
+    KeyShareResponse key_share_response = 32;
+
+    // Redaction/TEET
+    RedactedRequest redacted_request = 40;
+    RedactionStreams redaction_streams = 41;
+    RedactionVerification redaction_verification = 44;
+    ResponseRedactionSpec response_redaction_spec = 45;
+    EncryptedDataResponse encrypted_data = 42;
+
+    // Batches
+    BatchedEncryptedResponses batched_encrypted_responses = 50;
+    BatchedResponseLengths batched_response_lengths = 51;
+    BatchedTagSecrets batched_tag_secrets = 52;
+    BatchedTagVerifications batched_tag_verifications = 53;
+    BatchedDecryptionStreams batched_decryption_streams = 54;
+
+    // Signing outputs
+    SignedMessage signed_message = 57;
+
+    // Mutual attestation
+    TEEKAttestationRequest teek_attestation = 60;
+    TEETAttestationResponse teet_attestation = 61;
+  }
+}
+
+// Basic types aligned with existing JSON models
+message RequestConnection {
+  string hostname = 1;
+  int32 port = 2;
+  string sni = 3;
+  repeated string alpn = 4;
+  string force_tls_version = 5; // optional
+  string force_cipher_suite = 6; // optional (kept string form)
+}
+
+message ConnectionReady { bool success = 1; }
+message TCPReady { bool success = 1; }
+message TCPData { bytes data = 1; }
+
+message HandshakeComplete {
+  bool success = 1;
+  repeated bytes certificate_chain = 2;
+  uint32 cipher_suite = 3;  // Negotiated cipher suite for consolidated verification
+}
+
+message HandshakeKeyDisclosure {
+  bytes handshake_key = 1;
+  bytes handshake_iv = 2;
+  bytes certificate_packet = 3;
+  uint32 cipher_suite = 4; // uint16 fits here
+  string algorithm = 5;
+  bool success = 6;
+}
+
+message KeyShareRequest {
+  int32 key_length = 1;
+  int32 iv_length = 2;
+}
+
+message KeyShareResponse {
+  bytes key_share = 1;
+  bool success = 2;
+}
+
+message EncryptedDataResponse {
+  bytes encrypted_data = 1; // R_Enc
+  bytes auth_tag = 2; // T
+  bool success = 3;
+}
+
+message RedactedRequest {
+  bytes redacted_request = 1; // R_red
+  repeated bytes commitments = 2; // [comm_s, comm_sp]
+  repeated RequestRedactionRange redaction_ranges = 3;
+}
+
+message RedactionVerification {
+  bool success = 1;
+  string message = 2;
+}
+
+message RedactionStreams {
+  repeated bytes streams = 1; // [Str_S, Str_SP]
+  repeated bytes commitment_keys = 2; // [K_S, K_SP]
+}
+
+// Client to TEE_K: response redaction specification
+message ResponseRedactionSpec {
+  repeated ResponseRedactionRange ranges = 1;
+}
+
+message EncryptedRequest {
+  bytes encrypted_data = 1; // R_red_Enc
+  bytes tag_secrets = 2;
+  repeated bytes commitments = 3; // [comm_s, comm_sp]
+  uint32 cipher_suite = 4; // uint16 fits here
+  uint64 seq_num = 5;
+  repeated RequestRedactionRange redaction_ranges = 6;
+}
+
+message EncryptedResponseData {
+  bytes encrypted_data = 1; // payload (without tag)
+  bytes tag = 2; // auth tag
+  bytes record_header = 3; // 5 bytes
+  uint64 seq_num = 4;
+  bytes explicit_iv = 5; // optional (tls1.2)
+}
+
+message ResponseTagVerification {
+  bool success = 1;
+  uint64 seq_num = 2;
+  string message = 3;
+}
+
+// Batches
+message BatchedEncryptedResponses {
+  repeated EncryptedResponseData responses = 1;
+  string session_id = 2;
+  int32 total_count = 3;
+}
+
+message BatchedResponseLengths {
+  message Length {
+    int32 length = 1;
+    bytes record_header = 2;
+    uint64 seq_num = 3;
+    bytes explicit_iv = 4;
+  }
+  repeated Length lengths = 1;
+  string session_id = 2;
+  int32 total_count = 3;
+}
+
+message BatchedTagSecrets {
+  message TagSecret {
+    bytes tag_secrets = 1;
+    uint64 seq_num = 2;
+  }
+  repeated TagSecret tag_secrets = 1;
+  string session_id = 2;
+  int32 total_count = 3;
+}
+
+message BatchedTagVerifications {
+  message Verification {
+    bool success = 1;
+    uint64 seq_num = 2;
+    string message = 3;
+  }
+  repeated Verification verifications = 1;
+  string session_id = 2;
+  int32 total_count = 3;
+  bool all_successful = 4;
+}
+
+message BatchedDecryptionStreams {
+  repeated ResponseDecryptionStreamData decryption_streams = 1;
+  string session_id = 2;
+  int32 total_count = 3;
+}
+
+message BatchedSignedRedactedDecryptionStreams {
+  repeated SignedRedactedDecryptionStream signed_redacted_streams = 1;
+  string session_id = 2;
+  int32 total_count = 3;
+}
+
+message SessionCreated {}
+message SessionReady { bool ready = 1; }
+
+// Mutual attestation messages
+message TEEKAttestationRequest {
+  AttestationReport attestation_report = 1;
+}
+
+message TEETAttestationResponse {
+  AttestationReport attestation_report = 1;
+}
+
