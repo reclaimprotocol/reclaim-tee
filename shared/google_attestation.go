@@ -1,12 +1,12 @@
 package shared
 
 import (
-	"context"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
 )
@@ -66,7 +66,7 @@ func NewGoogleAttestor() (*GoogleAttestor, error) {
 // Validate verifies a compact JWS (JWT) from Google CVM attestation service.
 // For simplicity, this validates the signature using embedded x5c certificate chain
 // and checks certificate chain roots to our hardcoded pool.
-func (g *GoogleAttestor) Validate(ctx context.Context, raw []byte) error {
+func (g *GoogleAttestor) Validate(raw []byte) error {
 	if len(raw) == 0 {
 		return fmt.Errorf("empty GCP attestation report")
 	}
@@ -121,6 +121,52 @@ func (g *GoogleAttestor) Validate(ctx context.Context, raw []byte) error {
 	// Parse and verify
 	token, err := parser.Parse(tokenStr, keyfunc)
 	if err != nil {
+		// Extract timing information from JWT to diagnose clock skew
+		parts := strings.Split(tokenStr, ".")
+		if len(parts) >= 2 {
+			if payload, decErr := base64.RawURLEncoding.DecodeString(parts[1]); decErr == nil {
+				var claims map[string]interface{}
+				if jsonErr := json.Unmarshal(payload, &claims); jsonErr == nil {
+					now := time.Now()
+					timingInfo := fmt.Sprintf("JWT validation failed, diagnosing clock skew - Current time: %s", now.Format(time.RFC3339))
+
+					if nbf, ok := claims["nbf"].(float64); ok {
+						nbfTime := time.Unix(int64(nbf), 0)
+						diff := now.Sub(nbfTime)
+						timingInfo += fmt.Sprintf(" | nbf (not before): %s | Time until valid: %v",
+							nbfTime.Format(time.RFC3339), -diff)
+					}
+					if iat, ok := claims["iat"].(float64); ok {
+						iatTime := time.Unix(int64(iat), 0)
+						diff := now.Sub(iatTime)
+						timingInfo += fmt.Sprintf(" | iat (issued at): %s | Age: %v",
+							iatTime.Format(time.RFC3339), diff)
+					}
+					if exp, ok := claims["exp"].(float64); ok {
+						expTime := time.Unix(int64(exp), 0)
+						diff := expTime.Sub(now)
+						timingInfo += fmt.Sprintf(" | exp (expires): %s | Time until expiry: %v",
+							expTime.Format(time.RFC3339), diff)
+					}
+
+					// Log the timing information (this will appear in the error chain)
+					fmt.Printf("CLOCK SKEW DETECTED: %s\n", timingInfo)
+
+					// Retry with 1-minute leeway to handle clock skew
+					parserWithLeeway := jwt.NewParser(jwt.WithLeeway(1 * time.Minute))
+					token, retryErr := parserWithLeeway.Parse(tokenStr, keyfunc)
+					if retryErr != nil {
+						return fmt.Errorf("failed to parse/verify GCP attestation JWT even with 1-minute leeway: %v | %s", retryErr, timingInfo)
+					}
+					if !token.Valid {
+						return fmt.Errorf("invalid GCP attestation JWT even with 1-minute leeway | %s", timingInfo)
+					}
+					// Success with leeway
+					fmt.Printf("JWT validation succeeded with 1-minute leeway\n")
+					return nil
+				}
+			}
+		}
 		return fmt.Errorf("failed to parse/verify GCP attestation JWT: %v", err)
 	}
 	if !token.Valid {
@@ -157,7 +203,7 @@ func ValidateGCPAttestationAndExtractUserData(token []byte) (string, error) {
 	}
 
 	// Validate JWT signature and certificate chain
-	if err := attestor.Validate(context.Background(), token); err != nil {
+	if err := attestor.Validate(token); err != nil {
 		return "", fmt.Errorf("JWT validation failed: %v", err)
 	}
 
@@ -215,7 +261,7 @@ func ExtractImageDigestFromGCPAttestation(token []byte) (string, error) {
 	}
 
 	// Validate JWT signature and certificate chain
-	if err := attestor.Validate(context.Background(), token); err != nil {
+	if err := attestor.Validate(token); err != nil {
 		return "", fmt.Errorf("JWT validation failed: %v", err)
 	}
 

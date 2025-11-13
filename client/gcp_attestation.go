@@ -1,7 +1,6 @@
 package client
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -78,7 +77,7 @@ func VerifyGCPConfidentialSpaceAttestation(jwtToken string) (publicKey []byte, e
 			return nil, fmt.Errorf("failed to create Google attestor: %w", err)
 		}
 
-		if err = attestor.Validate(context.Background(), []byte(jwtToken)); err != nil {
+		if err = attestor.Validate([]byte(jwtToken)); err != nil {
 			return nil, fmt.Errorf("GCP Confidential Space attestation validation failed: %w", err)
 		}
 	} else {
