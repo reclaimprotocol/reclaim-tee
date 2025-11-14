@@ -9,6 +9,7 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
+	"go.uber.org/zap"
 )
 
 // GoogleAttestor verifies Google CVM attestation JWT against hardcoded Google roots.
@@ -66,7 +67,7 @@ func NewGoogleAttestor() (*GoogleAttestor, error) {
 // Validate verifies a compact JWS (JWT) from Google CVM attestation service.
 // For simplicity, this validates the signature using embedded x5c certificate chain
 // and checks certificate chain roots to our hardcoded pool.
-func (g *GoogleAttestor) Validate(raw []byte) error {
+func (g *GoogleAttestor) Validate(raw []byte, logger *Logger) error {
 	if len(raw) == 0 {
 		return fmt.Errorf("empty GCP attestation report")
 	}
@@ -149,8 +150,10 @@ func (g *GoogleAttestor) Validate(raw []byte) error {
 							expTime.Format(time.RFC3339), diff)
 					}
 
-					// Log the timing information (this will appear in the error chain)
-					fmt.Printf("CLOCK SKEW DETECTED: %s\n", timingInfo)
+					// Log the timing information using shared logger
+					logger.Warn("JWT clock skew detected, retrying with leeway",
+						zap.String("current_time", now.Format(time.RFC3339)),
+						zap.String("timing_info", timingInfo))
 
 					// Retry with 1-minute leeway to handle clock skew
 					parserWithLeeway := jwt.NewParser(jwt.WithLeeway(1 * time.Minute))
@@ -162,7 +165,8 @@ func (g *GoogleAttestor) Validate(raw []byte) error {
 						return fmt.Errorf("invalid GCP attestation JWT even with 1-minute leeway | %s", timingInfo)
 					}
 					// Success with leeway
-					fmt.Printf("JWT validation succeeded with 1-minute leeway\n")
+					logger.Info("JWT validation succeeded with 1-minute leeway",
+						zap.String("timing_info", timingInfo))
 					return nil
 				}
 			}
@@ -195,7 +199,7 @@ func decodeBase64URL(s string) ([]byte, error) {
 }
 
 // ValidateGCPAttestationAndExtractUserData validates GCP JWT signature and extracts userData from eat_nonce
-func ValidateGCPAttestationAndExtractUserData(token []byte) (string, error) {
+func ValidateGCPAttestationAndExtractUserData(token []byte, logger *Logger) (string, error) {
 	// Create attestor with Google root certs
 	attestor, err := NewGoogleAttestor()
 	if err != nil {
@@ -203,7 +207,7 @@ func ValidateGCPAttestationAndExtractUserData(token []byte) (string, error) {
 	}
 
 	// Validate JWT signature and certificate chain
-	if err := attestor.Validate(token); err != nil {
+	if err := attestor.Validate(token, logger); err != nil {
 		return "", fmt.Errorf("JWT validation failed: %v", err)
 	}
 
@@ -253,7 +257,7 @@ func ValidateGCPAttestationAndExtractUserData(token []byte) (string, error) {
 }
 
 // ExtractImageDigestFromGCPAttestation extracts image_digest from GCP attestation token
-func ExtractImageDigestFromGCPAttestation(token []byte) (string, error) {
+func ExtractImageDigestFromGCPAttestation(token []byte, logger *Logger) (string, error) {
 	// Create attestor with Google root certs
 	attestor, err := NewGoogleAttestor()
 	if err != nil {
@@ -261,7 +265,7 @@ func ExtractImageDigestFromGCPAttestation(token []byte) (string, error) {
 	}
 
 	// Validate JWT signature and certificate chain
-	if err := attestor.Validate(token); err != nil {
+	if err := attestor.Validate(token, logger); err != nil {
 		return "", fmt.Errorf("JWT validation failed: %v", err)
 	}
 

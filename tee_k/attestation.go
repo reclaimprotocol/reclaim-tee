@@ -207,7 +207,7 @@ func (t *TEEK) verifyTEETAttestation(msgBytes []byte, tlsCert []byte) error {
 
 	switch attestation.Type {
 	case "gcp":
-		actualUserData, err = shared.ExtractUserDataFromGCPAttestation(attestation.Report)
+		actualUserData, err = shared.ExtractUserDataFromGCPAttestation(attestation.Report, t.logger)
 		if err != nil {
 			return fmt.Errorf("failed to extract userData from GCP attestation: %v", err)
 		}
@@ -232,7 +232,7 @@ func (t *TEEK) verifyTEETAttestation(msgBytes []byte, tlsCert []byte) error {
 	// Verify PCR0
 	expectedPCR0 := os.Getenv("EXPECTED_TEET_PCR0")
 	if expectedPCR0 != "" {
-		pcr0, err := shared.ExtractPCR0FromAttestation(attestation)
+		pcr0, err := shared.ExtractPCR0FromAttestation(attestation, t.logger)
 		if err != nil {
 			return fmt.Errorf("failed to extract PCR0: %v", err)
 		}

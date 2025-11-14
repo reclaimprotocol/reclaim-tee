@@ -11,26 +11,6 @@ import (
 	jwt "github.com/golang-jwt/jwt/v5"
 )
 
-// GCP JWKS endpoints for public keys
-const (
-	gcpConfidentialSpaceJWKSURL = "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com"
-)
-
-// JWK represents a JSON Web Key
-type JWK struct {
-	Kid string `json:"kid"`
-	Kty string `json:"kty"`
-	Alg string `json:"alg"`
-	Use string `json:"use"`
-	N   string `json:"n"`
-	E   string `json:"e"`
-}
-
-// JWKS represents a JSON Web Key Set
-type JWKS struct {
-	Keys []JWK `json:"keys"`
-}
-
 // JWTHeader represents the JWT header
 type JWTHeader struct {
 	Alg string        `json:"alg"`
@@ -77,7 +57,9 @@ func VerifyGCPConfidentialSpaceAttestation(jwtToken string) (publicKey []byte, e
 			return nil, fmt.Errorf("failed to create Google attestor: %w", err)
 		}
 
-		if err = attestor.Validate([]byte(jwtToken)); err != nil {
+		// Create logger for JWT validation diagnostics
+		logger := GetLogger("client", false)
+		if err = attestor.Validate([]byte(jwtToken), logger); err != nil {
 			return nil, fmt.Errorf("GCP Confidential Space attestation validation failed: %w", err)
 		}
 	} else {

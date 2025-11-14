@@ -164,7 +164,7 @@ func (t *TEET) verifyTEEKAttestation(req *teeproto.TEEKAttestationRequest) error
 		return fmt.Errorf("EXPECTED_TEEK_PCR0 not configured")
 	}
 
-	pcr0, err := shared.ExtractPCR0FromAttestation(attestation)
+	pcr0, err := shared.ExtractPCR0FromAttestation(attestation, t.logger)
 	if err != nil {
 		return fmt.Errorf("failed to extract PCR0: %v", err)
 	}

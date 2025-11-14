@@ -29,12 +29,12 @@ func ExtractTLSCertFromWebSocket(conn *websocket.Conn) ([]byte, error) {
 }
 
 // ExtractPCR0FromAttestation extracts PCR0 from platform-specific attestation as string
-func ExtractPCR0FromAttestation(attestation *teeproto.AttestationReport) (string, error) {
+func ExtractPCR0FromAttestation(attestation *teeproto.AttestationReport, logger *Logger) (string, error) {
 	switch attestation.Type {
 	case "nitro":
 		return extractPCR0FromNitro(attestation.Report)
 	case "gcp":
-		return extractPCR0FromGCP(attestation.Report)
+		return ExtractImageDigestFromGCPAttestation(attestation.Report, logger)
 	default:
 		return "", fmt.Errorf("unknown attestation type: %s", attestation.Type)
 	}
@@ -63,14 +63,6 @@ func extractPCR0FromNitro(doc []byte) (string, error) {
 	return fmt.Sprintf("%x", pcr0), nil
 }
 
-// extractPCR0FromGCP parses GCP attestation token and extracts image digest as PCR0 equivalent
-func extractPCR0FromGCP(token []byte) (string, error) {
-	// GCP Confidential Space uses image_digest in submods.container.image_digest
-	// This serves as the equivalent of PCR0 for image identity verification
-	// Returns the full string like "sha256:abc123..." for simple string comparison
-	return ExtractImageDigestFromGCPAttestation(token)
-}
-
 // ExtractUserDataFromNitroAttestation extracts userData from AWS Nitro attestation document
 func ExtractUserDataFromNitroAttestation(doc []byte) (string, error) {
 	// Parse Nitro attestation document using Anjuna library
@@ -89,9 +81,9 @@ func ExtractUserDataFromNitroAttestation(doc []byte) (string, error) {
 }
 
 // ExtractUserDataFromGCPAttestation extracts userData from GCP Confidential Space attestation token
-func ExtractUserDataFromGCPAttestation(token []byte) (string, error) {
+func ExtractUserDataFromGCPAttestation(token []byte, logger *Logger) (string, error) {
 	// Validate JWT signature and extract userData from eat_nonce claim
-	userData, err := ValidateGCPAttestationAndExtractUserData(token)
+	userData, err := ValidateGCPAttestationAndExtractUserData(token, logger)
 	if err != nil {
 		return "", fmt.Errorf("GCP attestation validation failed: %v", err)
 	}
