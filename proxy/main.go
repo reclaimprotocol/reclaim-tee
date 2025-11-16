@@ -14,12 +14,11 @@ import (
 )
 
 type ProxyConfig struct {
-	Domains map[string]EnclaveTarget `json:"domains"`
-	AWS     AWSConfig                `json:"aws"`
-	Ports   PortConfig               `json:"ports"`
-	// TEE_T routing mode: "vsock" (default) or "network"
-	TEETMode       string `json:"teet_mode,omitempty"`
-	TEETNetworkURL string `json:"teet_network_url,omitempty"`
+	Domains    map[string]EnclaveTarget `json:"domains"`
+	AWS        AWSConfig                `json:"aws"`
+	Ports      PortConfig               `json:"ports"`
+	TEETDomain string                   `json:"teet_domain"`
+	TEETMode   string                   `json:"teet_mode,omitempty"`
 }
 
 type EnclaveTarget struct {
@@ -27,7 +26,8 @@ type EnclaveTarget struct {
 }
 
 type AWSConfig struct {
-	Region string `json:"region"`
+	Region        string `json:"region"`
+	S3CacheBucket string `json:"s3_cache_bucket"`
 }
 
 type PortConfig struct {
@@ -84,6 +84,14 @@ func main() {
 		zap.Int("kms_port", config.Ports.KMS),
 		zap.Int("internet_port", config.Ports.Internet),
 		zap.Int("cloudwatch_port", config.Ports.CloudWatch))
+
+	if config.TEETDomain != "" {
+		go func() {
+			if err := ServeEnclaveConfig(proxy.ctx, config.TEETDomain, logger); err != nil {
+				logger.Error("Config server failed", zap.Error(err))
+			}
+		}()
+	}
 
 	// Wait for shutdown signal
 	<-sigChan
@@ -226,8 +234,8 @@ func loadConfig() (*ProxyConfig, error) {
 			Internet:   8444,
 			CloudWatch: 5001,
 		},
-		TEETMode:       getEnvOrDefault("TEET_MODE", "vsock"),
-		TEETNetworkURL: getEnvOrDefault("TEET_NETWORK_URL", ""),
+		TEETDomain: getEnvOrDefault("TEET_DOMAIN", ""),
+		TEETMode:   getEnvOrDefault("TEET_MODE", "vsock"),
 	}, nil
 }
 

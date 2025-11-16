@@ -16,17 +16,27 @@ import (
 )
 
 func main() {
-
-	config := LoadTEEKConfig()
-	// Get the TEE_K logger for this service
 	logger := shared.GetTEEKLogger()
 	defer logger.Sync()
 
-	if config.EnclaveMode {
+	enclaveMode := shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true"
+
+	var config *TEEKConfig
+	if enclaveMode {
 		logger.Info("=== TEE_K Enclave Mode ===")
+
+		domain, err := ReceiveRuntimeConfig()
+		if err != nil {
+			logger.Critical("Failed to receive runtime config", zap.Error(err))
+			return
+		}
+		logger.Info("Received TEE_T domain", zap.String("domain", domain))
+
+		config = LoadTEEKConfigWithDomain(domain)
 		startEnclaveMode(config, logger)
 	} else {
 		logger.Info("=== TEE_K Standalone Mode ===")
+		config = LoadTEEKConfig()
 		startStandaloneMode(config, logger)
 	}
 }

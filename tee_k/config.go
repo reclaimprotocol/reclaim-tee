@@ -33,6 +33,10 @@ type TEEKConfig struct {
 }
 
 func LoadTEEKConfig() *TEEKConfig {
+	return LoadTEEKConfigWithDomain("")
+}
+
+func LoadTEEKConfigWithDomain(runtimeDomain string) *TEEKConfig {
 	err := godotenv.Load()
 	if err != nil {
 		log.Printf("Warning: Error loading .env file: %v", err)
@@ -51,13 +55,12 @@ func LoadTEEKConfig() *TEEKConfig {
 
 	enclaveMode := shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true"
 
-	// Set TEETURL based on mode
 	var teetURL string
-	if enclaveMode {
-		// Enclave mode: connect to TEE_T over internet via vsock proxy
+	if runtimeDomain != "" {
+		teetURL = "wss://" + runtimeDomain + "/teek"
+	} else if enclaveMode {
 		teetURL = shared.GetEnvOrDefault("TEET_URL", "wss://tee-t.reclaimprotocol.org/teek")
 	} else {
-		// Standalone mode: connect to TEE_T on localhost
 		teetURL = shared.GetEnvOrDefault("TEET_URL", "ws://localhost:8081/teek")
 	}
 

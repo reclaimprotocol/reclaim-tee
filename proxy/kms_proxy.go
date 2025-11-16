@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -29,146 +27,17 @@ const (
 	OpDeleteEncryptedItem = "DeleteEncryptedItem"
 )
 
-// Cache file constants
-const (
-	CacheFileName  = "kms_cache.json"
-	CacheFilePerms = 0600
-)
-
 // CacheItem represents a single cached item
 type CacheItem struct {
 	Data []byte `json:"data"`
 	Key  []byte `json:"key"`
 }
 
-// ServiceCache represents all cache items for a specific service
-type ServiceCache map[string]*CacheItem
-
-// CacheData represents the entire cache structure grouped by service
-type CacheData struct {
-	Services map[string]ServiceCache `json:"services"`
-	mutex    sync.RWMutex
-}
-
-// NewCacheData creates a new cache data structure
-func NewCacheData() *CacheData {
-	return &CacheData{
-		Services: make(map[string]ServiceCache),
-	}
-}
-
-// LoadCache loads the cache from disk, creating it if it doesn't exist
-func (cd *CacheData) LoadCache() error {
-	cd.mutex.Lock()
-	defer cd.mutex.Unlock()
-
-	if _, err := os.Stat(CacheFileName); os.IsNotExist(err) {
-		// Cache file doesn't exist, initialize empty cache
-		cd.Services = make(map[string]ServiceCache)
-		return cd.saveToFile()
-	}
-
-	data, err := os.ReadFile(CacheFileName)
-	if err != nil {
-		return fmt.Errorf("failed to read cache file: %v", err)
-	}
-
-	var fileData struct {
-		Services map[string]ServiceCache `json:"services"`
-	}
-
-	if err := json.Unmarshal(data, &fileData); err != nil {
-		return fmt.Errorf("failed to parse cache file: %v", err)
-	}
-
-	cd.Services = fileData.Services
-	if cd.Services == nil {
-		cd.Services = make(map[string]ServiceCache)
-	}
-
-	return nil
-}
-
-// saveToFile saves the cache to disk (must be called with write lock held)
-func (cd *CacheData) saveToFile() error {
-	fileData := struct {
-		Services map[string]ServiceCache `json:"services"`
-	}{
-		Services: cd.Services,
-	}
-
-	data, err := json.MarshalIndent(fileData, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal cache data: %v", err)
-	}
-
-	return os.WriteFile(CacheFileName, data, CacheFilePerms)
-}
-
-// StoreItem stores a cache item for a specific service
-func (cd *CacheData) StoreItem(serviceName, filename string, data, key []byte) error {
-	cd.mutex.Lock()
-	defer cd.mutex.Unlock()
-
-	if cd.Services[serviceName] == nil {
-		cd.Services[serviceName] = make(ServiceCache)
-	}
-
-	cd.Services[serviceName][filename] = &CacheItem{
-		Data: data,
-		Key:  key,
-	}
-
-	return cd.saveToFile()
-}
-
-// GetItem retrieves a cache item for a specific service
-func (cd *CacheData) GetItem(serviceName, filename string) (*CacheItem, error) {
-	cd.mutex.RLock()
-	defer cd.mutex.RUnlock()
-
-	serviceCache, exists := cd.Services[serviceName]
-	if !exists {
-		return nil, fmt.Errorf("service not found: %s", serviceName)
-	}
-
-	item, exists := serviceCache[filename]
-	if !exists {
-		return nil, fmt.Errorf("item not found: %s", filename)
-	}
-
-	// Return a copy to avoid race conditions
-	return &CacheItem{
-		Data: append([]byte(nil), item.Data...),
-		Key:  append([]byte(nil), item.Key...),
-	}, nil
-}
-
-// DeleteItem removes a cache item for a specific service
-func (cd *CacheData) DeleteItem(serviceName, filename string) error {
-	cd.mutex.Lock()
-	defer cd.mutex.Unlock()
-
-	serviceCache, exists := cd.Services[serviceName]
-	if !exists {
-		return nil // Item doesn't exist, consider it deleted
-	}
-
-	delete(serviceCache, filename)
-
-	// Clean up empty service cache
-	if len(serviceCache) == 0 {
-		delete(cd.Services, serviceName)
-	}
-
-	return cd.saveToFile()
-}
-
 type KMSProxy struct {
 	config    *ProxyConfig
 	logger    *zap.Logger
 	kmsClient *kms.Client
-	cache     *CacheData
+	cache     *S3CacheData
 }
 
 type KMSRequest struct {
@@ -224,31 +93,31 @@ type SharedDecryptInput struct {
 	Recipient           *SharedRecipientInfo `json:"recipient"`
 }
 
-// Conversion functions to custom AWS SDK types
-func (s *SharedRecipientInfo) toCustomAWSType() *types.RecipientInfoType {
+// Conversion functions to AWS SDK types
+func (s *SharedRecipientInfo) toAWSType() *types.RecipientInfo {
 	if s == nil {
 		return nil
 	}
-	return &types.RecipientInfoType{
+	return &types.RecipientInfo{
 		AttestationDocument:    s.AttestationDocument,
-		KeyEncryptionAlgorithm: types.EncryptionAlgorithmSpec(s.KeyEncryptionAlgorithm),
+		KeyEncryptionAlgorithm: types.KeyEncryptionMechanism(s.KeyEncryptionAlgorithm),
 	}
 }
 
-func (s *SharedGenerateDataKeyInput) toCustomAWSType() *kms.GenerateDataKeyInput {
+func (s *SharedGenerateDataKeyInput) toAWSType() *kms.GenerateDataKeyInput {
 	return &kms.GenerateDataKeyInput{
 		KeyId:     aws.String(s.KeyId),
 		KeySpec:   types.DataKeySpec(s.KeySpec),
-		Recipient: s.Recipient.toCustomAWSType(),
+		Recipient: s.Recipient.toAWSType(),
 	}
 }
 
-func (s *SharedDecryptInput) toCustomAWSType() *kms.DecryptInput {
+func (s *SharedDecryptInput) toAWSType() *kms.DecryptInput {
 	return &kms.DecryptInput{
 		KeyId:               aws.String(s.KeyId),
 		CiphertextBlob:      s.CiphertextBlob,
 		EncryptionAlgorithm: types.EncryptionAlgorithmSpec(s.EncryptionAlgorithm),
-		Recipient:           s.Recipient.toCustomAWSType(),
+		Recipient:           s.Recipient.toAWSType(),
 	}
 }
 
@@ -274,10 +143,17 @@ func NewKMSProxy(proxyConfig *ProxyConfig, logger *zap.Logger) (*KMSProxy, error
 
 	kmsClient := kms.NewFromConfig(awsConfig)
 
-	// Initialize cache
-	cache := NewCacheData()
-	if err := cache.LoadCache(); err != nil {
-		logger.Warn("Failed to load cache, starting with empty cache", zap.Error(err))
+	// Initialize S3 cache backend
+	s3Bucket := proxyConfig.AWS.S3CacheBucket
+	if s3Bucket == "" {
+		return nil, fmt.Errorf("s3_cache_bucket is required in AWS configuration")
+	}
+
+	logger.Info("Initializing S3 cache storage", zap.String("bucket", s3Bucket))
+
+	cache, err := NewS3CacheData(context.Background(), s3Bucket, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize S3 cache: %v", err)
 	}
 
 	return &KMSProxy{
@@ -423,7 +299,7 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 			)
 		}
 
-		output, err := p.kmsClient.GenerateDataKey(ctx, input.toCustomAWSType())
+		output, err := p.kmsClient.GenerateDataKey(ctx, input.toAWSType())
 		if err != nil {
 			p.logger.Error("KMS GenerateDataKey failed - detailed error",
 				zap.Error(err),
@@ -489,7 +365,7 @@ func (p *KMSProxy) processOperation(ctx context.Context, req KMSRequest) ([]byte
 			)
 		}
 
-		output, err := p.kmsClient.Decrypt(ctx, input.toCustomAWSType())
+		output, err := p.kmsClient.Decrypt(ctx, input.toAWSType())
 		if err != nil {
 			p.logger.Error("KMS Decrypt failed - detailed error",
 				zap.Error(err),
