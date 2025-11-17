@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 
 	"github.com/mdlayher/vsock"
 	"go.uber.org/zap"
@@ -10,7 +11,7 @@ import (
 
 const configPort = 5555
 
-func ServeEnclaveConfig(ctx context.Context, domain string, logger *zap.Logger) error {
+func ServeEnclaveConfig(ctx context.Context, config *EnclaveRuntimeConfig, logger *zap.Logger) error {
 	listener, err := vsock.Listen(configPort, nil)
 	if err != nil {
 		return err
@@ -32,17 +33,26 @@ func ServeEnclaveConfig(ctx context.Context, domain string, logger *zap.Logger) 
 			go func() {
 				defer conn.Close()
 
-				length := uint16(len(domain))
+				// Marshal config to JSON
+				configJSON, err := json.Marshal(config)
+				if err != nil {
+					logger.Error("Failed to marshal config", zap.Error(err))
+					return
+				}
+
+				length := uint16(len(configJSON))
 				if err := binary.Write(conn, binary.BigEndian, length); err != nil {
 					logger.Error("Failed to send length", zap.Error(err))
 					return
 				}
 
-				if _, err := conn.Write([]byte(domain)); err != nil {
-					logger.Error("Failed to send domain", zap.Error(err))
+				if _, err := conn.Write(configJSON); err != nil {
+					logger.Error("Failed to send config", zap.Error(err))
 					return
 				}
-				logger.Info("Sent TEE_T domain to enclave", zap.String("domain", domain))
+				logger.Info("Sent enclave config",
+					zap.String("tee_k_domain", config.TEEKDomain),
+					zap.String("tee_t_domain", config.TEETDomain))
 			}()
 		}
 	}

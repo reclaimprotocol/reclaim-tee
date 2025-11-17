@@ -414,8 +414,8 @@ func (p *InternetProxy) handleTEETNetworkRouting(ctx context.Context, enclaveCon
 
 // resolveTEETNetworkHostPort parses TEETDomain or falls back to original target host:port
 func (p *InternetProxy) resolveTEETNetworkHostPort(originalTarget string) string {
-	if p.config != nil && p.config.TEETDomain != "" {
-		if u, err := url.Parse("wss://" + p.config.TEETDomain); err == nil {
+	if p.config != nil && p.config.EnclaveConfig.TEETDomain != "" {
+		if u, err := url.Parse("wss://" + p.config.EnclaveConfig.TEETDomain); err == nil {
 			host := u.Host
 			if !strings.Contains(host, ":") {
 				// default port

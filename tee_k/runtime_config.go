@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -13,27 +14,36 @@ const (
 	configPort = 5555
 )
 
-func ReceiveRuntimeConfig() (string, error) {
+type RuntimeConfig struct {
+	TEEKDomain string `json:"tee_k_domain"`
+	TEETDomain string `json:"tee_t_domain"`
+}
+
+func ReceiveRuntimeConfig() (*RuntimeConfig, error) {
 	conn, err := vsock.Dial(proxyCID, configPort, nil)
 	if err != nil {
-		return "", fmt.Errorf("vsock dial failed: %w", err)
+		return nil, fmt.Errorf("vsock dial failed: %w", err)
 	}
 	defer conn.Close()
 
 	var length uint16
 	if err := binary.Read(conn, binary.BigEndian, &length); err != nil {
-		return "", fmt.Errorf("failed to read length: %w", err)
+		return nil, fmt.Errorf("failed to read length: %w", err)
 	}
 
 	buf := make([]byte, length)
 	if _, err := io.ReadFull(conn, buf); err != nil {
-		return "", fmt.Errorf("failed to read domain: %w", err)
+		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 
-	domain := string(buf)
-	if domain == "" {
-		return "", fmt.Errorf("empty domain received")
+	var config RuntimeConfig
+	if err := json.Unmarshal(buf, &config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	return domain, nil
+	if config.TEEKDomain == "" || config.TEETDomain == "" {
+		return nil, fmt.Errorf("invalid config: missing domains")
+	}
+
+	return &config, nil
 }

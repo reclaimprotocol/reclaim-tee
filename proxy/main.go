@@ -13,11 +13,16 @@ import (
 	"go.uber.org/zap"
 )
 
+type EnclaveRuntimeConfig struct {
+	TEEKDomain string `json:"tee_k_domain"`
+	TEETDomain string `json:"tee_t_domain"`
+}
+
 type ProxyConfig struct {
-	Domains    map[string]EnclaveTarget `json:"domains"`
-	AWS        AWSConfig                `json:"aws"`
-	Ports      PortConfig               `json:"ports"`
-	TEETDomain string                   `json:"teet_domain"`
+	Domains       map[string]EnclaveTarget `json:"domains"`
+	AWS           AWSConfig                `json:"aws"`
+	Ports         PortConfig               `json:"ports"`
+	EnclaveConfig EnclaveRuntimeConfig     `json:"enclave_config"`
 }
 
 type EnclaveTarget struct {
@@ -84,9 +89,9 @@ func main() {
 		zap.Int("internet_port", config.Ports.Internet),
 		zap.Int("cloudwatch_port", config.Ports.CloudWatch))
 
-	if config.TEETDomain != "" {
+	if config.EnclaveConfig.TEETDomain != "" {
 		go func() {
-			if err := ServeEnclaveConfig(proxy.ctx, config.TEETDomain, logger); err != nil {
+			if err := ServeEnclaveConfig(proxy.ctx, &config.EnclaveConfig, logger); err != nil {
 				logger.Error("Config server failed", zap.Error(err))
 			}
 		}()
@@ -233,7 +238,10 @@ func loadConfig() (*ProxyConfig, error) {
 			Internet:   8444,
 			CloudWatch: 5001,
 		},
-		TEETDomain: getEnvOrDefault("TEET_DOMAIN", "tee-t-gcp.reclaimprotocol.org"),
+		EnclaveConfig: EnclaveRuntimeConfig{
+			TEEKDomain: "tee-k.reclaimprotocol.org",
+			TEETDomain: getEnvOrDefault("TEET_DOMAIN", "tee-t-gcp.reclaimprotocol.org:443"),
+		},
 	}, nil
 }
 

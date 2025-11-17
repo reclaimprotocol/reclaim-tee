@@ -29,14 +29,16 @@ func main() {
 	if enclaveMode {
 		logger.Info("=== TEE_K Enclave Mode ===")
 
-		domain, err := ReceiveRuntimeConfig()
+		runtimeConfig, err := ReceiveRuntimeConfig()
 		if err != nil {
 			logger.Critical("Failed to receive runtime config", zap.Error(err))
 			return
 		}
-		logger.Info("Received TEE_T domain", zap.String("domain", domain))
+		logger.Info("Received runtime config",
+			zap.String("tee_k_domain", runtimeConfig.TEEKDomain),
+			zap.String("tee_t_domain", runtimeConfig.TEETDomain))
 
-		config = LoadTEEKConfigWithDomain(domain)
+		config = LoadTEEKConfigWithDomains(runtimeConfig.TEEKDomain, runtimeConfig.TEETDomain)
 		startEnclaveMode(config, logger)
 	} else {
 		logger.Info("=== TEE_K Standalone Mode ===")
