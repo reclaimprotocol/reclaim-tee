@@ -12,10 +12,14 @@ import (
 
 	"tee-mpc/shared"
 
+	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
 
 func main() {
+	// Load .env file first (before any env var checks)
+	_ = godotenv.Load()
+
 	logger := shared.GetTEEKLogger()
 	defer logger.Sync()
 
