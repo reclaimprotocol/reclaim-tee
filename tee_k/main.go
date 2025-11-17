@@ -12,21 +12,37 @@ import (
 
 	"tee-mpc/shared"
 
+	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
 
 func main() {
+	// Load .env file first (before any env var checks)
+	_ = godotenv.Load()
 
-	config := LoadTEEKConfig()
-	// Get the TEE_K logger for this service
 	logger := shared.GetTEEKLogger()
 	defer logger.Sync()
 
-	if config.EnclaveMode {
+	enclaveMode := shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true"
+
+	var config *TEEKConfig
+	if enclaveMode {
 		logger.Info("=== TEE_K Enclave Mode ===")
+
+		runtimeConfig, err := ReceiveRuntimeConfig()
+		if err != nil {
+			logger.Critical("Failed to receive runtime config", zap.Error(err))
+			return
+		}
+		logger.Info("Received runtime config",
+			zap.String("tee_k_domain", runtimeConfig.TEEKDomain),
+			zap.String("tee_t_domain", runtimeConfig.TEETDomain))
+
+		config = LoadTEEKConfigWithDomains(runtimeConfig.TEEKDomain, runtimeConfig.TEETDomain)
 		startEnclaveMode(config, logger)
 	} else {
 		logger.Info("=== TEE_K Standalone Mode ===")
+		config = LoadTEEKConfig()
 		startStandaloneMode(config, logger)
 	}
 }

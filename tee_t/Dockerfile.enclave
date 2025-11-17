@@ -31,9 +31,10 @@ COPY deploy/tee_t.env /.env
 # Declare environment variables that can be overridden at runtime
 # This is required for GCP Confidential Space
 ENV EXPECTED_TEEK_PCR0=""
+ENV ENCLAVE_DOMAIN=""
 
-# GCP Confidential Space launch policy: allow this env var to be overridden
-LABEL "tee.launch_policy.allow_env_override"="EXPECTED_TEEK_PCR0"
+# GCP Confidential Space launch policy: allow these env vars to be overridden
+LABEL "tee.launch_policy.allow_env_override"="EXPECTED_TEEK_PCR0,ENCLAVE_DOMAIN"
 
 # Expose ports
 EXPOSE 80 443

@@ -23,5 +23,9 @@ go.work
 
 # OS files
 .DS_Store
-Thumbs.db 
+Thumbs.db
 /.env
+
+# Proxy runtime configuration (use proxy-config.json.example as template)
+proxy-config.json
+kms_cache.json

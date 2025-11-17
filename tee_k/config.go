@@ -33,6 +33,10 @@ type TEEKConfig struct {
 }
 
 func LoadTEEKConfig() *TEEKConfig {
+	return LoadTEEKConfigWithDomains("", "")
+}
+
+func LoadTEEKConfigWithDomains(teekDomain, teetDomain string) *TEEKConfig {
 	err := godotenv.Load()
 	if err != nil {
 		log.Printf("Warning: Error loading .env file: %v", err)
@@ -51,21 +55,34 @@ func LoadTEEKConfig() *TEEKConfig {
 
 	enclaveMode := shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true"
 
-	// Set TEETURL based on mode
+	// Determine TEE_T URL
 	var teetURL string
-	if enclaveMode {
-		// Enclave mode: connect to TEE_T over internet via vsock proxy
+	if teetDomain != "" {
+		// Runtime config provided (from proxy for nitro platform)
+		teetURL = "wss://" + teetDomain + "/teek"
+	} else if enclaveMode {
+		// Enclave mode but no runtime config (standalone or GCP)
 		teetURL = shared.GetEnvOrDefault("TEET_URL", "wss://tee-t.reclaimprotocol.org/teek")
 	} else {
-		// Standalone mode: connect to TEE_T on localhost
+		// Standalone mode
 		teetURL = shared.GetEnvOrDefault("TEET_URL", "ws://localhost:8081/teek")
+	}
+
+	// Determine TEE_K domain
+	var domain string
+	if teekDomain != "" {
+		// Runtime config provided (from proxy for nitro platform)
+		domain = teekDomain
+	} else {
+		// Use env var (for GCP or standalone)
+		domain = shared.GetEnvOrDefault("ENCLAVE_DOMAIN", "tee-k.reclaimprotocol.org")
 	}
 
 	return &TEEKConfig{
 		Port:             shared.GetEnvIntOrDefault("PORT", 8080),
 		TEETURL:          teetURL,
 		EnclaveMode:      enclaveMode,
-		Domain:           shared.GetEnvOrDefault("ENCLAVE_DOMAIN", "tee-k.reclaimprotocol.org"),
+		Domain:           domain,
 		KMSKey:           shared.GetEnvOrDefault("KMS_KEY", ""),
 		KMSProvider:      kmsProvider,
 		GoogleProjectID:  shared.GetEnvOrDefault("GOOGLE_PROJECT_ID", ""),

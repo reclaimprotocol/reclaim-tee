@@ -342,7 +342,7 @@ func (p *InternetProxy) handleLocalDomainConnection(ctx context.Context, enclave
 
 // shouldRouteTEETOverNetwork determines if the target is TEE_T domain and network mode is enabled
 func (p *InternetProxy) shouldRouteTEETOverNetwork(target string) bool {
-	if p.config == nil || strings.ToLower(p.config.TEETMode) != "network" {
+	if p.config == nil {
 		return false
 	}
 	// Extract hostname
@@ -357,7 +357,7 @@ func (p *InternetProxy) shouldRouteTEETOverNetwork(target string) bool {
 	return false
 }
 
-// handleTEETNetworkRouting routes local TEE_T domain over network to configured TEETNetworkURL
+// handleTEETNetworkRouting routes local TEE_T domain over network to configured TEETDomain
 func (p *InternetProxy) handleTEETNetworkRouting(ctx context.Context, enclaveConn net.Conn, originalTarget string) {
 	// Determine destination host:port
 	destHostPort := p.resolveTEETNetworkHostPort(originalTarget)
@@ -412,10 +412,10 @@ func (p *InternetProxy) handleTEETNetworkRouting(ctx context.Context, enclaveCon
 	}
 }
 
-// resolveTEETNetworkHostPort parses TEETNetworkURL or falls back to original target host:port
+// resolveTEETNetworkHostPort parses TEETDomain or falls back to original target host:port
 func (p *InternetProxy) resolveTEETNetworkHostPort(originalTarget string) string {
-	if p.config != nil && p.config.TEETNetworkURL != "" {
-		if u, err := url.Parse(p.config.TEETNetworkURL); err == nil {
+	if p.config != nil && p.config.EnclaveConfig.TEETDomain != "" {
+		if u, err := url.Parse("wss://" + p.config.EnclaveConfig.TEETDomain); err == nil {
 			host := u.Host
 			if !strings.Contains(host, ":") {
 				// default port
