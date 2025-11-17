@@ -28,6 +28,7 @@ type EnclaveManager struct {
 	certManager   *VSockLegoManager
 	cache         *EnclaveCache
 	kmsProvider   KMSProvider
+	logger        *Logger
 
 	// HTTP server for certificate renewal (started/stopped as needed)
 	renewalHTTPServer interface {
@@ -252,8 +253,15 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 		acmeURL = LetsEncryptStaging
 	}
 
-	// Create zap logger for cert manager
-	zapLogger, _ := zap.NewProduction()
+	// Get service-specific logger
+	var logger *Logger
+	if config.ServiceName == "tee_k" {
+		logger = GetTEEKLogger()
+	} else if config.ServiceName == "tee_t" {
+		logger = GetTEETLogger()
+	} else {
+		logger = GetTEEKLogger() // Default fallback
+	}
 
 	certManager, err := NewVSockLegoManager(ctx, &LegoVSockConfig{
 		Domain:       config.Domain,
@@ -266,7 +274,7 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 		InternetPort: config.InternetPort,
 		Cache:        cache,
 		HTTPClient:   httpClient,
-		Logger:       zapLogger,
+		Logger:       logger.Logger,
 	})
 
 	if err != nil {
@@ -279,6 +287,7 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 		certManager:   certManager,
 		cache:         cache,
 		kmsProvider:   provider,
+		logger:        logger,
 	}
 
 	// Set renewal callbacks to start/stop HTTP server during renewal
@@ -295,7 +304,7 @@ func NewEnclaveManager(ctx context.Context, config *EnclaveConfig, kmsKeyID stri
 
 // BootstrapCertificates ensures certificates are available before starting HTTPS server
 func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
-	log.Printf("[%s] Bootstrapping certificates for domain: %s", em.config.ServiceName, em.config.Domain)
+	em.logger.Info("Bootstrapping certificates for domain", zap.String("domain", em.config.Domain))
 
 	// Check if we already have a valid certificate WITHOUT triggering ACME operations
 	// First check the certificate manager's in-memory cache
@@ -303,7 +312,7 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	if cert, exists := em.certManager.certificates[em.config.Domain]; exists {
 		if em.certManager.IsValidCertificate(cert) {
 			em.certManager.mu.RUnlock()
-			log.Printf("[%s] Found valid certificate in memory - skipping ACME process", em.config.ServiceName)
+			em.logger.Info("Found valid certificate in memory - skipping ACME process")
 			return nil
 		}
 	}
@@ -315,7 +324,7 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 		if err == nil {
 			cert, err := tls.X509KeyPair(cachedData, cachedData)
 			if err == nil && em.certManager.IsValidCertificate(&cert) {
-				log.Printf("[%s] Found valid certificate in persistent cache - skipping ACME process", em.config.ServiceName)
+				em.logger.Info("Found valid certificate in persistent cache - skipping ACME process")
 				// Store in memory for future use
 				em.certManager.mu.Lock()
 				em.certManager.certificates[em.config.Domain] = &cert
@@ -325,8 +334,8 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("[%s] No valid certificate found - starting ACME challenge for %s", em.config.ServiceName, em.config.Domain)
-	log.Printf("[%s] Platform check: %s (IsGCP=%v)", em.config.ServiceName, em.config.Platform.Platform, em.config.Platform.Platform == "gcp")
+	em.logger.Info("No valid certificate found - starting ACME challenge", zap.String("domain", em.config.Domain))
+	em.logger.Info("Platform check", zap.String("platform", em.config.Platform.Platform), zap.Bool("is_gcp", em.config.Platform.Platform == "gcp"))
 
 	if em.config.Platform.Platform == "gcp" {
 		return em.bootstrapCertificatesGCP(ctx)
@@ -336,10 +345,10 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 
 	serverErrChan := make(chan error, 1)
 	go func() {
-		log.Printf("[%s] Starting VSock HTTP server on port %d for ACME challenges", em.config.ServiceName, em.config.HTTPPort)
+		em.logger.Info("Starting VSock HTTP server for ACME challenges", zap.Uint32("port", em.config.HTTPPort))
 
 		if err := httpServer.ListenAndServeVSock(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("[%s] VSock HTTP server error: %v", em.config.ServiceName, err)
+			em.logger.Error("VSock HTTP server error", zap.Error(err))
 			serverErrChan <- err
 		}
 	}()
@@ -351,13 +360,13 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 		return fmt.Errorf("HTTP server failed to become ready: %v", err)
 	}
 
-	log.Printf("[%s] HTTP server is ready and listening on port %d", em.config.ServiceName, em.config.HTTPPort)
+	em.logger.Info("HTTP server is ready and listening", zap.Uint32("port", em.config.HTTPPort))
 
 	// Additional wait to ensure server is fully ready to handle connections
 	time.Sleep(500 * time.Millisecond)
 
-	log.Printf("[%s] Starting ACME certificate request for %s...", em.config.ServiceName, em.config.Domain)
-	log.Printf("[%s] ACME Client Directory URL: %s", em.config.ServiceName, em.certManager.config.CADirURL)
+	em.logger.Info("Starting ACME certificate request", zap.String("domain", em.config.Domain))
+	em.logger.Info("ACME Client Directory URL", zap.String("url", em.certManager.config.CADirURL))
 
 	// Now it's safe to call BootstrapCertificates which will trigger ACME operations
 	err := em.certManager.BootstrapCertificates(ctx)
@@ -376,11 +385,11 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	// Channel to handle the GetCertificate call with timeout
 	certResult := make(chan error, 1)
 	go func() {
-		log.Printf("[%s] Validating obtained certificate for %s...", em.config.ServiceName, em.config.Domain)
+		em.logger.Info("Validating obtained certificate", zap.String("domain", em.config.Domain))
 		_, certErr := em.certManager.GetCertificate(&tls.ClientHelloInfo{
 			ServerName: em.config.Domain,
 		})
-		log.Printf("[%s] Certificate validation completed for %s", em.config.ServiceName, em.config.Domain)
+		em.logger.Info("Certificate validation completed", zap.String("domain", em.config.Domain))
 		certResult <- certErr
 	}()
 
@@ -388,26 +397,26 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 	select {
 	case err = <-certResult:
 		if err != nil {
-			log.Printf("[%s] Certificate validation failed: %v", em.config.ServiceName, err)
+			em.logger.Error("Certificate validation failed", zap.Error(err))
 		} else {
-			log.Printf("[%s] Certificate validation succeeded!", em.config.ServiceName)
+			em.logger.Info("Certificate validation succeeded!")
 
 			// Verify it's now cached
 			if cachedCert, cacheErr := em.cache.Get(ctx, em.config.Domain); cacheErr == nil {
-				log.Printf("[%s] Certificate now cached (%d bytes) - ready for TLS!", em.config.ServiceName, len(cachedCert))
+				em.logger.Info("Certificate now cached - ready for TLS!", zap.Int("bytes", len(cachedCert)))
 			} else {
-				log.Printf("[%s] WARNING: Certificate not cached: %v", em.config.ServiceName, cacheErr)
+				em.logger.Warn("Certificate not cached", zap.Error(cacheErr))
 			}
 		}
 	case <-certCtx.Done():
 		err = fmt.Errorf("certificate validation timed out after 30 seconds")
-		log.Printf("[%s] Certificate validation TIMED OUT", em.config.ServiceName)
+		em.logger.Error("Certificate validation TIMED OUT")
 	}
 
 	// Shutdown HTTP server
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	log.Printf("[%s] Shutting down ACME HTTP server", em.config.ServiceName)
+	em.logger.Info("Shutting down ACME HTTP server")
 	httpServer.Shutdown(shutdownCtx)
 
 	// Check for server errors
@@ -424,12 +433,12 @@ func (em *EnclaveManager) BootstrapCertificates(ctx context.Context) error {
 		return fmt.Errorf("failed to bootstrap certificate for %s: %v", em.config.Domain, err)
 	}
 
-	log.Printf("[%s] Successfully bootstrapped certificate for domain: %s", em.config.ServiceName, em.config.Domain)
+	em.logger.Info("Successfully bootstrapped certificate for domain", zap.String("domain", em.config.Domain))
 	return nil
 }
 
 func (em *EnclaveManager) bootstrapCertificatesGCP(ctx context.Context) error {
-	log.Printf("[%s] Starting standard HTTP server on port %d for ACME", em.config.ServiceName, em.config.HTTPPort)
+	em.logger.Info("Starting standard HTTP server for ACME", zap.Uint32("port", em.config.HTTPPort))
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", em.config.HTTPPort),
@@ -445,7 +454,7 @@ func (em *EnclaveManager) bootstrapCertificatesGCP(ctx context.Context) error {
 
 	time.Sleep(500 * time.Millisecond)
 
-	log.Printf("[%s] Starting ACME certificate request for %s", em.config.ServiceName, em.config.Domain)
+	em.logger.Info("Starting ACME certificate request", zap.String("domain", em.config.Domain))
 	err := em.certManager.BootstrapCertificates(ctx)
 	if err != nil {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -466,7 +475,7 @@ func (em *EnclaveManager) bootstrapCertificatesGCP(ctx context.Context) error {
 		return fmt.Errorf("certificate validation failed: %v", certErr)
 	}
 
-	log.Printf("[%s] Successfully bootstrapped certificate for domain: %s", em.config.ServiceName, em.config.Domain)
+	em.logger.Info("Successfully bootstrapped certificate for domain", zap.String("domain", em.config.Domain))
 	return nil
 }
 
