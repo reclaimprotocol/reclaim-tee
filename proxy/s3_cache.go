@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"go.uber.org/zap"
 )
@@ -26,17 +25,11 @@ type S3CacheData struct {
 // NewS3CacheData creates a new S3-backed cache
 // bucket: S3 bucket name for certificate storage
 // awsConfig: AWS configuration (region, credentials via IAM role)
-func NewS3CacheData(ctx context.Context, bucket string, logger *zap.Logger) (*S3CacheData, error) {
-	// Load AWS configuration (uses IAM role from EC2 instance)
-	awsConfig, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %v", err)
-	}
-
+func NewS3CacheData(ctx context.Context, awsConfig aws.Config, bucket string, logger *zap.Logger) (*S3CacheData, error) {
 	s3Client := s3.NewFromConfig(awsConfig)
 
 	// Verify bucket exists and is accessible
-	_, err = s3Client.HeadBucket(ctx, &s3.HeadBucketInput{
+	_, err := s3Client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {

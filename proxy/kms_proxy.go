@@ -151,7 +151,7 @@ func NewKMSProxy(proxyConfig *ProxyConfig, logger *zap.Logger) (*KMSProxy, error
 
 	logger.Info("Initializing S3 cache storage", zap.String("bucket", s3Bucket))
 
-	cache, err := NewS3CacheData(context.Background(), s3Bucket, logger)
+	cache, err := NewS3CacheData(context.Background(), awsConfig, s3Bucket, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize S3 cache: %v", err)
 	}
