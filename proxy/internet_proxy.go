@@ -342,7 +342,7 @@ func (p *InternetProxy) handleLocalDomainConnection(ctx context.Context, enclave
 
 // shouldRouteTEETOverNetwork determines if the target is TEE_T domain and network mode is enabled
 func (p *InternetProxy) shouldRouteTEETOverNetwork(target string) bool {
-	if p.config == nil || strings.ToLower(p.config.TEETMode) != "network" {
+	if p.config == nil {
 		return false
 	}
 	// Extract hostname

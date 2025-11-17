@@ -18,7 +18,6 @@ type ProxyConfig struct {
 	AWS        AWSConfig                `json:"aws"`
 	Ports      PortConfig               `json:"ports"`
 	TEETDomain string                   `json:"teet_domain"`
-	TEETMode   string                   `json:"teet_mode,omitempty"`
 }
 
 type EnclaveTarget struct {
@@ -234,8 +233,7 @@ func loadConfig() (*ProxyConfig, error) {
 			Internet:   8444,
 			CloudWatch: 5001,
 		},
-		TEETDomain: getEnvOrDefault("TEET_DOMAIN", ""),
-		TEETMode:   getEnvOrDefault("TEET_MODE", "vsock"),
+		TEETDomain: getEnvOrDefault("TEET_DOMAIN", "tee-t-gcp.reclaimprotocol.org"),
 	}, nil
 }
 
