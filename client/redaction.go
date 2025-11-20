@@ -14,12 +14,15 @@ import (
 )
 
 // analyzeResponseRedaction is the main entry point for response redaction analysis
-func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
+func (c *Client) analyzeResponseRedaction() (shared.ResponseRedactionSpec, error) {
 	// Step 1: Analyze TLS records and build mappings
 	tlsAnalysis := c.analyzeTLSRecords(c.getSortedSequenceNumbers())
 
 	// Step 2: Process HTTP content redactions if present
-	httpRedactions := c.analyzeHTTPContent(tlsAnalysis.HTTPMappings, tlsAnalysis.AllHTTPContent)
+	httpRedactions, err := c.analyzeHTTPContent(tlsAnalysis.HTTPMappings, tlsAnalysis.AllHTTPContent)
+	if err != nil {
+		return shared.ResponseRedactionSpec{}, fmt.Errorf("failed to analyze HTTP content: %w", err)
+	}
 
 	// Step 3: Combine all redaction ranges
 	responseRedactionRanges := append(tlsAnalysis.ProtocolRedactions, httpRedactions...)
@@ -54,7 +57,7 @@ func (c *Client) analyzeResponseRedaction() shared.ResponseRedactionSpec {
 	}
 	c.logger.Info("Response redaction analysis complete", logFields...)
 
-	return spec
+	return spec, nil
 }
 
 // getSortedSequenceNumbers returns sequence numbers in sorted order
@@ -138,30 +141,32 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 }
 
 // analyzeHTTPContent analyzes HTTP content and returns redaction ranges
-func (c *Client) analyzeHTTPContent(mappings []TLSToHTTPMapping, httpContent []byte) []shared.ResponseRedactionRange {
+func (c *Client) analyzeHTTPContent(mappings []TLSToHTTPMapping, httpContent []byte) ([]shared.ResponseRedactionRange, error) {
 	if len(httpContent) == 0 || len(mappings) == 0 {
-		return nil
+		return nil, nil
 	}
 	// Parse HTTP response
 	httpResponse := c.parseHTTPResponse(httpContent)
 	c.lastResponseData = httpResponse
 
 	// Get automatic redactions from provider if configured
-	httpRedactions := c.getAutomaticHTTPRedactions(httpResponse)
+	httpRedactions, err := c.getAutomaticHTTPRedactions(httpResponse)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get automatic HTTP redactions: %w", err)
+	}
 
 	// Convert HTTP positions to TLS positions
-	return c.mapHTTPToTLSRedactions(httpRedactions, mappings)
+	return c.mapHTTPToTLSRedactions(httpRedactions, mappings), nil
 }
 
 // getAutomaticHTTPRedactions gets provider-specific redactions
-func (c *Client) getAutomaticHTTPRedactions(httpResponse *HTTPResponse) []shared.ResponseRedactionRange {
+func (c *Client) getAutomaticHTTPRedactions(httpResponse *HTTPResponse) ([]shared.ResponseRedactionRange, error) {
 	if len(c.lastRedactionRanges) == 0 {
 		c.logger.Info("Getting automatic response redactions", zap.Int("response_bytes", len(httpResponse.FullResponse)))
 
 		ranges, err := c.getResponseRedactions(httpResponse)
 		if err != nil {
-			c.terminateConnectionWithError("Failed to get response redactions", err)
-			return nil
+			return nil, fmt.Errorf("failed to get response redactions: %w", err)
 		}
 
 		c.logger.Info("Automatic response redactions generated",
@@ -172,7 +177,7 @@ func (c *Client) getAutomaticHTTPRedactions(httpResponse *HTTPResponse) []shared
 			zap.Int("cached_ranges", len(c.lastRedactionRanges)))
 	}
 
-	return c.lastRedactionRanges
+	return c.lastRedactionRanges, nil
 }
 
 // mapHTTPToTLSRedactions converts HTTP position ranges to TLS stream positions
@@ -277,7 +282,11 @@ func (c *Client) sendRedactionSpec() error {
 	c.logger.Info("🚀 [REDACTION] Generating and sending redaction specification to TEE_K")
 
 	// Analyze response content to identify redaction ranges
-	redactionSpec := c.analyzeResponseRedaction()
+	redactionSpec, err := c.analyzeResponseRedaction()
+	if err != nil {
+		c.terminateConnectionWithError("Failed to analyze response redaction", err)
+		return fmt.Errorf("failed to analyze response redaction: %w", err)
+	}
 
 	// Send redaction spec to TEE_K using protobuf envelope
 	if c.wsConn == nil {

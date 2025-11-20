@@ -112,32 +112,32 @@ func substituteParamValues(current *HTTPProviderParams, secret *HTTPProviderSecr
 	}
 
 	if params.ResponseRedactions != nil {
-		for i, r := range params.ResponseRedactions {
-			if r.Regex != "" {
-				regexParams := extractAndReplaceTemplateValues(r.Regex, &params, secret, ignoreMissing)
-				r.Regex = regexParams.NewParam
+		for i := range params.ResponseRedactions {
+			if params.ResponseRedactions[i].Regex != "" {
+				regexParams := extractAndReplaceTemplateValues(params.ResponseRedactions[i].Regex, &params, secret, ignoreMissing)
+				params.ResponseRedactions[i].Regex = regexParams.NewParam
 				logger.Debug("Redaction regex substituted", zap.String("component", "Utils"), zap.String("operation", "substituteParamValues"), zap.String("level", "verbose"), zap.Int("redaction_index", i+1))
 			}
 
-			if r.XPath != "" {
-				xpathParams := extractAndReplaceTemplateValues(r.XPath, &params, secret, ignoreMissing)
-				r.XPath = xpathParams.NewParam
+			if params.ResponseRedactions[i].XPath != "" {
+				xpathParams := extractAndReplaceTemplateValues(params.ResponseRedactions[i].XPath, &params, secret, ignoreMissing)
+				params.ResponseRedactions[i].XPath = xpathParams.NewParam
 				logger.Debug("Redaction XPath substituted", zap.String("component", "Utils"), zap.String("operation", "substituteParamValues"), zap.String("level", "verbose"), zap.Int("redaction_index", i+1))
 			}
 
-			if r.JSONPath != "" {
-				jsonPathParams := extractAndReplaceTemplateValues(r.JSONPath, &params, secret, ignoreMissing)
-				r.JSONPath = jsonPathParams.NewParam
+			if params.ResponseRedactions[i].JSONPath != "" {
+				jsonPathParams := extractAndReplaceTemplateValues(params.ResponseRedactions[i].JSONPath, &params, secret, ignoreMissing)
+				params.ResponseRedactions[i].JSONPath = jsonPathParams.NewParam
 				logger.Debug("Redaction JSONPath substituted", zap.String("component", "Utils"), zap.String("operation", "substituteParamValues"), zap.String("level", "verbose"), zap.Int("redaction_index", i+1))
 			}
 		}
 	}
 
 	if params.ResponseMatches != nil {
-		for i, r := range params.ResponseMatches {
-			if r.Value != "" {
-				matchParams := extractAndReplaceTemplateValues(r.Value, &params, secret, ignoreMissing)
-				r.Value = matchParams.NewParam
+		for i := range params.ResponseMatches {
+			if params.ResponseMatches[i].Value != "" {
+				matchParams := extractAndReplaceTemplateValues(params.ResponseMatches[i].Value, &params, secret, ignoreMissing)
+				params.ResponseMatches[i].Value = matchParams.NewParam
 				maps.Copy(extracted, matchParams.ExtractedValues)
 				logger.Debug("Match value substituted", zap.String("component", "Utils"), zap.String("operation", "substituteParamValues"), zap.String("level", "verbose"), zap.Int("match_index", i+1), zap.Int("extracted_values", len(matchParams.ExtractedValues)))
 			}
