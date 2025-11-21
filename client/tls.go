@@ -355,6 +355,16 @@ func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 		// The data before that byte is the actual content
 		actualContent := data[:lastNonZero]
 
+		// Log for debugging
+		if len(actualContent) < 100 {
+			c.logger.Debug("TLS 1.3 padding removed",
+				zap.Int("original_length", len(data)),
+				zap.Int("actual_content_length", len(actualContent)),
+				zap.Uint8("content_type", contentType),
+				zap.String("content_type_name", getContentTypeName(contentType)),
+				zap.String("content_hex", fmt.Sprintf("%x", actualContent)))
+		}
+
 		return actualContent, contentType
 	}
 }

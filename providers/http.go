@@ -88,6 +88,7 @@ func CreateRequest(secret *HTTPProviderSecretParams, params *HTTPProviderParams)
 		reqTarget = reqTarget + "?" + query
 	}
 	reqLine := fmt.Sprintf("%s %s HTTP/1.1", p.Method, reqTarget)
+	logger.Debug("Built request line", zap.String("component", "HTTP"), zap.String("operation", "CreateRequest"), zap.String("request_line", reqLine))
 
 	logger.Info("Step 3/5: Building request body and headers", zap.String("component", "HTTP"), zap.String("operation", "CreateRequest"), zap.Int("step", 3), zap.Int("total", 5))
 	bodyBytes := strToUint8Array(p.Body)

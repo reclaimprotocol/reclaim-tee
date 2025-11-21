@@ -119,15 +119,39 @@ func (c *Client) handshakeTLS12(serverName string) error {
 
 	c.logger.Debug("Generated client ECDH key pair", zap.Uint16("curve", msg.GetNamedCurve()))
 
-	// Step 5: Read ServerHelloDone message
-	serverHelloDone, err := c.readHandshakeMessage()
+	// Step 5: Check for optional CertificateRequest, then read ServerHelloDone
+	nextMsg, err := c.readHandshakeMessage()
 	if err != nil {
-		return fmt.Errorf("failed to read ServerHelloDone: %v", err)
+		return fmt.Errorf("failed to read next handshake message: %v", err)
 	}
-	c.transcript = append(c.transcript, serverHelloDone...)
+	c.transcript = append(c.transcript, nextMsg...)
 
-	if _, err := ParseServerHelloDone(serverHelloDone); err != nil {
-		return fmt.Errorf("failed to parse ServerHelloDone: %v", err)
+	certRequestReceived := false
+	if len(nextMsg) > 0 && HandshakeType(nextMsg[0]) == typeCertificateRequest {
+		c.logger.Info("Server requested client certificate")
+		certRequestReceived = true
+
+		// Now read ServerHelloDone
+		serverHelloDone, err := c.readHandshakeMessage()
+		if err != nil {
+			return fmt.Errorf("failed to read ServerHelloDone after CertificateRequest: %v", err)
+		}
+		c.transcript = append(c.transcript, serverHelloDone...)
+
+		if _, err := ParseServerHelloDone(serverHelloDone); err != nil {
+			return fmt.Errorf("failed to parse ServerHelloDone: %v", err)
+		}
+	} else if len(nextMsg) > 0 && HandshakeType(nextMsg[0]) == typeServerHelloDone {
+		// No CertificateRequest, this is directly ServerHelloDone
+		if _, err := ParseServerHelloDone(nextMsg); err != nil {
+			return fmt.Errorf("failed to parse ServerHelloDone: %v", err)
+		}
+	} else {
+		msgType := "unknown"
+		if len(nextMsg) > 0 {
+			msgType = fmt.Sprintf("%d", nextMsg[0])
+		}
+		return fmt.Errorf("unexpected handshake message type: %s (expected CertificateRequest or ServerHelloDone)", msgType)
 	}
 
 	c.logger.Debug("Received Server Hello Done")
@@ -179,6 +203,18 @@ func (c *Client) handshakeTLS12(serverName string) error {
 	}
 
 	c.logger.Debug("Master secret derived successfully")
+
+	// Step 9.5: Send empty Certificate if server requested it
+	if certRequestReceived {
+		c.logger.Info("Sending empty Certificate in response to server's CertificateRequest")
+		emptyCert := c.buildEmptyCertificateMessageTLS12()
+		emptyCertRecord := c.wrapHandshakeMessage(emptyCert)
+		if _, err := c.conn.Write(emptyCertRecord); err != nil {
+			return fmt.Errorf("failed to send empty Certificate: %v", err)
+		}
+		c.transcript = append(c.transcript, emptyCert...)
+		c.logger.Debug("Sent empty Certificate")
+	}
 
 	// Step 10: Now send ClientKeyExchange
 
@@ -295,15 +331,39 @@ func (c *Client) continueTLS12HandshakeAfterServerHello() error {
 
 	c.logger.Debug("Generated client ECDH key pair", zap.Uint16("curve", msg.GetNamedCurve()))
 
-	// Step 5: Read ServerHelloDone message
-	serverHelloDone, err := c.readHandshakeMessage()
+	// Step 5: Check for optional CertificateRequest, then read ServerHelloDone
+	nextMsg, err := c.readHandshakeMessage()
 	if err != nil {
-		return fmt.Errorf("failed to read ServerHelloDone: %v", err)
+		return fmt.Errorf("failed to read next handshake message: %v", err)
 	}
-	c.transcript = append(c.transcript, serverHelloDone...)
+	c.transcript = append(c.transcript, nextMsg...)
 
-	if _, err := ParseServerHelloDone(serverHelloDone); err != nil {
-		return fmt.Errorf("failed to parse ServerHelloDone: %v", err)
+	certRequestReceived := false
+	if len(nextMsg) > 0 && HandshakeType(nextMsg[0]) == typeCertificateRequest {
+		c.logger.Info("Server requested client certificate")
+		certRequestReceived = true
+
+		// Now read ServerHelloDone
+		serverHelloDone, err := c.readHandshakeMessage()
+		if err != nil {
+			return fmt.Errorf("failed to read ServerHelloDone after CertificateRequest: %v", err)
+		}
+		c.transcript = append(c.transcript, serverHelloDone...)
+
+		if _, err := ParseServerHelloDone(serverHelloDone); err != nil {
+			return fmt.Errorf("failed to parse ServerHelloDone: %v", err)
+		}
+	} else if len(nextMsg) > 0 && HandshakeType(nextMsg[0]) == typeServerHelloDone {
+		// No CertificateRequest, this is directly ServerHelloDone
+		if _, err := ParseServerHelloDone(nextMsg); err != nil {
+			return fmt.Errorf("failed to parse ServerHelloDone: %v", err)
+		}
+	} else {
+		msgType := "unknown"
+		if len(nextMsg) > 0 {
+			msgType = fmt.Sprintf("%d", nextMsg[0])
+		}
+		return fmt.Errorf("unexpected handshake message type: %s (expected CertificateRequest or ServerHelloDone)", msgType)
 	}
 
 	c.logger.Debug("Received Server Hello Done")
@@ -356,6 +416,18 @@ func (c *Client) continueTLS12HandshakeAfterServerHello() error {
 	}
 
 	c.logger.Debug("Master secret derived successfully")
+
+	// Step 9.5: Send empty Certificate if server requested it
+	if certRequestReceived {
+		c.logger.Info("Sending empty Certificate in response to server's CertificateRequest")
+		emptyCert := c.buildEmptyCertificateMessageTLS12()
+		emptyCertRecord := c.wrapHandshakeMessage(emptyCert)
+		if _, err := c.conn.Write(emptyCertRecord); err != nil {
+			return fmt.Errorf("failed to send empty Certificate: %v", err)
+		}
+		c.transcript = append(c.transcript, emptyCert...)
+		c.logger.Debug("Sent empty Certificate")
+	}
 
 	// Step 10: Now send ClientKeyExchange
 
@@ -1118,4 +1190,23 @@ func compareBytes(a, b []byte) bool {
 		result |= a[i] ^ b[i]
 	}
 	return result == 0
+}
+
+// buildEmptyCertificateMessageTLS12 builds an empty Certificate message for TLS 1.2
+// RFC 5246 Section 7.4.2: Certificate message format
+// When server requests client cert but we have none, send empty certificate list
+func (c *Client) buildEmptyCertificateMessageTLS12() []byte {
+	// Certificate message:
+	// - Handshake type: 0x0b (Certificate)
+	// - Length: 3 bytes (total length of certificate_list field)
+	// - certificate_list length: 3 bytes (0 for empty)
+	msg := make([]byte, 7)
+	msg[0] = 0x0b // typeCertificate
+	msg[1] = 0x00 // Length high byte
+	msg[2] = 0x00 // Length mid byte
+	msg[3] = 0x03 // Length low byte (3 bytes for the cert list length field)
+	msg[4] = 0x00 // Certificate list length high byte
+	msg[5] = 0x00 // Certificate list length mid byte
+	msg[6] = 0x00 // Certificate list length low byte (empty list)
+	return msg
 }

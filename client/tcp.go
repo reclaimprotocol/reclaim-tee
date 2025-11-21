@@ -175,26 +175,26 @@ func (c *Client) tcpToWebsocket() {
 				c.logger.Info("Captured incoming raw TCP chunk", zap.Int("bytes", len(packet)))
 
 				// Log TLS record details for debugging
-				// recordType := packet[0]
-				// recordVersion := uint16(packet[1])<<8 | uint16(packet[2])
-				// recordTypeStr := "unknown"
-				// switch recordType {
-				// case 20:
-				// 	recordTypeStr = "ChangeCipherSpec"
-				// case 21:
-				// 	recordTypeStr = "Alert"
-				// case 22:
-				// 	recordTypeStr = "Handshake"
-				// case 23:
-				// 	recordTypeStr = "ApplicationData"
-				// }
+				recordType := packet[0]
+				recordVersion := uint16(packet[1])<<8 | uint16(packet[2])
+				recordTypeStr := "unknown"
+				switch recordType {
+				case 20:
+					recordTypeStr = "ChangeCipherSpec"
+				case 21:
+					recordTypeStr = "Alert"
+				case 22:
+					recordTypeStr = "Handshake"
+				case 23:
+					recordTypeStr = "ApplicationData"
+				}
 
-				// c.logger.Debug("Captured complete TLS record",
-				// 	zap.Int("total_bytes", len(packet)),
-				// 	zap.Int("payload_bytes", length),
-				// 	zap.Uint8("record_type", recordType),
-				// 	zap.String("record_type_name", recordTypeStr),
-				// 	zap.Uint16("tls_version", recordVersion))
+				c.logger.Debug("Captured complete TLS record",
+					zap.Int("total_bytes", len(packet)),
+					zap.Int("payload_bytes", length),
+					zap.Uint8("record_type", recordType),
+					zap.String("record_type_name", recordTypeStr),
+					zap.Uint16("tls_version", recordVersion))
 
 				if !c.handshakeComplete {
 					// During handshake: Forward to TEE_K

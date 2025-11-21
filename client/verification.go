@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"tee-mpc/minitls"
@@ -60,7 +61,11 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 
 	// Reconstruct HTTP response if we haven't already
 	if !c.responseReconstructed {
-		c.reconstructHTTPResponseFromDecryptedData()
+		if err := c.reconstructHTTPResponseFromDecryptedData(); err != nil {
+			c.logger.Error("Failed to reconstruct HTTP response", zap.Error(err))
+			c.terminateConnectionWithError("Failed to reconstruct HTTP response", err)
+			return
+		}
 
 		// Check if connection was terminated during reconstruction (e.g., non-2XX response)
 		if c.wsConn == nil {
@@ -82,14 +87,30 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 	}
 }
 
+// getContentTypeName returns a human-readable name for TLS content type
+func getContentTypeName(contentType uint8) string {
+	switch contentType {
+	case 20:
+		return "ChangeCipherSpec"
+	case 21:
+		return "Alert"
+	case 22:
+		return "Handshake"
+	case 23:
+		return "ApplicationData"
+	default:
+		return fmt.Sprintf("Unknown(%d)", contentType)
+	}
+}
+
 // reconstructHTTPResponseFromDecryptedData reconstructs HTTP response from all parsed response data
-func (c *Client) reconstructHTTPResponseFromDecryptedData() {
+func (c *Client) reconstructHTTPResponseFromDecryptedData() error {
 	c.responseContentMutex.Lock()
 	defer c.responseContentMutex.Unlock()
 
 	if len(c.parsedResponseBySeq) == 0 {
-		c.logger.Warn("No parsed response data to reconstruct")
-		return
+		c.logger.Error("No parsed response data to reconstruct")
+		return fmt.Errorf("no parsed response data available")
 	}
 
 	// Sort sequence numbers and concatenate response data
@@ -104,9 +125,31 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 		if seqNum > 0 { // Skip handshake sequences (seq 0)
 			parsed := c.parsedResponseBySeq[seqNum]
 
+			// Log what we're processing
+			c.logger.Debug("Processing sequence",
+				zap.Uint64("seq_num", seqNum),
+				zap.Uint8("content_type", parsed.ContentType),
+				zap.Int("content_length", len(parsed.ActualContent)))
+
 			// Only include application data, skip handshake and alerts
 			if parsed.ContentType == minitls.RecordTypeApplicationData && len(parsed.ActualContent) > 0 {
+				// Log the actual content for debugging
+				previewLen := 100
+				if len(parsed.ActualContent) < previewLen {
+					previewLen = len(parsed.ActualContent)
+				}
+				c.logger.Debug("Decrypted ApplicationData content",
+					zap.Uint64("seq_num", seqNum),
+					zap.Int("length", len(parsed.ActualContent)),
+					zap.String("preview", string(parsed.ActualContent[:previewLen])),
+					zap.String("hex", fmt.Sprintf("%x", parsed.ActualContent[:previewLen])))
+
 				fullResponse = append(fullResponse, parsed.ActualContent...)
+			} else if parsed.ContentType != minitls.RecordTypeApplicationData {
+				c.logger.Warn("Skipping non-ApplicationData content",
+					zap.Uint64("seq_num", seqNum),
+					zap.Uint8("content_type", parsed.ContentType),
+					zap.String("content_type_name", getContentTypeName(parsed.ContentType)))
 			}
 		}
 	}
@@ -114,6 +157,11 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 	c.logger.Info("Reconstructed HTTP response", zap.Int("total_bytes", len(fullResponse)))
 
 	// Parse HTTP response and set success flags
+	if len(fullResponse) == 0 {
+		c.logger.Error("Reconstructed response is empty")
+		return fmt.Errorf("reconstructed response is empty")
+	}
+
 	if len(fullResponse) > 0 {
 		responseStr := string(fullResponse)
 
@@ -141,29 +189,6 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 			httpResponse := c.parseHTTPResponse([]byte(actualHTTPResponse))
 			c.lastResponseData = httpResponse
 
-			// Get automatic response redactions now that we have complete HTTP response
-			// if len(c.lastRedactionRanges) == 0 {
-			// 	c.logger.Info("Getting automatic response redactions", zap.Int("response_bytes", len(actualHTTPResponse)))
-			//
-			// 	ranges, err := c.getResponseRedactions(httpResponse)
-			//
-			// 	if err != nil {
-			// 		c.terminateConnectionWithError("Failed to get response redactions", err)
-			// 		return
-			// 	} else {
-			// 		c.logger.Info("Automatic response redactions generated",
-			// 			zap.Int("redaction_ranges", len(ranges)))
-			//
-			// 		// Store results for use in redaction spec generation
-			// 		c.lastRedactionRanges = ranges
-			//
-			// 		c.logger.Info("Stored automatic redaction results",
-			// 			zap.Int("ranges_count", len(ranges)))
-			// 	}
-			// } else {
-			// 	c.logger.Info("Response redactions already generated", zap.Int("cached_ranges", len(c.lastRedactionRanges)))
-			// }
-
 			// Display the raw HTTP response (redaction will be handled at TLS record level)
 			previewLen := HTTPResponsePreviewLength
 			if len(actualHTTPResponse) < previewLen {
@@ -175,12 +200,16 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() {
 
 			// Set success flags
 			c.logger.Info("Response processing successful", zap.Int("response_bytes", len(actualHTTPResponse)))
+			return nil
 		} else {
 			previewLen := 100
 			if len(responseStr) < previewLen {
 				previewLen = len(responseStr)
 			}
-			c.logger.Warn("Reconstructed response doesn't look like HTTP", zap.String("preview", responseStr[:previewLen]))
+			c.logger.Error("Reconstructed response doesn't look like HTTP", zap.String("preview", responseStr[:previewLen]))
+			return fmt.Errorf("corrupted response: no HTTP status line found")
 		}
+	} else {
+		return fmt.Errorf("response is empty")
 	}
 }

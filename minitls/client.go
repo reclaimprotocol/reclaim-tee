@@ -57,6 +57,9 @@ type Client struct {
 	// Extended Master Secret support (RFC 7627)
 	extendedMasterSecret bool
 
+	// Client certificate request flag
+	certRequestReceived bool // True if server requested client certificate
+
 	// ALPN negotiation
 	negotiatedProtocol string // Server's selected ALPN protocol
 
@@ -281,6 +284,11 @@ func (c *Client) processSingleHandshakeMessage(data []byte) (bool, error) {
 		c.logger.Debug("Received handshake message", zap.String("type", handshakeTypeString(msgType)))
 		c.finishedTranscript = append(c.finishedTranscript, data...)
 
+	case typeCertificateRequest:
+		c.logger.Info("Server requested client certificate (TLS 1.3)")
+		c.certRequestReceived = true
+		c.finishedTranscript = append(c.finishedTranscript, data...)
+
 	case typeCertificate:
 		if err := c.processServerCertificate(data); err != nil {
 			return false, err
@@ -302,16 +310,25 @@ func (c *Client) processSingleHandshakeMessage(data []byte) (bool, error) {
 
 		c.finishedTranscript = append(c.finishedTranscript, data...)
 
-		if err := c.sendClientFinished(); err != nil {
-			return false, fmt.Errorf("failed to send client Finished: %v", err)
-		}
-
-		// The transcript for the application keys is hash(ClientHello...ServerFinished).
-		// At this point, c.finishedTranscript has exactly that, so we hash it directly.
+		// Compute application key hash NOW - before client auth messages
+		// Application keys derived from hash(ClientHello...ServerFinished) only
 		hasherForApp := c.keySchedule.getHashFunc()()
 		hasherForApp.Write(c.finishedTranscript)
 		fullTranscriptHash := hasherForApp.Sum(nil)
 
+		// Send empty Certificate if server requested it (TLS 1.3)
+		// Must be sent BEFORE deriving application keys (uses handshake keys)
+		if c.certRequestReceived {
+			if err := c.sendEmptyCertificateTLS13(); err != nil {
+				return false, fmt.Errorf("failed to send empty Certificate: %v", err)
+			}
+		}
+
+		if err := c.sendClientFinished(); err != nil {
+			return false, fmt.Errorf("failed to send client Finished: %v", err)
+		}
+
+		// NOW derive application keys using hash computed before client messages
 		if err := c.deriveApplicationKeys(fullTranscriptHash); err != nil {
 			return false, err
 		}
@@ -2090,6 +2107,56 @@ func (c *Client) buildClientHelloForHRR(serverName string, selectedGroup uint16,
 		zap.Int("public_key_bytes", len(publicKeyBytes)))
 
 	return hello.Marshal(), nil
+}
+
+// sendEmptyCertificateTLS13 sends an empty Certificate message for TLS 1.3
+// RFC 8446 Section 4.4.2: Certificate message format for TLS 1.3
+// When server requests client cert but we have none, send empty certificate list
+func (c *Client) sendEmptyCertificateTLS13() error {
+	c.logger.Info("Sending empty Certificate in response to server's CertificateRequest (TLS 1.3)")
+
+	// TLS 1.3 Certificate message:
+	// - Handshake type: 0x0b (Certificate)
+	// - Length: 3 bytes (total length of following data)
+	// - certificate_request_context length: 1 byte (0 for empty)
+	// - certificate_list length: 3 bytes (0 for empty)
+	msg := make([]byte, 8)
+	msg[0] = 0x0b // typeCertificate
+	msg[1] = 0x00 // Length high byte
+	msg[2] = 0x00 // Length mid byte
+	msg[3] = 0x04 // Length low byte (4 bytes for context len + cert list len)
+	msg[4] = 0x00 // Certificate request context length (empty)
+	msg[5] = 0x00 // Certificate list length high byte
+	msg[6] = 0x00 // Certificate list length mid byte
+	msg[7] = 0x00 // Certificate list length low byte (empty list)
+
+	// Add to transcript
+	c.finishedTranscript = append(c.finishedTranscript, msg...)
+
+	// Encrypt the Certificate message using the client's HANDSHAKE keys (same as Finished)
+	plaintextWithContentType := make([]byte, 0, len(msg)+1)
+	plaintextWithContentType = append(plaintextWithContentType, msg...)
+	plaintextWithContentType = append(plaintextWithContentType, recordTypeHandshake) // Real content type
+
+	ciphertextLen := len(plaintextWithContentType) + c.clientAEAD.aead.Overhead()
+	header := make([]byte, 5)
+	header[0] = recordTypeApplicationData // Encrypted handshake messages are sent in application_data records
+	header[1] = 0x03                      // Legacy version
+	header[2] = 0x03
+	header[3] = byte(ciphertextLen >> 8)
+	header[4] = byte(ciphertextLen)
+
+	c.logger.Debug("AEAD Encrypt (Empty Certificate)", zap.Uint64("seq", c.clientAEAD.seq))
+	ciphertext := c.clientAEAD.Encrypt(plaintextWithContentType, header)
+
+	// Send the encrypted record
+	record := append(header, ciphertext...)
+	if _, err := c.conn.Write(record); err != nil {
+		return fmt.Errorf("failed to write empty Certificate record: %v", err)
+	}
+
+	c.logger.Debug("Sent empty Certificate (TLS 1.3)")
+	return nil
 }
 
 // getHashForCipherSuite returns the hash function for a given cipher suite
