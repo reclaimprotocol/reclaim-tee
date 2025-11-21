@@ -611,7 +611,8 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 		return nil, fmt.Errorf("data size %d exceeds maximum of 62 bytes for TOPRF", dataLength)
 	}
 
-	// Find all packets that overlap with this range
+	// STEP 1: Find all packets that overlap with the data range
+	// A 14-byte range can span multiple TLS packets (e.g., bytes 1358-1372 might be split across packets)
 	c.logger.Debug("Searching for packets overlapping range",
 		zap.Int("range_start", rangeStart),
 		zap.Int("range_end", rangeEnd),
@@ -639,7 +640,7 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 			zap.Int("pkt_start", pktStart),
 			zap.Int("pkt_end", pktEnd))
 
-		// Check if packet overlaps with range
+		// Check if this packet contains any part of our data range
 		if rangeEnd > pktStart && rangeStart < pktEnd {
 			segStart := max(rangeStart, pktStart)
 			segEnd := min(rangeEnd, pktEnd)
@@ -683,10 +684,12 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 		zap.Int("range_end", rangeEnd),
 		zap.Int("num_segments", len(segments)))
 
-	// Build a list of all blocks that contain data, across all packets
+	// STEP 2: Build a list of all cipher blocks that contain our data
+	// Each segment may span multiple blocks within its packet
+	// Important: Each block gets its nonce from its packet (not from a global counter)
 	type BlockInfo struct {
 		packet      *teeproto.TLSPacketInfo
-		blockNum    int // Block number within the packet
+		blockNum    int // Block number within the packet (used for counter calculation)
 		streamStart int // Where this block starts in consolidated stream
 		streamEnd   int // Where this block ends in consolidated stream
 	}
@@ -711,20 +714,21 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 		zap.Int("num_data_blocks", len(allDataBlocks)),
 		zap.Int("required_blocks", requiredBlocks))
 
-	// Select which blocks to include (up to requiredBlocks)
-	// Strategy: take all data blocks, then extend with adjacent blocks if needed
+	// STEP 3: Select exactly requiredBlocks for the ZK prover
+	// ZK circuit requires exactly 5 blocks for AES or 2 blocks for ChaCha20
+	// If data spans fewer blocks, we include adjacent blocks to reach the requirement
 	var selectedBlocks []BlockInfo
 
 	if len(allDataBlocks) >= requiredBlocks {
-		// Use the first requiredBlocks that contain data
+		// Easy case: data already spans enough blocks
 		selectedBlocks = allDataBlocks[:requiredBlocks]
 	} else {
-		// Need to add more blocks - try to add from the first segment
+		// Need to pad with extra blocks from the same packet(s)
 		selectedBlocks = allDataBlocks
 		firstSeg := segments[0]
 		pktStart := int(firstSeg.packet.GetPosition())
 
-		// Try to prepend blocks before the first data block
+		// Strategy: prepend blocks before the data to reach requiredBlocks
 		blocksNeeded := requiredBlocks - len(selectedBlocks)
 		firstDataBlock := firstSeg.firstBlockNum
 
@@ -741,7 +745,7 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 			}}, selectedBlocks...)
 		}
 
-		// If still need more, try to append blocks after the last data block
+		// If still short, append blocks after the data
 		if len(selectedBlocks) < requiredBlocks && len(segments) > 0 {
 			lastSeg := segments[len(segments)-1]
 			pktStart := int(lastSeg.packet.GetPosition())
@@ -769,7 +773,8 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 		return nil, fmt.Errorf("cannot extract enough blocks: need %d, got %d", requiredBlocks, len(selectedBlocks))
 	}
 
-	// Now extract ciphertext and build Block structures
+	// STEP 4: Extract ciphertext and build Block structures for the prover
+	// Each block needs: nonce (from packet), counter (from block position), and optional boundary
 	blocks := make([]prover.Block, 0, len(selectedBlocks))
 	var ciphertextBlocks []byte
 
@@ -777,6 +782,7 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 		blockCiphertext := originalCiphertext[blk.streamStart:blk.streamEnd]
 		ciphertextBlocks = append(ciphertextBlocks, blockCiphertext...)
 
+		// Counter is calculated based on block position within its packet
 		counter := minitls.GetBlockCounter(cipherSuite, blk.blockNum)
 		c.logger.Debug("Building block",
 			zap.Uint64("packet_seq", blk.packet.GetSeqNum()),
@@ -787,11 +793,11 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 			zap.Int("block_bytes", len(blockCiphertext)))
 
 		block := prover.Block{
-			Nonce:   blk.packet.GetNonce(),
+			Nonce:   blk.packet.GetNonce(), // Each packet has its own nonce
 			Counter: counter,
 		}
 
-		// Add boundary field if block is incomplete
+		// Boundary marks how many bytes in this block are valid (nil = full block)
 		if len(blockCiphertext) < blockSize {
 			boundary := uint32(len(blockCiphertext))
 			block.Boundary = &boundary
@@ -800,8 +806,8 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 		blocks = append(blocks, block)
 	}
 
-	// Calculate position of data within the extracted blocks
-	// The data starts at rangeStart in the stream, and our blocks start at selectedBlocks[0].streamStart
+	// Calculate where our data starts within the concatenated blocks
+	// Example: if blocks start at position 1280 and data starts at 1358, offset is 78
 	positionInBlocks := rangeStart - selectedBlocks[0].streamStart
 
 	// Build the InputParams structure
