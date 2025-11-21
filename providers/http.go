@@ -79,6 +79,9 @@ func CreateRequest(secret *HTTPProviderSecretParams, params *HTTPProviderParams)
 	}
 	logger.Debug("Parsed URL", zap.String("component", "HTTP"), zap.String("operation", "CreateRequest"), zap.String("level", "verbose"), zap.String("host", u.Host), zap.String("path", u.Path))
 	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
 	query := u.RawQuery
 	reqTarget := path
 	if query != "" {
