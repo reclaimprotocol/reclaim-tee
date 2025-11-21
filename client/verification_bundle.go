@@ -611,14 +611,23 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 		return nil, fmt.Errorf("data size %d exceeds maximum of 62 bytes for TOPRF", dataLength)
 	}
 
-	// Find the packet containing this range
-	var targetPacket *teeproto.TLSPacketInfo
-	var offsetInPacket int
-
-	c.logger.Debug("Searching for packet",
+	// Find all packets that overlap with this range
+	c.logger.Debug("Searching for packets overlapping range",
 		zap.Int("range_start", rangeStart),
 		zap.Int("range_end", rangeEnd),
 		zap.Int("num_packets", len(packetMetadata)))
+
+	type PacketSegment struct {
+		packet        *teeproto.TLSPacketInfo
+		segmentStart  int // Position in consolidated stream where this segment starts
+		segmentEnd    int // Position in consolidated stream where this segment ends
+		offsetInPkt   int // Offset within the packet where range data starts
+		dataLen       int // Length of data in this packet segment
+		firstBlockNum int // First block number in this packet that contains data
+		lastBlockNum  int // Last block number in this packet that contains data
+	}
+
+	var segments []PacketSegment
 
 	for i, pkt := range packetMetadata {
 		pktStart := int(pkt.GetPosition())
@@ -627,104 +636,173 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 		c.logger.Debug("Checking packet",
 			zap.Int("index", i),
 			zap.Uint64("seq", pkt.GetSeqNum()),
-			zap.Int("start", pktStart),
-			zap.Int("end", pktEnd),
-			zap.Int("length", int(pkt.GetLength())))
+			zap.Int("pkt_start", pktStart),
+			zap.Int("pkt_end", pktEnd))
 
-		if rangeStart >= pktStart && rangeEnd <= pktEnd {
-			targetPacket = pkt
-			offsetInPacket = rangeStart - pktStart
-			break
+		// Check if packet overlaps with range
+		if rangeEnd > pktStart && rangeStart < pktEnd {
+			segStart := max(rangeStart, pktStart)
+			segEnd := min(rangeEnd, pktEnd)
+			offsetInPkt := segStart - pktStart
+			dataLen := segEnd - segStart
+
+			firstBlock := offsetInPkt / blockSize
+			lastBlock := (offsetInPkt + dataLen - 1) / blockSize
+
+			seg := PacketSegment{
+				packet:        pkt,
+				segmentStart:  segStart,
+				segmentEnd:    segEnd,
+				offsetInPkt:   offsetInPkt,
+				dataLen:       dataLen,
+				firstBlockNum: firstBlock,
+				lastBlockNum:  lastBlock,
+			}
+			segments = append(segments, seg)
+
+			c.logger.Debug("Packet overlaps with range",
+				zap.Uint64("seq", pkt.GetSeqNum()),
+				zap.Int("seg_start", segStart),
+				zap.Int("seg_end", segEnd),
+				zap.Int("data_len", dataLen),
+				zap.Int("first_block", firstBlock),
+				zap.Int("last_block", lastBlock))
 		}
 	}
 
-	if targetPacket == nil {
-		c.logger.Error("Could not find packet containing range",
+	if len(segments) == 0 {
+		c.logger.Error("No packets found containing range",
 			zap.Int("range_start", rangeStart),
 			zap.Int("range_end", rangeEnd),
 			zap.Int("num_packets", len(packetMetadata)))
 		return nil, fmt.Errorf("could not find packet containing range [%d:%d]", rangeStart, rangeEnd)
 	}
 
-	c.logger.Info("Found packet for TOPRF range",
+	c.logger.Info("Found packets for TOPRF range",
 		zap.Int("range_start", rangeStart),
 		zap.Int("range_end", rangeEnd),
-		zap.Uint64("packet_seq", targetPacket.GetSeqNum()),
-		zap.Uint32("packet_position", targetPacket.GetPosition()),
-		zap.Uint32("packet_length", targetPacket.GetLength()),
-		zap.Int("offset_in_packet", offsetInPacket))
+		zap.Int("num_segments", len(segments)))
 
-	// Calculate which block contains the start of our data
-	firstBlockNum := offsetInPacket / blockSize
-	lastBlockNum := (offsetInPacket + dataLength - 1) / blockSize
-	blocksNeeded := lastBlockNum - firstBlockNum + 1
+	// Build a list of all blocks that contain data, across all packets
+	type BlockInfo struct {
+		packet      *teeproto.TLSPacketInfo
+		blockNum    int // Block number within the packet
+		streamStart int // Where this block starts in consolidated stream
+		streamEnd   int // Where this block ends in consolidated stream
+	}
 
-	// Calculate ideal starting block to get required number of blocks
-	var idealStartBlock int
-	if blocksNeeded >= requiredBlocks {
-		// Data already spans enough blocks
-		idealStartBlock = firstBlockNum
-	} else {
-		// Need to include additional blocks - try to center if possible
-		extraBlocks := requiredBlocks - blocksNeeded
-		blocksBeforeData := extraBlocks / 2
-		idealStartBlock = firstBlockNum - blocksBeforeData
+	var allDataBlocks []BlockInfo
+	for _, seg := range segments {
+		pktStart := int(seg.packet.GetPosition())
+		for blockNum := seg.firstBlockNum; blockNum <= seg.lastBlockNum; blockNum++ {
+			blockStreamStart := pktStart + blockNum*blockSize
+			blockStreamEnd := min(blockStreamStart+blockSize, pktStart+int(seg.packet.GetLength()))
 
-		// Ensure we don't go before packet start
-		if idealStartBlock < 0 {
-			idealStartBlock = 0
-		}
-
-		// Ensure we have enough blocks in the packet
-		maxStartBlock := (int(targetPacket.GetLength())+blockSize-1)/blockSize - requiredBlocks
-		if idealStartBlock > maxStartBlock && maxStartBlock >= 0 {
-			idealStartBlock = maxStartBlock
+			allDataBlocks = append(allDataBlocks, BlockInfo{
+				packet:      seg.packet,
+				blockNum:    blockNum,
+				streamStart: blockStreamStart,
+				streamEnd:   blockStreamEnd,
+			})
 		}
 	}
 
-	// Extract the blocks and generate parameters
-	blocks := make([]prover.Block, 0, requiredBlocks)
+	c.logger.Debug("Data spans blocks",
+		zap.Int("num_data_blocks", len(allDataBlocks)),
+		zap.Int("required_blocks", requiredBlocks))
+
+	// Select which blocks to include (up to requiredBlocks)
+	// Strategy: take all data blocks, then extend with adjacent blocks if needed
+	var selectedBlocks []BlockInfo
+
+	if len(allDataBlocks) >= requiredBlocks {
+		// Use the first requiredBlocks that contain data
+		selectedBlocks = allDataBlocks[:requiredBlocks]
+	} else {
+		// Need to add more blocks - try to add from the first segment
+		selectedBlocks = allDataBlocks
+		firstSeg := segments[0]
+		pktStart := int(firstSeg.packet.GetPosition())
+
+		// Try to prepend blocks before the first data block
+		blocksNeeded := requiredBlocks - len(selectedBlocks)
+		firstDataBlock := firstSeg.firstBlockNum
+
+		for i := 0; i < blocksNeeded && firstDataBlock-i-1 >= 0; i++ {
+			blockNum := firstDataBlock - i - 1
+			blockStreamStart := pktStart + blockNum*blockSize
+			blockStreamEnd := min(blockStreamStart+blockSize, pktStart+int(firstSeg.packet.GetLength()))
+
+			selectedBlocks = append([]BlockInfo{{
+				packet:      firstSeg.packet,
+				blockNum:    blockNum,
+				streamStart: blockStreamStart,
+				streamEnd:   blockStreamEnd,
+			}}, selectedBlocks...)
+		}
+
+		// If still need more, try to append blocks after the last data block
+		if len(selectedBlocks) < requiredBlocks && len(segments) > 0 {
+			lastSeg := segments[len(segments)-1]
+			pktStart := int(lastSeg.packet.GetPosition())
+			pktBlocks := int(lastSeg.packet.GetLength()+uint32(blockSize)-1) / blockSize
+
+			blocksNeeded := requiredBlocks - len(selectedBlocks)
+			lastDataBlock := lastSeg.lastBlockNum
+
+			for i := 0; i < blocksNeeded && lastDataBlock+i+1 < pktBlocks; i++ {
+				blockNum := lastDataBlock + i + 1
+				blockStreamStart := pktStart + blockNum*blockSize
+				blockStreamEnd := min(blockStreamStart+blockSize, pktStart+int(lastSeg.packet.GetLength()))
+
+				selectedBlocks = append(selectedBlocks, BlockInfo{
+					packet:      lastSeg.packet,
+					blockNum:    blockNum,
+					streamStart: blockStreamStart,
+					streamEnd:   blockStreamEnd,
+				})
+			}
+		}
+	}
+
+	if len(selectedBlocks) < requiredBlocks {
+		return nil, fmt.Errorf("cannot extract enough blocks: need %d, got %d", requiredBlocks, len(selectedBlocks))
+	}
+
+	// Now extract ciphertext and build Block structures
+	blocks := make([]prover.Block, 0, len(selectedBlocks))
 	var ciphertextBlocks []byte
 
-	pktStart := int(targetPacket.GetPosition())
+	for _, blk := range selectedBlocks {
+		blockCiphertext := originalCiphertext[blk.streamStart:blk.streamEnd]
+		ciphertextBlocks = append(ciphertextBlocks, blockCiphertext...)
 
-	for i := 0; i < requiredBlocks; i++ {
-		blockNum := idealStartBlock + i
-		blockStart := pktStart + (blockNum * blockSize)
-		blockEnd := min(blockStart+blockSize, pktStart+int(targetPacket.GetLength()))
+		counter := minitls.GetBlockCounter(cipherSuite, blk.blockNum)
+		c.logger.Debug("Building block",
+			zap.Uint64("packet_seq", blk.packet.GetSeqNum()),
+			zap.Int("block_num", blk.blockNum),
+			zap.Uint32("counter", counter),
+			zap.Int("stream_start", blk.streamStart),
+			zap.Int("stream_end", blk.streamEnd),
+			zap.Int("block_bytes", len(blockCiphertext)))
 
-		// Extract ciphertext for this block from original unredacted ciphertext
-		if blockStart < len(originalCiphertext) {
-			actualEnd := min(blockEnd, len(originalCiphertext))
-			blockCiphertext := originalCiphertext[blockStart:actualEnd]
-
-			// Do NOT pad - attestor will handle padding using boundary info
-			ciphertextBlocks = append(ciphertextBlocks, blockCiphertext...)
-
-			// Build block metadata
-			counter := minitls.GetBlockCounter(cipherSuite, blockNum)
-			c.logger.Debug("Block counter calculation",
-				zap.Int("block_num", blockNum),
-				zap.Uint32("counter", counter),
-				zap.Uint16("cipher_suite", cipherSuite))
-
-			block := prover.Block{
-				Nonce:   targetPacket.GetNonce(),
-				Counter: counter,
-			}
-
-			// Add boundary field if block is incomplete
-			if len(blockCiphertext) < blockSize {
-				boundary := uint32(len(blockCiphertext))
-				block.Boundary = &boundary
-			}
-
-			blocks = append(blocks, block)
+		block := prover.Block{
+			Nonce:   blk.packet.GetNonce(),
+			Counter: counter,
 		}
+
+		// Add boundary field if block is incomplete
+		if len(blockCiphertext) < blockSize {
+			boundary := uint32(len(blockCiphertext))
+			block.Boundary = &boundary
+		}
+
+		blocks = append(blocks, block)
 	}
 
 	// Calculate position of data within the extracted blocks
-	positionInBlocks := offsetInPacket - idealStartBlock*blockSize
+	// The data starts at rangeStart in the stream, and our blocks start at selectedBlocks[0].streamStart
+	positionInBlocks := rangeStart - selectedBlocks[0].streamStart
 
 	// Build the InputParams structure
 	inputParams := &prover.InputParams{
