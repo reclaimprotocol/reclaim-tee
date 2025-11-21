@@ -614,9 +614,22 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 	// Find the packet containing this range
 	var targetPacket *teeproto.TLSPacketInfo
 	var offsetInPacket int
-	for _, pkt := range packetMetadata {
+
+	c.logger.Debug("Searching for packet",
+		zap.Int("range_start", rangeStart),
+		zap.Int("range_end", rangeEnd),
+		zap.Int("num_packets", len(packetMetadata)))
+
+	for i, pkt := range packetMetadata {
 		pktStart := int(pkt.GetPosition())
 		pktEnd := pktStart + int(pkt.GetLength())
+
+		c.logger.Debug("Checking packet",
+			zap.Int("index", i),
+			zap.Uint64("seq", pkt.GetSeqNum()),
+			zap.Int("start", pktStart),
+			zap.Int("end", pktEnd),
+			zap.Int("length", int(pkt.GetLength())))
 
 		if rangeStart >= pktStart && rangeEnd <= pktEnd {
 			targetPacket = pkt
@@ -626,6 +639,10 @@ func (c *Client) getIdealBlocksForTOPRF(rangeStart, rangeEnd int, packetMetadata
 	}
 
 	if targetPacket == nil {
+		c.logger.Error("Could not find packet containing range",
+			zap.Int("range_start", rangeStart),
+			zap.Int("range_end", rangeEnd),
+			zap.Int("num_packets", len(packetMetadata)))
 		return nil, fmt.Errorf("could not find packet containing range [%d:%d]", rangeStart, rangeEnd)
 	}
 
