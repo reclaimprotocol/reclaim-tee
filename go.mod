@@ -17,7 +17,7 @@ require (
 	github.com/hf/nsm v0.0.0-20220930140112-cd181bd646b9
 	github.com/joho/godotenv v1.5.1
 	github.com/mdlayher/vsock v1.2.1
-	github.com/reclaimprotocol/jsonpathplus-go v1.1.4
+	github.com/reclaimprotocol/jsonpathplus-go v1.1.5
 	github.com/reclaimprotocol/xpath-go v1.3.0
 	github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20251105043702-d307166bc510
 	github.com/xeipuuv/gojsonschema v1.2.0
