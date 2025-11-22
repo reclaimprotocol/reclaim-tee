@@ -22,6 +22,7 @@ typedef enum {
 */
 import "C"
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -399,9 +400,10 @@ func ExtractHTMLElementsIndexes(params []byte) (resultPtr unsafe.Pointer, result
 
 	// Parse input parameters
 	var input struct {
-		HTML         string `json:"html"`
+		HTML         string `json:"html"`        // Legacy: direct string (will be escaped)
+		HTMLBase64   string `json:"html_base64"` // New: base64-encoded bytes (preserves exact bytes)
 		XPath        string `json:"xpath"`
-		ContentsOnly bool   `json:"contents_only"`
+		ContentsOnly bool   `json:"contentsOnly"`
 	}
 
 	if err := json.Unmarshal(params, &input); err != nil {
@@ -412,8 +414,26 @@ func ExtractHTMLElementsIndexes(params []byte) (resultPtr unsafe.Pointer, result
 		return C.CBytes(bRes), len(bRes)
 	}
 
+	// Determine which HTML format to use
+	var htmlBytes []byte
+	if input.HTMLBase64 != "" {
+		// Prefer base64-encoded HTML (preserves exact bytes)
+		decoded, err := base64.StdEncoding.DecodeString(input.HTMLBase64)
+		if err != nil {
+			errResp := map[string]interface{}{
+				"error": fmt.Sprintf("failed to decode html_base64: %v", err),
+			}
+			bRes, _ := json.Marshal(errResp)
+			return C.CBytes(bRes), len(bRes)
+		}
+		htmlBytes = decoded
+	} else {
+		// Fallback to legacy string format
+		htmlBytes = []byte(input.HTML)
+	}
+
 	// Call the internal function
-	ranges, err := providers.ExtractHTMLElementsIndexes(input.HTML, input.XPath, input.ContentsOnly)
+	ranges, err := providers.ExtractHTMLElementsIndexes(string(htmlBytes), input.XPath, input.ContentsOnly)
 	if err != nil {
 		errResp := map[string]interface{}{
 			"error": fmt.Sprintf("extraction failed: %v", err),
@@ -458,8 +478,9 @@ func ExtractJSONValueIndexes(params []byte) (resultPtr unsafe.Pointer, resultLen
 
 	// Parse input parameters
 	var input struct {
-		Document string `json:"document"`
-		JSONPath string `json:"jsonPath"`
+		Document       string `json:"document"`        // Legacy: direct string (will be escaped)
+		DocumentBase64 string `json:"document_base64"` // New: base64-encoded bytes (preserves exact bytes)
+		JSONPath       string `json:"jsonPath"`
 	}
 
 	if err := json.Unmarshal(params, &input); err != nil {
@@ -470,8 +491,50 @@ func ExtractJSONValueIndexes(params []byte) (resultPtr unsafe.Pointer, resultLen
 		return C.CBytes(bRes), len(bRes)
 	}
 
+	// Determine which document format to use
+	var docBytes []byte
+	if input.DocumentBase64 != "" {
+		// Prefer base64-encoded document (preserves exact bytes)
+		if logger != nil {
+			logger.Info("📦 Using base64-encoded document",
+				zap.String("component", "JSON-EXTRACTION"),
+				zap.Int("base64_length", len(input.DocumentBase64)),
+				zap.String("jsonPath", input.JSONPath))
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(input.DocumentBase64)
+		if err != nil {
+			if logger != nil {
+				logger.Error("❌ Failed to decode base64",
+					zap.String("component", "JSON-EXTRACTION"),
+					zap.Error(err))
+			}
+			errResp := map[string]interface{}{
+				"error": fmt.Sprintf("failed to decode document_base64: %v", err),
+			}
+			bRes, _ := json.Marshal(errResp)
+			return C.CBytes(bRes), len(bRes)
+		}
+		docBytes = decoded
+
+		if logger != nil {
+			logger.Info("✅ Successfully decoded base64",
+				zap.String("component", "JSON-EXTRACTION"),
+				zap.Int("decoded_bytes_length", len(docBytes)),
+				zap.String("preview", string(docBytes[:min(100, len(docBytes))])))
+		}
+	} else {
+		// Fallback to legacy string format
+		if logger != nil {
+			logger.Info("📝 Using legacy string format",
+				zap.String("component", "JSON-EXTRACTION"),
+				zap.Int("document_length", len(input.Document)))
+		}
+		docBytes = []byte(input.Document)
+	}
+
 	// Call the internal function
-	ranges, err := providers.ExtractJSONValueIndexes([]byte(input.Document), input.JSONPath)
+	ranges, err := providers.ExtractJSONValueIndexes(docBytes, input.JSONPath)
 	if err != nil {
 		errResp := map[string]interface{}{
 			"error": fmt.Sprintf("extraction failed: %v", err),
