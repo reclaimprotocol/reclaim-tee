@@ -122,35 +122,33 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() error {
 
 	var fullResponse []byte
 	for _, seqNum := range seqNums {
-		if seqNum > 0 { // Skip handshake sequences (seq 0)
-			parsed := c.parsedResponseBySeq[seqNum]
+		parsed := c.parsedResponseBySeq[seqNum]
 
-			// Log what we're processing
-			c.logger.Debug("Processing sequence",
+		// Log what we're processing
+		c.logger.Debug("Processing sequence",
+			zap.Uint64("seq_num", seqNum),
+			zap.Uint8("content_type", parsed.ContentType),
+			zap.Int("content_length", len(parsed.ActualContent)))
+
+		// Only include application data, skip handshake and alerts
+		if parsed.ContentType == minitls.RecordTypeApplicationData && len(parsed.ActualContent) > 0 {
+			// Log the actual content for debugging
+			previewLen := 100
+			if len(parsed.ActualContent) < previewLen {
+				previewLen = len(parsed.ActualContent)
+			}
+			c.logger.Debug("Decrypted ApplicationData content",
+				zap.Uint64("seq_num", seqNum),
+				zap.Int("length", len(parsed.ActualContent)),
+				zap.String("preview", string(parsed.ActualContent[:previewLen])),
+				zap.String("hex", fmt.Sprintf("%x", parsed.ActualContent[:previewLen])))
+
+			fullResponse = append(fullResponse, parsed.ActualContent...)
+		} else if parsed.ContentType != minitls.RecordTypeApplicationData {
+			c.logger.Warn("Skipping non-ApplicationData content",
 				zap.Uint64("seq_num", seqNum),
 				zap.Uint8("content_type", parsed.ContentType),
-				zap.Int("content_length", len(parsed.ActualContent)))
-
-			// Only include application data, skip handshake and alerts
-			if parsed.ContentType == minitls.RecordTypeApplicationData && len(parsed.ActualContent) > 0 {
-				// Log the actual content for debugging
-				previewLen := 100
-				if len(parsed.ActualContent) < previewLen {
-					previewLen = len(parsed.ActualContent)
-				}
-				c.logger.Debug("Decrypted ApplicationData content",
-					zap.Uint64("seq_num", seqNum),
-					zap.Int("length", len(parsed.ActualContent)),
-					zap.String("preview", string(parsed.ActualContent[:previewLen])),
-					zap.String("hex", fmt.Sprintf("%x", parsed.ActualContent[:previewLen])))
-
-				fullResponse = append(fullResponse, parsed.ActualContent...)
-			} else if parsed.ContentType != minitls.RecordTypeApplicationData {
-				c.logger.Warn("Skipping non-ApplicationData content",
-					zap.Uint64("seq_num", seqNum),
-					zap.Uint8("content_type", parsed.ContentType),
-					zap.String("content_type_name", getContentTypeName(parsed.ContentType)))
-			}
+				zap.String("content_type_name", getContentTypeName(parsed.ContentType)))
 		}
 	}
 
