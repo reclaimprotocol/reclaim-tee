@@ -80,18 +80,40 @@ func (c *Client) analyzeTLSRecords(seqNums []uint64) *TLSAnalysisResult {
 		AllHTTPContent:     make([]byte, 0),
 	}
 
-	c.logger.Info("[REDACTION DEBUG] Starting TLS record analysis",
-		zap.Int("total_sequences", len(seqNums)),
-		zap.Uint64s("sequence_numbers", seqNums))
+	// Debug logging (commented out for production)
+	// c.logger.Info("[REDACTION DEBUG] Starting TLS record analysis",
+	// 	zap.Int("total_sequences", len(seqNums)),
+	// 	zap.Uint64s("sequence_numbers", seqNums))
 
 	for _, seqNum := range seqNums {
 		c.processSingleTLSRecord(seqNum, result)
 	}
 
-	c.logger.Info("[REDACTION DEBUG] Completed TLS record analysis",
-		zap.Int("total_http_content_bytes", len(result.AllHTTPContent)),
-		zap.Int("final_tls_offset", result.TotalTLSOffset),
-		zap.Int("http_mappings_count", len(result.HTTPMappings)))
+	// Debug logging (commented out for production)
+	// totalOriginalLen := 0
+	// totalActualContentLen := 0
+	// totalPaddingBytes := 0
+	// for _, seqNum := range seqNums {
+	// 	parsed := c.parsedResponseBySeq[seqNum]
+	// 	if parsed != nil {
+	// 		totalOriginalLen += parsed.OriginalLen
+	// 		totalActualContentLen += len(parsed.ActualContent)
+	// 		paddingBytes := parsed.OriginalLen - len(parsed.ActualContent) - 1 // -1 for content type
+	// 		if paddingBytes < 0 {
+	// 			paddingBytes = 0
+	// 		}
+	// 		totalPaddingBytes += paddingBytes
+	// 	}
+	// }
+	//
+	// c.logger.Info("📊 TLS Record Analysis Summary",
+	// 	zap.Int("total_sequences", len(seqNums)),
+	// 	zap.Int("total_original_len", totalOriginalLen),
+	// 	zap.Int("total_actual_content_len", totalActualContentLen),
+	// 	zap.Int("total_tls_stream_offset", result.TotalTLSOffset),
+	// 	zap.Int("total_padding_bytes", totalPaddingBytes),
+	// 	zap.Int("total_content_type_bytes", len(seqNums)),
+	// 	zap.Int("http_content_bytes", len(result.AllHTTPContent)))
 
 	// Store mappings for OPRF use
 	c.httpToTlsMapping = result.HTTPMappings
@@ -114,19 +136,33 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 		return
 	}
 
-	if len(ciphertext) != len(parsed.ActualContent) {
-		panic("ciphertext and actual content length do not match")
+	// TEE_T's consolidated stream format depends on TLS version:
+	// - TLS 1.3: strips content type byte (OriginalLen - 1)
+	// - TLS 1.2: keeps full encrypted data (OriginalLen)
+	var tlsStreamLength int
+	if minitls.IsTLS13CipherSuite(c.cipherSuite) {
+		tlsStreamLength = parsed.OriginalLen - 1 // TLS 1.3: strip content type byte
+	} else {
+		tlsStreamLength = parsed.OriginalLen // TLS 1.2: no stripping
+	}
+
+	if len(ciphertext) != tlsStreamLength {
+		panic(fmt.Sprintf("ciphertext length (%d) does not match TEE_T stream length (%d) for cipher %x",
+			len(ciphertext), tlsStreamLength, c.cipherSuite))
 	}
 
 	actualLength := len(parsed.ActualContent)
-	ciphertextLength := len(ciphertext)
+	// ciphertextLength := len(ciphertext)
 
-	c.logger.Info("[REDACTION DEBUG] Processing TLS record",
-		zap.Uint64("seq_num", seqNum),
-		zap.Int("total_offset_BEFORE", result.TotalTLSOffset),
-		zap.Uint8("content_type", parsed.ContentType),
-		zap.Int("actual_content_length", actualLength),
-		zap.Int("ciphertext_length", ciphertextLength))
+	// Debug logging (commented out for production)
+	// c.logger.Info("[REDACTION DEBUG] Processing TLS record",
+	// 	zap.Uint64("seq_num", seqNum),
+	// 	zap.Int("total_offset_BEFORE", result.TotalTLSOffset),
+	// 	zap.Uint8("content_type", parsed.ContentType),
+	// 	zap.Int("actual_content_length", actualLength),
+	// 	zap.Int("ciphertext_length", len(ciphertext)),
+	// 	zap.Int("original_length", parsed.OriginalLen),
+	// 	zap.Int("tls_stream_length", tlsStreamLength))
 
 	switch parsed.ContentType {
 	case minitls.RecordTypeApplicationData:
@@ -135,27 +171,30 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 			SeqNum:     seqNum,
 			HTTPPos:    len(result.AllHTTPContent),
 			TLSPos:     result.TotalTLSOffset,
-			Length:     actualLength,
+			Length:     actualLength, // HTTP content length (for mapping)
 			Ciphertext: ciphertext,
 		}
 
 		result.HTTPMappings = append(result.HTTPMappings, mapping)
 		result.AllHTTPContent = append(result.AllHTTPContent, parsed.ActualContent...)
 	default:
-		// redact everything except app data
+		// Redact everything except app data
+		// Use tlsStreamLength to match TEE_T's consolidated stream
 		result.ProtocolRedactions = append(result.ProtocolRedactions,
 			shared.ResponseRedactionRange{
 				Start:  result.TotalTLSOffset,
-				Length: actualLength,
+				Length: tlsStreamLength,
 			})
 	}
 
-	oldOffset := result.TotalTLSOffset
-	result.TotalTLSOffset += actualLength
-	c.logger.Info("[REDACTION DEBUG] Incremented offset",
-		zap.Int("old_offset", oldOffset),
-		zap.Int("increment_by", actualLength),
-		zap.Int("new_offset", result.TotalTLSOffset))
+	// oldOffset := result.TotalTLSOffset
+	// Increment by tlsStreamLength to match TEE_T's consolidated stream
+	result.TotalTLSOffset += tlsStreamLength
+	// Debug logging (commented out for production)
+	// c.logger.Info("[REDACTION DEBUG] Incremented offset",
+	// 	zap.Int("old_offset", oldOffset),
+	// 	zap.Int("increment_by", tlsStreamLength),
+	// 	zap.Int("new_offset", result.TotalTLSOffset))
 }
 
 // analyzeHTTPContent analyzes HTTP content and returns redaction ranges
@@ -297,63 +336,64 @@ func (c *Client) applyRedactionRangesToContent(content []byte, baseOffset int, r
 
 // logRedactedResponseWithAsterisks reconstructs the full response and logs it with redacted parts as asterisks
 func (c *Client) logRedactedResponseWithAsterisks(ranges []shared.ResponseRedactionRange) {
+	// Debug logging disabled for production - uncomment if needed for debugging
 	// Get sorted sequence numbers
-	seqNums := c.getSortedSequenceNumbers()
+	// seqNums := c.getSortedSequenceNumbers()
 
 	// Reconstruct full TLS stream
-	var fullTLSStream []byte
-	totalOffset := 0
+	// var fullTLSStream []byte
+	// totalOffset := 0
 
-	c.logger.Info("=== RECONSTRUCTING FULL TLS STREAM ===")
+	// c.logger.Info("=== RECONSTRUCTING FULL TLS STREAM ===")
 
-	for _, seqNum := range seqNums {
-		parsed := c.parsedResponseBySeq[seqNum]
-		if parsed == nil {
-			continue
-		}
+	// for _, seqNum := range seqNums {
+	// 	parsed := c.parsedResponseBySeq[seqNum]
+	// 	if parsed == nil {
+	// 		continue
+	// 	}
 
-		c.logger.Info("TLS Record",
-			zap.Uint64("seq_num", seqNum),
-			zap.Int("offset", totalOffset),
-			zap.Int("length", len(parsed.ActualContent)),
-			zap.Uint8("content_type", parsed.ContentType))
+	// 	c.logger.Info("TLS Record",
+	// 		zap.Uint64("seq_num", seqNum),
+	// 		zap.Int("offset", totalOffset),
+	// 		zap.Int("length", len(parsed.ActualContent)),
+	// 		zap.Uint8("content_type", parsed.ContentType))
 
-		fullTLSStream = append(fullTLSStream, parsed.ActualContent...)
-		totalOffset += len(parsed.ActualContent)
-	}
+	// 	fullTLSStream = append(fullTLSStream, parsed.ActualContent...)
+	// 	totalOffset += len(parsed.ActualContent)
+	// }
 
-	c.logger.Info("Full TLS stream reconstructed",
-		zap.Int("total_bytes", len(fullTLSStream)))
+	// c.logger.Info("Full TLS stream reconstructed",
+	// 	zap.Int("total_bytes", len(fullTLSStream)))
 
 	// Apply redactions (replace with asterisks)
-	redactedStream := c.applyRedactionRangesToContent(fullTLSStream, 0, ranges)
+	// redactedStream := c.applyRedactionRangesToContent(fullTLSStream, 0, ranges)
 
 	// Log statistics
-	totalRedacted := 0
-	for _, r := range ranges {
-		totalRedacted += r.Length
-	}
-	totalRevealed := len(fullTLSStream) - totalRedacted
+	// totalRedacted := 0
+	// for _, r := range ranges {
+	// 	totalRedacted += r.Length
+	// }
+	// totalRevealed := len(fullTLSStream) - totalRedacted
 
-	c.logger.Info("=== REDACTION STATISTICS ===",
-		zap.Int("total_bytes", len(fullTLSStream)),
-		zap.Int("redacted_bytes", totalRedacted),
-		zap.Int("revealed_bytes", totalRevealed),
-		zap.Int("num_ranges", len(ranges)))
+	// c.logger.Info("=== REDACTION STATISTICS ===",
+	// 	zap.Int("total_bytes", len(fullTLSStream)),
+	// 	zap.Int("redacted_bytes", totalRedacted),
+	// 	zap.Int("revealed_bytes", totalRevealed),
+	// 	zap.Int("num_ranges", len(ranges)))
 
 	// Log each range
-	for i, r := range ranges {
-		c.logger.Info("Redaction Range",
-			zap.Int("index", i),
-			zap.Int("start", r.Start),
-			zap.Int("length", r.Length),
-			zap.Int("end", r.Start+r.Length))
-	}
+	// for i, r := range ranges {
+	// 	c.logger.Info("Redaction Range",
+	// 		zap.Int("index", i),
+	// 		zap.Int("start", r.Start),
+	// 		zap.Int("length", r.Length),
+	// 		zap.Int("end", r.Start+r.Length))
+	// }
 
 	// Log the full redacted response (convert to string for readability)
-	c.logger.Info("=== FULL REDACTED RESPONSE (asterisks show redacted parts) ===")
-	c.logger.Info(string(redactedStream))
-	c.logger.Info("=== END REDACTED RESPONSE ===")
+	// c.logger.Info("=== FULL REDACTED RESPONSE (asterisks show redacted parts) ===")
+	// c.logger.Info(string(redactedStream))
+	// c.logger.Info("=== END REDACTED RESPONSE ===")
 }
 
 // sendRedactionSpec sends redaction specification to TEE_K

@@ -42,14 +42,38 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 
 			c.responseContentMutex.Lock()
 
+			// Capture original length before stripping (this matches TEE_T's view)
+			originalLen := len(plaintext)
+
 			// Parse TLS padding once and store all data
 			actualContent, contentType := c.removeTLSPadding(plaintext)
 
-			c.ciphertextBySeq[streamData.SeqNum] = c.ciphertextBySeq[streamData.SeqNum][:len(actualContent)] // !!! Strip content type byte (and padding if exists)
+			// Trim ciphertext to match TEE_T's consolidated stream length
+			// TLS 1.3: TEE_T strips content type byte (originalLen - 1)
+			// TLS 1.2: TEE_T keeps full encrypted data (originalLen)
+			var teetStreamLen int
+			if minitls.IsTLS13CipherSuite(c.cipherSuite) {
+				teetStreamLen = originalLen - 1
+			} else {
+				teetStreamLen = originalLen
+			}
+
+			// Debug logging (commented out for production)
+			// c.logger.Info("📏 Ciphertext Trimming Decision",
+			// 	zap.Uint64("seq_num", streamData.SeqNum),
+			// 	zap.Int("original_ciphertext_len", len(c.ciphertextBySeq[streamData.SeqNum])),
+			// 	zap.Int("original_plaintext_len", originalLen),
+			// 	zap.Int("actual_content_len", len(actualContent)),
+			// 	zap.Int("teet_stream_len", teetStreamLen),
+			// 	zap.Bool("is_tls13", minitls.IsTLS13CipherSuite(c.cipherSuite)),
+			// 	zap.Int("bytes_trimmed_from_ciphertext", len(c.ciphertextBySeq[streamData.SeqNum])-teetStreamLen))
+
+			c.ciphertextBySeq[streamData.SeqNum] = c.ciphertextBySeq[streamData.SeqNum][:teetStreamLen]
 
 			c.parsedResponseBySeq[streamData.SeqNum] = &TLSResponseData{
 				ActualContent: actualContent,
 				ContentType:   contentType,
+				OriginalLen:   originalLen, // Store original length to match TEE_T's view
 			}
 
 			c.responseContentMutex.Unlock()
