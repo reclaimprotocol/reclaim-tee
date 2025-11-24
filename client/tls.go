@@ -341,8 +341,10 @@ func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 		// TLS 1.3: Has inner content type byte + zero padding
 		// Find the last non-zero byte which indicates the content type
 		lastNonZero := len(data) - 1
+		zeroPaddingCount := 0
 		for lastNonZero >= 0 && data[lastNonZero] == 0 {
 			lastNonZero--
+			zeroPaddingCount++
 		}
 
 		if lastNonZero < 0 {
@@ -355,13 +357,22 @@ func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 		// The data before that byte is the actual content
 		actualContent := data[:lastNonZero]
 
-		// Log for debugging
+		// Calculate total bytes stripped (content type byte + padding)
+		bytesStripped := len(data) - len(actualContent)
+
+		// Log TLS 1.3 padding details for ALL records
+		c.logger.Info("🔍 TLS 1.3 Padding Stripped",
+			zap.Int("original_length", len(data)),
+			zap.Int("stripped_length", len(actualContent)),
+			zap.Int("content_type_byte", 1),
+			zap.Int("zero_padding_bytes", zeroPaddingCount),
+			zap.Int("total_bytes_stripped", bytesStripped),
+			zap.Uint8("content_type", contentType),
+			zap.String("content_type_name", getContentTypeName(contentType)))
+
+		// Additional debug for small records
 		if len(actualContent) < 100 {
-			c.logger.Debug("TLS 1.3 padding removed",
-				zap.Int("original_length", len(data)),
-				zap.Int("actual_content_length", len(actualContent)),
-				zap.Uint8("content_type", contentType),
-				zap.String("content_type_name", getContentTypeName(contentType)),
+			c.logger.Debug("TLS 1.3 padding removed (detailed)",
 				zap.String("content_hex", fmt.Sprintf("%x", actualContent)))
 		}
 

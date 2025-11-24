@@ -115,29 +115,35 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 		zap.Uint8("content_type", parsed.ContentType),
 		zap.Int("content_length", len(parsed.ActualContent)))
 
+	// Calculate padding bytes (TLS 1.3: originalLen includes content + content_type_byte + padding)
+	paddingBytes := parsed.OriginalLen - len(parsed.ActualContent)
+
 	switch parsed.ContentType {
 	case minitls.RecordTypeApplicationData:
 		// Create mapping for this segment
 		mapping := TLSToHTTPMapping{
-			SeqNum:     seqNum,
-			HTTPPos:    len(result.AllHTTPContent),
-			TLSPos:     result.TotalTLSOffset,
-			Length:     len(parsed.ActualContent),
-			Ciphertext: ciphertext,
+			SeqNum:       seqNum,
+			HTTPPos:      len(result.AllHTTPContent),
+			TLSPos:       result.TotalTLSOffset,
+			Length:       len(parsed.ActualContent),
+			OriginalLen:  parsed.OriginalLen,
+			PaddingBytes: paddingBytes,
+			Ciphertext:   ciphertext,
 		}
 
 		result.HTTPMappings = append(result.HTTPMappings, mapping)
 		result.AllHTTPContent = append(result.AllHTTPContent, parsed.ActualContent...)
 	default:
-		// redact everything except app data
+		// redact everything except app data - use original length for TLS position
 		result.ProtocolRedactions = append(result.ProtocolRedactions,
 			shared.ResponseRedactionRange{
 				Start:  result.TotalTLSOffset,
-				Length: len(parsed.ActualContent),
+				Length: parsed.OriginalLen, // Use original length (with padding)
 			})
 	}
 
-	result.TotalTLSOffset += len(parsed.ActualContent) // !!!
+	// CRITICAL: Increment by ORIGINAL length to match consolidated stream positions
+	result.TotalTLSOffset += parsed.OriginalLen // Use original length including padding
 }
 
 // analyzeHTTPContent analyzes HTTP content and returns redaction ranges
@@ -163,6 +169,18 @@ func (c *Client) analyzeHTTPContent(mappings []TLSToHTTPMapping, httpContent []b
 func (c *Client) getAutomaticHTTPRedactions(httpResponse *HTTPResponse) ([]shared.ResponseRedactionRange, error) {
 	if len(c.lastRedactionRanges) == 0 {
 		c.logger.Info("Getting automatic response redactions", zap.Int("response_bytes", len(httpResponse.FullResponse)))
+
+		// Log if response uses chunked encoding
+		if len(httpResponse.Headers) > 0 {
+			if te, ok := httpResponse.Headers["Transfer-Encoding"]; ok {
+				c.logger.Info("⚠️ Response uses Transfer-Encoding",
+					zap.String("transfer_encoding", te))
+			}
+			if ce, ok := httpResponse.Headers["Content-Encoding"]; ok {
+				c.logger.Info("Response uses Content-Encoding",
+					zap.String("content_encoding", ce))
+			}
+		}
 
 		ranges, err := c.getResponseRedactions(httpResponse)
 		if err != nil {
@@ -193,6 +211,7 @@ func (c *Client) mapHTTPToTLSRedactions(httpRanges []shared.ResponseRedactionRan
 }
 
 // findTLSPositions converts an HTTP range to TLS positions
+// CRITICAL: HTTP positions are in stripped content, TLS positions are in consolidated stream (with padding)
 func (c *Client) findTLSPositions(httpStart int, httpLength int, mappings []TLSToHTTPMapping) []shared.ResponseRedactionRange {
 	ranges := make([]shared.ResponseRedactionRange, 0)
 	httpEnd := httpStart + httpLength
@@ -202,13 +221,23 @@ func (c *Client) findTLSPositions(httpStart int, httpLength int, mappings []TLST
 
 		// Check if this mapping overlaps with the HTTP range
 		if mapping.HTTPPos < httpEnd && mappingHTTPEnd > httpStart {
-			// Calculate the overlap
+			// Calculate the overlap in HTTP (stripped) space
 			overlapStart := max(mapping.HTTPPos, httpStart)
 			overlapEnd := min(mappingHTTPEnd, httpEnd)
 
-			// Convert to TLS positions
+			// Convert to TLS positions (with padding)
+			// mapping.TLSPos already accounts for cumulative padding from previous records
 			tlsStart := mapping.TLSPos + (overlapStart - mapping.HTTPPos)
 			tlsLength := overlapEnd - overlapStart
+
+			c.logger.Debug("Mapping HTTP to TLS",
+				zap.Int("http_start", httpStart),
+				zap.Int("http_length", httpLength),
+				zap.Int("mapping_http_pos", mapping.HTTPPos),
+				zap.Int("mapping_tls_pos", mapping.TLSPos),
+				zap.Int("mapping_padding", mapping.PaddingBytes),
+				zap.Int("tls_start", tlsStart),
+				zap.Int("tls_length", tlsLength))
 
 			ranges = append(ranges, shared.ResponseRedactionRange{
 				Start:  tlsStart,
@@ -282,11 +311,12 @@ func (c *Client) logRedactedResponseWithAsterisks(ranges []shared.ResponseRedact
 	// Get sorted sequence numbers
 	seqNums := c.getSortedSequenceNumbers()
 
-	// Reconstruct full TLS stream
+	// Reconstruct full TLS stream WITH PADDING to match consolidated stream
 	var fullTLSStream []byte
 	totalOffset := 0
+	totalPadding := 0
 
-	c.logger.Info("=== RECONSTRUCTING FULL TLS STREAM ===")
+	c.logger.Info("=== RECONSTRUCTING FULL TLS STREAM (with padding to match attestor) ===")
 
 	for _, seqNum := range seqNums {
 		parsed := c.parsedResponseBySeq[seqNum]
@@ -294,18 +324,31 @@ func (c *Client) logRedactedResponseWithAsterisks(ranges []shared.ResponseRedact
 			continue
 		}
 
+		paddingBytes := parsed.OriginalLen - len(parsed.ActualContent)
+		totalPadding += paddingBytes
+
 		c.logger.Info("TLS Record",
 			zap.Uint64("seq_num", seqNum),
 			zap.Int("offset", totalOffset),
-			zap.Int("length", len(parsed.ActualContent)),
+			zap.Int("stripped_length", len(parsed.ActualContent)),
+			zap.Int("original_length", parsed.OriginalLen),
+			zap.Int("padding_bytes", paddingBytes),
 			zap.Uint8("content_type", parsed.ContentType))
 
+		// Add actual content
 		fullTLSStream = append(fullTLSStream, parsed.ActualContent...)
-		totalOffset += len(parsed.ActualContent)
+		// Add padding to match what attestor will see
+		if paddingBytes > 0 {
+			padding := make([]byte, paddingBytes)
+			// TLS 1.3: last byte is content type, rest is 0x00
+			fullTLSStream = append(fullTLSStream, padding...)
+		}
+		totalOffset += parsed.OriginalLen
 	}
 
-	c.logger.Info("Full TLS stream reconstructed",
-		zap.Int("total_bytes", len(fullTLSStream)))
+	c.logger.Info("Full TLS stream reconstructed (with padding)",
+		zap.Int("total_bytes", len(fullTLSStream)),
+		zap.Int("total_padding", totalPadding))
 
 	// Apply redactions (replace with asterisks)
 	redactedStream := c.applyRedactionRangesToContent(fullTLSStream, 0, ranges)

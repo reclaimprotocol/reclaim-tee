@@ -43,6 +43,7 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 			c.responseContentMutex.Lock()
 
 			// Parse TLS padding once and store all data
+			originalLen := len(plaintext)
 			actualContent, contentType := c.removeTLSPadding(plaintext)
 
 			c.ciphertextBySeq[streamData.SeqNum] = c.ciphertextBySeq[streamData.SeqNum][:len(actualContent)] // !!! Strip content type byte (and padding if exists)
@@ -50,6 +51,7 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 			c.parsedResponseBySeq[streamData.SeqNum] = &TLSResponseData{
 				ActualContent: actualContent,
 				ContentType:   contentType,
+				OriginalLen:   originalLen, // Store original length for TLS position calculations
 			}
 
 			c.responseContentMutex.Unlock()

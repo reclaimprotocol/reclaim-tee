@@ -77,6 +77,7 @@ func (p ProtocolPhase) String() string {
 type TLSResponseData struct {
 	ActualContent []byte // Content after removing padding
 	ContentType   byte   // TLS content type (inner for TLS 1.3, record type for TLS 1.2)
+	OriginalLen   int    // Original length before padding removal (for TLS 1.3)
 }
 
 // GetPhasePercentage returns the progress percentage for a given phase
