@@ -361,16 +361,16 @@ func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 		actualContent := data[:lastNonZero]
 
 		// Calculate bytes stripped
-		contentTypeByte := 1
-		totalBytesStripped := contentTypeByte + zeroPaddingCount
+		// contentTypeByte := 1
+		// totalBytesStripped := contentTypeByte + zeroPaddingCount
 
-		// ALWAYS log to track padding
-		c.logger.Info("🔍 TLS 1.3 Padding Stripped",
-			zap.Int("original_length", len(data)),
-			zap.Int("stripped_length", len(actualContent)),
-			zap.Uint8("content_type_byte", contentType),
-			zap.Int("zero_padding_bytes", zeroPaddingCount),
-			zap.Int("total_bytes_stripped", totalBytesStripped))
+		// Debug logging (commented out for production)
+		// c.logger.Info("🔍 TLS 1.3 Padding Stripped",
+		// 	zap.Int("original_length", len(data)),
+		// 	zap.Int("stripped_length", len(actualContent)),
+		// 	zap.Uint8("content_type_byte", contentType),
+		// 	zap.Int("zero_padding_bytes", zeroPaddingCount),
+		// 	zap.Int("total_bytes_stripped", totalBytesStripped))
 
 		return actualContent, contentType
 	}

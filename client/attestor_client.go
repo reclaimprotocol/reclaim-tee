@@ -248,27 +248,28 @@ func (ac *AttestorClient) logAttestorViewOfRedactedResponse(bundle *teeproto.Ver
 		totalRedacted += length
 	}
 
-	totalRevealed := len(redactedResponse) - totalRedacted
+	// totalRevealed := len(redactedResponse) - totalRedacted
 
-	ac.logger.Info("=== ATTESTOR REDACTION STATISTICS ===",
-		zap.Int("total_bytes", len(redactedResponse)),
-		zap.Int("redacted_bytes", totalRedacted),
-		zap.Int("revealed_bytes", totalRevealed),
-		zap.Int("num_ranges", len(redactionRanges)))
+	// Debug logging (commented out for production)
+	// ac.logger.Info("=== ATTESTOR REDACTION STATISTICS ===",
+	// 	zap.Int("total_bytes", len(redactedResponse)),
+	// 	zap.Int("redacted_bytes", totalRedacted),
+	// 	zap.Int("revealed_bytes", totalRevealed),
+	// 	zap.Int("num_ranges", len(redactionRanges)))
 
 	// Log each range
-	for i, r := range redactionRanges {
-		ac.logger.Info("Attestor Redaction Range",
-			zap.Int("index", i),
-			zap.Int32("start", r.Start),
-			zap.Int32("length", r.Length),
-			zap.Int32("end", r.Start+r.Length))
-	}
+	// for i, r := range redactionRanges {
+	// 	ac.logger.Info("Attestor Redaction Range",
+	// 		zap.Int("index", i),
+	// 		zap.Int32("start", r.Start),
+	// 		zap.Int32("length", r.Length),
+	// 		zap.Int32("end", r.Start+r.Length))
+	// }
 
 	// Log the full redacted response as attestor sees it
-	ac.logger.Info("=== ATTESTOR VIEW: FULL REDACTED RESPONSE (asterisks show redacted parts) ===")
-	ac.logger.Info(string(redactedResponse))
-	ac.logger.Info("=== END ATTESTOR VIEW ===")
+	// ac.logger.Info("=== ATTESTOR VIEW: FULL REDACTED RESPONSE (asterisks show redacted parts) ===")
+	// ac.logger.Info(string(redactedResponse))
+	// ac.logger.Info("=== END ATTESTOR VIEW ===")
 }
 
 // SubmitTeeBundle submits a TEE verification bundle to attestor-core for claim validation
