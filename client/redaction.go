@@ -44,19 +44,6 @@ func (c *Client) analyzeResponseRedaction() (shared.ResponseRedactionSpec, error
 		totalRedactedBytes += r.Length
 	}
 
-	// Calculate revealed bytes
-	revealedBytes := totalResponseBytes - totalRedactedBytes
-
-	// Log statistics - single line with revealed bytes and OPRF redaction count
-	logFields := []zap.Field{
-		zap.Int("revealed_bytes", revealedBytes),
-		zap.Int("oprf_redactions", len(c.oprfRedactionRanges)),
-	}
-	if c.requestId != "" {
-		logFields = append(logFields, zap.String("requestId", c.requestId))
-	}
-	c.logger.Info("Response redaction analysis complete", logFields...)
-
 	return spec, nil
 }
 
