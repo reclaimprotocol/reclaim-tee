@@ -277,6 +277,67 @@ func (c *Client) applyRedactionRangesToContent(content []byte, baseOffset int, r
 	return result
 }
 
+// logRedactedResponseWithAsterisks reconstructs the full response and logs it with redacted parts as asterisks
+func (c *Client) logRedactedResponseWithAsterisks(ranges []shared.ResponseRedactionRange) {
+	// Get sorted sequence numbers
+	seqNums := c.getSortedSequenceNumbers()
+
+	// Reconstruct full TLS stream
+	var fullTLSStream []byte
+	totalOffset := 0
+
+	c.logger.Info("=== RECONSTRUCTING FULL TLS STREAM ===")
+
+	for _, seqNum := range seqNums {
+		parsed := c.parsedResponseBySeq[seqNum]
+		if parsed == nil {
+			continue
+		}
+
+		c.logger.Info("TLS Record",
+			zap.Uint64("seq_num", seqNum),
+			zap.Int("offset", totalOffset),
+			zap.Int("length", len(parsed.ActualContent)),
+			zap.Uint8("content_type", parsed.ContentType))
+
+		fullTLSStream = append(fullTLSStream, parsed.ActualContent...)
+		totalOffset += len(parsed.ActualContent)
+	}
+
+	c.logger.Info("Full TLS stream reconstructed",
+		zap.Int("total_bytes", len(fullTLSStream)))
+
+	// Apply redactions (replace with asterisks)
+	redactedStream := c.applyRedactionRangesToContent(fullTLSStream, 0, ranges)
+
+	// Log statistics
+	totalRedacted := 0
+	for _, r := range ranges {
+		totalRedacted += r.Length
+	}
+	totalRevealed := len(fullTLSStream) - totalRedacted
+
+	c.logger.Info("=== REDACTION STATISTICS ===",
+		zap.Int("total_bytes", len(fullTLSStream)),
+		zap.Int("redacted_bytes", totalRedacted),
+		zap.Int("revealed_bytes", totalRevealed),
+		zap.Int("num_ranges", len(ranges)))
+
+	// Log each range
+	for i, r := range ranges {
+		c.logger.Info("Redaction Range",
+			zap.Int("index", i),
+			zap.Int("start", r.Start),
+			zap.Int("length", r.Length),
+			zap.Int("end", r.Start+r.Length))
+	}
+
+	// Log the full redacted response (convert to string for readability)
+	c.logger.Info("=== FULL REDACTED RESPONSE (asterisks show redacted parts) ===")
+	c.logger.Info(string(redactedStream))
+	c.logger.Info("=== END REDACTED RESPONSE ===")
+}
+
 // sendRedactionSpec sends redaction specification to TEE_K
 func (c *Client) sendRedactionSpec() error {
 	c.logger.Info("🚀 [REDACTION] Generating and sending redaction specification to TEE_K")
@@ -287,6 +348,9 @@ func (c *Client) sendRedactionSpec() error {
 		c.terminateConnectionWithError("Failed to analyze response redaction", err)
 		return fmt.Errorf("failed to analyze response redaction: %w", err)
 	}
+
+	// Log the full redacted response for debugging
+	c.logRedactedResponseWithAsterisks(redactionSpec.Ranges)
 
 	// Send redaction spec to TEE_K using protobuf envelope
 	if c.wsConn == nil {
