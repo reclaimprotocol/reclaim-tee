@@ -88,6 +88,32 @@ func (c *Client) analyzeTLSRecords(seqNums []uint64) *TLSAnalysisResult {
 		c.processSingleTLSRecord(seqNum, result)
 	}
 
+	// Calculate summary statistics
+	totalOriginalLen := 0
+	totalActualContentLen := 0
+	totalPaddingBytes := 0
+	for _, seqNum := range seqNums {
+		parsed := c.parsedResponseBySeq[seqNum]
+		if parsed != nil {
+			totalOriginalLen += parsed.OriginalLen
+			totalActualContentLen += len(parsed.ActualContent)
+			paddingBytes := parsed.OriginalLen - len(parsed.ActualContent) - 1 // -1 for content type
+			if paddingBytes < 0 {
+				paddingBytes = 0
+			}
+			totalPaddingBytes += paddingBytes
+		}
+	}
+
+	c.logger.Info("📊 TLS Record Analysis Summary",
+		zap.Int("total_sequences", len(seqNums)),
+		zap.Int("total_original_len", totalOriginalLen),
+		zap.Int("total_actual_content_len", totalActualContentLen),
+		zap.Int("total_tls_stream_offset", result.TotalTLSOffset),
+		zap.Int("total_padding_bytes", totalPaddingBytes),
+		zap.Int("total_content_type_bytes", len(seqNums)),
+		zap.Int("http_content_bytes", len(result.AllHTTPContent)))
+
 	c.logger.Info("[REDACTION DEBUG] Completed TLS record analysis",
 		zap.Int("total_http_content_bytes", len(result.AllHTTPContent)),
 		zap.Int("final_tls_offset", result.TotalTLSOffset),

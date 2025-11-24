@@ -57,6 +57,17 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 			} else {
 				teetStreamLen = originalLen
 			}
+
+			// Log the trimming decision
+			c.logger.Info("📏 Ciphertext Trimming Decision",
+				zap.Uint64("seq_num", streamData.SeqNum),
+				zap.Int("original_ciphertext_len", len(c.ciphertextBySeq[streamData.SeqNum])),
+				zap.Int("original_plaintext_len", originalLen),
+				zap.Int("actual_content_len", len(actualContent)),
+				zap.Int("teet_stream_len", teetStreamLen),
+				zap.Bool("is_tls13", minitls.IsTLS13CipherSuite(c.cipherSuite)),
+				zap.Int("bytes_trimmed_from_ciphertext", len(c.ciphertextBySeq[streamData.SeqNum])-teetStreamLen))
+
 			c.ciphertextBySeq[streamData.SeqNum] = c.ciphertextBySeq[streamData.SeqNum][:teetStreamLen]
 
 			c.parsedResponseBySeq[streamData.SeqNum] = &TLSResponseData{
