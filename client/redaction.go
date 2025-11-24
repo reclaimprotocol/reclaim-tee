@@ -114,8 +114,19 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 		return
 	}
 
-	if len(ciphertext) != len(parsed.ActualContent) {
-		panic("ciphertext and actual content length do not match")
+	// TEE_T's consolidated stream format depends on TLS version:
+	// - TLS 1.3: strips content type byte (OriginalLen - 1)
+	// - TLS 1.2: keeps full encrypted data (OriginalLen)
+	var tlsStreamLength int
+	if minitls.IsTLS13CipherSuite(c.cipherSuite) {
+		tlsStreamLength = parsed.OriginalLen - 1 // TLS 1.3: strip content type byte
+	} else {
+		tlsStreamLength = parsed.OriginalLen // TLS 1.2: no stripping
+	}
+
+	if len(ciphertext) != tlsStreamLength {
+		panic(fmt.Sprintf("ciphertext length (%d) does not match TEE_T stream length (%d) for cipher %x",
+			len(ciphertext), tlsStreamLength, c.cipherSuite))
 	}
 
 	actualLength := len(parsed.ActualContent)
@@ -126,7 +137,9 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 		zap.Int("total_offset_BEFORE", result.TotalTLSOffset),
 		zap.Uint8("content_type", parsed.ContentType),
 		zap.Int("actual_content_length", actualLength),
-		zap.Int("ciphertext_length", ciphertextLength))
+		zap.Int("ciphertext_length", ciphertextLength),
+		zap.Int("original_length", parsed.OriginalLen),
+		zap.Int("tls_stream_length", tlsStreamLength))
 
 	switch parsed.ContentType {
 	case minitls.RecordTypeApplicationData:
@@ -135,26 +148,28 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 			SeqNum:     seqNum,
 			HTTPPos:    len(result.AllHTTPContent),
 			TLSPos:     result.TotalTLSOffset,
-			Length:     actualLength,
+			Length:     actualLength, // HTTP content length (for mapping)
 			Ciphertext: ciphertext,
 		}
 
 		result.HTTPMappings = append(result.HTTPMappings, mapping)
 		result.AllHTTPContent = append(result.AllHTTPContent, parsed.ActualContent...)
 	default:
-		// redact everything except app data
+		// Redact everything except app data
+		// Use tlsStreamLength to match TEE_T's consolidated stream
 		result.ProtocolRedactions = append(result.ProtocolRedactions,
 			shared.ResponseRedactionRange{
 				Start:  result.TotalTLSOffset,
-				Length: actualLength,
+				Length: tlsStreamLength,
 			})
 	}
 
 	oldOffset := result.TotalTLSOffset
-	result.TotalTLSOffset += actualLength
+	// Increment by tlsStreamLength to match TEE_T's consolidated stream
+	result.TotalTLSOffset += tlsStreamLength
 	c.logger.Info("[REDACTION DEBUG] Incremented offset",
 		zap.Int("old_offset", oldOffset),
-		zap.Int("increment_by", actualLength),
+		zap.Int("increment_by", tlsStreamLength),
 		zap.Int("new_offset", result.TotalTLSOffset))
 }
 
