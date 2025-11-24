@@ -80,9 +80,18 @@ func (c *Client) analyzeTLSRecords(seqNums []uint64) *TLSAnalysisResult {
 		AllHTTPContent:     make([]byte, 0),
 	}
 
+	c.logger.Info("[REDACTION DEBUG] Starting TLS record analysis",
+		zap.Int("total_sequences", len(seqNums)),
+		zap.Uint64s("sequence_numbers", seqNums))
+
 	for _, seqNum := range seqNums {
 		c.processSingleTLSRecord(seqNum, result)
 	}
+
+	c.logger.Info("[REDACTION DEBUG] Completed TLS record analysis",
+		zap.Int("total_http_content_bytes", len(result.AllHTTPContent)),
+		zap.Int("final_tls_offset", result.TotalTLSOffset),
+		zap.Int("http_mappings_count", len(result.HTTPMappings)))
 
 	// Store mappings for OPRF use
 	c.httpToTlsMapping = result.HTTPMappings
@@ -109,11 +118,15 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 		panic("ciphertext and actual content length do not match")
 	}
 
+	actualLength := len(parsed.ActualContent)
+	ciphertextLength := len(ciphertext)
+
 	c.logger.Info("[REDACTION DEBUG] Processing TLS record",
 		zap.Uint64("seq_num", seqNum),
-		zap.Int("total_offset", result.TotalTLSOffset),
+		zap.Int("total_offset_BEFORE", result.TotalTLSOffset),
 		zap.Uint8("content_type", parsed.ContentType),
-		zap.Int("content_length", len(parsed.ActualContent)))
+		zap.Int("actual_content_length", actualLength),
+		zap.Int("ciphertext_length", ciphertextLength))
 
 	switch parsed.ContentType {
 	case minitls.RecordTypeApplicationData:
@@ -122,7 +135,7 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 			SeqNum:     seqNum,
 			HTTPPos:    len(result.AllHTTPContent),
 			TLSPos:     result.TotalTLSOffset,
-			Length:     len(parsed.ActualContent),
+			Length:     actualLength,
 			Ciphertext: ciphertext,
 		}
 
@@ -133,11 +146,16 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 		result.ProtocolRedactions = append(result.ProtocolRedactions,
 			shared.ResponseRedactionRange{
 				Start:  result.TotalTLSOffset,
-				Length: len(parsed.ActualContent),
+				Length: actualLength,
 			})
 	}
 
-	result.TotalTLSOffset += len(parsed.ActualContent) // !!!
+	oldOffset := result.TotalTLSOffset
+	result.TotalTLSOffset += actualLength
+	c.logger.Info("[REDACTION DEBUG] Incremented offset",
+		zap.Int("old_offset", oldOffset),
+		zap.Int("increment_by", actualLength),
+		zap.Int("new_offset", result.TotalTLSOffset))
 }
 
 // analyzeHTTPContent analyzes HTTP content and returns redaction ranges
