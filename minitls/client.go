@@ -35,11 +35,12 @@ type Client struct {
 	tls12AEAD         *TLS12AEADContext // TLS 1.2 AEAD context
 
 	// Handshake state
-	transcript         []byte // Running transcript of all handshake messages
-	finishedTranscript []byte // Transcript for Finished message verification
-	readBuffer         []byte // Buffer for incoming TLS records
-	handshakeBuffer    []byte // Buffer for reassembling handshake messages
-	cipherSuite        uint16 // Negotiated cipher suite
+	transcript           []byte // Running transcript of all handshake messages
+	finishedTranscript   []byte // Transcript for Finished message verification
+	readBuffer           []byte // Buffer for incoming TLS records
+	handshakeBuffer      []byte // Buffer for reassembling handshake messages
+	pendingHandshakeData []byte // Buffer for leftover handshake data from coalesced TLS 1.2 records
+	cipherSuite          uint16 // Negotiated cipher suite
 
 	// Certificate info storage
 	certificateInfo    *teeproto.CertificateInfo // Store structured certificate data
@@ -606,6 +607,34 @@ func (c *Client) buildClientHello(serverName string) ([]byte, error) {
 
 // readHandshakeMessage reads a complete handshake message
 func (c *Client) readHandshakeMessage() ([]byte, error) {
+	// First check if we have pending handshake data from a coalesced record
+	if len(c.pendingHandshakeData) > 0 {
+		// Need at least 4 bytes for handshake message header
+		if len(c.pendingHandshakeData) < 4 {
+			return nil, fmt.Errorf("pending handshake data too short: %d bytes", len(c.pendingHandshakeData))
+		}
+
+		// Extract handshake message length from header
+		msgLen := int(c.pendingHandshakeData[1])<<16 | int(c.pendingHandshakeData[2])<<8 | int(c.pendingHandshakeData[3])
+		totalMsgLen := 4 + msgLen
+
+		if len(c.pendingHandshakeData) < totalMsgLen {
+			return nil, fmt.Errorf("pending handshake data incomplete: have %d, need %d", len(c.pendingHandshakeData), totalMsgLen)
+		}
+
+		// Extract the message and update pending buffer
+		msg := make([]byte, totalMsgLen)
+		copy(msg, c.pendingHandshakeData[:totalMsgLen])
+		c.pendingHandshakeData = c.pendingHandshakeData[totalMsgLen:]
+
+		c.logger.Debug("Read handshake message from pending buffer",
+			zap.Int("msg_bytes", totalMsgLen),
+			zap.Int("remaining_pending", len(c.pendingHandshakeData)))
+
+		return msg, nil
+	}
+
+	// No pending data, read from connection
 	// Read TLS record header
 	header := make([]byte, 5)
 	if _, err := io.ReadFull(c.conn, header); err != nil {
@@ -623,6 +652,19 @@ func (c *Client) readHandshakeMessage() ([]byte, error) {
 	payload := make([]byte, recordLength)
 	if _, err := io.ReadFull(c.conn, payload); err != nil {
 		return nil, fmt.Errorf("failed to read handshake payload: %v", err)
+	}
+
+	// Check if this record contains multiple handshake messages
+	if len(payload) >= 4 {
+		msgLen := int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
+		totalMsgLen := 4 + msgLen
+		if len(payload) > totalMsgLen {
+			// Store leftover data for subsequent reads
+			c.pendingHandshakeData = payload[totalMsgLen:]
+			c.logger.Debug("Stored leftover handshake data from record",
+				zap.Int("leftover_bytes", len(c.pendingHandshakeData)))
+			return payload[:totalMsgLen], nil
+		}
 	}
 
 	return payload, nil
@@ -917,7 +959,13 @@ func (c *Client) readServerHello() ([]byte, error) {
 			c.logger.Debug("Received complete ServerHello",
 				zap.Int("total_bytes", len(handshakeData)),
 				zap.Int("needed_bytes", totalNeeded))
-			// Return only the complete handshake message, not any extra data
+			// Store any leftover data for subsequent reads (coalesced handshake messages)
+			if len(handshakeData) > totalNeeded {
+				c.pendingHandshakeData = handshakeData[totalNeeded:]
+				c.logger.Debug("Stored leftover handshake data from coalesced record",
+					zap.Int("leftover_bytes", len(c.pendingHandshakeData)))
+			}
+			// Return only the complete handshake message
 			return handshakeData[:totalNeeded], nil
 		}
 
