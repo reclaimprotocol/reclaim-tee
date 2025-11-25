@@ -49,7 +49,8 @@ func (c *Client) handleBatchedDecryptionStreams(msg *shared.Message) {
 			actualContent, contentType := c.removeTLSPadding(plaintext)
 
 			// Trim ciphertext to match TEE_T's consolidated stream length
-			// TLS 1.3: TEE_T strips content type byte (originalLen - 1)
+			// TLS 1.3: TEE_T strips last byte from encrypted data (originalLen - 1)
+			//          Structure is [content][type][padding], last byte is end of padding
 			// TLS 1.2: TEE_T keeps full encrypted data (originalLen)
 			var teetStreamLen int
 			if minitls.IsTLS13CipherSuite(c.cipherSuite) {

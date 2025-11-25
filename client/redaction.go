@@ -30,19 +30,37 @@ func (c *Client) analyzeResponseRedaction() (shared.ResponseRedactionSpec, error
 	// Step 4: Consolidate and finalize
 	spec := c.finalizeRedactionSpec(responseRedactionRanges)
 
-	// Calculate total response size and redacted bytes
+	// Calculate total response size in TLS stream coordinates (matching redaction ranges)
 	totalResponseBytes := 0
 	for _, parsed := range c.parsedResponseBySeq {
 		if parsed != nil {
-			totalResponseBytes += len(parsed.ActualContent)
+			// Use TLS stream length to match TEE_T's consolidated stream coordinates
+			if minitls.IsTLS13CipherSuite(c.cipherSuite) {
+				totalResponseBytes += parsed.OriginalLen - 1 // TLS 1.3: strips last byte from encrypted data
+			} else {
+				totalResponseBytes += parsed.OriginalLen // TLS 1.2: no inner plaintext structure
+			}
 		}
 	}
 
-	// Calculate total redacted bytes from consolidated ranges
+	// Calculate total redacted bytes from consolidated ranges (also in TLS stream coordinates)
 	totalRedactedBytes := 0
 	for _, r := range spec.Ranges {
 		totalRedactedBytes += r.Length
 	}
+
+	// Calculate revealed bytes (now both values use same TLS stream coordinate system)
+	revealedBytes := totalResponseBytes - totalRedactedBytes
+
+	// Log statistics - single line with revealed bytes and OPRF redaction count
+	logFields := []zap.Field{
+		zap.Int("revealed_bytes", revealedBytes),
+		zap.Int("oprf_redactions", len(c.oprfRedactionRanges)),
+	}
+	if c.requestId != "" {
+		logFields = append(logFields, zap.String("requestId", c.requestId))
+	}
+	c.logger.Info("Response redaction analysis complete", logFields...)
 
 	return spec, nil
 }
@@ -124,11 +142,12 @@ func (c *Client) processSingleTLSRecord(seqNum uint64, result *TLSAnalysisResult
 	}
 
 	// TEE_T's consolidated stream format depends on TLS version:
-	// - TLS 1.3: strips content type byte (OriginalLen - 1)
+	// - TLS 1.3: strips last byte from encrypted data (OriginalLen - 1)
+	//   Note: Structure is [content][type][padding], last byte is end of padding
 	// - TLS 1.2: keeps full encrypted data (OriginalLen)
 	var tlsStreamLength int
 	if minitls.IsTLS13CipherSuite(c.cipherSuite) {
-		tlsStreamLength = parsed.OriginalLen - 1 // TLS 1.3: strip content type byte
+		tlsStreamLength = parsed.OriginalLen - 1 // TLS 1.3: strip last byte
 	} else {
 		tlsStreamLength = parsed.OriginalLen // TLS 1.2: no stripping
 	}
