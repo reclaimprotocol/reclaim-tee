@@ -325,6 +325,10 @@ export PARENT_VSOCK_PORT=5000
 export LOG_LEVEL=debug  # or info, warn, error
 ```
 
+## Deployment
+
+For production deployment to AWS Nitro Enclaves (TEE_K) and GCP Confidential Space (TEE_T), see [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Development
 
 ### Project Organization
