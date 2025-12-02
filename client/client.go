@@ -233,8 +233,8 @@ func NewClient(teekURL string) *Client {
 	return &Client{
 		logger:          logger,
 		teekURL:         teekURL,
-		teetURL:         "wss://tee-t.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
-		completionChan:  make(chan error, 1),                  // buffered to avoid blocking
+		teetURL:         "wss://tee-t-gcp.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
+		completionChan:  make(chan error, 1),                      // buffered to avoid blocking
 		completionFlags: 0,
 
 		protocolPhase:          PhaseHandshaking,
