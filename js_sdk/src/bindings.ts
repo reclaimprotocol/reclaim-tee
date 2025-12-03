@@ -83,11 +83,18 @@ export function loadLibrary(libraryPath?: string): void {
   // reclaim_free_string(char* str) -> void
   _reclaim_free_string = lib.func('reclaim_free_string', 'void', ['void*']);
 
-  // reclaim_get_error_message(int error) -> char*
-  _reclaim_get_error_message = lib.func('reclaim_get_error_message', 'str', ['int']);
+  // Define disposable string type that auto-frees with reclaim_free_string
+  const disposableStr = koffi.disposable('str', (ptr: unknown) => {
+    if (ptr) {
+      _reclaim_free_string!(ptr);
+    }
+  });
 
-  // reclaim_get_version() -> char*
-  _reclaim_get_version = lib.func('reclaim_get_version', 'str', []);
+  // reclaim_get_error_message(int error) -> char* (auto-freed)
+  _reclaim_get_error_message = lib.func('reclaim_get_error_message', disposableStr, ['int']);
+
+  // reclaim_get_version() -> char* (auto-freed)
+  _reclaim_get_version = lib.func('reclaim_get_version', disposableStr, []);
 
   // InitAlgorithm(uint8 algorithmID, GoSlice provingKey, GoSlice r1cs) -> uint8
   _init_algorithm = lib.func('InitAlgorithm', 'uint8', ['uint8', GoSlice, GoSlice]);
@@ -127,7 +134,9 @@ export function executeProtocol(
   // Decode the raw pointer to string if we have data
   let claimJson: string | null = null;
   if (rawPointer && claimLength > 0) {
-    claimJson = koffi.decode(rawPointer, 'char', claimLength) as string;
+    // Decode as array of uint8 bytes and convert to string via Buffer
+    const byteArray = koffi.decode(rawPointer, koffi.array('uint8', claimLength)) as number[];
+    claimJson = Buffer.from(byteArray).toString('utf8');
   }
 
   return { error, claimJson, claimLength, rawPointer };
