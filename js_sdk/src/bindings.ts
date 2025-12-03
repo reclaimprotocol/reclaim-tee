@@ -38,16 +38,36 @@ let _reclaim_get_version: koffi.KoffiFunction | null = null;
 let _init_algorithm: koffi.KoffiFunction | null = null;
 
 /**
+ * Get the architecture-specific library path
+ */
+function getDefaultLibraryPath(): string {
+  const arch = process.arch;
+  let archDir: string;
+
+  switch (arch) {
+    case 'x64':
+      archDir = 'amd64';
+      break;
+    case 'arm64':
+      archDir = 'arm64';
+      break;
+    default:
+      throw new Error(`Unsupported architecture: ${arch}`);
+  }
+
+  return path.resolve(__dirname, '..', 'lib', archDir, 'libreclaim.so');
+}
+
+/**
  * Load the libreclaim shared library
- * @param libraryPath - Path to libreclaim.so (optional, defaults to ../lib/libreclaim.so)
+ * @param libraryPath - Path to libreclaim.so (optional, auto-detects architecture if not provided)
  */
 export function loadLibrary(libraryPath?: string): void {
   if (lib) {
     return; // Already loaded
   }
 
-  const defaultPath = path.resolve(__dirname, '../../lib/libreclaim.so');
-  const libPath = libraryPath || defaultPath;
+  const libPath = libraryPath || getDefaultLibraryPath();
 
   lib = koffi.load(libPath);
 

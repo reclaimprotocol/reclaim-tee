@@ -3,13 +3,15 @@ import path from 'path';
 
 async function main() {
     // Create and initialize SDK
-    // By default, looks for libreclaim.so in ../lib/libreclaim.so relative to dist/
-    const sdk = new ReclaimSDK(path.resolve(__dirname, '../lib/libreclaim.so'));
+    // Auto-detects architecture (amd64/arm64) and loads appropriate library
+    const sdk = new ReclaimSDK();
     sdk.init();
 
-    console.log('Reclaim SDK Version:', sdk.getVersion());
+    console.log('Reclaim TEE SDK Version:', sdk.getVersion());
+    console.log('Architecture:', process.arch);
 
     // Initialize ZK circuits (required for OPRF-based redactions)
+    // Note: In production, circuits are typically pre-loaded or bundled differently
     const circuitsPath = path.resolve(__dirname, '../circuits');
     console.log('Initializing ZK circuits from:', circuitsPath);
     try {
