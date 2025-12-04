@@ -29,3 +29,6 @@ Thumbs.db
 # Proxy runtime configuration (use proxy-config.json.example as template)
 proxy-config.json
 kms_cache.json
+/js_sdk/node_modules/
+/js_sdk/dist/
+/js_sdk/.idea/
