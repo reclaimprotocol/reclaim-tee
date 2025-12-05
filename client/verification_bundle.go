@@ -11,10 +11,23 @@ import (
 	"tee-mpc/providers"
 
 	prover "github.com/reclaimprotocol/zk-symmetric-crypto/gnark/libraries/prover/impl"
-	verifier "github.com/reclaimprotocol/zk-symmetric-crypto/gnark/libraries/verifier/impl"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
+
+// Local types for JSON serialization (matching verifier expected format)
+// These avoid importing the verifier package while producing identical JSON output
+
+type zkInputVerifyParams struct {
+	Cipher        string          `json:"cipher"`
+	Proof         []uint8         `json:"proof"`
+	PublicSignals json.RawMessage `json:"publicSignals"`
+}
+
+type zkInputTOPRFParams struct {
+	Blocks []prover.Block      `json:"blocks"`
+	TOPRF  *prover.TOPRFParams `json:"toprf"`
+}
 
 // getStreamPosition calculates the position of an HTTP range in the consolidated TLS stream
 func (c *Client) getStreamPosition(httpStart int) (uint32, error) {
@@ -253,40 +266,16 @@ func (c *Client) buildVerificationBundle() ([]byte, error) {
 				}
 			}
 
-			// Prepare public signals using proper types
-			// Convert prover.Block to verifier.Block
-			var blocks []verifier.Block
-			if oprfData.ZKProofParams != nil {
-				for _, block := range oprfData.ZKProofParams.Blocks {
-					vBlock := verifier.Block{
-						Nonce:    block.Nonce,
-						Counter:  block.Counter,
-						Boundary: block.Boundary,
-					}
-					blocks = append(blocks, vBlock)
-				}
-			}
-
-			// Extract locations from ZKProofParams
-			var locations []verifier.Location
-			if oprfData.ZKProofParams != nil && oprfData.ZKProofParams.TOPRF != nil {
-				for _, loc := range oprfData.ZKProofParams.TOPRF.Locations {
-					locations = append(locations, verifier.Location{
-						Pos: loc.Pos,
-						Len: loc.Len,
-					})
-				}
-			}
-
-			// Create InputTOPRFParams for public signals (without Input field)
-			publicSignalsStruct := verifier.InputTOPRFParams{
-				Blocks: blocks,
+			// Build public signals using prover types directly (no conversion needed)
+			// The JSON output is identical to what the verifier expects
+			publicSignalsStruct := zkInputTOPRFParams{
+				Blocks: oprfData.ZKProofParams.Blocks,
 				// Input is intentionally omitted - attestor will extract from TEE signed stream
-				TOPRF: &verifier.TOPRFParams{
-					Locations:       locations,
-					DomainSeparator: []byte("reclaim"), // Using the same domain separator from OPRF processing
+				TOPRF: &prover.TOPRFParams{
+					Locations:       oprfData.ZKProofParams.TOPRF.Locations,
+					DomainSeparator: []byte("reclaim"),
 					Output:          oprfData.FinalOutput,
-					Responses: []*verifier.TOPRFResponse{
+					Responses: []*prover.TOPRFResponse{
 						{
 							Index:          0,
 							PublicKeyShare: oprfData.Response.PublicKeyShare,
@@ -304,8 +293,8 @@ func (c *Client) buildVerificationBundle() ([]byte, error) {
 				return nil, fmt.Errorf("failed to marshal public signals for range %d: %v", oprfData.Start, err)
 			}
 
-			// Create InputVerifyParams
-			verifyParams := verifier.InputVerifyParams{
+			// Create verification params wrapper
+			verifyParams := zkInputVerifyParams{
 				Cipher:        oprfData.ZKProofParams.Cipher,
 				Proof:         oprfData.ZKProof,
 				PublicSignals: json.RawMessage(publicSignalsJSON),

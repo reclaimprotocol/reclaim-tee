@@ -5,12 +5,17 @@ import (
 	"fmt"
 	teeproto "tee-mpc/proto"
 
+	"github.com/consensys/gnark/logger"
 	prover "github.com/reclaimprotocol/zk-symmetric-crypto/gnark/libraries/prover/impl"
 	"github.com/reclaimprotocol/zk-symmetric-crypto/gnark/libraries/prover/oprf"
 	"github.com/reclaimprotocol/zk-symmetric-crypto/gnark/utils"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
+
+func init() {
+	logger.Disable() // disable gnark logger
+}
 
 // OPRFRangeData stores all OPRF-related data for a single hashed range
 type OPRFRangeData struct {
