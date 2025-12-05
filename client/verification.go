@@ -212,6 +212,16 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() error {
 			httpResponse := c.parseHTTPResponse([]byte(actualHTTPResponse))
 			c.lastResponseData = httpResponse
 
+			// Check for non-2xx status code and fail early
+			// This prevents continuing to attestation with error responses (403, 500, etc.)
+			if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
+				c.terminateConnectionWithError(
+					fmt.Sprintf("HTTP response status %d is not a success status", httpResponse.StatusCode),
+					fmt.Errorf("received HTTP %d, expected 2xx", httpResponse.StatusCode),
+				)
+				return fmt.Errorf("non-2xx HTTP status code: %d", httpResponse.StatusCode)
+			}
+
 			// Display the raw HTTP response (redaction will be handled at TLS record level)
 			previewLen := HTTPResponsePreviewLength
 			if len(actualHTTPResponse) < previewLen {
