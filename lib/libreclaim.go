@@ -4,6 +4,7 @@ package main
 /*
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 // Opaque handle for protocol session
 typedef struct reclaim_protocol* reclaim_protocol_t;
@@ -19,6 +20,28 @@ typedef enum {
     RECLAIM_ERROR_SESSION_NOT_FOUND = -6,
     RECLAIM_ERROR_ALREADY_COMPLETED = -7
 } reclaim_error_t;
+
+// Callback function type for lazy loading ZK circuits.
+// The callback receives the algorithm ID and should call InitAlgorithm
+// with the appropriate proving key and r1cs data.
+// Returns true (non-zero) on success, false (0) on failure.
+typedef bool (*zk_init_callback_t)(unsigned char algorithm_id);
+
+// Global callback pointer (set via SetZKInitCallback)
+static zk_init_callback_t g_zk_init_callback = NULL;
+
+// C wrapper to invoke the callback from Go
+static inline bool invoke_zk_init_callback(unsigned char algorithm_id) {
+    if (g_zk_init_callback != NULL) {
+        return g_zk_init_callback(algorithm_id);
+    }
+    return false;
+}
+
+// C function to set the callback (called from SetZKInitCallback export)
+static inline void set_zk_init_callback_internal(zk_init_callback_t cb) {
+    g_zk_init_callback = cb;
+}
 */
 import "C"
 import (
@@ -289,13 +312,69 @@ func InitAlgorithm(algorithmID uint8, provingKey []byte, r1cs []byte) (success b
 		zap.Int("provingKey_len", len(provingKey)),
 		zap.Int("r1cs_len", len(r1cs)))
 
-	result := impl.InitAlgorithm(algorithmID, provingKey, r1cs)
+	// Use the tracking wrapper to mark algorithm as initialized
+	result := client.InitAlgorithmWithTracking(algorithmID, provingKey, r1cs)
 
 	logger.Info("InitAlgorithm result",
 		zap.Bool("success", result),
 		zap.Uint8("algorithmID", algorithmID))
 
 	return result
+}
+
+// cZKInitCallback is the Go callback wrapper that invokes the C callback
+func cZKInitCallback(algorithmID uint8) bool {
+	return bool(C.invoke_zk_init_callback(C.uchar(algorithmID)))
+}
+
+//export SetZKInitCallback
+func SetZKInitCallback(callback C.zk_init_callback_t) {
+	// Initialize logger if not already initialized
+	if logger == nil {
+		var err error
+		logger, err = shared.NewLoggerFromEnv("libreclaim")
+		if err != nil {
+			// Fallback to basic logger
+			logger, _ = shared.NewLogger(shared.LoggerConfig{
+				ServiceName: "libreclaim",
+				Development: true,
+			})
+		}
+	}
+
+	// Store the C callback
+	C.set_zk_init_callback_internal(callback)
+
+	if callback != nil {
+		// Set up the Go-side callback that will invoke the C callback
+		client.SetZKInitCallback(cZKInitCallback)
+		logger.Info("ZK init callback registered for lazy loading")
+	} else {
+		// Clear the callback
+		client.SetZKInitCallback(nil)
+		logger.Info("ZK init callback cleared")
+	}
+}
+
+//export GetAlgorithmID
+func GetAlgorithmID(cipher *C.char) (algorithmID C.uchar, found C.bool) {
+	goCipher := C.GoString(cipher)
+	id, ok := client.GetAlgorithmID(goCipher)
+	return C.uchar(id), C.bool(ok)
+}
+
+//export GetCipherName
+func GetCipherName(algorithmID C.uchar) (cipher *C.char) {
+	name, ok := client.GetCipherName(uint8(algorithmID))
+	if !ok {
+		return nil
+	}
+	return C.CString(name)
+}
+
+//export IsAlgorithmInitialized
+func IsAlgorithmInitialized(algorithmID C.uchar) C.bool {
+	return C.bool(client.IsAlgorithmInitialized(uint8(algorithmID)))
 }
 
 //export Free

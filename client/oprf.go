@@ -312,6 +312,11 @@ func (c *Client) prepareZKProofForRange(oprfData *OPRFRangeData) (*prover.InputP
 
 // generateZKProof generates the actual ZK proof
 func (c *Client) generateZKProof(inputParams *prover.InputParams) ([]byte, error) {
+	// Ensure algorithm is initialized (lazy loading via callback if needed)
+	if err := EnsureAlgorithmInitialized(inputParams.Cipher); err != nil {
+		return nil, fmt.Errorf("algorithm initialization failed: %v", err)
+	}
+
 	// Marshal the ZK parameters
 	zkJSON, err := json.Marshal(inputParams)
 	if err != nil {
