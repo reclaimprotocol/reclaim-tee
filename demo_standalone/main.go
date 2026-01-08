@@ -154,7 +154,13 @@ func setupZKLazyLoading(logger *shared.Logger) error {
 	logger.Info("Setting up ZK lazy loading", zap.String("circuits_dir", circuitsDir))
 
 	// Set the lazy loading callback
-	client.SetZKInitCallback(zkInitCallback)
+	client.SetZKInitCallback(func(algorithmID uint8) <-chan bool {
+		resultCh := make(chan bool, 1)
+		go func() {
+			resultCh <- zkInitCallback(algorithmID)
+		}()
+		return resultCh
+	})
 
 	logger.Info("ZK lazy loading configured - circuits will be loaded on demand")
 	return nil

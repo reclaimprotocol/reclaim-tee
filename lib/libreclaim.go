@@ -24,18 +24,19 @@ typedef enum {
 // Callback function type for lazy loading ZK circuits.
 // The callback receives the algorithm ID and should call InitAlgorithm
 // with the appropriate proving key and r1cs data.
-// Returns true (non-zero) on success, false (0) on failure.
-typedef bool (*zk_init_callback_t)(unsigned char algorithm_id);
+// Returns nothing - initialization happens asynchronously.
+// IMPORTANT: The callback MUST ensure that MarkZKInitComplete is called
+// with the result (true/false) when initialization is finished.
+typedef void (*zk_init_callback_t)(unsigned char algorithm_id);
 
 // Global callback pointer (set via SetZKInitCallback)
 static zk_init_callback_t g_zk_init_callback = NULL;
 
 // C wrapper to invoke the callback from Go
-static inline bool invoke_zk_init_callback(unsigned char algorithm_id) {
+static inline void invoke_zk_init_callback(unsigned char algorithm_id) {
     if (g_zk_init_callback != NULL) {
-        return g_zk_init_callback(algorithm_id);
+        g_zk_init_callback(algorithm_id);
     }
-    return false;
 }
 
 // C function to set the callback (called from SetZKInitCallback export)
@@ -56,6 +57,8 @@ import (
 	"tee-mpc/providers"
 	"tee-mpc/shared"
 
+	"sync"
+
 	"github.com/reclaimprotocol/zk-symmetric-crypto/gnark/libraries/prover/impl"
 	"github.com/reclaimprotocol/zk-symmetric-crypto/gnark/libraries/prover/oprf"
 	"go.uber.org/zap"
@@ -63,6 +66,9 @@ import (
 
 // Logger instance for the shared library
 var logger *shared.Logger
+
+// Stores completed algorithm init status
+var pendingInits sync.Map
 
 // ClaimData represents the JSON structure for claim data returned from attestor
 type ClaimData struct {
@@ -323,8 +329,39 @@ func InitAlgorithm(algorithmID uint8, provingKey []byte, r1cs []byte) (success b
 }
 
 // cZKInitCallback is the Go callback wrapper that invokes the C callback
-func cZKInitCallback(algorithmID uint8) bool {
-	return bool(C.invoke_zk_init_callback(C.uchar(algorithmID)))
+func cZKInitCallback(algorithmID uint8) <-chan bool {
+	ch := make(chan bool, 1)
+
+	// Check if already pending - if so, return existing channel
+	actual, loaded := pendingInits.LoadOrStore(algorithmID, ch)
+	if loaded {
+		return actual.(chan bool)
+	}
+
+	// This callback must call `MarkZKInitComplete` with the result (true/false) when initialization is finished.
+	C.invoke_zk_init_callback(C.uchar(algorithmID))
+	return ch
+}
+
+//export MarkZKInitComplete
+func MarkZKInitComplete(algorithmID C.uchar, success C.bool) {
+	if chVal, ok := pendingInits.Load(uint8(algorithmID)); ok {
+		ch := chVal.(chan bool)
+		ch <- bool(success)
+		// Clean up only after sending.
+		close(ch)
+		// Note: There's a small race here if multiple waiters, but LoadOrStore handles the creation race.
+		// Since we use LoadOrStore, everyone shares the same channel for the same ID.
+		// Once completed, we remove it.
+		pendingInits.Delete(uint8(algorithmID))
+
+		logger.Info("ZK init completed via async callback",
+			zap.Uint8("algorithmID", uint8(algorithmID)),
+			zap.Bool("success", bool(success)))
+	} else {
+		logger.Warn("MarkZKInitComplete called for unknown algorithmID",
+			zap.Uint8("algorithmID", uint8(algorithmID)))
+	}
 }
 
 //export SetZKInitCallback

@@ -26,7 +26,7 @@ typedef enum {
 typedef struct { void *data; ptrdiff_t len; ptrdiff_t cap; } LibGoSlice;
 
 // Callback function type for lazy loading ZK circuits
-typedef bool (*zk_init_callback_t)(unsigned char algorithm_id);
+typedef void (*zk_init_callback_t)(unsigned char algorithm_id);
 
 // Function declarations
 reclaim_error_t reclaim_execute_protocol(char* request_json, char* config_json, char** claim_json, int* claim_length);
@@ -36,6 +36,7 @@ char* reclaim_get_version(void);
 uint8_t InitAlgorithm(uint8_t algorithmID, LibGoSlice provingKey, LibGoSlice r1cs);
 void Free(void* pointer);
 void SetZKInitCallback(zk_init_callback_t callback);
+void MarkZKInitComplete(unsigned char algorithmID, bool success);
 bool IsAlgorithmInitialized(unsigned char algorithmID);
 
 // New extraction functions
@@ -44,7 +45,7 @@ ExtractResult ExtractHTMLElementsIndexes(LibGoSlice params);
 ExtractResult ExtractJSONValueIndexes(LibGoSlice params);
 
 // Forward declaration for our callback
-extern bool goZKInitCallback(unsigned char algorithm_id);
+extern void goZKInitCallback(unsigned char algorithm_id);
 */
 import "C"
 import (
@@ -114,11 +115,12 @@ func resolveCircuitsPath() (string, error) {
 }
 
 //export goZKInitCallback
-func goZKInitCallback(algorithmID C.uchar) C.bool {
+func goZKInitCallback(algorithmID C.uchar) {
 	config, ok := circuitsRegistry[uint8(algorithmID)]
 	if !ok {
 		fmt.Printf("Unknown algorithm ID for lazy loading: %d\n", algorithmID)
-		return C.bool(false)
+		C.MarkZKInitComplete(algorithmID, C.bool(false))
+		return
 	}
 
 	fmt.Printf("Lazy loading ZK circuit: %s (ID: %d)\n", config.algorithmName, algorithmID)
@@ -129,7 +131,8 @@ func goZKInitCallback(algorithmID C.uchar) C.bool {
 		circuitsPath, err = resolveCircuitsPath()
 		if err != nil {
 			fmt.Printf("Failed to resolve circuits directory: %v\n", err)
-			return C.bool(false)
+			C.MarkZKInitComplete(algorithmID, C.bool(false))
+			return
 		}
 	}
 
@@ -138,7 +141,8 @@ func goZKInitCallback(algorithmID C.uchar) C.bool {
 	pkData, err := os.ReadFile(pkPath)
 	if err != nil {
 		fmt.Printf("Failed to read proving key %s: %v\n", pkPath, err)
-		return C.bool(false)
+		C.MarkZKInitComplete(algorithmID, C.bool(false))
+		return
 	}
 
 	// Read R1CS
@@ -146,7 +150,8 @@ func goZKInitCallback(algorithmID C.uchar) C.bool {
 	r1csData, err := os.ReadFile(r1csPath)
 	if err != nil {
 		fmt.Printf("Failed to read R1CS %s: %v\n", r1csPath, err)
-		return C.bool(false)
+		C.MarkZKInitComplete(algorithmID, C.bool(false))
+		return
 	}
 
 	// Create LibGoSlice structures for CGO
@@ -166,13 +171,14 @@ func goZKInitCallback(algorithmID C.uchar) C.bool {
 	success := C.InitAlgorithm(C.uint8_t(algorithmID), pkSlice, r1csSlice)
 	if success == 0 {
 		fmt.Printf("Failed to initialize %s circuit\n", config.algorithmName)
-		return C.bool(false)
+		C.MarkZKInitComplete(algorithmID, C.bool(false))
+		return
 	}
 
 	fmt.Printf("Successfully lazy loaded ZK circuit: %s (ID: %d, PK: %d bytes, R1CS: %d bytes)\n",
 		config.algorithmName, algorithmID, len(pkData), len(r1csData))
 
-	return C.bool(true)
+	C.MarkZKInitComplete(algorithmID, C.bool(true))
 }
 
 // setupZKLazyLoading sets up the lazy loading callback for ZK circuits

@@ -40,8 +40,8 @@ var algorithmIDToCipher = map[uint8]string{
 // ZKInitCallback is called before proving when an algorithm is not yet initialized.
 // The callback receives the algorithm ID and should call InitAlgorithm with the
 // appropriate proving key and r1cs data.
-// Returns true if initialization succeeded, false otherwise.
-type ZKInitCallback func(algorithmID uint8) bool
+// Returns a channel that will receive true if initialization succeeded, false otherwise.
+type ZKInitCallback func(algorithmID uint8) <-chan bool
 
 var (
 	zkInitCallback     ZKInitCallback
@@ -121,7 +121,8 @@ func EnsureAlgorithmInitialized(cipher string) error {
 		return fmt.Errorf("algorithm %s (ID=%d) is not initialized and no init callback is set", cipher, algorithmID)
 	}
 
-	success := cb(algorithmID)
+	successChan := cb(algorithmID)
+	success := <-successChan
 	if !success {
 		return fmt.Errorf("failed to initialize algorithm %s (ID=%d) via callback", cipher, algorithmID)
 	}
