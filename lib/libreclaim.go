@@ -328,39 +328,76 @@ func InitAlgorithm(algorithmID uint8, provingKey []byte, r1cs []byte) (success b
 	return result
 }
 
+// pendingInit tracks the state of an ongoing algorithm initialization.
+// We use a broadcast pattern (closed channel 'done') so that multiple
+// concurrent callers can wait on the same initialization.
+type pendingInit struct {
+	done    chan struct{}
+	success bool
+}
+
 // cZKInitCallback is the Go callback wrapper that invokes the C callback
 func cZKInitCallback(algorithmID uint8) <-chan bool {
-	ch := make(chan bool, 1)
+	var p *pendingInit
 
-	// Check if already pending - if so, return existing channel
-	actual, loaded := pendingInits.LoadOrStore(algorithmID, ch)
-	if loaded {
-		return actual.(chan bool)
+	// Check if already pending to avoid unnecessary allocation
+	if actual, ok := pendingInits.Load(algorithmID); ok {
+		p = actual.(*pendingInit)
+	} else {
+		// Create a new pendingInit only if likely needed
+		newPending := &pendingInit{
+			done: make(chan struct{}),
+		}
+
+		// Use LoadOrStore to handle race conditions safely
+		actual, loaded := pendingInits.LoadOrStore(algorithmID, newPending)
+		p = actual.(*pendingInit)
+
+		// If we were the one who stored the new entry, trigger initialization
+		if !loaded {
+			C.invoke_zk_init_callback(C.uchar(algorithmID))
+		}
 	}
 
-	// This callback must call `MarkZKInitComplete` with the result (true/false) when initialization is finished.
-	C.invoke_zk_init_callback(C.uchar(algorithmID))
-	return ch
+	// Create a buffered channel for this specific caller to receive the result.
+	resultCh := make(chan bool, 1)
+
+	// Spawn a goroutine to wait for the shared completion.
+	go func() {
+		// Wait for the 'done' channel to be closed by MarkZKInitComplete
+		<-p.done
+		// Send the result to our private channel
+		resultCh <- p.success
+		close(resultCh)
+	}()
+
+	return resultCh
 }
 
 //export MarkZKInitComplete
 func MarkZKInitComplete(algorithmID C.uchar, success C.bool) {
-	if chVal, ok := pendingInits.Load(uint8(algorithmID)); ok {
-		ch := chVal.(chan bool)
-		ch <- bool(success)
-		// Clean up only after sending.
-		close(ch)
-		// Note: There's a small race here if multiple waiters, but LoadOrStore handles the creation race.
-		// Since we use LoadOrStore, everyone shares the same channel for the same ID.
-		// Once completed, we remove it.
+	if val, ok := pendingInits.Load(uint8(algorithmID)); ok {
+		p := val.(*pendingInit)
+
+		// Set the result
+		p.success = bool(success)
+
+		// Broadcast completion to all waiters by closing the done channel
+		close(p.done)
+
+		// Remove from map so future calls start fresh
 		pendingInits.Delete(uint8(algorithmID))
 
-		logger.Info("ZK init completed via async callback",
-			zap.Uint8("algorithmID", uint8(algorithmID)),
-			zap.Bool("success", bool(success)))
+		if logger != nil {
+			logger.Info("ZK init completed via async callback",
+				zap.Uint8("algorithmID", uint8(algorithmID)),
+				zap.Bool("success", bool(success)))
+		}
 	} else {
-		logger.Warn("MarkZKInitComplete called for unknown algorithmID",
-			zap.Uint8("algorithmID", uint8(algorithmID)))
+		if logger != nil {
+			logger.Warn("MarkZKInitComplete called for unknown algorithmID",
+				zap.Uint8("algorithmID", uint8(algorithmID)))
+		}
 	}
 }
 
