@@ -185,12 +185,11 @@ type Client struct {
 	providerSecretParams *providers.HTTPProviderSecretParams
 
 	// Result tracking fields
-	protocolStartTime            time.Time                       // When protocol started
-	lastResponseData             *HTTPResponse                   // Last received HTTP response
-	lastRedactionRanges          []shared.ResponseRedactionRange // Last redaction ranges from callback
-	responseReconstructed        bool                            // Flag to prevent multiple response reconstruction
-	transcriptValidationResults  *TranscriptValidationResults    // Cached validation results
-	attestationValidationResults *AttestationValidationResults   // Cached attestation results
+	protocolStartTime           time.Time                       // When protocol started
+	lastResponseData            *HTTPResponse                   // Last received HTTP response
+	lastRedactionRanges         []shared.ResponseRedactionRange // Last redaction ranges from callback
+	responseReconstructed       bool                            // Flag to prevent multiple response reconstruction
+	transcriptValidationResults *TranscriptValidationResults    // Cached validation results
 
 	// Verification bundle tracking fields
 	cipherSuite       uint16                  // negotiated cipher suite (replaces handshakeDisclosure)
@@ -252,16 +251,15 @@ func NewClient(teekURL string) *Client {
 		responseProcessingSuccessful: false,
 		reconstructedResponseSize:    0,
 
-		clientMode:                   ModeAuto, // Default to auto-detect
-		providerParams:               nil,
-		providerSecretParams:         nil,
-		protocolStartTime:            time.Now(),
-		lastResponseData:             nil,
-		transcriptValidationResults:  nil,
-		attestationValidationResults: nil,
-		proofStream:                  nil,
-		proofKey:                     nil,
-		expectedRedactedStreams:      0,
+		clientMode:                  ModeAuto, // Default to auto-detect
+		providerParams:              nil,
+		providerSecretParams:        nil,
+		protocolStartTime:           time.Now(),
+		lastResponseData:            nil,
+		transcriptValidationResults: nil,
+		proofStream:                 nil,
+		proofKey:                    nil,
+		expectedRedactedStreams:     0,
 	}
 }
 
@@ -555,61 +553,6 @@ func (c *Client) getHostPortFromProviderParams() (string, int, error) {
 // NOTE: Session coordination removed - handled naturally by RequestHTTP()
 // The client receives sessionID asynchronously via handleSessionReady() and
 // RequestHTTP() automatically waits for it before sending connection requests.
-
-// verifySignedMessage verifies a protobuf SignedMessage using the same logic as the offline verifier
-// Now supports both enclave mode (with AttestationReport) and standalone mode (with PublicKey)
-func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error {
-	if signedMsg == nil {
-		return fmt.Errorf("SECURITY ERROR: %s signed message is nil", source)
-	}
-
-	// Validate required fields
-	if len(signedMsg.GetSignature()) == 0 {
-		return fmt.Errorf("SECURITY ERROR: %s missing signature", source)
-	}
-	if len(signedMsg.GetBody()) == 0 {
-		return fmt.Errorf("SECURITY ERROR: %s missing body", source)
-	}
-
-	// Validate body type
-	expectedBodyType := teeproto.BodyType_BODY_TYPE_K_OUTPUT
-	if source == "TEE_T" {
-		expectedBodyType = teeproto.BodyType_BODY_TYPE_T_OUTPUT
-	}
-	if signedMsg.GetBodyType() != expectedBodyType {
-		return fmt.Errorf("SECURITY ERROR: %s wrong body type, expected %v got %v", source, expectedBodyType, signedMsg.GetBodyType())
-	}
-
-	// Extract ETH address - either from AttestationReport (enclave mode) or PublicKey field (standalone mode)
-	var ethAddress shared.Address
-	var err error
-
-	if signedMsg.GetAttestationReport() != nil {
-		// Enclave mode: extract ETH address from attestation report
-		attestationReport := signedMsg.GetAttestationReport()
-		c.logger.Info("Verifying attestation and extracting ETH address", zap.String("source", source), zap.String("attestation_type", attestationReport.GetType()), zap.Int("report_bytes", len(attestationReport.GetReport())))
-
-		// Verify attestation and extract ETH address
-		ethAddress, err = c.verifyAttestationReportETH(attestationReport, source)
-		if err != nil {
-			return fmt.Errorf("SECURITY ERROR: %s attestation verification failed: %v", source, err)
-		}
-		c.logger.Info("Attestation verification SUCCESS", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
-	} else if len(signedMsg.GetEthAddress()) > 0 {
-		ethAddress = shared.HexToAddress(string(signedMsg.GetEthAddress()))
-		c.logger.Info("Using standalone mode ETH address", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
-	} else {
-		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)
-	}
-
-	// SECURITY: Verify ETH signature against the exact signed bytes (SignedMessage.Body)
-	if err := shared.VerifySignatureWithETH(signedMsg.GetBody(), signedMsg.GetSignature(), ethAddress); err != nil {
-		return fmt.Errorf("SECURITY ERROR: %s cryptographic signature verification FAILED: %v", source, err)
-	}
-
-	c.logger.Info("SignedMessage verification SUCCESS", zap.String("source", source), zap.Int("body_bytes", len(signedMsg.GetBody())))
-	return nil
-}
 
 // buildTranscriptResults constructs the transcript results from SignedMessage data
 // moved to results_build.go
