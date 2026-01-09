@@ -4,7 +4,6 @@ package client
 
 import (
 	"fmt"
-	"strings"
 	"tee-mpc/shared"
 
 	teeproto "tee-mpc/proto"
@@ -42,23 +41,4 @@ func (c *Client) verifyAttestationReportETH(report *teeproto.AttestationReport, 
 // Mobile doesn't verify GCP attestations - the attestor handles this
 func VerifyGCPConfidentialSpaceAttestation(token string) ([]byte, error) {
 	return nil, fmt.Errorf("GCP attestation verification not available on mobile")
-}
-
-// Helper to check if a string has the expected prefix and extract the rest
-func extractETHAddressFromUserData(userData string, expectedSource string) (shared.Address, error) {
-	expectedPrefix := fmt.Sprintf("%s_public_key:", strings.ToLower(expectedSource))
-	if !strings.HasPrefix(userData, expectedPrefix) {
-		return shared.Address{}, fmt.Errorf("invalid user data format, expected prefix %s", expectedPrefix)
-	}
-
-	ethAddressHex := userData[len(expectedPrefix):]
-	if !strings.HasPrefix(ethAddressHex, "0x") {
-		return shared.Address{}, fmt.Errorf("invalid ETH address format, expected 0x prefix")
-	}
-
-	if !shared.IsHexAddress(ethAddressHex) {
-		return shared.Address{}, fmt.Errorf("invalid ETH address format: %s", ethAddressHex)
-	}
-
-	return shared.HexToAddress(ethAddressHex), nil
 }
