@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	teeproto "tee-mpc/proto"
@@ -12,9 +11,6 @@ import (
 	"tee-mpc/shared"
 	"time"
 
-	"github.com/anjuna-security/go-nitro-attestation/verifier"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -289,7 +285,7 @@ func (c *Client) getAttestorClient() (*AttestorClient, error) {
 		}
 
 		// Generate private key for attestor communication
-		privateKey, err := crypto.GenerateKey()
+		privateKey, err := shared.GenerateKey()
 		if err != nil {
 			clientErr = fmt.Errorf("failed to generate private key: %v", err)
 			return
@@ -560,62 +556,6 @@ func (c *Client) getHostPortFromProviderParams() (string, int, error) {
 // The client receives sessionID asynchronously via handleSessionReady() and
 // RequestHTTP() automatically waits for it before sending connection requests.
 
-// verifyAttestationReportETH verifies a protobuf AttestationReport and extracts the ETH address from the report itself
-func (c *Client) verifyAttestationReportETH(report *teeproto.AttestationReport, expectedSource string) (common.Address, error) {
-	c.logger.Info("verifyAttestationReportETH called", zap.String("type", report.Type), zap.String("source", expectedSource), zap.Int("report_bytes", len(report.Report)))
-	switch report.Type {
-	case "nitro":
-		c.logger.Info("Attempting to parse Nitro attestation report for ETH address", zap.String("source", expectedSource))
-		sr, err := verifier.NewSignedAttestationReport(strings.NewReader(string(report.Report)))
-		if err != nil {
-			c.logger.Error("Failed to parse Nitro attestation report", zap.Error(err))
-			return common.Address{}, fmt.Errorf("failed to parse nitro report: %v", err)
-		}
-		if err := verifier.Validate(sr, nil); err != nil {
-			return common.Address{}, fmt.Errorf("nitro validation failed: %v", err)
-		}
-
-		// Extract ETH address from user data in the attestation document
-		userDataStr := string(sr.Document.UserData)
-		expectedPrefix := fmt.Sprintf("%s_public_key:", strings.ToLower(expectedSource))
-		if !strings.HasPrefix(userDataStr, expectedPrefix) {
-			return common.Address{}, fmt.Errorf("invalid user data format, expected prefix %s", expectedPrefix)
-		}
-
-		ethAddressHex := userDataStr[len(expectedPrefix):]
-		if !strings.HasPrefix(ethAddressHex, "0x") {
-			return common.Address{}, fmt.Errorf("invalid ETH address format, expected 0x prefix")
-		}
-
-		if !common.IsHexAddress(ethAddressHex) {
-			return common.Address{}, fmt.Errorf("invalid ETH address format: %s", ethAddressHex)
-		}
-
-		ethAddress := common.HexToAddress(ethAddressHex)
-		c.logger.Info("Extracted ETH address from Nitro attestation", zap.String("source", expectedSource), zap.String("eth_address", ethAddress.Hex()))
-		return ethAddress, nil
-
-	case "gcp":
-		// GCP Confidential Space attestation - verify x5c JWT and extract ETH address
-		pubKeyBytes, err := VerifyGCPConfidentialSpaceAttestation(string(report.Report))
-		if err != nil {
-			return common.Address{}, fmt.Errorf("GCP Confidential Space attestation validation failed: %v", err)
-		}
-
-		// pubKeyBytes is the ETH address (20 bytes)
-		if len(pubKeyBytes) != 20 {
-			return common.Address{}, fmt.Errorf("invalid ETH address length: %d bytes", len(pubKeyBytes))
-		}
-
-		ethAddress := common.BytesToAddress(pubKeyBytes)
-		c.logger.Info("Extracted ETH address from GCP Confidential Space attestation", zap.String("source", expectedSource), zap.String("eth_address", ethAddress.Hex()))
-		return ethAddress, nil
-
-	default:
-		return common.Address{}, fmt.Errorf("unsupported attestation type: %s", report.Type)
-	}
-}
-
 // verifySignedMessage verifies a protobuf SignedMessage using the same logic as the offline verifier
 // Now supports both enclave mode (with AttestationReport) and standalone mode (with PublicKey)
 func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source string) error {
@@ -641,7 +581,7 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 	}
 
 	// Extract ETH address - either from AttestationReport (enclave mode) or PublicKey field (standalone mode)
-	var ethAddress common.Address
+	var ethAddress shared.Address
 	var err error
 
 	if signedMsg.GetAttestationReport() != nil {
@@ -656,7 +596,7 @@ func (c *Client) verifySignedMessage(signedMsg *teeproto.SignedMessage, source s
 		}
 		c.logger.Info("Attestation verification SUCCESS", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
 	} else if len(signedMsg.GetEthAddress()) > 0 {
-		ethAddress = common.HexToAddress(string(signedMsg.GetEthAddress()))
+		ethAddress = shared.HexToAddress(string(signedMsg.GetEthAddress()))
 		c.logger.Info("Using standalone mode ETH address", zap.String("source", source), zap.String("eth_address", ethAddress.Hex()))
 	} else {
 		return fmt.Errorf("SECURITY ERROR: %s missing both attestation report and public key", source)
