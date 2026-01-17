@@ -638,7 +638,7 @@ func putUint24(b []byte, v uint32) {
 	b[2] = byte(v)
 }
 
-func alertDescriptionString(d uint8) string {
+func AlertDescriptionString(d uint8) string {
 	switch d {
 	case alertCloseNotify:
 		return "close_notify"

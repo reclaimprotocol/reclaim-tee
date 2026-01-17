@@ -299,28 +299,6 @@ func (c *Client) sendBatchedResponses() error {
 	return nil
 }
 
-// getClientAlertDescription returns alert description strings
-func getClientAlertDescription(code byte) string {
-	switch code {
-	case 0:
-		return "CLOSE_NOTIFY"
-	case 20:
-		return "BAD_RECORD_MAC"
-	case 21:
-		return "DECRYPTION_FAILED"
-	case 22:
-		return "RECORD_OVERFLOW"
-	case 40:
-		return "HANDSHAKE_FAILURE"
-	case 50:
-		return "DECODE_ERROR"
-	case 51:
-		return "DECRYPT_ERROR"
-	default:
-		return "UNKNOWN"
-	}
-}
-
 // removeTLSPadding removes TLS 1.3 padding from decrypted content (TLS 1.2 has no padding)
 func (c *Client) removeTLSPadding(data []byte) ([]byte, byte) {
 	if len(data) == 0 {
