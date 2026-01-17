@@ -198,10 +198,10 @@ func main() {
 	logger.Info("=== Client ===")
 
 	// Default to enclave mode, fallback to standalone if specified
-	teekURL := "ws://localhost:8080/ws"                        // Default to enclave
-	attestorURL := "wss://attestor.reclaimprotocol.org:444/ws" // Default attestor URL
-	forceTLSVersion := ""                                      // Default to auto-negotiate
-	forceCipherSuite := ""                                     // Default to auto-negotiate
+	teekURL := "ws://localhost:8080/ws"     // Default to enclave
+	attestorURL := "ws://localhost:8001/ws" // Default attestor URL
+	forceTLSVersion := ""                   // Default to auto-negotiate
+	forceCipherSuite := ""                  // Default to auto-negotiate
 
 	if len(os.Args) > 1 {
 		teekURL = os.Args[1]
@@ -251,8 +251,9 @@ func main() {
 	logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
 
 	providerParams := &providers.HTTPProviderParams{
-		URL:    "https://sps.unipune.ac.in/app/",
-		Method: "GET",
+		URL:    "https://rclmtst.free.beeceptor.com/test",
+		Method: "POST",
+		// Body:   strings.Repeat("1", 10000),
 		ResponseMatches: []providers.ResponseMatch{
 			{
 				Value: "{{ttt}}",
@@ -261,13 +262,11 @@ func main() {
 		},
 		ResponseRedactions: []providers.ResponseRedaction{
 			{
-				XPath: "/html/body/div/div/div/section[3]/div/div/div/div/div/div/div/div[2]/strong[1]",
-				Regex: "(?<ttt>Student Profile System \\(SPS\\))",
-				Hash:  providers.HASH_TYPE_OPRF,
+				Regex: "Awesome",
 			},
 		},
 		ParamValues: map[string]string{
-			"ttt": "Student Profile System (SPS)",
+			"ttt": "Awesome",
 		},
 	}
 
@@ -408,7 +407,7 @@ func isValidCipherSuite(cipherSuite string) bool {
 func autoDetectTEETURL(teekURL string) string {
 	if strings.HasPrefix(teekURL, "wss://") && strings.Contains(teekURL, "reclaimprotocol.org") {
 		// Enclave mode: TEE_K is using enclave domain, so TEE_T should too
-		return "wss://tee-t-gcp.reclaimprotocol.org/ws"
+		return "wss://tt.reclaimprotocol.org/ws"
 	} else if strings.HasPrefix(teekURL, "ws://") && strings.Contains(teekURL, "localhost") {
 		// Standalone mode: TEE_K is using localhost, so TEE_T should too
 		return "ws://localhost:8081/ws"
@@ -416,7 +415,7 @@ func autoDetectTEETURL(teekURL string) string {
 		// Custom URL - try to infer the pattern
 		if strings.HasPrefix(teekURL, "wss://") {
 			// Assume enclave mode for any wss:// URL
-			return "wss://tee-t-gcp.reclaimprotocol.org/ws"
+			return "wss://tt.reclaimprotocol.org/ws"
 		} else {
 			// Assume standalone mode for any ws:// URL
 			return "ws://localhost:8081/ws"

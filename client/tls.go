@@ -77,9 +77,6 @@ func (c *Client) sendRedactedRequest() {
 		}
 	}
 
-	c.logger.Info("TEE_K redacted request content",
-		zap.String("redacted_request", string(prettyRedactedRequest)))
-
 	// Log redaction ranges details
 	for i, r := range redactedData.RedactionRanges {
 		c.logger.Info("Redaction range for TEE_K",

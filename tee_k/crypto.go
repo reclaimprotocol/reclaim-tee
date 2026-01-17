@@ -74,26 +74,93 @@ func (t *TEEK) encryptAndSendRequest(sessionID string, redactedRequest shared.Re
 		zap.Int("iv_bytes", len(clientAppIV)),
 		zap.Uint64("sequence", actualSeqNum))
 
-	// Use consolidated crypto functions from minitls
-	splitAEAD := minitls.NewSplitAEAD(clientAppKey, clientAppIV, cipherSuite)
-	splitAEAD.SetSequence(actualSeqNum)
+	// Fragment data if it exceeds TLS maximum plaintext record size (16KB)
+	// RFC 5246: TLSPlaintext.fragment length MUST NOT exceed 2^14 = 16384 bytes
+	const maxTLSPlaintextSize = 16384
+	fragmentCount := (len(dataToEncrypt) + maxTLSPlaintextSize - 1) / maxTLSPlaintextSize
+	t.logger.WithSession(sessionID).Info("TEE_K: Processing request with batched fragments",
+		zap.Int("total_bytes", len(dataToEncrypt)),
+		zap.Int("max_size", maxTLSPlaintextSize),
+		zap.Int("fragments", fragmentCount))
 
-	// Create AAD based on cipher suite (handles TLS version differences internally)
-	additionalData := minitls.CreateAdditionalData(cipherSuite, actualSeqNum, len(dataToEncrypt))
-
-	encryptedData, tagSecrets, err := splitAEAD.EncryptWithoutTag(dataToEncrypt, additionalData)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt data: %v", err)
+	// Collect all fragments before sending
+	var fragments []struct {
+		encryptedData   []byte
+		tagSecrets      []byte
+		redactionRanges []shared.RequestRedactionRange
+		seqNum          uint64
 	}
 
-	t.logger.WithSession(sessionID).Info("Generated client application tag secrets",
-		zap.Uint64("sequence", actualSeqNum))
-	t.logger.WithSession(sessionID).Info("Encrypted data using split AEAD",
-		zap.Int("bytes", len(encryptedData)))
+	for fragmentIndex := 0; fragmentIndex < fragmentCount; fragmentIndex++ {
+		// Calculate fragment boundaries
+		start := fragmentIndex * maxTLSPlaintextSize
+		end := start + maxTLSPlaintextSize
+		if end > len(dataToEncrypt) {
+			end = len(dataToEncrypt)
+		}
+		fragmentData := dataToEncrypt[start:end]
 
-	// Send encrypted request and tag secrets to TEE_T with session ID
-	if err := t.sendEncryptedRequestToTEET(sessionID, encryptedData, tagSecrets, cipherSuite, actualSeqNum, redactedRequest.RedactionRanges, redactedRequest.Commitments); err != nil {
-		return fmt.Errorf("failed to send encrypted request to TEE_T: %v", err)
+		// Calculate current sequence number for this fragment
+		currentSeqNum := actualSeqNum + uint64(fragmentIndex)
+
+		// Create split AEAD for this fragment
+		splitAEAD := minitls.NewSplitAEAD(clientAppKey, clientAppIV, cipherSuite)
+		splitAEAD.SetSequence(currentSeqNum)
+
+		// Encrypt fragment
+		additionalData := minitls.CreateAdditionalData(cipherSuite, currentSeqNum, len(fragmentData))
+		encryptedData, tagSecrets, err := splitAEAD.EncryptWithoutTag(fragmentData, additionalData)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt fragment %d: %v", fragmentIndex, err)
+		}
+
+		// Adjust redaction ranges for this fragment offset
+		var adjustedRanges []shared.RequestRedactionRange
+		for _, r := range redactedRequest.RedactionRanges {
+			// Only include ranges that overlap with this fragment
+			if r.Start < start+len(fragmentData) && r.Start+r.Length > start {
+				adjustedRange := r
+				// Adjust start position relative to fragment
+				if adjustedRange.Start < start {
+					// Range starts before this fragment
+					adjustedRange.Length -= start - adjustedRange.Start
+					adjustedRange.Start = 0
+				} else {
+					adjustedRange.Start -= start
+				}
+				// Clip length if range extends beyond fragment
+				if adjustedRange.Start+adjustedRange.Length > len(fragmentData) {
+					adjustedRange.Length = len(fragmentData) - adjustedRange.Start
+				}
+				adjustedRanges = append(adjustedRanges, adjustedRange)
+			}
+		}
+
+		t.logger.WithSession(sessionID).Info("Encrypted fragment",
+			zap.Int("fragment", fragmentIndex+1),
+			zap.Int("of", fragmentCount),
+			zap.Int("bytes", len(encryptedData)),
+			zap.Uint64("sequence", currentSeqNum),
+			zap.Uint64("actual_seq_num_base", actualSeqNum),
+			zap.Int("redaction_ranges", len(adjustedRanges)))
+
+		// Collect fragment instead of sending immediately
+		fragments = append(fragments, struct {
+			encryptedData   []byte
+			tagSecrets      []byte
+			redactionRanges []shared.RequestRedactionRange
+			seqNum          uint64
+		}{
+			encryptedData:   encryptedData,
+			tagSecrets:      tagSecrets,
+			redactionRanges: adjustedRanges,
+			seqNum:          currentSeqNum,
+		})
+	}
+
+	// Send all fragments in a single batch to TEE_T
+	if err := t.sendBatchedEncryptedRequestToTEET(sessionID, fragments, cipherSuite, actualSeqNum, redactedRequest.Commitments); err != nil {
+		return fmt.Errorf("failed to send batched encrypted request to TEE_T: %v", err)
 	}
 
 	return nil
