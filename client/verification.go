@@ -181,8 +181,8 @@ func (c *Client) reconstructHTTPResponseFromDecryptedData() error {
 				alertLevel := parsed.ActualContent[0]
 				alertDesc := parsed.ActualContent[1]
 
-				// close_notify (level=1, desc=0) is normal, everything else is an error
-				if !(alertLevel == 1 && alertDesc == 0) {
+				// close_notify (level=1, desc=0) or a warning is normal, everything else is an error
+				if alertLevel == 2 { // Fatal
 					alertName := minitls.AlertDescriptionString(alertDesc)
 					err := fmt.Errorf("TLS alert received: level=%d, desc=%d (%s)", alertLevel, alertDesc, alertName)
 					c.logger.Error("Server sent TLS alert instead of HTTP response",
