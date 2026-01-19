@@ -455,6 +455,7 @@ func (c *Client) handleBatchedEncryptedRequest(sessionID string, batchData *teep
 			n, err := c.tcpConn.Write(tlsRecord)
 			if err != nil {
 				c.logger.Error("Failed to write TLS fragment to TCP connection", zap.Error(err))
+				c.terminateConnectionWithError("Failed to write TLS fragment to TCP connection", err)
 				return
 			}
 			c.logger.Info("Sent fragment bytes to website", zap.Int("bytes", n))

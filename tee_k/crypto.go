@@ -28,19 +28,17 @@ func (t *TEEK) encryptAndSendRequest(sessionID string, redactedRequest shared.Re
 
 	// Get cipher suite and encryption parameters
 	cipherSuite := tlsClient.GetCipherSuite()
+	isTLS13 := minitls.IsTLS13CipherSuite(cipherSuite)
 
-	// Prepare data for encryption based on TLS version
-	var dataToEncrypt []byte
+	// Get raw plaintext - DO NOT apply TLS 1.3 formatting yet
+	// Each fragment needs its own content-type and padding per RFC 8446
+	rawPlaintext := redactedRequest.RedactedRequest
+
 	var clientAppKey, clientAppIV []byte
 	var actualSeqNum uint64
 
-	// Prepare data for encryption based on cipher suite (handles TLS version differences)
-	dataToEncrypt = minitls.PrepareDataForEncryption(redactedRequest.RedactedRequest, cipherSuite)
-	t.logger.WithSession(sessionID).Info("Prepared data for encryption",
-		zap.Int("bytes", len(dataToEncrypt)))
-
 	// Get keys based on cipher suite (TLS 1.2 vs 1.3 handled internally)
-	if minitls.IsTLS13CipherSuite(cipherSuite) {
+	if isTLS13 {
 		// TLS 1.3: Use client application AEAD
 		clientAEAD := tlsClient.GetClientApplicationAEAD()
 		if clientAEAD == nil {
@@ -74,14 +72,21 @@ func (t *TEEK) encryptAndSendRequest(sessionID string, redactedRequest shared.Re
 		zap.Int("iv_bytes", len(clientAppIV)),
 		zap.Uint64("sequence", actualSeqNum))
 
-	// Fragment data if it exceeds TLS maximum plaintext record size (16KB)
-	// RFC 5246: TLSPlaintext.fragment length MUST NOT exceed 2^14 = 16384 bytes
+	// Fragment plaintext BEFORE applying TLS 1.3 per-record formatting
+	// RFC 8446: Each record needs its own content-type byte and padding
+	// RFC 5246/8446: TLSPlaintext.fragment length MUST NOT exceed 2^14 = 16384 bytes
 	const maxTLSPlaintextSize = 16384
-	fragmentCount := (len(dataToEncrypt) + maxTLSPlaintextSize - 1) / maxTLSPlaintextSize
+	// For TLS 1.3, reserve space for content-type (1 byte) in each fragment
+	maxFragmentPayload := maxTLSPlaintextSize
+	if isTLS13 {
+		maxFragmentPayload = maxTLSPlaintextSize - 1 // Reserve 1 byte for content-type
+	}
+	fragmentCount := (len(rawPlaintext) + maxFragmentPayload - 1) / maxFragmentPayload
 	t.logger.WithSession(sessionID).Info("TEE_K: Processing request with batched fragments",
-		zap.Int("total_bytes", len(dataToEncrypt)),
-		zap.Int("max_size", maxTLSPlaintextSize),
-		zap.Int("fragments", fragmentCount))
+		zap.Int("total_bytes", len(rawPlaintext)),
+		zap.Int("max_fragment_payload", maxFragmentPayload),
+		zap.Int("fragments", fragmentCount),
+		zap.Bool("tls13", isTLS13))
 
 	// Collect all fragments before sending
 	var fragments []struct {
@@ -92,13 +97,17 @@ func (t *TEEK) encryptAndSendRequest(sessionID string, redactedRequest shared.Re
 	}
 
 	for fragmentIndex := 0; fragmentIndex < fragmentCount; fragmentIndex++ {
-		// Calculate fragment boundaries
-		start := fragmentIndex * maxTLSPlaintextSize
-		end := start + maxTLSPlaintextSize
-		if end > len(dataToEncrypt) {
-			end = len(dataToEncrypt)
+		// Calculate fragment boundaries on RAW plaintext
+		start := fragmentIndex * maxFragmentPayload
+		end := start + maxFragmentPayload
+		if end > len(rawPlaintext) {
+			end = len(rawPlaintext)
 		}
-		fragmentData := dataToEncrypt[start:end]
+		fragmentPlaintext := rawPlaintext[start:end]
+
+		// Apply TLS 1.3 per-record formatting to THIS fragment (content-type + padding)
+		// For TLS 1.2, this is a no-op
+		fragmentData := minitls.PrepareDataForEncryption(fragmentPlaintext, cipherSuite)
 
 		// Calculate current sequence number for this fragment
 		currentSeqNum := actualSeqNum + uint64(fragmentIndex)
@@ -114,11 +123,11 @@ func (t *TEEK) encryptAndSendRequest(sessionID string, redactedRequest shared.Re
 			return fmt.Errorf("failed to encrypt fragment %d: %v", fragmentIndex, err)
 		}
 
-		// Adjust redaction ranges for this fragment offset
+		// Adjust redaction ranges for this fragment offset (based on raw plaintext boundaries)
 		var adjustedRanges []shared.RequestRedactionRange
 		for _, r := range redactedRequest.RedactionRanges {
-			// Only include ranges that overlap with this fragment
-			if r.Start < start+len(fragmentData) && r.Start+r.Length > start {
+			// Only include ranges that overlap with this fragment's raw plaintext
+			if r.Start < start+len(fragmentPlaintext) && r.Start+r.Length > start {
 				adjustedRange := r
 				// Adjust start position relative to fragment
 				if adjustedRange.Start < start {
@@ -128,9 +137,9 @@ func (t *TEEK) encryptAndSendRequest(sessionID string, redactedRequest shared.Re
 				} else {
 					adjustedRange.Start -= start
 				}
-				// Clip length if range extends beyond fragment
-				if adjustedRange.Start+adjustedRange.Length > len(fragmentData) {
-					adjustedRange.Length = len(fragmentData) - adjustedRange.Start
+				// Clip length if range extends beyond fragment plaintext
+				if adjustedRange.Start+adjustedRange.Length > len(fragmentPlaintext) {
+					adjustedRange.Length = len(fragmentPlaintext) - adjustedRange.Start
 				}
 				adjustedRanges = append(adjustedRanges, adjustedRange)
 			}

@@ -19,8 +19,12 @@ func (c *Client) handleHandshakeComplete(msg *shared.Message) {
 	}
 
 	if completeData.Success {
-		c.logger.Info("Handshake completed successfully",
-			zap.Uint16("cipher_suite", completeData.CipherSuite))
+		cs := minitls.GetCipherSuiteInfo(completeData.CipherSuite)
+		if cs != nil {
+			c.logger.Info("Handshake completed successfully",
+				zap.String("cipher_suite", cs.Name),
+				zap.Bool("tls13", cs.IsTLS13))
+		}
 
 		// Store cipher suite for consolidated verification (replaces handshakeDisclosure)
 		c.cipherSuite = completeData.CipherSuite
