@@ -6,7 +6,6 @@ require (
 	cloud.google.com/go/kms v1.24.0
 	cloud.google.com/go/logging v1.13.1
 	cloud.google.com/go/secretmanager v1.16.0
-	github.com/anjuna-security/go-nitro-attestation v0.0.0-20250527214750-dc507eadb414
 	github.com/consensys/gnark v0.14.0
 	github.com/coreos/go-json v0.0.0-20231102161613-e49c8866685a
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
