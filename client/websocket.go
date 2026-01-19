@@ -426,10 +426,17 @@ func (c *Client) sendPendingConnectionRequest() error {
 func (c *Client) handleBatchedEncryptedRequest(sessionID string, batchData *teeproto.BatchedEncryptedDataResponse) {
 	if !batchData.GetSuccess() {
 		c.logger.Error("TEE_T reported failure in batched encrypted data")
+		c.terminateConnectionWithError("TEE_T reported failure in batched encrypted data", fmt.Errorf("batchData.Success=false"))
 		return
 	}
 
 	fragments := batchData.GetFragments()
+	if len(fragments) == 0 {
+		c.logger.Error("TEE_T returned empty fragments in batched encrypted data")
+		c.terminateConnectionWithError("TEE_T returned empty fragments", fmt.Errorf("no fragments in batch response"))
+		return
+	}
+
 	baseSeqNum := batchData.GetBaseSeqNum()
 
 	c.logger.Info("Received batched encrypted request from TEE_T",
