@@ -95,27 +95,48 @@ class IOSNativeConnectionHandlerAsync {
   ///
   /// Call this before enabling native networking to establish all required
   /// connections through iOS's VPN-compatible networking stack.
+  ///
+  /// If any connection fails, all previously established connections in this
+  /// call will be cleaned up before the error is thrown.
   Future<void> preConnect({
     required String teekUrl,
     required String teetUrl,
     required String targetHost,
     required int targetPort,
   }) async {
-    // Connect to TEE_K
-    final teekHandle = await _connect(ConnectionType.websocket, teekUrl, 30000);
-    _preConnectedHandles['teek'] = teekHandle;
+    try {
+      // Connect to TEE_K
+      final teekHandle = await _connect(ConnectionType.websocket, teekUrl, 30000);
+      _preConnectedHandles['teek'] = teekHandle;
 
-    // Connect to TEE_T
-    final teetHandle = await _connect(ConnectionType.websocket, teetUrl, 30000);
-    _preConnectedHandles['teet'] = teetHandle;
+      // Connect to TEE_T
+      final teetHandle = await _connect(ConnectionType.websocket, teetUrl, 30000);
+      _preConnectedHandles['teet'] = teetHandle;
 
-    // Connect to target
-    final targetHandle = await _connect(
-      ConnectionType.tcp,
-      '$targetHost:$targetPort',
-      5000,
-    );
-    _preConnectedHandles['target'] = targetHandle;
+      // Connect to target
+      final targetHandle = await _connect(
+        ConnectionType.tcp,
+        '$targetHost:$targetPort',
+        5000,
+      );
+      _preConnectedHandles['target'] = targetHandle;
+    } catch (e) {
+      // Clean up any connections that were successfully established
+      await _cleanupOnError();
+      rethrow;
+    }
+  }
+
+  /// Clean up any established connections on error during preConnect
+  Future<void> _cleanupOnError() async {
+    for (final entry in _preConnectedHandles.entries.toList()) {
+      try {
+        await _channel.invokeMethod('close', {'handle': entry.value});
+      } catch (_) {
+        // Ignore errors during cleanup
+      }
+    }
+    _preConnectedHandles.clear();
   }
 
   Future<int> _connect(int connType, String url, int timeoutMs) async {
@@ -131,7 +152,15 @@ class IOSNativeConnectionHandlerAsync {
       throw NativeNetworkException(errorCode, message);
     }
 
-    return result?['handle'] as int? ?? 0;
+    final handle = result?['handle'] as int?;
+    if (handle == null || handle <= 0) {
+      throw NativeNetworkException(
+        NativeNetError.unknown,
+        'Missing or invalid connection handle returned from native layer',
+      );
+    }
+
+    return handle;
   }
 
   /// Read from a pre-connected handle
@@ -214,10 +243,19 @@ class IOSNativeConnectionHandlerAsync {
 }
 
 /// Platform-specific native network handler factory
+///
+/// Note: On iOS, direct FFI callbacks require synchronous Swift bridging which
+/// is complex to implement. The recommended approach is to use
+/// [IOSNativeConnectionHandlerAsync] with pre-established connections instead.
+///
+/// This factory returns null because the synchronous [IOSNativeConnectionHandler]
+/// is not fully implemented. Use [IOSNativeConnectionHandlerAsync] directly for
+/// iOS native networking with VPN support.
 NativeConnectionHandler? createPlatformHandler() {
-  if (Platform.isIOS) {
-    return IOSNativeConnectionHandler();
-  }
-  // Android, desktop platforms would have their own implementations
+  // The synchronous IOSNativeConnectionHandler is not implemented because
+  // iOS networking (NWConnection) is inherently async. Use
+  // IOSNativeConnectionHandlerAsync with preConnect() instead.
+  //
+  // Android and desktop platforms would have their own implementations.
   return null;
 }

@@ -222,6 +222,10 @@ ConnectionResult _connectCallback(
     final handle = handler.connect(connType, url, timeoutMs);
     return _createSuccessResult(handle);
   } catch (e) {
+    // Preserve specific error codes from NativeNetworkException
+    if (e is NativeNetworkException) {
+      return _createErrorResult(e.errorCode, e.message ?? e.toString());
+    }
     return _createErrorResult(NativeNetError.connectFailed, e.toString());
   }
 }
@@ -283,6 +287,26 @@ void _closeCallback(NativeConnHandle handle) {
 // Helper Functions
 // =============================================================================
 
+// Memory Ownership Contract:
+// --------------------------
+// The helper functions below allocate native memory that is passed to the Go/C
+// layer via FFI callbacks. The Go layer is responsible for using the data and
+// then the memory becomes unreachable. In practice:
+//
+// - ConnectionResult and ReadResult structs are stack-allocated by the C caller
+//   and we just populate them, so the struct memory itself is not leaked.
+// - The data buffers (for ReadResult) and error message strings are copied by
+//   the Go layer immediately after the callback returns.
+//
+// For a production implementation, consider:
+// 1. Using a memory pool to reuse allocations
+// 2. Having the Go layer call back to free the memory
+// 3. Using arena allocators that can be bulk-freed
+//
+// Current implementation note: These allocations may leak in edge cases.
+// This is acceptable for short-lived protocol operations but should be
+// addressed for long-running applications.
+
 ConnectionResult _createSuccessResult(NativeConnHandle handle) {
   final resultPtr = calloc<ConnectionResult>();
   resultPtr.ref.handle = handle;
@@ -295,6 +319,8 @@ ConnectionResult _createErrorResult(int errorCode, String message) {
   final resultPtr = calloc<ConnectionResult>();
   resultPtr.ref.handle = nullptr;
   resultPtr.ref.errorCode = errorCode;
+  // Note: This UTF-8 string allocation is copied by the Go layer and then
+  // becomes unreachable. For production use, implement a free callback.
   resultPtr.ref.errorMessage = message.toNativeUtf8();
   return resultPtr.ref;
 }

@@ -25,7 +25,11 @@ class NativeConnection {
 
     private var readBuffer: Data = Data()
     private let bufferLock = NSLock()
-    private var isClosed = false
+    private var _isClosed = false
+    private let closedLock = NSLock()
+
+    /// Semaphore to signal when data is available in the buffer
+    let dataAvailable = DispatchSemaphore(value: 0)
 
     init(id: Int, type: ConnectionType, connection: NWConnection) {
         self.id = id
@@ -37,6 +41,7 @@ class NativeConnection {
         bufferLock.lock()
         defer { bufferLock.unlock() }
         readBuffer.append(data)
+        dataAvailable.signal()
     }
 
     func readFromBuffer(maxBytes: Int) -> Data? {
@@ -54,11 +59,16 @@ class NativeConnection {
     }
 
     func markClosed() {
-        isClosed = true
+        closedLock.lock()
+        defer { closedLock.unlock() }
+        _isClosed = true
+        dataAvailable.signal() // Wake up any waiting readers
     }
 
     var closed: Bool {
-        return isClosed
+        closedLock.lock()
+        defer { closedLock.unlock() }
+        return _isClosed
     }
 }
 
@@ -131,6 +141,8 @@ class NativeConnection {
         let semaphore = DispatchSemaphore(value: 0)
         var connectError: Error?
 
+        var wasCancelled = false
+
         connection.stateUpdateHandler = { [weak nativeConn] state in
             switch state {
             case .ready:
@@ -142,6 +154,7 @@ class NativeConnection {
                 nativeConn?.markClosed()
                 semaphore.signal()
             case .cancelled:
+                wasCancelled = true
                 nativeConn?.markClosed()
                 semaphore.signal()
             default:
@@ -173,6 +186,14 @@ class NativeConnection {
             )
         }
 
+        if wasCancelled {
+            return NativeConnectionResult(
+                handle: 0,
+                errorCode: NativeNetError.closed.rawValue,
+                errorMessage: "Connection was cancelled"
+            )
+        }
+
         // Store connection
         lock.lock()
         connections[connectionId] = nativeConn
@@ -186,6 +207,9 @@ class NativeConnection {
     }
 
     /// Read data from the connection
+    ///
+    /// This method reads from the internal buffer populated by startReceiving().
+    /// It waits for data to become available using the connection's semaphore.
     @objc public func read(
         handle: Int,
         maxBytes: Int32,
@@ -199,7 +223,11 @@ class NativeConnection {
         }
 
         if conn.closed {
-            return NativeReadResult(data: nil, errorCode: NativeNetError.closed.rawValue)
+            // Check if there's still buffered data to return before reporting closed
+            if let data = conn.readFromBuffer(maxBytes: Int(maxBytes)) {
+                return NativeReadResult(data: data, errorCode: NativeNetError.success.rawValue)
+            }
+            return NativeReadResult(data: nil, errorCode: NativeNetError.eof.rawValue)
         }
 
         // Try to read from buffer first
@@ -207,38 +235,30 @@ class NativeConnection {
             return NativeReadResult(data: data, errorCode: NativeNetError.success.rawValue)
         }
 
-        // Wait for data with timeout
-        let semaphore = DispatchSemaphore(value: 0)
-        var receivedData: Data?
-        var readError: NativeNetError?
-
-        conn.connection.receive(minimumIncompleteLength: 1, maximumLength: Int(maxBytes)) { data, _, isComplete, error in
-            if let error = error {
-                readError = .unknown
-                NSLog("NativeNetworkHandler read error: \(error)")
-            } else if isComplete && (data == nil || data!.isEmpty) {
-                readError = .eof
-            } else {
-                receivedData = data
-            }
-            semaphore.signal()
-        }
-
+        // Wait for data to be available in the buffer (populated by startReceiving)
         let timeout = DispatchTime.now() + .milliseconds(Int(timeoutMs))
-        let result = semaphore.wait(timeout: timeout)
+        let waitResult = conn.dataAvailable.wait(timeout: timeout)
 
-        if result == .timedOut {
+        if waitResult == .timedOut {
             return NativeReadResult(data: nil, errorCode: NativeNetError.timeout.rawValue)
         }
 
-        if let error = readError {
-            return NativeReadResult(data: nil, errorCode: error.rawValue)
+        // Check if connection was closed while waiting
+        if conn.closed {
+            // Still try to return any remaining buffered data
+            if let data = conn.readFromBuffer(maxBytes: Int(maxBytes)) {
+                return NativeReadResult(data: data, errorCode: NativeNetError.success.rawValue)
+            }
+            return NativeReadResult(data: nil, errorCode: NativeNetError.eof.rawValue)
         }
 
-        return NativeReadResult(
-            data: receivedData,
-            errorCode: NativeNetError.success.rawValue
-        )
+        // Try to read from buffer again after being signaled
+        if let data = conn.readFromBuffer(maxBytes: Int(maxBytes)) {
+            return NativeReadResult(data: data, errorCode: NativeNetError.success.rawValue)
+        }
+
+        // No data available - this shouldn't happen normally
+        return NativeReadResult(data: nil, errorCode: NativeNetError.unknown.rawValue)
     }
 
     /// Write data to the connection
@@ -353,7 +373,7 @@ class NativeConnection {
         guard let conn = conn, !conn.closed else { return }
 
         conn.connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self, weak conn] data, _, isComplete, error in
-            guard let conn = conn else { return }
+            guard let self = self, let conn = conn else { return }
 
             if let data = data, !data.isEmpty {
                 conn.appendToBuffer(data)
@@ -361,9 +381,13 @@ class NativeConnection {
 
             if isComplete || error != nil {
                 conn.markClosed()
+                // Remove closed connection from registry to prevent stale entries
+                self.lock.lock()
+                self.connections.removeValue(forKey: conn.id)
+                self.lock.unlock()
             } else {
                 // Continue receiving
-                self?.startReceiving(conn)
+                self.startReceiving(conn)
             }
         }
     }

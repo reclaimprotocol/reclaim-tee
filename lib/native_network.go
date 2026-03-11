@@ -159,6 +159,11 @@ func (c *DelegatedConn) Read(b []byte) (int, error) {
 		return 0, ErrNativeConnectionClosed
 	}
 
+	// Handle zero-length buffer per io.Reader semantics
+	if len(b) == 0 {
+		return 0, nil
+	}
+
 	c.readMutex.Lock()
 	defer c.readMutex.Unlock()
 
@@ -206,6 +211,11 @@ func (c *DelegatedConn) Read(b []byte) (int, error) {
 func (c *DelegatedConn) Write(b []byte) (int, error) {
 	if atomic.LoadInt32(&c.closed) == 1 {
 		return 0, ErrNativeConnectionClosed
+	}
+
+	// Handle zero-length buffer per io.Writer semantics
+	if len(b) == 0 {
+		return 0, nil
 	}
 
 	c.writeMutex.Lock()

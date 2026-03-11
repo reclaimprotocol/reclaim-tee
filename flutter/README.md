@@ -12,7 +12,7 @@ This wrapper delegates network connections to iOS's Network.framework (`NWConnec
 
 ## Architecture
 
-```
+```text
 Flutter/iOS App (NWConnection - respects VPN)
         ↑↓ Method Channel / FFI
     Dart FFI Bindings
