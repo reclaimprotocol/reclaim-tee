@@ -1,0 +1,394 @@
+import Foundation
+import Network
+
+/// Connection types matching Go's connection_type_t
+enum ConnectionType: Int32 {
+    case websocket = 1
+    case tcp = 2
+}
+
+/// Error codes matching Go's native_net_error_t
+enum NativeNetError: Int32 {
+    case success = 0
+    case unknown = -1
+    case timeout = -2
+    case eof = -3
+    case closed = -4
+    case connectFailed = -5
+}
+
+/// Represents an active native connection
+class NativeConnection {
+    let id: Int
+    let type: ConnectionType
+    let connection: NWConnection
+
+    private var readBuffer: Data = Data()
+    private let bufferLock = NSLock()
+    private var isClosed = false
+
+    init(id: Int, type: ConnectionType, connection: NWConnection) {
+        self.id = id
+        self.type = type
+        self.connection = connection
+    }
+
+    func appendToBuffer(_ data: Data) {
+        bufferLock.lock()
+        defer { bufferLock.unlock() }
+        readBuffer.append(data)
+    }
+
+    func readFromBuffer(maxBytes: Int) -> Data? {
+        bufferLock.lock()
+        defer { bufferLock.unlock() }
+
+        if readBuffer.isEmpty {
+            return nil
+        }
+
+        let count = min(maxBytes, readBuffer.count)
+        let data = readBuffer.prefix(count)
+        readBuffer.removeFirst(count)
+        return Data(data)
+    }
+
+    func markClosed() {
+        isClosed = true
+    }
+
+    var closed: Bool {
+        return isClosed
+    }
+}
+
+/// Manages native network connections for iOS VPN compatibility
+///
+/// This class uses Network.framework (NWConnection) which properly
+/// respects iOS VPN tunnels, unlike raw POSIX sockets used by Go.
+@objc public class NativeNetworkHandler: NSObject {
+
+    @objc public static let shared = NativeNetworkHandler()
+
+    private var connections: [Int: NativeConnection] = [:]
+    private var nextConnectionId = 1
+    private let lock = NSLock()
+
+    private let queue = DispatchQueue(label: "com.reclaim.native-network", qos: .userInitiated)
+
+    private override init() {
+        super.init()
+    }
+
+    // MARK: - Public API
+
+    /// Connect to the given URL using native iOS networking
+    @objc public func connect(
+        connType: Int32,
+        url: String,
+        timeoutMs: Int32
+    ) -> NativeConnectionResult {
+        guard let type = ConnectionType(rawValue: connType) else {
+            return NativeConnectionResult(
+                handle: 0,
+                errorCode: NativeNetError.unknown.rawValue,
+                errorMessage: "Invalid connection type"
+            )
+        }
+
+        // Parse URL to get host and port
+        guard let (host, port, useTLS) = parseURL(url, type: type) else {
+            return NativeConnectionResult(
+                handle: 0,
+                errorCode: NativeNetError.connectFailed.rawValue,
+                errorMessage: "Failed to parse URL: \(url)"
+            )
+        }
+
+        // Create NWConnection with appropriate parameters
+        let parameters: NWParameters
+        if useTLS {
+            parameters = .tls
+        } else {
+            parameters = .tcp
+        }
+
+        // For WebSocket, we need to handle the upgrade ourselves or use URLSessionWebSocketTask
+        // For simplicity in this example, we use raw TCP/TLS connections
+        // The WebSocket upgrade is handled by the Go gorilla/websocket library
+
+        let endpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(host),
+            port: NWEndpoint.Port(rawValue: port)!
+        )
+
+        let connection = NWConnection(to: endpoint, using: parameters)
+
+        let connectionId = assignConnectionId()
+        let nativeConn = NativeConnection(id: connectionId, type: type, connection: connection)
+
+        // Set up state handler
+        let semaphore = DispatchSemaphore(value: 0)
+        var connectError: Error?
+
+        connection.stateUpdateHandler = { [weak nativeConn] state in
+            switch state {
+            case .ready:
+                semaphore.signal()
+                // Start receiving data
+                self.startReceiving(nativeConn)
+            case .failed(let error):
+                connectError = error
+                nativeConn?.markClosed()
+                semaphore.signal()
+            case .cancelled:
+                nativeConn?.markClosed()
+                semaphore.signal()
+            default:
+                break
+            }
+        }
+
+        // Start the connection
+        connection.start(queue: queue)
+
+        // Wait for connection with timeout
+        let timeout = DispatchTime.now() + .milliseconds(Int(timeoutMs))
+        let result = semaphore.wait(timeout: timeout)
+
+        if result == .timedOut {
+            connection.cancel()
+            return NativeConnectionResult(
+                handle: 0,
+                errorCode: NativeNetError.timeout.rawValue,
+                errorMessage: "Connection timeout"
+            )
+        }
+
+        if let error = connectError {
+            return NativeConnectionResult(
+                handle: 0,
+                errorCode: NativeNetError.connectFailed.rawValue,
+                errorMessage: error.localizedDescription
+            )
+        }
+
+        // Store connection
+        lock.lock()
+        connections[connectionId] = nativeConn
+        lock.unlock()
+
+        return NativeConnectionResult(
+            handle: connectionId,
+            errorCode: NativeNetError.success.rawValue,
+            errorMessage: nil
+        )
+    }
+
+    /// Read data from the connection
+    @objc public func read(
+        handle: Int,
+        maxBytes: Int32,
+        timeoutMs: Int32
+    ) -> NativeReadResult {
+        guard let conn = getConnection(handle) else {
+            return NativeReadResult(
+                data: nil,
+                errorCode: NativeNetError.closed.rawValue
+            )
+        }
+
+        if conn.closed {
+            return NativeReadResult(data: nil, errorCode: NativeNetError.closed.rawValue)
+        }
+
+        // Try to read from buffer first
+        if let data = conn.readFromBuffer(maxBytes: Int(maxBytes)) {
+            return NativeReadResult(data: data, errorCode: NativeNetError.success.rawValue)
+        }
+
+        // Wait for data with timeout
+        let semaphore = DispatchSemaphore(value: 0)
+        var receivedData: Data?
+        var readError: NativeNetError?
+
+        conn.connection.receive(minimumIncompleteLength: 1, maximumLength: Int(maxBytes)) { data, _, isComplete, error in
+            if let error = error {
+                readError = .unknown
+                NSLog("NativeNetworkHandler read error: \(error)")
+            } else if isComplete && (data == nil || data!.isEmpty) {
+                readError = .eof
+            } else {
+                receivedData = data
+            }
+            semaphore.signal()
+        }
+
+        let timeout = DispatchTime.now() + .milliseconds(Int(timeoutMs))
+        let result = semaphore.wait(timeout: timeout)
+
+        if result == .timedOut {
+            return NativeReadResult(data: nil, errorCode: NativeNetError.timeout.rawValue)
+        }
+
+        if let error = readError {
+            return NativeReadResult(data: nil, errorCode: error.rawValue)
+        }
+
+        return NativeReadResult(
+            data: receivedData,
+            errorCode: NativeNetError.success.rawValue
+        )
+    }
+
+    /// Write data to the connection
+    @objc public func write(
+        handle: Int,
+        data: Data
+    ) -> Int32 {
+        guard let conn = getConnection(handle) else {
+            return NativeNetError.closed.rawValue
+        }
+
+        if conn.closed {
+            return NativeNetError.closed.rawValue
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var writeError: NWError?
+
+        conn.connection.send(content: data, completion: .contentProcessed { error in
+            writeError = error
+            semaphore.signal()
+        })
+
+        // Wait for write to complete (with reasonable timeout)
+        let result = semaphore.wait(timeout: .now() + .seconds(30))
+
+        if result == .timedOut {
+            return NativeNetError.timeout.rawValue
+        }
+
+        if writeError != nil {
+            return NativeNetError.unknown.rawValue
+        }
+
+        return Int32(data.count)
+    }
+
+    /// Close the connection
+    @objc public func close(handle: Int) {
+        lock.lock()
+        guard let conn = connections.removeValue(forKey: handle) else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+
+        conn.markClosed()
+        conn.connection.cancel()
+    }
+
+    // MARK: - Private Helpers
+
+    private func assignConnectionId() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = nextConnectionId
+        nextConnectionId += 1
+        return id
+    }
+
+    private func getConnection(_ handle: Int) -> NativeConnection? {
+        lock.lock()
+        defer { lock.unlock() }
+        return connections[handle]
+    }
+
+    private func parseURL(_ url: String, type: ConnectionType) -> (host: String, port: UInt16, useTLS: Bool)? {
+        // Handle WebSocket URLs
+        if type == .websocket {
+            if url.hasPrefix("wss://") {
+                let stripped = String(url.dropFirst(6))
+                return parseHostPort(stripped, defaultPort: 443, useTLS: true)
+            } else if url.hasPrefix("ws://") {
+                let stripped = String(url.dropFirst(5))
+                return parseHostPort(stripped, defaultPort: 80, useTLS: false)
+            }
+        }
+
+        // Handle TCP addresses (host:port format)
+        if type == .tcp {
+            return parseHostPort(url, defaultPort: 443, useTLS: true)
+        }
+
+        // Try generic URL parsing
+        if let parsed = URL(string: url) {
+            let host = parsed.host ?? ""
+            let port = UInt16(parsed.port ?? (parsed.scheme == "https" || parsed.scheme == "wss" ? 443 : 80))
+            let useTLS = parsed.scheme == "https" || parsed.scheme == "wss"
+            return (host, port, useTLS)
+        }
+
+        return nil
+    }
+
+    private func parseHostPort(_ str: String, defaultPort: UInt16, useTLS: Bool) -> (host: String, port: UInt16, useTLS: Bool)? {
+        // Remove path component if present
+        let hostPort = str.split(separator: "/").first.map(String.init) ?? str
+
+        // Parse host:port
+        if let colonIndex = hostPort.lastIndex(of: ":") {
+            let host = String(hostPort[..<colonIndex])
+            let portStr = String(hostPort[hostPort.index(after: colonIndex)...])
+            if let port = UInt16(portStr) {
+                return (host, port, useTLS)
+            }
+        }
+
+        return (hostPort, defaultPort, useTLS)
+    }
+
+    private func startReceiving(_ conn: NativeConnection?) {
+        guard let conn = conn, !conn.closed else { return }
+
+        conn.connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self, weak conn] data, _, isComplete, error in
+            guard let conn = conn else { return }
+
+            if let data = data, !data.isEmpty {
+                conn.appendToBuffer(data)
+            }
+
+            if isComplete || error != nil {
+                conn.markClosed()
+            } else {
+                // Continue receiving
+                self?.startReceiving(conn)
+            }
+        }
+    }
+}
+
+// MARK: - Result Types
+
+@objc public class NativeConnectionResult: NSObject {
+    @objc public let handle: Int
+    @objc public let errorCode: Int32
+    @objc public let errorMessage: String?
+
+    init(handle: Int, errorCode: Int32, errorMessage: String?) {
+        self.handle = handle
+        self.errorCode = errorCode
+        self.errorMessage = errorMessage
+    }
+}
+
+@objc public class NativeReadResult: NSObject {
+    @objc public let data: Data?
+    @objc public let errorCode: Int32
+
+    init(data: Data?, errorCode: Int32) {
+        self.data = data
+        self.errorCode = errorCode
+    }
+}
