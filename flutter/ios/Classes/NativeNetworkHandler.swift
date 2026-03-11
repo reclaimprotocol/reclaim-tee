@@ -127,15 +127,29 @@ class NativeConnection {
         // For simplicity in this example, we use raw TCP/TLS connections
         // The WebSocket upgrade is handled by the Go gorilla/websocket library
 
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            return NativeConnectionResult(
+                handle: 0,
+                errorCode: NativeNetError.connectFailed.rawValue,
+                errorMessage: "Invalid port number: \(port)"
+            )
+        }
+
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
-            port: NWEndpoint.Port(rawValue: port)!
+            port: nwPort
         )
 
         let connection = NWConnection(to: endpoint, using: parameters)
 
         let connectionId = assignConnectionId()
         let nativeConn = NativeConnection(id: connectionId, type: type, connection: connection)
+
+        // Store connection BEFORE setting up state handler to prevent race condition
+        // where data arrives before connection is in the map
+        lock.lock()
+        connections[connectionId] = nativeConn
+        lock.unlock()
 
         // Set up state handler
         let semaphore = DispatchSemaphore(value: 0)
@@ -169,8 +183,12 @@ class NativeConnection {
         let timeout = DispatchTime.now() + .milliseconds(Int(timeoutMs))
         let result = semaphore.wait(timeout: timeout)
 
+        // On failure, remove from map and return error
         if result == .timedOut {
             connection.cancel()
+            lock.lock()
+            connections.removeValue(forKey: connectionId)
+            lock.unlock()
             return NativeConnectionResult(
                 handle: 0,
                 errorCode: NativeNetError.timeout.rawValue,
@@ -179,6 +197,9 @@ class NativeConnection {
         }
 
         if let error = connectError {
+            lock.lock()
+            connections.removeValue(forKey: connectionId)
+            lock.unlock()
             return NativeConnectionResult(
                 handle: 0,
                 errorCode: NativeNetError.connectFailed.rawValue,
@@ -187,17 +208,15 @@ class NativeConnection {
         }
 
         if wasCancelled {
+            lock.lock()
+            connections.removeValue(forKey: connectionId)
+            lock.unlock()
             return NativeConnectionResult(
                 handle: 0,
                 errorCode: NativeNetError.closed.rawValue,
                 errorMessage: "Connection was cancelled"
             )
         }
-
-        // Store connection
-        lock.lock()
-        connections[connectionId] = nativeConn
-        lock.unlock()
 
         return NativeConnectionResult(
             handle: connectionId,
@@ -338,8 +357,9 @@ class NativeConnection {
         }
 
         // Handle TCP addresses (host:port format)
+        // TCP connections are plain by default; TLS is handled at application layer
         if type == .tcp {
-            return parseHostPort(url, defaultPort: 443, useTLS: true)
+            return parseHostPort(url, defaultPort: 443, useTLS: false)
         }
 
         // Try generic URL parsing
@@ -357,7 +377,23 @@ class NativeConnection {
         // Remove path component if present
         let hostPort = str.split(separator: "/").first.map(String.init) ?? str
 
-        // Parse host:port
+        // Handle IPv6 addresses in brackets: [::1]:8080
+        if hostPort.hasPrefix("[") {
+            if let closeBracket = hostPort.firstIndex(of: "]") {
+                let host = String(hostPort[hostPort.index(after: hostPort.startIndex)..<closeBracket])
+                let afterBracket = hostPort.index(after: closeBracket)
+                if afterBracket < hostPort.endIndex && hostPort[afterBracket] == ":" {
+                    let portStr = String(hostPort[hostPort.index(after: afterBracket)...])
+                    if let port = UInt16(portStr) {
+                        return (host, port, useTLS)
+                    }
+                }
+                return (host, defaultPort, useTLS)
+            }
+            return nil // Malformed IPv6 address
+        }
+
+        // Parse host:port for IPv4/hostname (only use last colon to handle edge cases)
         if let colonIndex = hostPort.lastIndex(of: ":") {
             let host = String(hostPort[..<colonIndex])
             let portStr = String(hostPort[hostPort.index(after: colonIndex)...])

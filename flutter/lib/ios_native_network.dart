@@ -5,7 +5,6 @@
 library;
 
 import 'dart:ffi';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
@@ -16,13 +15,11 @@ import 'native_network_ffi.dart';
 ///
 /// This bridges to the Swift NativeNetworkHandler which uses Network.framework
 /// (NWConnection) for iOS networking that properly respects VPN tunnels.
+///
+/// **Note:** This synchronous implementation is not usable because iOS networking
+/// is inherently asynchronous. Use [IOSNativeConnectionHandlerAsync] instead,
+/// which pre-establishes connections before the protocol runs.
 class IOSNativeConnectionHandler implements NativeConnectionHandler {
-  static const _channel = MethodChannel('com.reclaim.native_network');
-
-  /// Map of Dart connection IDs to native handles
-  final Map<int, int> _handles = {};
-  int _nextHandle = 1;
-
   @override
   NativeConnHandle connect(int connType, String url, int timeoutMs) {
     // This is called synchronously from the C callback, so we need
@@ -221,17 +218,26 @@ class IOSNativeConnectionHandlerAsync {
   }
 
   /// Close all connections
+  ///
+  /// Continues closing remaining connections even if one fails.
   Future<void> closeAll() async {
-    for (final handle in _preConnectedHandles.values) {
-      await _channel.invokeMethod('close', {'handle': handle});
+    for (final handle in _preConnectedHandles.values.toList()) {
+      try {
+        await _channel.invokeMethod('close', {'handle': handle});
+      } catch (_) {
+        // Continue closing other connections even if one fails
+      }
     }
     _preConnectedHandles.clear();
   }
 
-  /// Enable native networking
+  /// Enable native networking mode
+  ///
+  /// This method tracks the enabled state for this handler. The actual FFI
+  /// callback registration with the Go library should be done separately via
+  /// [NativeNetworkManager.enable] after setting up a connection handler.
   void enable() {
     if (_enabled) return;
-    // The actual enabling happens through FFI - this just tracks state
     _enabled = true;
   }
 
