@@ -39,6 +39,7 @@ typedef struct {
 } read_result_t;
 
 // Callback function types (Async)
+// Note: Native callbacks must synchronously copy all inputs before returning.
 typedef void (*native_connect_cb_t)(int64_t req_id, int conn_type, const char* url, int timeout_ms);
 typedef void (*native_read_cb_t)(int64_t req_id, native_conn_handle_t handle, int max_bytes, int timeout_ms);
 typedef void (*native_write_cb_t)(int64_t req_id, native_conn_handle_t handle, const unsigned char* data, int length);
@@ -119,20 +120,26 @@ var (
 var (
 	nativeNetworkMutex   sync.RWMutex
 	nativeNetworkEnabled bool = false
+	activeConnections    int32
+	pendingDisable       bool
 
 	// Request tracking for async callbacks
-	reqIDCounter int64
-	reqMutex     sync.RWMutex
-	pendingReqs  = make(map[int64]chan interface{})
+	reqIDCounter   int64
+	reqMutex       sync.RWMutex
+	pendingReqs    = make(map[int64]chan interface{})
+	pendingCAllocs = make(map[int64]unsafe.Pointer)
 )
 
 func generateReqID() int64 {
 	return atomic.AddInt64(&reqIDCounter, 1)
 }
 
-func registerReq(reqID int64, ch chan interface{}) {
+func registerReq(reqID int64, ch chan interface{}, alloc unsafe.Pointer) {
 	reqMutex.Lock()
 	pendingReqs[reqID] = ch
+	if alloc != nil {
+		pendingCAllocs[reqID] = alloc
+	}
 	reqMutex.Unlock()
 }
 
@@ -143,9 +150,14 @@ func unregisterReq(reqID int64) {
 }
 
 func completeReq(reqID int64, result interface{}) {
-	reqMutex.RLock()
+	reqMutex.Lock()
+	if ptr, ok := pendingCAllocs[reqID]; ok && ptr != nil {
+		C.free(ptr)
+		delete(pendingCAllocs, reqID)
+	}
 	ch, ok := pendingReqs[reqID]
-	reqMutex.RUnlock()
+	reqMutex.Unlock()
+
 	if ok {
 		select {
 		case ch <- result:
@@ -205,6 +217,7 @@ type DelegatedConn struct {
 
 	readMutex  sync.Mutex
 	writeMutex sync.Mutex
+	closeMutex sync.RWMutex
 	closed     int32 // atomic flag
 
 	// Buffered read data for partial reads
@@ -245,13 +258,20 @@ func (c *DelegatedConn) Read(b []byte) (int, error) {
 		return n, nil
 	}
 
+	c.closeMutex.RLock()
+	if atomic.LoadInt32(&c.closed) == 1 {
+		c.closeMutex.RUnlock()
+		return 0, ErrNativeConnectionClosed
+	}
+
 	// Call native read callback via async request ID
 	reqID := generateReqID()
 	ch := make(chan interface{}, 1)
-	registerReq(reqID, ch)
-	defer unregisterReq(reqID)
+	registerReq(reqID, ch, nil)
 
 	C.call_native_read_async(C.int64_t(reqID), c.handle, C.int(len(b)), C.int(30000))
+	c.closeMutex.RUnlock()
+	defer unregisterReq(reqID)
 
 	var readRes readResultStruct
 	select {
@@ -302,13 +322,22 @@ func (c *DelegatedConn) Write(b []byte) (int, error) {
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
 
+	c.closeMutex.RLock()
+	if atomic.LoadInt32(&c.closed) == 1 {
+		c.closeMutex.RUnlock()
+		return 0, ErrNativeConnectionClosed
+	}
+
 	// Call native write callback
 	reqID := generateReqID()
 	ch := make(chan interface{}, 1)
-	registerReq(reqID, ch)
-	defer unregisterReq(reqID)
 
-	C.call_native_write_async(C.int64_t(reqID), c.handle, (*C.uchar)(unsafe.Pointer(&b[0])), C.int(len(b)))
+	cData := C.CBytes(b)
+	registerReq(reqID, ch, cData)
+
+	C.call_native_write_async(C.int64_t(reqID), c.handle, (*C.uchar)(cData), C.int(len(b)))
+	c.closeMutex.RUnlock()
+	defer unregisterReq(reqID)
 
 	var writeRes writeResultStruct
 	select {
@@ -330,6 +359,10 @@ func (c *DelegatedConn) Write(b []byte) (int, error) {
 		}
 	}
 
+	if int(writeRes.written) < len(b) {
+		return int(writeRes.written), io.ErrShortWrite
+	}
+
 	return int(writeRes.written), nil
 }
 
@@ -340,7 +373,11 @@ func (c *DelegatedConn) Close() error {
 		return nil // Already closed
 	}
 
+	c.closeMutex.Lock()
 	C.call_native_close(c.handle)
+	c.closeMutex.Unlock()
+
+	decrementActiveConnections()
 	return nil
 }
 
@@ -405,6 +442,7 @@ func enable_native_networking(
 	C.store_native_write_cb(writeCb)
 	C.store_native_close_cb(closeCb)
 	nativeNetworkEnabled = true
+	pendingDisable = false
 
 	if logger != nil {
 		logger.Info("Native networking enabled for VPN compatibility")
@@ -420,14 +458,34 @@ func disable_native_networking() {
 	nativeNetworkMutex.Lock()
 	defer nativeNetworkMutex.Unlock()
 
-	C.store_native_connect_cb(nil)
-	C.store_native_read_cb(nil)
-	C.store_native_write_cb(nil)
-	C.store_native_close_cb(nil)
 	nativeNetworkEnabled = false
+
+	if atomic.LoadInt32(&activeConnections) == 0 {
+		C.store_native_connect_cb(nil)
+		C.store_native_read_cb(nil)
+		C.store_native_write_cb(nil)
+		C.store_native_close_cb(nil)
+		pendingDisable = false
+	} else {
+		pendingDisable = true
+	}
 
 	if logger != nil {
 		logger.Info("Native networking disabled")
+	}
+}
+
+func decrementActiveConnections() {
+	if atomic.AddInt32(&activeConnections, -1) == 0 {
+		nativeNetworkMutex.Lock()
+		defer nativeNetworkMutex.Unlock()
+		if pendingDisable && atomic.LoadInt32(&activeConnections) == 0 {
+			C.store_native_connect_cb(nil)
+			C.store_native_read_cb(nil)
+			C.store_native_write_cb(nil)
+			C.store_native_close_cb(nil)
+			pendingDisable = false
+		}
 	}
 }
 
@@ -442,18 +500,27 @@ func IsNativeNetworkingAvailable() bool {
 func NativeDialWebSocket(url string, timeoutMs int) (net.Conn, error) {
 	nativeNetworkMutex.RLock()
 	enabled := nativeNetworkEnabled
+	if enabled {
+		atomic.AddInt32(&activeConnections, 1)
+	}
 	nativeNetworkMutex.RUnlock()
 
 	if !enabled {
 		return nil, ErrNativeNetworkNotEnabled
 	}
 
+	success := false
+	defer func() {
+		if !success {
+			decrementActiveConnections()
+		}
+	}()
+
 	cURL := C.CString(url)
-	defer C.free(unsafe.Pointer(cURL))
 
 	reqID := generateReqID()
 	ch := make(chan interface{}, 1)
-	registerReq(reqID, ch)
+	registerReq(reqID, ch, unsafe.Pointer(cURL))
 	defer unregisterReq(reqID)
 
 	C.call_native_connect_async(C.int64_t(reqID), C.CONN_TYPE_WEBSOCKET, cURL, C.int(timeoutMs))
@@ -472,6 +539,9 @@ func NativeDialWebSocket(url string, timeoutMs int) (net.Conn, error) {
 		if connRes.msg != "" {
 			errMsg = connRes.msg
 		}
+		if result.error_code == C.NATIVE_NET_ERROR_TIMEOUT {
+			return nil, fmt.Errorf("%w: %s (code: %d)", ErrNativeNetworkTimeout, errMsg, result.error_code)
+		}
 		return nil, fmt.Errorf("%w: %s (code: %d)", ErrNativeConnectFailed, errMsg, result.error_code)
 	}
 
@@ -479,6 +549,7 @@ func NativeDialWebSocket(url string, timeoutMs int) (net.Conn, error) {
 		return nil, fmt.Errorf("%w: nil handle returned", ErrNativeConnectFailed)
 	}
 
+	success = true
 	return newDelegatedConn(result.handle, C.CONN_TYPE_WEBSOCKET, url), nil
 }
 
@@ -486,18 +557,27 @@ func NativeDialWebSocket(url string, timeoutMs int) (net.Conn, error) {
 func NativeDialTCP(address string, timeoutMs int) (net.Conn, error) {
 	nativeNetworkMutex.RLock()
 	enabled := nativeNetworkEnabled
+	if enabled {
+		atomic.AddInt32(&activeConnections, 1)
+	}
 	nativeNetworkMutex.RUnlock()
 
 	if !enabled {
 		return nil, ErrNativeNetworkNotEnabled
 	}
 
+	success := false
+	defer func() {
+		if !success {
+			decrementActiveConnections()
+		}
+	}()
+
 	cAddr := C.CString(address)
-	defer C.free(unsafe.Pointer(cAddr))
 
 	reqID := generateReqID()
 	ch := make(chan interface{}, 1)
-	registerReq(reqID, ch)
+	registerReq(reqID, ch, unsafe.Pointer(cAddr))
 	defer unregisterReq(reqID)
 
 	C.call_native_connect_async(C.int64_t(reqID), C.CONN_TYPE_TCP, cAddr, C.int(timeoutMs))
@@ -516,6 +596,9 @@ func NativeDialTCP(address string, timeoutMs int) (net.Conn, error) {
 		if connRes.msg != "" {
 			errMsg = connRes.msg
 		}
+		if result.error_code == C.NATIVE_NET_ERROR_TIMEOUT {
+			return nil, fmt.Errorf("%w: %s (code: %d)", ErrNativeNetworkTimeout, errMsg, result.error_code)
+		}
 		return nil, fmt.Errorf("%w: %s (code: %d)", ErrNativeConnectFailed, errMsg, result.error_code)
 	}
 
@@ -523,6 +606,7 @@ func NativeDialTCP(address string, timeoutMs int) (net.Conn, error) {
 		return nil, fmt.Errorf("%w: nil handle returned", ErrNativeConnectFailed)
 	}
 
+	success = true
 	return newDelegatedConn(result.handle, C.CONN_TYPE_TCP, address), nil
 }
 
