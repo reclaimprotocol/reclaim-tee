@@ -37,10 +37,10 @@ typedef struct {
     int error_code;
 } read_result_t;
 
-// Callback function types
-typedef connection_result_t (*native_connect_cb_t)(int conn_type, const char* url, int timeout_ms);
-typedef read_result_t (*native_read_cb_t)(native_conn_handle_t handle, int max_bytes, int timeout_ms);
-typedef int (*native_write_cb_t)(native_conn_handle_t handle, const unsigned char* data, int length);
+// Callback function types (Async)
+typedef void (*native_connect_cb_t)(int64_t req_id, int conn_type, const char* url, int timeout_ms);
+typedef void (*native_read_cb_t)(int64_t req_id, native_conn_handle_t handle, int max_bytes, int timeout_ms);
+typedef void (*native_write_cb_t)(int64_t req_id, native_conn_handle_t handle, const unsigned char* data, int length);
 typedef void (*native_close_cb_t)(native_conn_handle_t handle);
 
 // Global callback storage
@@ -64,29 +64,24 @@ static inline void store_native_close_cb(native_close_cb_t cb) {
 }
 
 // Call the connect callback
-static inline connection_result_t call_native_connect(int conn_type, const char* url, int timeout_ms) {
-    connection_result_t result = {NULL, NATIVE_NET_ERROR_UNKNOWN, "callback not registered"};
+static inline void call_native_connect_async(int64_t req_id, int conn_type, const char* url, int timeout_ms) {
     if (g_native_connect_cb != NULL) {
-        result = g_native_connect_cb(conn_type, url, timeout_ms);
+        g_native_connect_cb(req_id, conn_type, url, timeout_ms);
     }
-    return result;
 }
 
 // Call the read callback
-static inline read_result_t call_native_read(native_conn_handle_t handle, int max_bytes, int timeout_ms) {
-    read_result_t result = {NULL, 0, NATIVE_NET_ERROR_UNKNOWN};
+static inline void call_native_read_async(int64_t req_id, native_conn_handle_t handle, int max_bytes, int timeout_ms) {
     if (g_native_read_cb != NULL) {
-        result = g_native_read_cb(handle, max_bytes, timeout_ms);
+        g_native_read_cb(req_id, handle, max_bytes, timeout_ms);
     }
-    return result;
 }
 
 // Call the write callback
-static inline int call_native_write(native_conn_handle_t handle, const unsigned char* data, int length) {
+static inline void call_native_write_async(int64_t req_id, native_conn_handle_t handle, const unsigned char* data, int length) {
     if (g_native_write_cb != NULL) {
-        return g_native_write_cb(handle, data, length);
+        g_native_write_cb(req_id, handle, data, length);
     }
-    return NATIVE_NET_ERROR_UNKNOWN;
 }
 
 // Call the close callback
@@ -123,7 +118,82 @@ var (
 var (
 	nativeNetworkMutex   sync.RWMutex
 	nativeNetworkEnabled bool = false
+
+	// Request tracking for async callbacks
+	reqIDCounter int64
+	reqMutex     sync.RWMutex
+	pendingReqs  = make(map[int64]chan interface{})
 )
+
+func generateReqID() int64 {
+	return atomic.AddInt64(&reqIDCounter, 1)
+}
+
+func registerReq(reqID int64, ch chan interface{}) {
+	reqMutex.Lock()
+	pendingReqs[reqID] = ch
+	reqMutex.Unlock()
+}
+
+func unregisterReq(reqID int64) {
+	reqMutex.Lock()
+	delete(pendingReqs, reqID)
+	reqMutex.Unlock()
+}
+
+func completeReq(reqID int64, result interface{}) {
+	reqMutex.RLock()
+	ch, ok := pendingReqs[reqID]
+	reqMutex.RUnlock()
+	if ok {
+		select {
+		case ch <- result:
+		default:
+		}
+	}
+}
+
+type connectResultStruct struct {
+	res C.connection_result_t
+	msg string
+}
+
+type readResultStruct struct {
+	data []byte
+	err  C.int
+}
+
+type writeResultStruct struct {
+	written C.int
+	err     C.int
+}
+
+//export submit_connect_result
+func submit_connect_result(req_id C.int64_t, handle C.native_conn_handle_t, err_code C.int, err_msg *C.char) {
+	var errMsg string
+	if err_msg != nil {
+		errMsg = C.GoString(err_msg)
+	}
+	result := C.connection_result_t{
+		handle:     handle,
+		error_code: err_code,
+	}
+	completeReq(int64(req_id), connectResultStruct{result, errMsg})
+}
+
+//export submit_read_result
+func submit_read_result(req_id C.int64_t, data *C.uchar, length C.int, err_code C.int) {
+	var slice []byte
+	if length > 0 && data != nil {
+		slice = C.GoBytes(unsafe.Pointer(data), length)
+	}
+	completeReq(int64(req_id), readResultStruct{slice, err_code})
+}
+
+//export submit_write_result
+func submit_write_result(req_id C.int64_t, bytes_written C.int, err_code C.int) {
+	completeReq(int64(req_id), writeResultStruct{bytes_written, err_code})
+}
 
 // DelegatedConn wraps a native connection handle and implements net.Conn
 type DelegatedConn struct {
@@ -174,21 +244,31 @@ func (c *DelegatedConn) Read(b []byte) (int, error) {
 		return n, nil
 	}
 
-	// Call native read callback
-	// Use a reasonable timeout (30 seconds) for read operations
-	result := C.call_native_read(c.handle, C.int(len(b)), C.int(30000))
+	// Call native read callback via async request ID
+	reqID := generateReqID()
+	ch := make(chan interface{}, 1)
+	registerReq(reqID, ch)
+	defer unregisterReq(reqID)
 
-	switch result.error_code {
+	C.call_native_read_async(C.int64_t(reqID), c.handle, C.int(len(b)), C.int(30000))
+
+	var readRes readResultStruct
+	select {
+	case resIntf := <-ch:
+		readRes = resIntf.(readResultStruct)
+	case <-time.After(35 * time.Second): // Safety fallback
+		return 0, ErrNativeNetworkTimeout
+	}
+
+	switch readRes.err {
 	case C.NATIVE_NET_SUCCESS:
-		if result.length <= 0 {
+		if len(readRes.data) <= 0 {
 			return 0, io.EOF
 		}
-		// Copy data from C buffer to Go slice
-		data := C.GoBytes(unsafe.Pointer(result.data), result.length)
-		n := copy(b, data)
-		// Buffer any remaining data
-		if n < len(data) {
-			c.readBuffer = append(c.readBuffer, data[n:]...)
+
+		n := copy(b, readRes.data)
+		if n < len(readRes.data) {
+			c.readBuffer = append(c.readBuffer, readRes.data[n:]...)
 		}
 		return n, nil
 
@@ -203,7 +283,7 @@ func (c *DelegatedConn) Read(b []byte) (int, error) {
 		return 0, ErrNativeConnectionClosed
 
 	default:
-		return 0, fmt.Errorf("native read error: code %d", result.error_code)
+		return 0, fmt.Errorf("native read error: code %d", readRes.err)
 	}
 }
 
@@ -222,21 +302,34 @@ func (c *DelegatedConn) Write(b []byte) (int, error) {
 	defer c.writeMutex.Unlock()
 
 	// Call native write callback
-	result := C.call_native_write(c.handle, (*C.uchar)(unsafe.Pointer(&b[0])), C.int(len(b)))
+	reqID := generateReqID()
+	ch := make(chan interface{}, 1)
+	registerReq(reqID, ch)
+	defer unregisterReq(reqID)
 
-	if result < 0 {
-		switch result {
+	C.call_native_write_async(C.int64_t(reqID), c.handle, (*C.uchar)(unsafe.Pointer(&b[0])), C.int(len(b)))
+
+	var writeRes writeResultStruct
+	select {
+	case resIntf := <-ch:
+		writeRes = resIntf.(writeResultStruct)
+	case <-time.After(35 * time.Second):
+		return 0, ErrNativeNetworkTimeout
+	}
+
+	if writeRes.err < 0 {
+		switch writeRes.err {
 		case C.NATIVE_NET_ERROR_CLOSED:
 			atomic.StoreInt32(&c.closed, 1)
 			return 0, ErrNativeConnectionClosed
 		case C.NATIVE_NET_ERROR_TIMEOUT:
 			return 0, ErrNativeNetworkTimeout
 		default:
-			return 0, fmt.Errorf("native write error: code %d", result)
+			return 0, fmt.Errorf("native write error: code %d", writeRes.err)
 		}
 	}
 
-	return int(result), nil
+	return int(writeRes.written), nil
 }
 
 // Close implements net.Conn.Close
@@ -357,12 +450,26 @@ func NativeDialWebSocket(url string, timeoutMs int) (net.Conn, error) {
 	cURL := C.CString(url)
 	defer C.free(unsafe.Pointer(cURL))
 
-	result := C.call_native_connect(C.CONN_TYPE_WEBSOCKET, cURL, C.int(timeoutMs))
+	reqID := generateReqID()
+	ch := make(chan interface{}, 1)
+	registerReq(reqID, ch)
+	defer unregisterReq(reqID)
 
+	C.call_native_connect_async(C.int64_t(reqID), C.CONN_TYPE_WEBSOCKET, cURL, C.int(timeoutMs))
+
+	var connRes connectResultStruct
+	select {
+	case resIntf := <-ch:
+		connRes = resIntf.(connectResultStruct)
+	case <-time.After(time.Duration(timeoutMs+5000) * time.Millisecond):
+		return nil, ErrNativeNetworkTimeout
+	}
+
+	result := connRes.res
 	if result.error_code != C.NATIVE_NET_SUCCESS {
 		errMsg := "connection failed"
-		if result.error_message != nil {
-			errMsg = C.GoString(result.error_message)
+		if connRes.msg != "" {
+			errMsg = connRes.msg
 		}
 		return nil, fmt.Errorf("%w: %s (code: %d)", ErrNativeConnectFailed, errMsg, result.error_code)
 	}
@@ -387,12 +494,26 @@ func NativeDialTCP(address string, timeoutMs int) (net.Conn, error) {
 	cAddr := C.CString(address)
 	defer C.free(unsafe.Pointer(cAddr))
 
-	result := C.call_native_connect(C.CONN_TYPE_TCP, cAddr, C.int(timeoutMs))
+	reqID := generateReqID()
+	ch := make(chan interface{}, 1)
+	registerReq(reqID, ch)
+	defer unregisterReq(reqID)
 
+	C.call_native_connect_async(C.int64_t(reqID), C.CONN_TYPE_TCP, cAddr, C.int(timeoutMs))
+
+	var connRes connectResultStruct
+	select {
+	case resIntf := <-ch:
+		connRes = resIntf.(connectResultStruct)
+	case <-time.After(time.Duration(timeoutMs+5000) * time.Millisecond):
+		return nil, ErrNativeNetworkTimeout
+	}
+
+	result := connRes.res
 	if result.error_code != C.NATIVE_NET_SUCCESS {
 		errMsg := "connection failed"
-		if result.error_message != nil {
-			errMsg = C.GoString(result.error_message)
+		if connRes.msg != "" {
+			errMsg = connRes.msg
 		}
 		return nil, fmt.Errorf("%w: %s (code: %d)", ErrNativeConnectFailed, errMsg, result.error_code)
 	}
