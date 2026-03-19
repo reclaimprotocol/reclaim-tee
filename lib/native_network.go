@@ -3,6 +3,7 @@ package main
 /*
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 // Native connection handle - opaque pointer managed by iOS/Flutter
 typedef void* native_conn_handle_t;
