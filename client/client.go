@@ -220,7 +220,7 @@ type Client struct {
 
 	// MPC OPRF redaction ranges (TEE-to-TEE MPC OPRF)
 	// Map from HTTP range start position to length
-	mpcOprfRedactionRanges map[int]int
+	oprfMpcRedactionRanges map[int]int
 
 	// HTTP to TLS position mapping from response analysis
 	httpToTlsMapping []TLSToHTTPMapping
@@ -229,9 +229,9 @@ type Client struct {
 	oprfRanges map[int]*OPRFRangeData
 
 	// MPC OPRF state
-	mpcOprfRangesSent    bool                      // Track if ranges were sent
-	mpcOprfRangesSpec    []*teeproto.OPRFRangeSpec // Ranges sent to TEEs
-	mpcOprfRangeMappings []MPCOPRFRangeMapping     // HTTP <-> TLS position mappings for OPRF
+	oprfMpcRangesSent    bool                      // Track if ranges were sent
+	oprfMpcRangesSpec    []*teeproto.OPRFRangeSpec // Ranges sent to TEEs
+	oprfMpcRangeMappings []OPRFMPCRangeMapping     // HTTP <-> TLS position mappings for OPRF
 }
 
 func NewClient(teekURL string) *Client {
@@ -501,8 +501,8 @@ func (c *Client) getResponseRedactions(response *HTTPResponse) ([]shared.Respons
 	if c.oprfRedactionRanges == nil {
 		c.oprfRedactionRanges = make(map[int]int)
 	}
-	if c.mpcOprfRedactionRanges == nil {
-		c.mpcOprfRedactionRanges = make(map[int]int)
+	if c.oprfMpcRedactionRanges == nil {
+		c.oprfMpcRedactionRanges = make(map[int]int)
 	}
 
 	// Process OPRF redactions - store ranges that need OPRF processing
@@ -519,9 +519,9 @@ func (c *Client) getResponseRedactions(response *HTTPResponse) ([]shared.Respons
 					zap.Int("length", r.Length),
 					zap.String("hash_type", r.Hash),
 					zap.String("data", string(dataToProcess)))
-			} else if r.Hash == "oprf-mpc" {
+			} else if r.Hash == *providers.HASH_TYPE_OPRF_MPC {
 				// TEE-to-TEE MPC OPRF processing
-				c.mpcOprfRedactionRanges[r.Start] = r.Length
+				c.oprfMpcRedactionRanges[r.Start] = r.Length
 				c.logger.Info("Marked range for MPC OPRF processing",
 					zap.Int("start", r.Start),
 					zap.Int("length", r.Length),

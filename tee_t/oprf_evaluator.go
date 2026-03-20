@@ -66,33 +66,33 @@ func (t *TEET) handleOPRFRangesFromClient(sessionID string, msg *teeproto.OPRFRa
 	// TLS session hash will be cached from the first Round1 message from TEE_K
 	// TEE_K has access to ClientHello/ServerHello which TEE_T doesn't have
 
-	// Process any queued Round1 messages that arrived before client ranges
-	if len(teetState.PendingRound1s) > 0 {
+	// Process any queued Round1 messages that arrived before client ranges (thread-safe)
+	pendingRound1s := teetState.GetAndClearPendingRound1s()
+	if len(pendingRound1s) > 0 {
 		t.logger.WithSession(sessionID).Info("Processing queued Round1 messages",
-			zap.Int("count", len(teetState.PendingRound1s)))
-		for _, round1 := range teetState.PendingRound1s {
+			zap.Int("count", len(pendingRound1s)))
+		for _, round1 := range pendingRound1s {
 			if err := t.processOPRFRound1(sessionID, teetState, round1); err != nil {
 				return err
 			}
 		}
-		teetState.PendingRound1s = nil
 	}
 
 	return nil
 }
 
 // handleOPRFRound1 handles Round1 from TEE_K
-func (t *TEET) handleOPRFRound1(sessionID string, msg *teeproto.MPCOPRFRound1) error {
+func (t *TEET) handleOPRFRound1(sessionID string, msg *teeproto.OPRFMPCRound1) error {
 	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get TEE_T session state: %w", err)
 	}
 
-	// Queue if client ranges not yet received
+	// Queue if client ranges not yet received (thread-safe)
 	if !teetState.ClientRangesReceived {
 		t.logger.WithSession(sessionID).Info("Queueing Round1 - waiting for client ranges",
 			zap.Int("range_index", int(msg.RangeIndex)))
-		teetState.PendingRound1s = append(teetState.PendingRound1s, msg)
+		teetState.AddPendingRound1(msg)
 		return nil
 	}
 
@@ -100,7 +100,7 @@ func (t *TEET) handleOPRFRound1(sessionID string, msg *teeproto.MPCOPRFRound1) e
 }
 
 // processOPRFRound1 processes a Round1 message after client ranges are received
-func (t *TEET) processOPRFRound1(sessionID string, teetState *TEETSessionState, msg *teeproto.MPCOPRFRound1) error {
+func (t *TEET) processOPRFRound1(sessionID string, teetState *TEETSessionState, msg *teeproto.OPRFMPCRound1) error {
 	// SECURITY: Cache TLS session hash from first Round1, verify consistency for subsequent
 	// TEE_K computes this from ClientHello/ServerHello which TEE_T doesn't have access to
 	if len(teetState.TLSSessionHash) == 0 {
@@ -156,13 +156,13 @@ func (t *TEET) processOPRFRound1(sessionID string, teetState *TEETSessionState, 
 		return fmt.Errorf("CMACEvaluatorRound2 failed: %w", err)
 	}
 
-	teetState.EvaluatorSessions[rangeIndex] = evalState
+	teetState.SetEvaluatorSession(rangeIndex, evalState)
 
 	// Serialize Round2 payload
 	round2Bytes := oprfmpc.SerializeRound2(round2)
 
 	// Send Round2 to TEE_K
-	return t.sendMPCOPRFRound2ToTEEK(sessionID, &teeproto.MPCOPRFRound2{
+	return t.sendOPRFMPCRound2ToTEEK(sessionID, &teeproto.OPRFMPCRound2{
 		SessionId:     sessionID,
 		OprfSessionId: msg.OprfSessionId,
 		OtChoices:     round2Bytes,
@@ -170,13 +170,14 @@ func (t *TEET) processOPRFRound1(sessionID string, teetState *TEETSessionState, 
 }
 
 // handleOPRFRound3 handles Round3 from TEE_K
-func (t *TEET) handleOPRFRound3(sessionID string, msg *teeproto.MPCOPRFRound3) error {
+func (t *TEET) handleOPRFRound3(sessionID string, msg *teeproto.OPRFMPCRound3) error {
 	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get TEE_T session state: %w", err)
 	}
 
-	// Find evaluator session by OPRF session ID
+	// Find evaluator session by OPRF session ID (with locking)
+	teetState.LockOPRF()
 	var rangeIndex int = -1
 	var evalSession *oprfmpc.CMACEvaluatorSession
 	for idx, es := range teetState.EvaluatorSessions {
@@ -186,6 +187,7 @@ func (t *TEET) handleOPRFRound3(sessionID string, msg *teeproto.MPCOPRFRound3) e
 			break
 		}
 	}
+	teetState.UnlockOPRF()
 
 	if rangeIndex < 0 {
 		return fmt.Errorf("no evaluator session found for OPRF session %d", msg.OprfSessionId)
@@ -210,22 +212,22 @@ func (t *TEET) handleOPRFRound3(sessionID string, msg *teeproto.MPCOPRFRound3) e
 	// Compute hash of CMAC output
 	hashOutput := sha256.Sum256(cmacResult[:])
 
-	// Store result locally
+	// Store result locally (thread-safe)
 	r := teetState.ClientOPRFRanges[rangeIndex]
-	teetState.OPRFResults[rangeIndex] = &shared.OPRFResult{
+	teetState.SetOPRFResult(rangeIndex, &shared.OPRFResult{
 		RangeIndex: rangeIndex,
 		TLSStart:   int(r.TlsStart),
 		TLSLength:  int(r.TlsLength),
 		CMACOutput: cmacResult,
 		HashOutput: hashOutput,
-	}
+	})
 
 	t.logger.WithSession(sessionID).Info("MPC OPRF evaluation complete",
 		zap.Int("range_index", rangeIndex),
 		zap.String("cmac_preview", fmt.Sprintf("%x", cmacResult[:4])))
 
 	// Send result back to TEE_K
-	if err := t.sendMPCOPRFResultToTEEK(sessionID, &teeproto.MPCOPRFResult{
+	if err := t.sendOPRFMPCResultToTEEK(sessionID, &teeproto.OPRFMPCResult{
 		SessionId:     sessionID,
 		OprfSessionId: msg.OprfSessionId,
 		RangeIndex:    int32(rangeIndex),
@@ -235,8 +237,8 @@ func (t *TEET) handleOPRFRound3(sessionID string, msg *teeproto.MPCOPRFRound3) e
 		return err
 	}
 
-	// Check if all OPRF computations are complete
-	if len(teetState.OPRFResults) >= teetState.OPRFExpectedCount {
+	// Check if all OPRF computations are complete (thread-safe)
+	if teetState.GetOPRFResultCount() >= teetState.OPRFExpectedCount {
 		teetState.OPRFState = shared.OPRFStateComplete
 		t.logger.WithSession(sessionID).Info("All MPC OPRF computations complete",
 			zap.Int("count", len(teetState.OPRFResults)))
@@ -248,8 +250,8 @@ func (t *TEET) handleOPRFRound3(sessionID string, msg *teeproto.MPCOPRFRound3) e
 	return nil
 }
 
-// sendMPCOPRFRound2ToTEEK sends Round2 message to TEE_K
-func (t *TEET) sendMPCOPRFRound2ToTEEK(sessionID string, round2 *teeproto.MPCOPRFRound2) error {
+// sendOPRFMPCRound2ToTEEK sends Round2 message to TEE_K
+func (t *TEET) sendOPRFMPCRound2ToTEEK(sessionID string, round2 *teeproto.OPRFMPCRound2) error {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -262,8 +264,8 @@ func (t *TEET) sendMPCOPRFRound2ToTEEK(sessionID string, round2 *teeproto.MPCOPR
 	env := &teeproto.Envelope{
 		SessionId:   sessionID,
 		TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_MpcOprfRound2{
-			MpcOprfRound2: round2,
+		Payload: &teeproto.Envelope_OprfMpcRound2{
+			OprfMpcRound2: round2,
 		},
 	}
 
@@ -280,8 +282,8 @@ func (t *TEET) sendMPCOPRFRound2ToTEEK(sessionID string, round2 *teeproto.MPCOPR
 	return wsConn.WriteMessage(websocket.BinaryMessage, data)
 }
 
-// sendMPCOPRFResultToTEEK sends the final OPRF result to TEE_K
-func (t *TEET) sendMPCOPRFResultToTEEK(sessionID string, result *teeproto.MPCOPRFResult) error {
+// sendOPRFMPCResultToTEEK sends the final OPRF result to TEE_K
+func (t *TEET) sendOPRFMPCResultToTEEK(sessionID string, result *teeproto.OPRFMPCResult) error {
 	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -294,8 +296,8 @@ func (t *TEET) sendMPCOPRFResultToTEEK(sessionID string, result *teeproto.MPCOPR
 	env := &teeproto.Envelope{
 		SessionId:   sessionID,
 		TimestampMs: time.Now().UnixMilli(),
-		Payload: &teeproto.Envelope_MpcOprfResult{
-			MpcOprfResult: result,
+		Payload: &teeproto.Envelope_OprfMpcResult{
+			OprfMpcResult: result,
 		},
 	}
 
@@ -316,7 +318,10 @@ func (t *TEET) sendMPCOPRFResultToTEEK(sessionID string, result *teeproto.MPCOPR
 // IMPORTANT: Iterates over ClientOPRFRanges slice (not OPRFResults map) for deterministic ordering
 // ZERO ERROR POLICY: Returns nil if any expected result is missing (caller should check)
 func (t *TEET) buildOPRFOutputsForSigning(teetState *TEETSessionState) []*teeproto.OPRFOutput {
-	if teetState.OPRFState != shared.OPRFStateComplete || len(teetState.OPRFResults) == 0 {
+	// Get snapshot of results with lock
+	oprfResults := teetState.GetAllOPRFResults()
+
+	if teetState.OPRFState != shared.OPRFStateComplete || len(oprfResults) == 0 {
 		return nil
 	}
 
@@ -324,14 +329,14 @@ func (t *TEET) buildOPRFOutputsForSigning(teetState *TEETSessionState) []*teepro
 
 	// Iterate over ranges slice for deterministic ordering
 	for i, r := range teetState.ClientOPRFRanges {
-		result, ok := teetState.OPRFResults[i]
+		result, ok := oprfResults[i]
 		if !ok {
 			// ZERO ERROR POLICY: Missing result when state is Complete is a critical error
 			// This should never happen - return nil to signal failure
 			t.logger.Error("CRITICAL: Missing OPRF result for range",
 				zap.Int("range_index", i),
 				zap.Int("expected_count", len(teetState.ClientOPRFRanges)),
-				zap.Int("actual_count", len(teetState.OPRFResults)))
+				zap.Int("actual_count", len(oprfResults)))
 			return nil
 		}
 		outputs = append(outputs, &teeproto.OPRFOutput{

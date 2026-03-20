@@ -81,6 +81,9 @@ const (
 	// Single Session Mode message types
 	MsgFinished      MessageType = "finished"
 	MsgRedactionSpec MessageType = "redaction_spec"
+
+	// MPC OPRF message types
+	MsgOPRFRanges MessageType = "oprf_ranges"
 )
 
 const (

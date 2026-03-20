@@ -64,13 +64,13 @@ message Envelope {
     TEEKAttestationRequest teek_attestation = 60;
     TEETAttestationResponse teet_attestation = 61;
 
-    // MPC OPRF messages
+    // OPRF MPC messages
     OPRFRangesSubmission oprf_ranges_submission = 70;  // Client -> both TEEs
     CiphertextReady ciphertext_ready = 71;             // TEE_T -> TEE_K
-    MPCOPRFRound1 mpc_oprf_round1 = 72;                // TEE_K -> TEE_T
-    MPCOPRFRound2 mpc_oprf_round2 = 73;                // TEE_T -> TEE_K
-    MPCOPRFRound3 mpc_oprf_round3 = 74;                // TEE_K -> TEE_T
-    MPCOPRFResult mpc_oprf_result = 75;                // TEE_T -> TEE_K
+    OPRFMPCRound1 oprf_mpc_round1 = 72;                // TEE_K -> TEE_T
+    OPRFMPCRound2 oprf_mpc_round2 = 73;                // TEE_T -> TEE_K
+    OPRFMPCRound3 oprf_mpc_round3 = 74;                // TEE_K -> TEE_T
+    OPRFMPCResult oprf_mpc_result = 75;                // TEE_T -> TEE_K
   }
 }
 
@@ -242,7 +242,7 @@ message TEETAttestationResponse {
   AttestationReport attestation_report = 1;
 }
 
-// MPC OPRF message definitions
+// OPRF MPC message definitions
 message OPRFRangeSpec {
   int32 tls_start = 1;
   int32 tls_length = 2;  // max 64
@@ -258,7 +258,7 @@ message CiphertextReady {
   int32 total_length = 2;
 }
 
-message MPCOPRFRound1 {
+message OPRFMPCRound1 {
   string session_id = 1;
   uint64 oprf_session_id = 2;
   bytes ot_setup = 3;
@@ -268,13 +268,13 @@ message MPCOPRFRound1 {
   bytes tls_session_hash = 7;  // CRITICAL: replay protection
 }
 
-message MPCOPRFRound2 {
+message OPRFMPCRound2 {
   string session_id = 1;
   uint64 oprf_session_id = 2;
   bytes ot_choices = 3;
 }
 
-message MPCOPRFRound3 {
+message OPRFMPCRound3 {
   string session_id = 1;
   uint64 oprf_session_id = 2;
   bytes garbled_circuit = 3;
@@ -283,7 +283,7 @@ message MPCOPRFRound3 {
   bytes output_hints = 6;
 }
 
-message MPCOPRFResult {
+message OPRFMPCResult {
   string session_id = 1;
   uint64 oprf_session_id = 2;
   int32 range_index = 3;

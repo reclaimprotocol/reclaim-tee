@@ -38,6 +38,10 @@ type TEEKSessionState struct {
 	OPRFState             shared.OPRFSessionState             // Current OPRF processing state
 	OPRFExpectedCount     int                                 // Number of OPRF results expected
 	ClientRangesReceived  bool                                // Whether client has sent ranges
+
+	// Per-session mutex for thread-safe access to OPRF state
+	// Must be held when accessing GarblerSessions, OPRFResults, or OPRFRanges
+	oprfMu sync.Mutex
 }
 
 type TEEKSessionManager struct {
@@ -78,4 +82,68 @@ func (t *TEEKSessionManager) RemoveTEEKSessionState(sessionID string) {
 func (t *TEEKSessionManager) CloseSession(sessionID string) error {
 	t.RemoveTEEKSessionState(sessionID)
 	return t.SessionManager.CloseSession(sessionID)
+}
+
+// LockOPRF acquires the per-session OPRF mutex
+func (s *TEEKSessionState) LockOPRF() {
+	s.oprfMu.Lock()
+}
+
+// UnlockOPRF releases the per-session OPRF mutex
+func (s *TEEKSessionState) UnlockOPRF() {
+	s.oprfMu.Unlock()
+}
+
+// SetGarblerSession safely sets a garbler session for the given range index
+func (s *TEEKSessionState) SetGarblerSession(rangeIdx int, session *oprfmpc.CMACGarblerSession) {
+	s.oprfMu.Lock()
+	defer s.oprfMu.Unlock()
+	if s.GarblerSessions == nil {
+		s.GarblerSessions = make(map[int]*oprfmpc.CMACGarblerSession)
+	}
+	s.GarblerSessions[rangeIdx] = session
+}
+
+// GetGarblerSession safely retrieves a garbler session for the given range index
+func (s *TEEKSessionState) GetGarblerSession(rangeIdx int) (*oprfmpc.CMACGarblerSession, bool) {
+	s.oprfMu.Lock()
+	defer s.oprfMu.Unlock()
+	session, ok := s.GarblerSessions[rangeIdx]
+	return session, ok
+}
+
+// SetOPRFResult safely sets an OPRF result for the given range index
+func (s *TEEKSessionState) SetOPRFResult(rangeIdx int, result *shared.OPRFResult) {
+	s.oprfMu.Lock()
+	defer s.oprfMu.Unlock()
+	if s.OPRFResults == nil {
+		s.OPRFResults = make(map[int]*shared.OPRFResult)
+	}
+	s.OPRFResults[rangeIdx] = result
+}
+
+// GetOPRFResult safely retrieves an OPRF result for the given range index
+func (s *TEEKSessionState) GetOPRFResult(rangeIdx int) (*shared.OPRFResult, bool) {
+	s.oprfMu.Lock()
+	defer s.oprfMu.Unlock()
+	result, ok := s.OPRFResults[rangeIdx]
+	return result, ok
+}
+
+// GetOPRFResultCount safely returns the number of completed OPRF results
+func (s *TEEKSessionState) GetOPRFResultCount() int {
+	s.oprfMu.Lock()
+	defer s.oprfMu.Unlock()
+	return len(s.OPRFResults)
+}
+
+// GetAllOPRFResults safely returns a copy of all OPRF results
+func (s *TEEKSessionState) GetAllOPRFResults() map[int]*shared.OPRFResult {
+	s.oprfMu.Lock()
+	defer s.oprfMu.Unlock()
+	results := make(map[int]*shared.OPRFResult, len(s.OPRFResults))
+	for k, v := range s.OPRFResults {
+		results[k] = v
+	}
+	return results
 }

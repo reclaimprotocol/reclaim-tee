@@ -269,8 +269,13 @@ func main() {
 		ResponseRedactions: []providers.ResponseRedaction{
 			{
 				XPath: "/html/body/footer/div[2]/div/div[1]/ul[3]/li[2]/a",
-				Regex: "href=\"https://(?<addr>{{addr}})/\"",
-				Hash:  ptrString("oprf-mpc"), // Use MPC OPRF instead of client-side TOPRF
+				Regex: "href=\"https://(?<addr>www.trafficsafetymarketing.gov)/\"",
+				Hash:  providers.HASH_TYPE_OPRF, // Use MPC OPRF instead of client-side TOPRF
+			},
+			{
+				XPath: "/html/body/div[2]/main/div[5]/div[1]/h3/text()",
+				Regex: "Manufacturer (?<portal>Portal)",
+				Hash:  providers.HASH_TYPE_OPRF_MPC,
 			},
 		},
 		ParamValues: map[string]string{

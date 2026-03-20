@@ -548,7 +548,16 @@ func (c *Client) terminateConnectionWithError(reason string, err error) {
 }
 
 // sendOPRFRangesToBothTEEs sends MPC OPRF ranges to both TEE_K and TEE_T
+// IMPORTANT: Both connections must be valid before sending to ensure atomicity
 func (c *Client) sendOPRFRangesToBothTEEs(ranges []*teeproto.OPRFRangeSpec) error {
+	// Preflight: verify both connections are available before sending
+	if c.wsConn == nil {
+		return fmt.Errorf("TEE_K connection not available")
+	}
+	if c.teetConn == nil {
+		return fmt.Errorf("TEE_T connection not available")
+	}
+
 	env := &teeproto.Envelope{
 		SessionId:   c.sessionID,
 		TimestampMs: time.Now().UnixMilli(),
@@ -574,14 +583,16 @@ func (c *Client) sendOPRFRangesToBothTEEs(ranges []*teeproto.OPRFRangeSpec) erro
 	}
 
 	// Send to TEE_T via teetConn
+	// NOTE: If this fails, TEE_K has already received the ranges. The session should
+	// be terminated as the TEEs will be in inconsistent state. The caller handles this.
 	c.teetWriteMutex.Lock()
 	err = c.teetConn.WriteMessage(websocket.BinaryMessage, data)
 	c.teetWriteMutex.Unlock()
 	if err != nil {
-		return fmt.Errorf("send to TEE_T: %w", err)
+		return fmt.Errorf("send to TEE_T failed (TEE_K already received, session must be terminated): %w", err)
 	}
 
-	c.mpcOprfRangesSent = true
-	c.mpcOprfRangesSpec = ranges
+	c.oprfMpcRangesSent = true
+	c.oprfMpcRangesSpec = ranges
 	return nil
 }

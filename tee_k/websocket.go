@@ -154,7 +154,10 @@ func (t *TEEK) handleSharedTEETMessage(msgBytes []byte) {
 				return out
 			}(),
 		}
-		handlerErr = t.handleBatchedTagVerifications(sessionID, msg)
+		if handlerErr = t.handleBatchedTagVerifications(sessionID, msg); handlerErr != nil {
+			t.terminateSessionWithError(sessionID, shared.ReasonCryptoTagVerificationFailed, handlerErr, "Tag verification processing failed")
+		}
+		return
 
 	case *teeproto.Envelope_Error:
 		// TEE_T encountered an error (likely a response to our earlier error)
@@ -162,14 +165,23 @@ func (t *TEEK) handleSharedTEETMessage(msgBytes []byte) {
 		t.logger.WithSession(sessionID).Info("Received error from TEE_T", zap.String("error", p.Error.GetMessage()))
 		return
 
-	case *teeproto.Envelope_MpcOprfRound2:
-		handlerErr = t.handleOPRFRound2(sessionID, p.MpcOprfRound2)
+	case *teeproto.Envelope_OprfMpcRound2:
+		if handlerErr = t.handleOPRFRound2(sessionID, p.OprfMpcRound2); handlerErr != nil {
+			t.terminateSessionWithError(sessionID, shared.ReasonOPRFProtocolFailed, handlerErr, "MPC OPRF Round2 failed")
+		}
+		return
 
-	case *teeproto.Envelope_MpcOprfResult:
-		handlerErr = t.handleOPRFResult(sessionID, p.MpcOprfResult)
+	case *teeproto.Envelope_OprfMpcResult:
+		if handlerErr = t.handleOPRFResult(sessionID, p.OprfMpcResult); handlerErr != nil {
+			t.terminateSessionWithError(sessionID, shared.ReasonOPRFProtocolFailed, handlerErr, "MPC OPRF result handling failed")
+		}
+		return
 
 	case *teeproto.Envelope_CiphertextReady:
-		handlerErr = t.handleCiphertextReady(sessionID, p.CiphertextReady)
+		if handlerErr = t.handleCiphertextReady(sessionID, p.CiphertextReady); handlerErr != nil {
+			t.terminateSessionWithError(sessionID, shared.ReasonResponseValidationFailed, handlerErr, "Ciphertext verification failed")
+		}
+		return
 
 	default:
 		err := fmt.Errorf("unknown TEE_T message type: %T", p)
@@ -178,8 +190,9 @@ func (t *TEEK) handleSharedTEETMessage(msgBytes []byte) {
 	}
 
 	// ZERO ERROR POLICY: Any handler error terminates the session immediately
+	// This catches handleBatchedResponseLengths errors
 	if handlerErr != nil {
-		t.terminateSessionWithError(sessionID, shared.ReasonOPRFProtocolFailed, handlerErr, "OPRF protocol failed")
+		t.terminateSessionWithError(sessionID, shared.ReasonResponseValidationFailed, handlerErr, "Response processing failed")
 	}
 }
 

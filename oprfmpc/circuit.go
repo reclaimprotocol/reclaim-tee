@@ -542,8 +542,9 @@ func SerializeRound3(p CMACRound3Payload) []byte {
 
 // DeserializeRound3 deserializes bytes to CMACRound3Payload
 func DeserializeRound3(data []byte) (CMACRound3Payload, error) {
+	// Minimum header: sessionID(8) + key(32) + numCT(4) = 44 bytes
 	if len(data) < 44 {
-		return CMACRound3Payload{}, errors.New("data too short for round3")
+		return CMACRound3Payload{}, errors.New("data too short for round3 header")
 	}
 
 	offset := 0
@@ -555,8 +556,17 @@ func DeserializeRound3(data []byte) (CMACRound3Payload, error) {
 	offset += 32
 
 	// Ciphertexts (each is 32 bytes: Zero[16] + One[16])
+	if offset+4 > len(data) {
+		return CMACRound3Payload{}, errors.New("data too short for ciphertext count")
+	}
 	numCT := binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
+
+	// Bounds check for ciphertexts
+	if offset+int(numCT)*32 > len(data) {
+		return CMACRound3Payload{}, fmt.Errorf("data too short for %d ciphertexts: need %d bytes from offset %d, have %d",
+			numCT, numCT*32, offset, len(data)-offset)
+	}
 	ciphertexts := make([]ot.LabelCiphertext, numCT)
 	for i := range ciphertexts {
 		var zero, one ot.LabelData
@@ -567,12 +577,23 @@ func DeserializeRound3(data []byte) (CMACRound3Payload, error) {
 	}
 
 	// Garbled Tables
+	if offset+4 > len(data) {
+		return CMACRound3Payload{}, errors.New("data too short for gate count")
+	}
 	numGates := binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
 	gates := make([][]ot.Label, numGates)
 	for i := range gates {
+		if offset+4 > len(data) {
+			return CMACRound3Payload{}, fmt.Errorf("data too short for label count at gate %d", i)
+		}
 		numLabels := binary.BigEndian.Uint32(data[offset : offset+4])
 		offset += 4
+
+		// Bounds check for labels
+		if offset+int(numLabels)*16 > len(data) {
+			return CMACRound3Payload{}, fmt.Errorf("data too short for %d labels at gate %d", numLabels, i)
+		}
 		labels := make([]ot.Label, numLabels)
 		for j := range labels {
 			labels[j] = deserializeLabel(data[offset : offset+16])
@@ -582,8 +603,16 @@ func DeserializeRound3(data []byte) (CMACRound3Payload, error) {
 	}
 
 	// Garbler Inputs
+	if offset+4 > len(data) {
+		return CMACRound3Payload{}, errors.New("data too short for garbler input count")
+	}
 	numGI := binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
+
+	// Bounds check for garbler inputs
+	if offset+int(numGI)*16 > len(data) {
+		return CMACRound3Payload{}, fmt.Errorf("data too short for %d garbler inputs", numGI)
+	}
 	garblerInputs := make([]ot.Label, numGI)
 	for i := range garblerInputs {
 		garblerInputs[i] = deserializeLabel(data[offset : offset+16])
@@ -591,8 +620,16 @@ func DeserializeRound3(data []byte) (CMACRound3Payload, error) {
 	}
 
 	// Output Hints (each Wire is 32 bytes: L0[16] + L1[16])
+	if offset+4 > len(data) {
+		return CMACRound3Payload{}, errors.New("data too short for output hint count")
+	}
 	numOH := binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
+
+	// Bounds check for output hints
+	if offset+int(numOH)*32 > len(data) {
+		return CMACRound3Payload{}, fmt.Errorf("data too short for %d output hints", numOH)
+	}
 	outputHints := make([]ot.Wire, numOH)
 	for i := range outputHints {
 		outputHints[i].L0 = deserializeLabel(data[offset : offset+16])
