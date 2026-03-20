@@ -10,9 +10,7 @@
 package oprfmpc
 
 import (
-	"crypto/aes"
 	"crypto/elliptic"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -379,80 +377,6 @@ func PadZeros64(data []byte, dataLen int) ([64]byte, error) {
 	var padded [64]byte
 	copy(padded[:dataLen], data[:dataLen])
 	return padded, nil
-}
-
-// ComputeExpectedCMACWithLen computes expected AES-CMAC with explicit data length (for testing)
-func ComputeExpectedCMACWithLen(dataK, dataT, keyShareK, keyShareT []byte, dataLen int) [16]byte {
-	var key [16]byte
-	for i := 0; i < 16 && i < len(keyShareK) && i < len(keyShareT); i++ {
-		key[i] = keyShareK[i] ^ keyShareT[i]
-	}
-
-	paddedK, _ := PadZeros64(dataK, dataLen)
-	paddedT, _ := PadZeros64(dataT, dataLen)
-
-	var data [64]byte
-	for i := 0; i < 64; i++ {
-		data[i] = paddedK[i] ^ paddedT[i]
-	}
-
-	return aesCMAC(key[:], data[:])
-}
-
-// HashCMACOutput computes SHA256 of the CMAC output
-func HashCMACOutput(cmac [16]byte) [32]byte {
-	return sha256.Sum256(cmac[:])
-}
-
-func aesCMAC(key, data []byte) [16]byte {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		panic(err)
-	}
-
-	var zero [16]byte
-	var L [16]byte
-	block.Encrypt(L[:], zero[:])
-
-	K1 := cmacLeftShift(L)
-
-	var C [16]byte
-	var M1 [16]byte
-	copy(M1[:], data[0:16])
-	block.Encrypt(C[:], M1[:])
-
-	for i := 0; i < 16; i++ {
-		C[i] ^= data[16+i]
-	}
-	block.Encrypt(C[:], C[:])
-
-	for i := 0; i < 16; i++ {
-		C[i] ^= data[32+i]
-	}
-	block.Encrypt(C[:], C[:])
-
-	for i := 0; i < 16; i++ {
-		C[i] ^= data[48+i] ^ K1[i]
-	}
-	block.Encrypt(C[:], C[:])
-
-	return C
-}
-
-func cmacLeftShift(L [16]byte) [16]byte {
-	var result [16]byte
-	var carry byte = 0
-
-	for i := 15; i >= 0; i-- {
-		result[i] = (L[i] << 1) | carry
-		carry = L[i] >> 7
-	}
-
-	if L[0]>>7 == 1 {
-		result[15] ^= 0x87
-	}
-
-	return result
 }
 
 // Serialization helpers for wire protocol

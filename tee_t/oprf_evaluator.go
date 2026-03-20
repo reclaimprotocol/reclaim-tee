@@ -187,7 +187,7 @@ func (t *TEET) handleOPRFRound3(sessionID string, msg *teeproto.MPCOPRFRound3) e
 		}
 	}
 
-	if rangeIndex < 0 || evalSession == nil {
+	if rangeIndex < 0 {
 		return fmt.Errorf("no evaluator session found for OPRF session %d", msg.OprfSessionId)
 	}
 

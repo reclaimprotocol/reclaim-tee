@@ -147,7 +147,7 @@ func (t *TEEK) handleOPRFRound2(sessionID string, msg *teeproto.MPCOPRFRound2) e
 		}
 	}
 
-	if rangeIndex < 0 || garblerSession == nil {
+	if rangeIndex < 0 {
 		return fmt.Errorf("no garbler session found for OPRF session %d", msg.OprfSessionId)
 	}
 

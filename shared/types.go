@@ -3,11 +3,12 @@ package shared
 import (
 	"context"
 	"fmt"
-	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 	"reflect"
 	"sort"
 	"sync"
 	"time"
+
+	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 
 	"github.com/gorilla/websocket"
 )
@@ -58,10 +59,9 @@ const (
 	MsgTCPReady          MessageType = "tcp_ready"
 
 	// TEE_K to Client messages
-	MsgConnectionReady        MessageType = "connection_ready"
-	MsgSendTCPData            MessageType = "send_tcp_data"
-	MsgHandshakeComplete      MessageType = "handshake_complete"
-	MsgHandshakeKeyDisclosure MessageType = "handshake_key_disclosure"
+	MsgConnectionReady   MessageType = "connection_ready"
+	MsgSendTCPData       MessageType = "send_tcp_data"
+	MsgHandshakeComplete MessageType = "handshake_complete"
 
 	// Phase 2: Split AEAD messages
 	// TEE_K to TEE_T messages
@@ -79,9 +79,8 @@ const (
 	MsgRedactionStreams MessageType = "redaction_streams"
 
 	// Single Session Mode message types
-	MsgFinished         MessageType = "finished"
-	MsgSignedTranscript MessageType = "signed_transcript"
-	MsgRedactionSpec    MessageType = "redaction_spec"
+	MsgFinished      MessageType = "finished"
+	MsgRedactionSpec MessageType = "redaction_spec"
 )
 
 const (
@@ -130,11 +129,9 @@ func (m *Message) UnmarshalData(v any) error {
 type SessionState string
 
 const (
-	SessionStateNew         SessionState = "new"
-	SessionStateActive      SessionState = "active"
-	SessionStateHandshaking SessionState = "handshaking"
-	SessionStateReady       SessionState = "ready"
-	SessionStateClosed      SessionState = "closed"
+	SessionStateNew    SessionState = "new"
+	SessionStateActive SessionState = "active"
+	SessionStateClosed SessionState = "closed"
 )
 
 // OPRFSessionState represents the state of MPC OPRF processing for a session
@@ -142,7 +139,6 @@ type OPRFSessionState string
 
 const (
 	OPRFStateNone       OPRFSessionState = ""
-	OPRFStateWaiting    OPRFSessionState = "waiting"
 	OPRFStateInProgress OPRFSessionState = "in_progress"
 	OPRFStateComplete   OPRFSessionState = "complete"
 	OPRFStateFailed     OPRFSessionState = "failed"
@@ -150,12 +146,7 @@ const (
 
 // MPC OPRF error reasons
 const (
-	ReasonOPRFRangeOutOfBounds    = "oprf_range_out_of_bounds"
-	ReasonOPRFRangeTooLarge       = "oprf_range_too_large"
-	ReasonOPRFSessionHashMismatch = "oprf_session_hash_mismatch"
-	ReasonOPRFPositionMismatch    = "oprf_position_mismatch"
-	ReasonOPRFRoundTimeout        = "oprf_round_timeout"
-	ReasonOPRFEvaluationFailed    = "oprf_evaluation_failed"
+	ReasonOPRFEvaluationFailed = "oprf_evaluation_failed"
 )
 
 // OPRFResult holds the result of MPC OPRF computation for a single range
@@ -453,7 +444,6 @@ type SignedTranscript struct {
 const (
 	TranscriptDataTypeTLSRecord           = "tls_record"
 	TranscriptDataTypeHTTPRequestRedacted = "http_request_redacted"
-	TranscriptDataTypeCommitment          = "commitment"
 )
 
 // RequestRedactionSpec specifies which parts of the request should be redacted
