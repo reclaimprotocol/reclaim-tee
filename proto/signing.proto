@@ -61,8 +61,7 @@ message TLSPacketInfo {
 message OPRFOutput {
   int32 tls_start = 1;
   int32 tls_length = 2;
-  bytes cmac_output = 3;  // 16 bytes
-  bytes hash_output = 4;  // 32 bytes
+  bytes hash_output = 3;  // 32 bytes SHA256(CMAC)
 }
 
 message SignedMessage {

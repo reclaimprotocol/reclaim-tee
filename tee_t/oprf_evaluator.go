@@ -248,17 +248,6 @@ func (t *TEET) handleOPRFRound3(sessionID string, msg *teeproto.MPCOPRFRound3) e
 	return nil
 }
 
-// computeTLSSessionHash computes a hash of TLS session parameters for replay protection
-func (t *TEET) computeTLSSessionHash(sessionID string, teetState *TEETSessionState) []byte {
-	// Use session ID and consolidated ciphertext hash as session binding
-	h := sha256.New()
-	h.Write([]byte(sessionID))
-	// Include a hash of the ciphertext to bind to this specific response
-	ciphertextHash := sha256.Sum256(teetState.ConsolidatedResponseCiphertext)
-	h.Write(ciphertextHash[:])
-	return h.Sum(nil)
-}
-
 // sendMPCOPRFRound2ToTEEK sends Round2 message to TEE_K
 func (t *TEET) sendMPCOPRFRound2ToTEEK(sessionID string, round2 *teeproto.MPCOPRFRound2) error {
 	session, err := t.sessionManager.GetSession(sessionID)
@@ -325,6 +314,7 @@ func (t *TEET) sendMPCOPRFResultToTEEK(sessionID string, result *teeproto.MPCOPR
 
 // buildOPRFOutputsForSigning builds OPRF outputs for inclusion in signed payload
 // IMPORTANT: Iterates over ClientOPRFRanges slice (not OPRFResults map) for deterministic ordering
+// ZERO ERROR POLICY: Returns nil if any expected result is missing (caller should check)
 func (t *TEET) buildOPRFOutputsForSigning(teetState *TEETSessionState) []*teeproto.OPRFOutput {
 	if teetState.OPRFState != shared.OPRFStateComplete || len(teetState.OPRFResults) == 0 {
 		return nil
@@ -336,12 +326,17 @@ func (t *TEET) buildOPRFOutputsForSigning(teetState *TEETSessionState) []*teepro
 	for i, r := range teetState.ClientOPRFRanges {
 		result, ok := teetState.OPRFResults[i]
 		if !ok {
-			continue
+			// ZERO ERROR POLICY: Missing result when state is Complete is a critical error
+			// This should never happen - return nil to signal failure
+			t.logger.Error("CRITICAL: Missing OPRF result for range",
+				zap.Int("range_index", i),
+				zap.Int("expected_count", len(teetState.ClientOPRFRanges)),
+				zap.Int("actual_count", len(teetState.OPRFResults)))
+			return nil
 		}
 		outputs = append(outputs, &teeproto.OPRFOutput{
 			TlsStart:   r.TlsStart,
 			TlsLength:  r.TlsLength,
-			CmacOutput: result.CMACOutput[:],
 			HashOutput: result.HashOutput[:],
 		})
 	}

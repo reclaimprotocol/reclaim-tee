@@ -366,8 +366,7 @@ type OPRFOutput struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TlsStart      int32                  `protobuf:"varint,1,opt,name=tls_start,json=tlsStart,proto3" json:"tls_start,omitempty"`
 	TlsLength     int32                  `protobuf:"varint,2,opt,name=tls_length,json=tlsLength,proto3" json:"tls_length,omitempty"`
-	CmacOutput    []byte                 `protobuf:"bytes,3,opt,name=cmac_output,json=cmacOutput,proto3" json:"cmac_output,omitempty"` // 16 bytes
-	HashOutput    []byte                 `protobuf:"bytes,4,opt,name=hash_output,json=hashOutput,proto3" json:"hash_output,omitempty"` // 32 bytes
+	HashOutput    []byte                 `protobuf:"bytes,3,opt,name=hash_output,json=hashOutput,proto3" json:"hash_output,omitempty"` // 32 bytes SHA256(CMAC)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -414,13 +413,6 @@ func (x *OPRFOutput) GetTlsLength() int32 {
 		return x.TlsLength
 	}
 	return 0
-}
-
-func (x *OPRFOutput) GetCmacOutput() []byte {
-	if x != nil {
-		return x.CmacOutput
-	}
-	return nil
 }
 
 func (x *OPRFOutput) GetHashOutput() []byte {
@@ -558,15 +550,13 @@ const file_signing_proto_rawDesc = "" +
 	"\aseq_num\x18\x01 \x01(\x04R\x06seqNum\x12\x1a\n" +
 	"\bposition\x18\x02 \x01(\rR\bposition\x12\x16\n" +
 	"\x06length\x18\x03 \x01(\rR\x06length\x12\x14\n" +
-	"\x05nonce\x18\x04 \x01(\fR\x05nonce\"\x8a\x01\n" +
+	"\x05nonce\x18\x04 \x01(\fR\x05nonce\"i\n" +
 	"\n" +
 	"OPRFOutput\x12\x1b\n" +
 	"\ttls_start\x18\x01 \x01(\x05R\btlsStart\x12\x1d\n" +
 	"\n" +
 	"tls_length\x18\x02 \x01(\x05R\ttlsLength\x12\x1f\n" +
-	"\vcmac_output\x18\x03 \x01(\fR\n" +
-	"cmacOutput\x12\x1f\n" +
-	"\vhash_output\x18\x04 \x01(\fR\n" +
+	"\vhash_output\x18\x03 \x01(\fR\n" +
 	"hashOutput\"\xec\x02\n" +
 	"\rSignedMessage\x12/\n" +
 	"\tbody_type\x18\x01 \x01(\x0e2\x12.teeproto.BodyTypeR\bbodyType\x12\x12\n" +

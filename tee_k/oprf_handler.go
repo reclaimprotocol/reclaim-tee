@@ -107,7 +107,10 @@ func (t *TEEK) initiateOPRFForRange(sessionID string, teekState *TEEKSessionStat
 	teekState.GarblerSessions[rangeIndex] = garblerState
 
 	// Compute TLS session hash for replay protection
-	tlsSessionHash := t.computeTLSSessionHash(sessionID)
+	tlsSessionHash, err := t.computeTLSSessionHash(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to compute TLS session hash: %w", err)
+	}
 
 	t.logger.WithSession(sessionID).Info("Sending MPC OPRF Round1 to TEE_T",
 		zap.Int("range_index", rangeIndex),
@@ -237,10 +240,11 @@ func (t *TEEK) handleOPRFResult(sessionID string, msg *teeproto.MPCOPRFResult) e
 }
 
 // computeTLSSessionHash computes a hash of TLS session parameters for replay protection
-func (t *TEEK) computeTLSSessionHash(sessionID string) []byte {
+// Returns (hash, error) to ensure callers handle failures explicitly
+func (t *TEEK) computeTLSSessionHash(sessionID string) ([]byte, error) {
 	teekState, err := t.sessionManager.GetTEEKSessionState(sessionID)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to get session state: %w", err)
 	}
 
 	// Include session-specific data that can't be replayed
@@ -248,7 +252,7 @@ func (t *TEEK) computeTLSSessionHash(sessionID string) []byte {
 	h.Write([]byte(sessionID))
 	h.Write(teekState.ClientHello)
 	h.Write(teekState.ServerHello)
-	return h.Sum(nil)
+	return h.Sum(nil), nil
 }
 
 // sendMPCOPRFRound1ToTEET sends Round1 message to TEE_T
@@ -299,6 +303,7 @@ func (t *TEEK) sendMPCOPRFRound3ToTEET(sessionID string, round3 *teeproto.MPCOPR
 
 // buildOPRFOutputsForSigning builds OPRF outputs for inclusion in signed payload
 // IMPORTANT: Iterates over OPRFRanges slice (not OPRFResults map) for deterministic ordering
+// ZERO ERROR POLICY: Returns nil if any expected result is missing (caller should check)
 func (t *TEEK) buildOPRFOutputsForSigning(teekState *TEEKSessionState) []*teeproto.OPRFOutput {
 	if teekState.OPRFState != shared.OPRFStateComplete || len(teekState.OPRFResults) == 0 {
 		return nil
@@ -310,12 +315,17 @@ func (t *TEEK) buildOPRFOutputsForSigning(teekState *TEEKSessionState) []*teepro
 	for i, r := range teekState.OPRFRanges {
 		result, ok := teekState.OPRFResults[i]
 		if !ok {
-			continue
+			// ZERO ERROR POLICY: Missing result when state is Complete is a critical error
+			// This should never happen - return nil to signal failure
+			t.logger.Error("CRITICAL: Missing OPRF result for range",
+				zap.Int("range_index", i),
+				zap.Int("expected_count", len(teekState.OPRFRanges)),
+				zap.Int("actual_count", len(teekState.OPRFResults)))
+			return nil
 		}
 		outputs = append(outputs, &teeproto.OPRFOutput{
 			TlsStart:   r.TlsStart,
 			TlsLength:  r.TlsLength,
-			CmacOutput: result.CMACOutput[:],
 			HashOutput: result.HashOutput[:],
 		})
 	}

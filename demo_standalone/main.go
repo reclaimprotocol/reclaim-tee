@@ -204,10 +204,10 @@ func main() {
 	logger.Info("=== Client ===")
 
 	// Default to enclave mode, fallback to standalone if specified
-	teekURL := "ws://localhost:8080/ws"                        // Default to enclave
-	attestorURL := "wss://attestor.reclaimprotocol.org:444/ws" // Default attestor URL
-	forceTLSVersion := ""                                      // Default to auto-negotiate
-	forceCipherSuite := ""                                     // Default to auto-negotiate
+	teekURL := "ws://localhost:8080/ws"     // Default to enclave
+	attestorURL := "ws://localhost:8001/ws" // Default attestor URL
+	forceTLSVersion := ""                   // Default to auto-negotiate
+	forceCipherSuite := ""                  // Default to auto-negotiate
 
 	if len(os.Args) > 1 {
 		teekURL = os.Args[1]
@@ -269,7 +269,7 @@ func main() {
 		ResponseRedactions: []providers.ResponseRedaction{
 			{
 				XPath: "/html/body/footer/div[2]/div/div[1]/ul[3]/li[2]/a",
-				Regex: "href=\"https://(?<addr>www.trafficsafetymarketing.gov)/\"",
+				Regex: "href=\"https://(?<addr>{{addr}})/\"",
 				Hash:  ptrString("oprf-mpc"), // Use MPC OPRF instead of client-side TOPRF
 			},
 		},

@@ -209,9 +209,6 @@ func (c *Client) verifyMPCOPRFOutputsMatch() error {
 			kOutputs[i].TlsLength != tOutputs[i].TlsLength {
 			return fmt.Errorf("MPC OPRF range mismatch at index %d", i)
 		}
-		if !bytes.Equal(kOutputs[i].CmacOutput, tOutputs[i].CmacOutput) {
-			return fmt.Errorf("MPC OPRF CMAC mismatch at index %d", i)
-		}
 		if !bytes.Equal(kOutputs[i].HashOutput, tOutputs[i].HashOutput) {
 			return fmt.Errorf("MPC OPRF hash mismatch at index %d", i)
 		}
