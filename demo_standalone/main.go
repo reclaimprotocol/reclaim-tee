@@ -143,6 +143,11 @@ func zkInitCallback(algorithmID uint8) bool {
 	return true
 }
 
+// ptrString returns a pointer to a string value
+func ptrString(s string) *string {
+	return &s
+}
+
 // setupZKLazyLoading sets up the lazy loading callback for ZK circuits
 func setupZKLazyLoading(logger *shared.Logger) error {
 	// Resolve and validate circuits directory exists
@@ -265,7 +270,7 @@ func main() {
 			{
 				XPath: "/html/body/footer/div[2]/div/div[1]/ul[3]/li[2]/a",
 				Regex: "href=\"https://(?<addr>www.trafficsafetymarketing.gov)/\"",
-				Hash:  providers.HASH_TYPE_OPRF,
+				Hash:  ptrString("oprf-mpc"), // Use MPC OPRF instead of client-side TOPRF
 			},
 		},
 		ParamValues: map[string]string{

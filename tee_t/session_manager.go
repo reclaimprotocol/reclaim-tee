@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/reclaimprotocol/reclaim-tee/oprfmpc"
+	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 	"github.com/reclaimprotocol/reclaim-tee/shared"
 
 	"github.com/gorilla/websocket"
@@ -18,6 +20,17 @@ type TEETSessionState struct {
 	ExpectedFragmentCount          int                                     // Total number of fragments expected
 	RequestProofStreams            [][]byte                                // Store R_SP streams for cryptographic signing
 	ConsolidatedResponseCiphertext []byte                                  // Response ciphertext consolidation
+
+	// MPC OPRF state
+	OPRFKeyShare         []byte                                // 16-byte key share for MPC OPRF
+	EvaluatorSessions    map[int]*oprfmpc.CMACEvaluatorSession // Per-range evaluator sessions
+	ClientOPRFRanges     []*teeproto.OPRFRangeSpec             // Client-provided OPRF ranges
+	ClientRangesReceived bool                                  // Whether client has sent ranges
+	PendingRound1s       []*teeproto.MPCOPRFRound1             // Queued Round1 messages before client ranges arrive
+	OPRFResults          map[int]*shared.OPRFResult            // Completed OPRF results by range index
+	OPRFState            shared.OPRFSessionState               // Current OPRF processing state
+	OPRFExpectedCount    int                                   // Number of OPRF results expected
+	TLSSessionHash       []byte                                // Cached TLS session hash for replay protection
 }
 
 type TEETSessionManager struct {

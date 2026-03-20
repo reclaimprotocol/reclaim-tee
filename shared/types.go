@@ -137,6 +137,36 @@ const (
 	SessionStateClosed      SessionState = "closed"
 )
 
+// OPRFSessionState represents the state of MPC OPRF processing for a session
+type OPRFSessionState string
+
+const (
+	OPRFStateNone       OPRFSessionState = ""
+	OPRFStateWaiting    OPRFSessionState = "waiting"
+	OPRFStateInProgress OPRFSessionState = "in_progress"
+	OPRFStateComplete   OPRFSessionState = "complete"
+	OPRFStateFailed     OPRFSessionState = "failed"
+)
+
+// MPC OPRF error reasons
+const (
+	ReasonOPRFRangeOutOfBounds    = "oprf_range_out_of_bounds"
+	ReasonOPRFRangeTooLarge       = "oprf_range_too_large"
+	ReasonOPRFSessionHashMismatch = "oprf_session_hash_mismatch"
+	ReasonOPRFPositionMismatch    = "oprf_position_mismatch"
+	ReasonOPRFRoundTimeout        = "oprf_round_timeout"
+	ReasonOPRFEvaluationFailed    = "oprf_evaluation_failed"
+)
+
+// OPRFResult holds the result of MPC OPRF computation for a single range
+type OPRFResult struct {
+	RangeIndex int      // Index in the OPRFRanges slice
+	TLSStart   int      // Start position in TLS stream
+	TLSLength  int      // Length in TLS stream
+	CMACOutput [16]byte // 16-byte AES-CMAC output
+	HashOutput [32]byte // 32-byte SHA256(CMAC) output
+}
+
 // Session represents a complete client session across both TEE_K and TEE_T
 type Session struct {
 	ID           string

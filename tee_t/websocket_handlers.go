@@ -73,6 +73,14 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 				arr = append(arr, shared.EncryptedResponseData{EncryptedData: r.GetEncryptedData(), Tag: r.GetTag(), RecordHeader: r.GetRecordHeader(), SeqNum: r.GetSeqNum(), ExplicitIV: r.GetExplicitIv()})
 			}
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgBatchedEncryptedResponses, Data: shared.BatchedEncryptedResponseData{Responses: arr, SessionID: p.BatchedEncryptedResponses.GetSessionId(), TotalCount: int(p.BatchedEncryptedResponses.GetTotalCount())}}
+		case *teeproto.Envelope_OprfRangesSubmission:
+			// Handle OPRF ranges from client directly
+			// ZERO ERROR POLICY: Any error terminates the session immediately
+			if err := t.handleOPRFRangesFromClient(env.GetSessionId(), p.OprfRangesSubmission); err != nil {
+				t.terminateSessionWithError(env.GetSessionId(), shared.ReasonOPRFProtocolFailed, err, "Failed to handle OPRF ranges from client")
+				return
+			}
+			continue
 		default:
 			t.sendErrorToClient(sessionID, "Unknown message type")
 		}
@@ -302,6 +310,18 @@ func (t *TEET) handleTEEKWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Terminate session locally without sending error back (avoid infinite loop)
 			t.logger.WithSession(sessionID).Info("Received error from TEE_K, cleaning up session", zap.String("error", p.Error.GetMessage()))
 			t.cleanupSession(sessionID)
+			continue
+		case *teeproto.Envelope_MpcOprfRound1:
+			// Handle MPC OPRF Round1 from TEE_K
+			if err := t.handleOPRFRound1(sessionID, p.MpcOprfRound1); err != nil {
+				t.terminateSessionWithError(sessionID, shared.ReasonOPRFEvaluationFailed, err, "Failed to handle OPRF Round1")
+			}
+			continue
+		case *teeproto.Envelope_MpcOprfRound3:
+			// Handle MPC OPRF Round3 from TEE_K
+			if err := t.handleOPRFRound3(sessionID, p.MpcOprfRound3); err != nil {
+				t.terminateSessionWithError(sessionID, shared.ReasonOPRFEvaluationFailed, err, "Failed to handle OPRF Round3")
+			}
 			continue
 		default:
 			t.logger.Error("Unknown message type from TEE_K",

@@ -5,6 +5,8 @@ import (
 	"sync"
 
 	"github.com/reclaimprotocol/reclaim-tee/minitls"
+	"github.com/reclaimprotocol/reclaim-tee/oprfmpc"
+	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 	"github.com/reclaimprotocol/reclaim-tee/shared"
 
 	"github.com/gorilla/websocket"
@@ -26,6 +28,16 @@ type TEEKSessionState struct {
 	TCPReady          chan bool
 	CombinedKey       []byte
 	ServerSequenceNum uint64
+
+	// MPC OPRF state
+	ConsolidatedKeystream []byte                              // Keystream for response decryption
+	OPRFKeyShare          []byte                              // 16-byte key share for MPC OPRF
+	GarblerSessions       map[int]*oprfmpc.CMACGarblerSession // Per-range garbler sessions
+	OPRFRanges            []*teeproto.OPRFRangeSpec           // Client-provided OPRF ranges
+	OPRFResults           map[int]*shared.OPRFResult          // Completed OPRF results by range index
+	OPRFState             shared.OPRFSessionState             // Current OPRF processing state
+	OPRFExpectedCount     int                                 // Number of OPRF results expected
+	ClientRangesReceived  bool                                // Whether client has sent ranges
 }
 
 type TEEKSessionManager struct {

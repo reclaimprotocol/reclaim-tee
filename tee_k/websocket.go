@@ -162,15 +162,24 @@ func (t *TEEK) handleSharedTEETMessage(msgBytes []byte) {
 		t.logger.WithSession(sessionID).Info("Received error from TEE_T", zap.String("error", p.Error.GetMessage()))
 		return
 
+	case *teeproto.Envelope_MpcOprfRound2:
+		handlerErr = t.handleOPRFRound2(sessionID, p.MpcOprfRound2)
+
+	case *teeproto.Envelope_MpcOprfResult:
+		handlerErr = t.handleOPRFResult(sessionID, p.MpcOprfResult)
+
+	case *teeproto.Envelope_CiphertextReady:
+		handlerErr = t.handleCiphertextReady(sessionID, p.CiphertextReady)
+
 	default:
 		err := fmt.Errorf("unknown TEE_T message type: %T", p)
 		t.terminateSessionWithError(sessionID, shared.ReasonUnknownMessageType, err, "Unknown TEE_T message type")
 		return
 	}
 
-	// If handler returned error, session already terminated
+	// ZERO ERROR POLICY: Any handler error terminates the session immediately
 	if handlerErr != nil {
-		t.logger.WithSession(sessionID).Debug("Handler returned error, session terminated")
+		t.terminateSessionWithError(sessionID, shared.ReasonOPRFProtocolFailed, handlerErr, "OPRF protocol failed")
 	}
 }
 
@@ -394,6 +403,8 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Protocol specification: No client finished messages in single session mode
 			// TEE_K only sends finished to TEE_T, doesn't receive from client
 			t.logger.WithSession(sessionID).Info("Ignoring finished message from client (not needed in single session mode)")
+		case *teeproto.Envelope_OprfRangesSubmission:
+			handlerErr = t.handleOPRFRangesFromClient(sessionID, p.OprfRangesSubmission)
 		default:
 			unknownMsgErr := fmt.Errorf("unknown message type: %T", p)
 			t.terminateSessionWithError(sessionID, shared.ReasonUnknownMessageType, unknownMsgErr, "Unknown message type")

@@ -419,6 +419,22 @@ func (c *Client) sendRedactionSpec() error {
 		return fmt.Errorf("no websocket connection to TEE_K")
 	}
 
+	// IMPORTANT: Send MPC OPRF ranges BEFORE redaction spec
+	// This allows TEEs to set OPRF state before processing redaction,
+	// preventing premature signature sending
+	mpcRanges := c.buildMPCOPRFRanges()
+	if len(mpcRanges) > 0 {
+		if err := c.sendOPRFRangesToBothTEEs(mpcRanges); err != nil {
+			return fmt.Errorf("send MPC OPRF ranges: %w", err)
+		}
+		c.logger.Info("Sent MPC OPRF ranges to both TEEs", zap.Int("count", len(mpcRanges)))
+	} else {
+		// Send empty submission so TEEs know to skip OPRF
+		if err := c.sendOPRFRangesToBothTEEs(nil); err != nil {
+			return fmt.Errorf("send empty MPC OPRF ranges: %w", err)
+		}
+	}
+
 	// Map ranges
 	pr := make([]*teeproto.ResponseRedactionRange, 0, len(redactionSpec.Ranges))
 	for _, r := range redactionSpec.Ranges {
@@ -437,10 +453,46 @@ func (c *Client) sendRedactionSpec() error {
 	}
 
 	c.logger.Info("Sent redaction specification to TEE_K", zap.Int("consolidated_ranges", len(redactionSpec.Ranges)))
-	c.logger.Info("Redaction specification sent successfully")
 
 	c.advanceToPhase(PhaseReceivingRedacted)
 
 	c.logger.Info("Entering redacted receiving phase - waiting for TEE_K to send 'finished' to TEE_T")
 	return nil
+}
+
+// buildMPCOPRFRanges converts HTTP response redaction ranges with hash="oprf-mpc" to TLS positions
+func (c *Client) buildMPCOPRFRanges() []*teeproto.OPRFRangeSpec {
+	var ranges []*teeproto.OPRFRangeSpec
+
+	// Iterate through oprfRedactionRanges which maps HTTP start -> length
+	// This was populated during response analysis for ranges with hash="oprf-mpc"
+	for httpStart, httpLength := range c.mpcOprfRedactionRanges {
+		httpEnd := httpStart + httpLength - 1
+
+		// Convert HTTP range to TLS stream positions
+		tlsStart := c.httpPositionToTlsPosition(httpStart)
+		tlsEnd := c.httpPositionToTlsPosition(httpEnd) + 1
+
+		// Validate length fits in single OPRF (max 64 bytes)
+		tlsLength := tlsEnd - tlsStart
+		if tlsLength > 64 {
+			c.logger.Error("MPC OPRF range too long",
+				zap.Int("tls_length", tlsLength),
+				zap.Int("max", 64))
+			continue
+		}
+		if tlsLength <= 0 {
+			c.logger.Error("Invalid MPC OPRF range",
+				zap.Int("tls_start", tlsStart),
+				zap.Int("tls_end", tlsEnd))
+			continue
+		}
+
+		ranges = append(ranges, &teeproto.OPRFRangeSpec{
+			TlsStart:  int32(tlsStart),
+			TlsLength: int32(tlsLength),
+		})
+	}
+
+	return ranges
 }

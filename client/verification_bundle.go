@@ -150,7 +150,12 @@ func (c *Client) PrepareZKProofForTOPRF(httpRangeStart, httpRangeEnd int, toprfM
 
 // BuildVerificationBundleData collects all artefacts and processes OPRF for hashed ranges
 func (c *Client) BuildVerificationBundleData(attestorClient *AttestorClient, providerParams *providers.HTTPProviderParams) ([]byte, error) {
-	// Process OPRF for all hashed ranges first
+	// Verify MPC OPRF outputs match between TEE_K and TEE_T
+	if err := c.verifyMPCOPRFOutputsMatch(); err != nil {
+		return nil, fmt.Errorf("MPC OPRF verification failed: %w", err)
+	}
+
+	// Process OPRF for all hashed ranges first (client-side TOPRF)
 	if err := c.ProcessOPRFForHashedRanges(attestorClient); err != nil {
 		return nil, fmt.Errorf("failed to process OPRF for hashed ranges: %v", err)
 	}
@@ -162,6 +167,59 @@ func (c *Client) BuildVerificationBundleData(attestorClient *AttestorClient, pro
 
 	// Then build the verification bundle
 	return c.buildVerificationBundle()
+}
+
+// verifyMPCOPRFOutputsMatch verifies that MPC OPRF outputs from both TEEs match
+func (c *Client) verifyMPCOPRFOutputsMatch() error {
+	// Skip if no MPC OPRF was used
+	if len(c.mpcOprfRedactionRanges) == 0 {
+		return nil
+	}
+
+	// Ensure we have both signed messages
+	if c.teekSignedMessage == nil {
+		return fmt.Errorf("missing TEE_K signed message")
+	}
+	if c.teetSignedMessage == nil {
+		return fmt.Errorf("missing TEE_T signed message")
+	}
+
+	// Extract OPRF outputs from signed payloads
+	var kPayload teeproto.KOutputPayload
+	if err := proto.Unmarshal(c.teekSignedMessage.GetBody(), &kPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_K payload: %w", err)
+	}
+
+	var tPayload teeproto.TOutputPayload
+	if err := proto.Unmarshal(c.teetSignedMessage.GetBody(), &tPayload); err != nil {
+		return fmt.Errorf("failed to unmarshal TEE_T payload: %w", err)
+	}
+
+	kOutputs := kPayload.GetOprfOutputs()
+	tOutputs := tPayload.GetOprfOutputs()
+
+	// Count must match
+	if len(kOutputs) != len(tOutputs) {
+		return fmt.Errorf("MPC OPRF count mismatch: K=%d T=%d", len(kOutputs), len(tOutputs))
+	}
+
+	// Each output must match (both TEEs computed same result)
+	for i := range kOutputs {
+		if kOutputs[i].TlsStart != tOutputs[i].TlsStart ||
+			kOutputs[i].TlsLength != tOutputs[i].TlsLength {
+			return fmt.Errorf("MPC OPRF range mismatch at index %d", i)
+		}
+		if !bytes.Equal(kOutputs[i].CmacOutput, tOutputs[i].CmacOutput) {
+			return fmt.Errorf("MPC OPRF CMAC mismatch at index %d", i)
+		}
+		if !bytes.Equal(kOutputs[i].HashOutput, tOutputs[i].HashOutput) {
+			return fmt.Errorf("MPC OPRF hash mismatch at index %d", i)
+		}
+	}
+
+	c.logger.Info("Verified MPC OPRF outputs match between TEE_K and TEE_T",
+		zap.Int("count", len(kOutputs)))
+	return nil
 }
 
 // stripUnsignedFields creates a copy of SignedMessage with only the signed fields.

@@ -546,3 +546,42 @@ func (c *Client) terminateConnectionWithError(reason string, err error) {
 		}
 	})
 }
+
+// sendOPRFRangesToBothTEEs sends MPC OPRF ranges to both TEE_K and TEE_T
+func (c *Client) sendOPRFRangesToBothTEEs(ranges []*teeproto.OPRFRangeSpec) error {
+	env := &teeproto.Envelope{
+		SessionId:   c.sessionID,
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_OprfRangesSubmission{
+			OprfRangesSubmission: &teeproto.OPRFRangesSubmission{
+				SessionId: c.sessionID,
+				Ranges:    ranges,
+			},
+		},
+	}
+
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("failed to marshal OPRF ranges envelope: %w", err)
+	}
+
+	// Send to TEE_K via wsConn
+	c.wsWriteMutex.Lock()
+	err = c.wsConn.WriteMessage(websocket.BinaryMessage, data)
+	c.wsWriteMutex.Unlock()
+	if err != nil {
+		return fmt.Errorf("send to TEE_K: %w", err)
+	}
+
+	// Send to TEE_T via teetConn
+	c.teetWriteMutex.Lock()
+	err = c.teetConn.WriteMessage(websocket.BinaryMessage, data)
+	c.teetWriteMutex.Unlock()
+	if err != nil {
+		return fmt.Errorf("send to TEE_T: %w", err)
+	}
+
+	c.mpcOprfRangesSent = true
+	c.mpcOprfRangesSpec = ranges
+	return nil
+}
