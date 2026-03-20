@@ -18,3 +18,12 @@ type TLSAnalysisResult struct {
 	AllHTTPContent     []byte                          // Concatenated HTTP content
 	TotalTLSOffset     int                             // Final offset in TLS stream after all records
 }
+
+// MPCOPRFRangeMapping tracks the relationship between HTTP and TLS positions
+// for MPC OPRF ranges, enabling matching of OPRF outputs back to HTTP data
+type MPCOPRFRangeMapping struct {
+	HTTPStart  int // Position within HTTP response
+	HTTPLength int // Length of the range
+	TLSStart   int // Position within TLS stream (sent to TEEs)
+	TLSLength  int // Length in TLS stream
+}

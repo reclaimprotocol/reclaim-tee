@@ -461,12 +461,22 @@ func (c *Client) sendRedactionSpec() error {
 }
 
 // buildMPCOPRFRanges converts HTTP response redaction ranges with hash="oprf-mpc" to TLS positions
+// Also stores the HTTP <-> TLS position mappings for later use in ParamValue replacement
 func (c *Client) buildMPCOPRFRanges() []*teeproto.OPRFRangeSpec {
 	var ranges []*teeproto.OPRFRangeSpec
+	c.mpcOprfRangeMappings = nil // Reset mappings
 
-	// Iterate through oprfRedactionRanges which maps HTTP start -> length
-	// This was populated during response analysis for ranges with hash="oprf-mpc"
-	for httpStart, httpLength := range c.mpcOprfRedactionRanges {
+	// Sort HTTP starts for deterministic ordering (map iteration is random)
+	// This ensures OPRF outputs match the same order as our mappings
+	httpStarts := make([]int, 0, len(c.mpcOprfRedactionRanges))
+	for httpStart := range c.mpcOprfRedactionRanges {
+		httpStarts = append(httpStarts, httpStart)
+	}
+	slices.Sort(httpStarts)
+
+	// Iterate in sorted order for deterministic TLS range ordering
+	for _, httpStart := range httpStarts {
+		httpLength := c.mpcOprfRedactionRanges[httpStart]
 		httpEnd := httpStart + httpLength - 1
 
 		// Convert HTTP range to TLS stream positions
@@ -487,6 +497,14 @@ func (c *Client) buildMPCOPRFRanges() []*teeproto.OPRFRangeSpec {
 				zap.Int("tls_end", tlsEnd))
 			continue
 		}
+
+		// Store mapping for later use in ParamValue replacement
+		c.mpcOprfRangeMappings = append(c.mpcOprfRangeMappings, MPCOPRFRangeMapping{
+			HTTPStart:  httpStart,
+			HTTPLength: httpLength,
+			TLSStart:   tlsStart,
+			TLSLength:  tlsLength,
+		})
 
 		ranges = append(ranges, &teeproto.OPRFRangeSpec{
 			TlsStart:  int32(tlsStart),

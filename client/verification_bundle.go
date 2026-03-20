@@ -219,6 +219,76 @@ func (c *Client) verifyMPCOPRFOutputsMatch() error {
 
 	c.logger.Info("Verified MPC OPRF outputs match between TEE_K and TEE_T",
 		zap.Int("count", len(kOutputs)))
+
+	// Populate oprfRanges for ParamValue replacement
+	return c.populateMPCOPRFRanges(kOutputs)
+}
+
+// populateMPCOPRFRanges populates oprfRanges from MPC OPRF outputs
+// This enables replaceParamValuesWithOPRF to work with MPC OPRF just like ZK OPRF
+func (c *Client) populateMPCOPRFRanges(oprfOutputs []*teeproto.OPRFOutput) error {
+	if len(oprfOutputs) == 0 {
+		return nil
+	}
+
+	// Need HTTP response data to extract original values
+	if c.lastResponseData == nil || len(c.lastResponseData.FullResponse) == 0 {
+		c.logger.Warn("No HTTP response data available for MPC OPRF ParamValue replacement")
+		return nil
+	}
+
+	// Need mappings from buildMPCOPRFRanges
+	if len(c.mpcOprfRangeMappings) != len(oprfOutputs) {
+		return fmt.Errorf("MPC OPRF mapping count mismatch: mappings=%d outputs=%d",
+			len(c.mpcOprfRangeMappings), len(oprfOutputs))
+	}
+
+	// Initialize oprfRanges if needed
+	if c.oprfRanges == nil {
+		c.oprfRanges = make(map[int]*OPRFRangeData)
+	}
+
+	// Match OPRF outputs to HTTP positions using stored mappings
+	// Both are ordered by TLS position (sorted in buildMPCOPRFRanges)
+	for i, output := range oprfOutputs {
+		mapping := c.mpcOprfRangeMappings[i]
+
+		// Verify TLS positions match
+		if int(output.TlsStart) != mapping.TLSStart || int(output.TlsLength) != mapping.TLSLength {
+			return fmt.Errorf("MPC OPRF position mismatch at index %d: expected TLS[%d:%d], got TLS[%d:%d]",
+				i, mapping.TLSStart, mapping.TLSStart+mapping.TLSLength,
+				output.TlsStart, output.TlsStart+output.TlsLength)
+		}
+
+		// Extract original data from HTTP response
+		httpEnd := mapping.HTTPStart + mapping.HTTPLength
+		if httpEnd > len(c.lastResponseData.FullResponse) {
+			c.logger.Warn("MPC OPRF HTTP range exceeds response data",
+				zap.Int("http_start", mapping.HTTPStart),
+				zap.Int("http_length", mapping.HTTPLength),
+				zap.Int("response_len", len(c.lastResponseData.FullResponse)))
+			continue
+		}
+		originalData := c.lastResponseData.FullResponse[mapping.HTTPStart:httpEnd]
+
+		// Create OPRFRangeData with MPC OPRF output
+		// Note: Only Data and FinalOutput are used by replaceParamValuesWithOPRF
+		c.oprfRanges[mapping.HTTPStart] = &OPRFRangeData{
+			Start:       mapping.HTTPStart,
+			Length:      mapping.HTTPLength,
+			Data:        originalData,
+			FinalOutput: output.HashOutput, // MPC OPRF uses SHA256(CMAC) as final output
+		}
+
+		c.logger.Debug("Populated MPC OPRF range for ParamValue replacement",
+			zap.Int("http_start", mapping.HTTPStart),
+			zap.Int("http_length", mapping.HTTPLength),
+			zap.String("data", string(originalData)),
+			zap.Int("hash_len", len(output.HashOutput)))
+	}
+
+	c.logger.Info("Populated oprfRanges from MPC OPRF outputs",
+		zap.Int("count", len(oprfOutputs)))
 	return nil
 }
 

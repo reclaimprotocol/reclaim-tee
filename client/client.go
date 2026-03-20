@@ -229,8 +229,9 @@ type Client struct {
 	oprfRanges map[int]*OPRFRangeData
 
 	// MPC OPRF state
-	mpcOprfRangesSent bool                      // Track if ranges were sent
-	mpcOprfRangesSpec []*teeproto.OPRFRangeSpec // Ranges sent to TEEs
+	mpcOprfRangesSent    bool                      // Track if ranges were sent
+	mpcOprfRangesSpec    []*teeproto.OPRFRangeSpec // Ranges sent to TEEs
+	mpcOprfRangeMappings []MPCOPRFRangeMapping     // HTTP <-> TLS position mappings for OPRF
 }
 
 func NewClient(teekURL string) *Client {
