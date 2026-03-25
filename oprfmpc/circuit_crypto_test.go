@@ -416,17 +416,24 @@ func TestCMAC_NISTVectors(t *testing.T) {
 	}
 
 	// Create inputs for the garbled circuit
-	// The circuit expects: gInput[64+i] XOR eInput[64+i] = key
-	// and: gInput[i] XOR eInput[i] = message
-	var garblerInput, evaluatorInput [80]byte
+	// The circuit expects: gInput[128+i] XOR eInput[128+i] = key
+	// and: gInput[i] XOR eInput[i] = message (128 bytes, zero-padded)
+	var garblerInput, evaluatorInput [144]byte
 
 	// Split the key: garbler has key, evaluator has zeros
-	copy(garblerInput[64:], key)
-	// evaluatorInput[64:] remains zeros
+	copy(garblerInput[128:], key)
+	// evaluatorInput[128:] remains zeros
 
-	// Split the message: garbler has message, evaluator has zeros
+	// Split the message: garbler has 64-byte message zero-padded to 128 bytes, evaluator has zeros
+	// Note: The remaining 64 bytes are zeros (CMAC of zero-padded message)
 	copy(garblerInput[:64], message)
-	// evaluatorInput[:64] remains zeros
+	// garblerInput[64:128] remains zeros (padding)
+	// evaluatorInput[:128] remains zeros
+
+	// For 128-byte input, we need to compute expected CMAC of the zero-padded message
+	var paddedMessage [128]byte
+	copy(paddedMessage[:64], message)
+	expectedCMAC = computeAESCMAC(key, paddedMessage[:])
 
 	// Run the garbled circuit OPRF
 	result, err := runCMACTest(t, garblerInput, evaluatorInput)
@@ -443,15 +450,15 @@ func TestCMAC_NISTVectors(t *testing.T) {
 func TestCMAC_XORSharedInputs(t *testing.T) {
 	// Use random key and message, but XOR-share them between parties
 	key := make([]byte, 16)
-	message := make([]byte, 64)
+	message := make([]byte, 128)
 	rand.Read(key)
 	rand.Read(message)
 
 	// Random shares
 	keyShare1 := make([]byte, 16)
 	keyShare2 := make([]byte, 16)
-	msgShare1 := make([]byte, 64)
-	msgShare2 := make([]byte, 64)
+	msgShare1 := make([]byte, 128)
+	msgShare2 := make([]byte, 128)
 	rand.Read(keyShare1)
 	rand.Read(msgShare1)
 
@@ -465,11 +472,11 @@ func TestCMAC_XORSharedInputs(t *testing.T) {
 	}
 
 	// Build inputs
-	var garblerInput, evaluatorInput [80]byte
-	copy(garblerInput[:64], msgShare1)
-	copy(garblerInput[64:], keyShare1)
-	copy(evaluatorInput[:64], msgShare2)
-	copy(evaluatorInput[64:], keyShare2)
+	var garblerInput, evaluatorInput [144]byte
+	copy(garblerInput[:128], msgShare1)
+	copy(garblerInput[128:], keyShare1)
+	copy(evaluatorInput[:128], msgShare2)
+	copy(evaluatorInput[128:], keyShare2)
 
 	// Run the garbled circuit
 	result, err := runCMACTest(t, garblerInput, evaluatorInput)
@@ -520,7 +527,7 @@ func TestGarbledCircuit_EndToEnd(t *testing.T) {
 	}
 
 	// Create test inputs
-	var garblerInput, evaluatorInput [80]byte
+	var garblerInput, evaluatorInput [144]byte
 	rand.Read(garblerInput[:])
 	rand.Read(evaluatorInput[:])
 
@@ -545,11 +552,11 @@ func TestGarbledCircuit_EndToEnd(t *testing.T) {
 	// Verify the CMAC output is correct
 	// Reconstruct combined key and message
 	var combinedKey [16]byte
-	var combinedMsg [64]byte
+	var combinedMsg [128]byte
 	for i := 0; i < 16; i++ {
-		combinedKey[i] = garblerInput[64+i] ^ evaluatorInput[64+i]
+		combinedKey[i] = garblerInput[128+i] ^ evaluatorInput[128+i]
 	}
-	for i := 0; i < 64; i++ {
+	for i := 0; i < 128; i++ {
 		combinedMsg[i] = garblerInput[i] ^ evaluatorInput[i]
 	}
 
@@ -591,7 +598,7 @@ func TestGarbledCircuit_Soundness(t *testing.T) {
 		}
 	}
 
-	var garblerInput, evaluatorInput1, evaluatorInput2 [80]byte
+	var garblerInput, evaluatorInput1, evaluatorInput2 [144]byte
 	rand.Read(garblerInput[:])
 	rand.Read(evaluatorInput1[:])
 	copy(evaluatorInput2[:], evaluatorInput1[:])
@@ -616,12 +623,12 @@ func TestGarbledCircuit_Soundness(t *testing.T) {
 
 	// Compute expected CMACs
 	var combinedKey1, combinedKey2 [16]byte
-	var combinedMsg1, combinedMsg2 [64]byte
+	var combinedMsg1, combinedMsg2 [128]byte
 	for i := 0; i < 16; i++ {
-		combinedKey1[i] = garblerInput[64+i] ^ evaluatorInput1[64+i]
-		combinedKey2[i] = garblerInput[64+i] ^ evaluatorInput2[64+i]
+		combinedKey1[i] = garblerInput[128+i] ^ evaluatorInput1[128+i]
+		combinedKey2[i] = garblerInput[128+i] ^ evaluatorInput2[128+i]
 	}
-	for i := 0; i < 64; i++ {
+	for i := 0; i < 128; i++ {
 		combinedMsg1[i] = garblerInput[i] ^ evaluatorInput1[i]
 		combinedMsg2[i] = garblerInput[i] ^ evaluatorInput2[i]
 	}
@@ -661,7 +668,7 @@ func TestOutputLabelVerification_ValidLabels(t *testing.T) {
 		}
 	}
 
-	var garblerInput, evaluatorInput [80]byte
+	var garblerInput, evaluatorInput [144]byte
 	rand.Read(garblerInput[:])
 	rand.Read(evaluatorInput[:])
 
@@ -690,7 +697,7 @@ func TestOutputLabelVerification_InvalidLabels(t *testing.T) {
 		}
 	}
 
-	var garblerInput [80]byte
+	var garblerInput [144]byte
 	rand.Read(garblerInput[:])
 
 	_, session, _ := CMACGarblerOnline(rand.Reader, curve, garblerInput, otEntries, 0)
@@ -731,7 +738,7 @@ func TestOutputLabelVerification_ModifiedLabels(t *testing.T) {
 		}
 	}
 
-	var garblerInput, evaluatorInput [80]byte
+	var garblerInput, evaluatorInput [144]byte
 	rand.Read(garblerInput[:])
 	rand.Read(evaluatorInput[:])
 
@@ -749,7 +756,7 @@ func TestOutputLabelVerification_ModifiedLabels(t *testing.T) {
 }
 
 // Helper function to run CMAC test with given inputs
-func runCMACTest(t *testing.T, garblerInput, evaluatorInput [80]byte) ([16]byte, error) {
+func runCMACTest(t *testing.T, garblerInput, evaluatorInput [144]byte) ([16]byte, error) {
 	curve := elliptic.P256()
 
 	// Generate OT entries with precomputed choices matching evaluator's actual input bits
@@ -805,13 +812,13 @@ func computeAESCMAC(key, message []byte) []byte {
 	block.Encrypt(L, zero[:])
 	K1 := leftShift(L)
 
-	// Process 4 blocks (64 bytes)
+	// Process 8 blocks (128 bytes)
 	var C [16]byte
-	for blockIdx := 0; blockIdx < 4; blockIdx++ {
+	for blockIdx := 0; blockIdx < 8; blockIdx++ {
 		var M [16]byte
 		copy(M[:], message[blockIdx*16:(blockIdx+1)*16])
 
-		if blockIdx == 3 {
+		if blockIdx == 7 {
 			// XOR with K1 for last block (assuming complete block)
 			for i := range M {
 				M[i] ^= K1[i]

@@ -79,7 +79,7 @@ func (t *TEEK) processQueuedOPRFRanges(sessionID string, teekState *TEEKSessionS
 
 	// Validate ranges and initiate MPC for each
 	for i, r := range teekState.OPRFRanges {
-		if r.TlsStart < 0 || r.TlsLength <= 0 || r.TlsLength > 64 {
+		if r.TlsStart < 0 || r.TlsLength <= 0 || r.TlsLength > 128 {
 			return fmt.Errorf("invalid range %d: start=%d length=%d", i, r.TlsStart, r.TlsLength)
 		}
 		if int(r.TlsStart+r.TlsLength) > len(teekState.ConsolidatedKeystream) {
@@ -105,14 +105,14 @@ func (t *TEEK) initiateOPRFForRange(sessionID string, teekState *TEEKSessionStat
 
 	// Extract keystream for range and build garbler input
 	keystream := teekState.ConsolidatedKeystream[r.TlsStart : r.TlsStart+r.TlsLength]
-	paddedKeystream, err := oprfmpc.PadZeros64(keystream, int(r.TlsLength))
+	paddedKeystream, err := oprfmpc.PadZeros128(keystream, int(r.TlsLength))
 	if err != nil {
 		return fmt.Errorf("failed to pad keystream: %w", err)
 	}
 
-	var garblerInput [80]byte
-	copy(garblerInput[:64], paddedKeystream[:])
-	copy(garblerInput[64:], teekState.OPRFKeyShare)
+	var garblerInput [144]byte
+	copy(garblerInput[:128], paddedKeystream[:])
+	copy(garblerInput[128:], teekState.OPRFKeyShare)
 
 	// Generate online payload using precomputed OT
 	// Use the curve from OT precomputation state

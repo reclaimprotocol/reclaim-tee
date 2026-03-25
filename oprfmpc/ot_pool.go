@@ -16,20 +16,20 @@ import (
 // OT Pool configuration constants
 const (
 	// OTPoolInitialSize is the initial number of OTs to precompute
-	// 100,000 OTs = ~156 OPRFs = ~52 sessions (at 3 OPRFs/session average)
-	OTPoolInitialSize = 100000
+	// 180,000 OTs = ~156 OPRFs = ~52 sessions (at 3 OPRFs/session average)
+	OTPoolInitialSize = 180000
 
 	// OTPoolExtendSize is the number of OTs to add when extending
-	// Extends by 50,000 to restore pool to full capacity
-	OTPoolExtendSize = 50000
+	// Extends by 90,000 to restore pool to full capacity
+	OTPoolExtendSize = 90000
 
 	// OTPoolWatermark is the threshold below which extension is triggered
-	// 50,000 remaining = ~78 OPRFs = ~26 sessions buffer while extend completes
-	OTPoolWatermark = 50000
+	// 90,000 remaining = ~78 OPRFs = ~26 sessions buffer while extend completes
+	OTPoolWatermark = 90000
 
 	// OTsPerOPRF is the number of OTs consumed per OPRF operation
-	// 80 bytes input = 640 bits = 640 OTs
-	OTsPerOPRF = 640
+	// 144 bytes input = 1152 bits = 1152 OTs
+	OTsPerOPRF = 1152
 )
 
 // OTPoolEntry holds a single precomputed OT for the garbler (TEE_K)

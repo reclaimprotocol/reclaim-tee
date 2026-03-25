@@ -110,7 +110,7 @@ func FuzzDeserializeOnlinePayload(f *testing.F) {
 			Index:         i,
 		}
 	}
-	var input [80]byte
+	var input [144]byte
 	payload, _, _ := CMACGarblerOnline(rand.Reader, curve, input, otEntries, 0)
 	if payload != nil {
 		validData := SerializeOnlinePayload(payload)
@@ -252,7 +252,7 @@ func TestSerializationRoundtrip_OnlinePayload(t *testing.T) {
 		}
 	}
 
-	var input [80]byte
+	var input [144]byte
 	rand.Read(input[:])
 
 	payload, _, err := CMACGarblerOnline(rand.Reader, curve, input, otEntries, 42)

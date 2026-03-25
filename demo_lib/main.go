@@ -223,7 +223,7 @@ func main() {
 			"responseRedactions": []map[string]interface{}{
 				{
 					"xPath": "/html/body/footer/div[2]/div/div[1]/ul[3]/li[2]/a",
-					"regex": "href=\"https://(?<addr>www.trafficsafetymarketing.gov)/\"",
+					"regex": "(?<addr>.*)/\"",
 					"hash":  "oprf-mpc",
 				},
 			},
@@ -246,7 +246,7 @@ func main() {
 	// - teetUrl: wss://tee-t.reclaimprotocol.org/ws (enclave mode)
 	// - attestorUrl: ws://localhost:8001/ws
 	configData := map[string]interface{}{
-		"attestorUrl": "ws://localhost:8001/ws", // Attestor WebSocket URL
+		"attestorUrl": "wss://attestor.reclaimprotocol.org:444/ws", // Attestor WebSocket URL
 		"teekUrl":     "wss://tk.reclaimprotocol.org/ws",
 		"teetUrl":     "wss://tt.reclaimprotocol.org/ws",
 	}

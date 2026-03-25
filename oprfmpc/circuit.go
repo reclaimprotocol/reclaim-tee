@@ -9,8 +9,8 @@
 //   - Round 2: TEE_T -> TEE_K: CMAC result + hash output + output labels (MANDATORY)
 //
 // Properties:
-// - TEE_K (Garbler) has: data share (up to 64 bytes), keyShareK (16 bytes)
-// - TEE_T (Evaluator) has: data share (up to 64 bytes), keyShareT (16 bytes)
+// - TEE_K (Garbler) has: data share (up to 128 bytes), keyShareK (16 bytes)
+// - TEE_T (Evaluator) has: data share (up to 128 bytes), keyShareT (16 bytes)
 // - Neither party sees: the combined key or plaintext
 // - Output: 16-byte CMAC tag (both parties), then SHA256 offline for 32 bytes
 package oprfmpc
@@ -33,8 +33,8 @@ import (
 // aesCMACCircuit holds the compiled AES-CMAC OPRF circuit
 var aesCMACCircuit *circuit.Circuit
 
-// Input size: 64 bytes data + 16 bytes key = 80 bytes = 640 bits per party
-const cmacInputBitCount = 640
+// Input size: 128 bytes data + 16 bytes key = 144 bytes = 1152 bits per party
+const cmacInputBitCount = 1152
 
 // AESCMACResult holds the result of AES-CMAC OPRF computation
 type AESCMACResult struct {
@@ -42,7 +42,7 @@ type AESCMACResult struct {
 	Output32 [32]byte // SHA256(CMAC output) for 32-byte result
 }
 
-// MPCL source for AES-CMAC OPRF with XOR-shared inputs
+// MPCL source for AES-CMAC OPRF with XOR-shared inputs (128-byte data)
 const aesCMACSource = `
 package main
 
@@ -62,37 +62,43 @@ func leftShift(L [16]byte) [16]byte {
 	return result
 }
 
-func main(gInput [80]byte, eInput [80]byte) []byte {
+func main(gInput [144]byte, eInput [144]byte) []byte {
 	var key [16]byte
 	for i := 0; i < 16; i++ {
-		key[i] = gInput[64+i] ^ eInput[64+i]
+		key[i] = gInput[128+i] ^ eInput[128+i]
 	}
-	var data [64]byte
-	for i := 0; i < 64; i++ {
+	var data [128]byte
+	for i := 0; i < 128; i++ {
 		data[i] = gInput[i] ^ eInput[i]
 	}
 	var zero [16]byte
 	L := aes.Block128(key, zero)
 	K1 := leftShift(L)
-	var M1, M2, M3, M4 [16]byte
+	var M1, M2, M3, M4, M5, M6, M7, M8 [16]byte
 	for i := 0; i < 16; i++ {
 		M1[i] = data[i]
 		M2[i] = data[16+i]
 		M3[i] = data[32+i]
-		M4[i] = data[48+i] ^ K1[i]
+		M4[i] = data[48+i]
+		M5[i] = data[64+i]
+		M6[i] = data[80+i]
+		M7[i] = data[96+i]
+		M8[i] = data[112+i] ^ K1[i]
 	}
 	C := aes.Block128(key, M1)
-	for i := 0; i < 16; i++ {
-		C[i] ^= M2[i]
-	}
+	for i := 0; i < 16; i++ { C[i] ^= M2[i] }
 	C = aes.Block128(key, C)
-	for i := 0; i < 16; i++ {
-		C[i] ^= M3[i]
-	}
+	for i := 0; i < 16; i++ { C[i] ^= M3[i] }
 	C = aes.Block128(key, C)
-	for i := 0; i < 16; i++ {
-		C[i] ^= M4[i]
-	}
+	for i := 0; i < 16; i++ { C[i] ^= M4[i] }
+	C = aes.Block128(key, C)
+	for i := 0; i < 16; i++ { C[i] ^= M5[i] }
+	C = aes.Block128(key, C)
+	for i := 0; i < 16; i++ { C[i] ^= M6[i] }
+	C = aes.Block128(key, C)
+	for i := 0; i < 16; i++ { C[i] ^= M7[i] }
+	C = aes.Block128(key, C)
+	for i := 0; i < 16; i++ { C[i] ^= M8[i] }
 	C = aes.Block128(key, C)
 	return C[:]
 }
@@ -102,7 +108,7 @@ func init() {
 	params := utils.NewParams()
 	params.OptPruneGates = true
 	comp := compiler.New(params)
-	inputSizes := [][]int{{640}, {640}}
+	inputSizes := [][]int{{1152}, {1152}}
 	circ, _, err := comp.Compile(aesCMACSource, inputSizes)
 	if err != nil {
 		panic(fmt.Sprintf("failed to compile AES-CMAC OPRF circuit: %v", err))
@@ -140,7 +146,7 @@ var (
 // CMACGarblerOnline creates the online phase payload using precomputed OT
 // Parameters:
 //   - rng: randomness source
-//   - garblerInput: 80-byte input (64 bytes data + 16 bytes key share)
+//   - garblerInput: 144-byte input (128 bytes data + 16 bytes key share)
 //   - otEntries: precomputed OT entries from the pool (640 entries for 640 input bits)
 //   - otStartIndex: starting index in the OT pool (for tracking)
 //
@@ -148,7 +154,7 @@ var (
 //   - payload: the message to send to evaluator
 //   - session: state for verifying evaluator's output
 //   - err: any error
-func CMACGarblerOnline(rng io.Reader, curve elliptic.Curve, garblerInput [80]byte, otEntries []*OTPoolEntry, otStartIndex int) (*CMACOnlinePayload, *CMACGarblerOnlineSession, error) {
+func CMACGarblerOnline(rng io.Reader, curve elliptic.Curve, garblerInput [144]byte, otEntries []*OTPoolEntry, otStartIndex int) (*CMACOnlinePayload, *CMACGarblerOnlineSession, error) {
 	if rng == nil {
 		return nil, nil, errCMACNilRandom
 	}
@@ -247,13 +253,13 @@ func CMACGarblerOnline(rng io.Reader, curve elliptic.Curve, garblerInput [80]byt
 // CMACEvaluatorOnline evaluates the garbled circuit using precomputed OT
 // Parameters:
 //   - payload: the online payload from garbler
-//   - evaluatorInput: 80-byte input (64 bytes data + 16 bytes key share)
+//   - evaluatorInput: 144-byte input (128 bytes data + 16 bytes key share)
 //   - receiverEntries: precomputed OT receiver entries from the pool
 //
 // Returns:
 //   - result: CMAC output and output labels
 //   - err: any error
-func CMACEvaluatorOnline(curve elliptic.Curve, payload *CMACOnlinePayload, evaluatorInput [80]byte, receiverEntries []*OTReceiverEntry) (*CMACOnlineResult, error) {
+func CMACEvaluatorOnline(curve elliptic.Curve, payload *CMACOnlinePayload, evaluatorInput [144]byte, receiverEntries []*OTReceiverEntry) (*CMACOnlineResult, error) {
 	if payload == nil {
 		return nil, errors.New("nil payload")
 	}
@@ -396,15 +402,15 @@ func cmacBitsToBytes(bits []bool) []byte {
 	return bytes
 }
 
-// PadZeros64 pads data with zeros to exactly 64 bytes.
-func PadZeros64(data []byte, dataLen int) ([64]byte, error) {
-	if dataLen > 64 {
-		return [64]byte{}, fmt.Errorf("dataLen too large: %d > 64", dataLen)
+// PadZeros128 pads data with zeros to exactly 128 bytes.
+func PadZeros128(data []byte, dataLen int) ([128]byte, error) {
+	if dataLen > 128 {
+		return [128]byte{}, fmt.Errorf("dataLen too large: %d > 128", dataLen)
 	}
 	if len(data) < dataLen {
-		return [64]byte{}, fmt.Errorf("data slice too short: %d < %d", len(data), dataLen)
+		return [128]byte{}, fmt.Errorf("data slice too short: %d < %d", len(data), dataLen)
 	}
-	var padded [64]byte
+	var padded [128]byte
 	copy(padded[:dataLen], data[:dataLen])
 	return padded, nil
 }

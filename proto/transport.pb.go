@@ -2326,7 +2326,7 @@ func (x *TEETAttestationResponse) GetAttestationReport() *AttestationReport {
 type OPRFRangeSpec struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TlsStart      int32                  `protobuf:"varint,1,opt,name=tls_start,json=tlsStart,proto3" json:"tls_start,omitempty"`
-	TlsLength     int32                  `protobuf:"varint,2,opt,name=tls_length,json=tlsLength,proto3" json:"tls_length,omitempty"` // max 64
+	TlsLength     int32                  `protobuf:"varint,2,opt,name=tls_length,json=tlsLength,proto3" json:"tls_length,omitempty"` // max 128
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
