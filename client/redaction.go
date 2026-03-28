@@ -496,12 +496,12 @@ func (c *Client) buildOPRFMPCRanges() []*teeproto.OPRFRangeSpec {
 		}
 		tlsEnd++ // Include the end byte
 
-		// Validate length fits in single OPRF (max 64 bytes)
+		// Validate length fits in single OPRF (max 128 bytes)
 		tlsLength := tlsEnd - tlsStart
-		if tlsLength > 64 {
+		if tlsLength > 128 {
 			c.logger.Error("MPC OPRF range too long",
 				zap.Int("tls_length", tlsLength),
-				zap.Int("max", 64))
+				zap.Int("max", 128))
 			continue
 		}
 		if tlsLength <= 0 {

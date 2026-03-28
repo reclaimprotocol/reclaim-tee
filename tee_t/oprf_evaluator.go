@@ -36,7 +36,7 @@ func (t *TEET) handleOPRFRangesFromClient(sessionID string, msg *teeproto.OPRFRa
 
 	// Validate ranges against consolidated ciphertext
 	for i, r := range msg.GetRanges() {
-		if r.TlsStart < 0 || r.TlsLength <= 0 || r.TlsLength > 64 {
+		if r.TlsStart < 0 || r.TlsLength <= 0 || r.TlsLength > 128 {
 			return fmt.Errorf("invalid range %d: start=%d length=%d", i, r.TlsStart, r.TlsLength)
 		}
 		if int(r.TlsStart+r.TlsLength) > len(teetState.ConsolidatedResponseCiphertext) {
@@ -117,16 +117,16 @@ func (t *TEET) handleOPRFOnlineFull(sessionID string, msg *teeproto.OPRFOnlineFu
 	// Extract ciphertext for range
 	ciphertext := teetState.ConsolidatedResponseCiphertext[msg.TlsStart : msg.TlsStart+msg.TlsLength]
 
-	// Pad to 64 bytes
-	paddedCiphertext, err := oprfmpc.PadZeros64(ciphertext, int(msg.TlsLength))
+	// Pad to 128 bytes
+	paddedCiphertext, err := oprfmpc.PadZeros128(ciphertext, int(msg.TlsLength))
 	if err != nil {
 		return fmt.Errorf("failed to pad ciphertext: %w", err)
 	}
 
-	// Build evaluator input: [64 bytes data][16 bytes key]
-	var evaluatorInput [80]byte
-	copy(evaluatorInput[:64], paddedCiphertext[:])
-	copy(evaluatorInput[64:], teetState.OPRFKeyShare)
+	// Build evaluator input: [128 bytes data][16 bytes key]
+	var evaluatorInput [144]byte
+	copy(evaluatorInput[:128], paddedCiphertext[:])
+	copy(evaluatorInput[128:], teetState.OPRFKeyShare)
 
 	// Consume OT receiver entries from precomputed pool
 	otEntries, err := t.consumeOTReceiverEntries(int(msg.OtStartIndex), oprfmpc.OTsPerOPRF)
