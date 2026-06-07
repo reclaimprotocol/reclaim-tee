@@ -25,6 +25,22 @@ type TEETConfig struct {
 	GoogleLocation  string `json:"google_location,omitempty"`
 	GoogleKeyRing   string `json:"google_key_ring,omitempty"`
 	GoogleKeyName   string `json:"google_key_name,omitempty"`
+
+	// Router-mode settings (multi-pair architecture, Phase 3+).
+	// Presence of RouterURL is what flips boot into router mode. The TEE
+	// mints SA identity tokens with RouterURL as the `aud` claim; the
+	// router validates against its own SA_TOKEN_AUDIENCE env var.
+	RouterURL               string `json:"router_url,omitempty"`
+	SelfAddr                string `json:"self_addr,omitempty"`
+	PeerAddr                string `json:"peer_addr,omitempty"`
+	ExpectedPeerImageDigest string `json:"expected_peer_image_digest,omitempty"`
+	JWTPublicKey            string `json:"jwt_public_key,omitempty"`
+}
+
+// RouterMode returns true when the new multi-pair router boot path should
+// be used. Detection is by presence of ROUTER_URL.
+func (c *TEETConfig) RouterMode() bool {
+	return c.RouterURL != ""
 }
 
 func LoadTEETConfig() *TEETConfig {
@@ -52,5 +68,11 @@ func LoadTEETConfig() *TEETConfig {
 		GoogleLocation:  shared.GetEnvOrDefault("GOOGLE_KMS_LOCATION", ""),
 		GoogleKeyRing:   shared.GetEnvOrDefault("GOOGLE_KMS_KEYRING", ""),
 		GoogleKeyName:   shared.GetEnvOrDefault("GOOGLE_KMS_KEY", ""),
+
+		RouterURL:               shared.GetEnvOrDefault("ROUTER_URL", ""),
+		SelfAddr:                shared.GetEnvOrDefault("SELF_ADDR", ""),
+		PeerAddr:                shared.GetEnvOrDefault("PEER_ADDR", ""),
+		ExpectedPeerImageDigest: shared.GetEnvOrDefault("EXPECTED_PEER_IMAGE_DIGEST", ""),
+		JWTPublicKey:            shared.GetEnvOrDefault("JWT_PUBLIC_KEY", ""),
 	}
 }

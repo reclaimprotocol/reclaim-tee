@@ -80,6 +80,9 @@ message Envelope {
     SessionConnectionAck session_connection_ack = 81;     // TEE_T -> TEE_K (on per-session WS)
     SessionClosed session_closed = 82;                    // TEE_K -> TEE_T (on control WS)
     SessionCreatedAck session_created_ack = 83;           // TEE_T -> TEE_K (on control WS)
+
+    // Router-mode pair assignment (multi-pair architecture, Phase 3+)
+    TEEKPairAssignment teek_pair_assignment = 84;         // TEE_K -> TEE_T (first message on /ws/peer)
   }
 }
 
@@ -327,5 +330,13 @@ message SessionConnectionAck {
 message SessionClosed {
   string session_id = 1;
   string reason = 2;             // Reason for closure (normal, error, timeout, etc.)
+}
+
+// TEEKPairAssignment is the first envelope TEE_K sends to TEE_T over the
+// RA-TLS peer connection in router mode. It carries the pair_id TEE_K
+// generated at boot; TEE_T uses it to register itself with the router
+// under the same id so both /register calls land on the same record.
+message TEEKPairAssignment {
+  string pair_id = 1;
 }
 

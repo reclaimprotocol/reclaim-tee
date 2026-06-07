@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"net/url"
 	"time"
 
+	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 	"github.com/reclaimprotocol/reclaim-tee/shared"
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // peerDialBackoffInitial / Max bound the reconnect-retry interval when
@@ -45,16 +48,19 @@ func buildPeerTLSConfig(verifier peerVerifier, ratls *shared.RATLSManager) *tls.
 	}
 }
 
-// runPeerConnection dials PEER_ADDR and keeps the connection alive as a
-// liveness signal. controlHealthy flips on connect/disconnect. On any
-// failure (dial, handshake, read), it backs off exponentially capped at
-// peerDialBackoffMax and reconnects until the context is cancelled.
+// runPeerConnection dials PEER_ADDR, sends pair_id as the first message,
+// and keeps the connection alive as a liveness signal. controlHealthy flips
+// on connect/disconnect. On any failure (dial, handshake, send, read), it
+// backs off exponentially capped at peerDialBackoffMax and reconnects until
+// the context is cancelled. pair_id is re-sent on every reconnect so TEE_T
+// always knows the current value.
 //
-// This PR doesn't send any messages over the connection — pair_id
-// exchange and OT precompute on top of it come in PR 3.2d.
+// OT precompute and session-protocol messages on top of this connection
+// come in subsequent PRs.
 func runPeerConnection(
 	ctx context.Context,
 	peerAddr string,
+	pairID string,
 	tlsConfig *tls.Config,
 	state *heartbeatState,
 	logger *shared.Logger,
@@ -87,6 +93,19 @@ func runPeerConnection(
 			continue
 		}
 		backoff = peerDialBackoffInitial
+
+		// First envelope on a fresh peer connection is always the pair_id
+		// assignment. TEE_T uses this to register with the router under the
+		// same pair_id we already registered with.
+		if err := sendPairAssignment(conn, pairID); err != nil {
+			logger.Warn("peer pair_id send failed", zap.Error(err))
+			_ = conn.Close()
+			if sleepCtx(ctx, peerDialBackoffInitial) {
+				return
+			}
+			continue
+		}
+
 		state.controlHealthy.Store(true)
 		logger.Info("peer connected", zap.String("peer", peerAddr))
 
@@ -139,4 +158,22 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return false
 	}
+}
+
+// sendPairAssignment writes a single TEEKPairAssignment envelope as a
+// binary WebSocket frame. Same wire format as every other TEE↔TEE
+// message — proto.Marshal'd Envelope with a oneof payload.
+func sendPairAssignment(conn *websocket.Conn, pairID string) error {
+	env := &teeproto.Envelope{
+		Sender:      teeproto.Sender_SENDER_TEE_K,
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_TeekPairAssignment{
+			TeekPairAssignment: &teeproto.TEEKPairAssignment{PairId: pairID},
+		},
+	}
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal pair assignment: %w", err)
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, data)
 }

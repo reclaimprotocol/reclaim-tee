@@ -96,7 +96,7 @@ func TestRunPeerConnection_FlipsHealthyOnConnect(t *testing.T) {
 	t.Cleanup(cancel)
 	done := make(chan struct{})
 	go func() {
-		runPeerConnection(ctx, addrOf(t, srv), tlsConfig, state, shared.GetTEEKLogger())
+		runPeerConnection(ctx, addrOf(t, srv), "00000000-0000-0000-0000-000000000001", tlsConfig, state, shared.GetTEEKLogger())
 		close(done)
 	}()
 
@@ -126,7 +126,7 @@ func TestRunPeerConnection_FlipsUnhealthyOnDisconnect(t *testing.T) {
 	t.Cleanup(cancel)
 	done := make(chan struct{})
 	go func() {
-		runPeerConnection(ctx, addrOf(t, srv), tlsConfig, state, shared.GetTEEKLogger())
+		runPeerConnection(ctx, addrOf(t, srv), "00000000-0000-0000-0000-000000000001", tlsConfig, state, shared.GetTEEKLogger())
 		close(done)
 	}()
 
@@ -163,7 +163,7 @@ func TestRunPeerConnection_StaysUnhealthyWhenUnreachable(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
-		runPeerConnection(ctx, addr, tlsConfig, state, shared.GetTEEKLogger())
+		runPeerConnection(ctx, addr, "00000000-0000-0000-0000-000000000001", tlsConfig, state, shared.GetTEEKLogger())
 		close(done)
 	}()
 

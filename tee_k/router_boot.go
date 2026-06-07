@@ -132,7 +132,7 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 		}),
 		ratls,
 	)
-	go runPeerConnection(ctx, config.PeerAddr, peerTLS, state, logger)
+	go runPeerConnection(ctx, config.PeerAddr, pairID, peerTLS, state, logger)
 
 	// Block on shutdown signal. Session serving on top of the peer
 	// connection is still to come (PR 3.2d).
