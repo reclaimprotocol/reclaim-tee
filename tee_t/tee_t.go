@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -147,15 +148,63 @@ func NewTEETForRouter(
 	return teet
 }
 
-// initializeOPRFKeyShare returns this side's MPC OPRF key share. Currently
-// a process-local constant (no persistent storage in router mode yet);
-// the value here XORs with TEE_K's static share to form the joint OPRF key.
+// initializeOPRFKeyShare returns TEE_T's MPC OPRF key share. When
+// KMS_ENCLAVE_DOMAIN_KEY is set the share is loaded from (or created in)
+// GCP Secret Manager — same secret name + envelope format as the legacy
+// EnclaveCache, so existing V1 shares are picked up unchanged. When the
+// env var is empty (local dev / standalone), a hardcoded share is used.
 func initializeOPRFKeyShare(logger *shared.Logger) []byte {
-	keyShare := []byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20}
-	if logger != nil {
-		logger.Info("Using static OPRF key share")
+	deploymentKey := shared.GetEnvOrDefault("KMS_ENCLAVE_DOMAIN_KEY", "")
+	if deploymentKey == "" {
+		keyShare := []byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20}
+		if logger != nil {
+			logger.Info("Using static OPRF key share (KMS_ENCLAVE_DOMAIN_KEY unset)")
+		}
+		return keyShare
 	}
-	return keyShare
+	share, err := loadPersistentOPRFShare(deploymentKey, "tee_t", logger)
+	if err != nil {
+		log.Fatalf("[TEE_T] CRITICAL: load OPRF share: %v", err)
+	}
+	return share
+}
+
+// loadPersistentOPRFShare bridges initializeOPRFKeyShare to shared.SecretStore.
+// Fails fatally if any of the supporting env vars are missing — operators
+// must set all of them when KMS_ENCLAVE_DOMAIN_KEY is in use.
+func loadPersistentOPRFShare(deploymentKey, role string, logger *shared.Logger) ([]byte, error) {
+	projectID := shared.GetEnvOrDefault("GOOGLE_PROJECT_ID", "")
+	kmsLocation := shared.GetEnvOrDefault("GOOGLE_KMS_LOCATION", "")
+	kmsKeyRing := shared.GetEnvOrDefault("GOOGLE_KMS_KEYRING", "")
+	kmsKey := shared.GetEnvOrDefault("GOOGLE_KMS_KEY", "")
+	for name, v := range map[string]string{
+		"GOOGLE_PROJECT_ID":   projectID,
+		"GOOGLE_KMS_LOCATION": kmsLocation,
+		"GOOGLE_KMS_KEYRING":  kmsKeyRing,
+		"GOOGLE_KMS_KEY":      kmsKey,
+	} {
+		if v == "" {
+			return nil, fmt.Errorf("%s required when KMS_ENCLAVE_DOMAIN_KEY is set", name)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	store, err := shared.NewSecretStore(ctx, projectID, kmsLocation, kmsKeyRing, kmsKey)
+	if err != nil {
+		return nil, fmt.Errorf("new secret store: %w", err)
+	}
+	share, err := store.LoadOrCreateOPRFShare(ctx, role, deploymentKey)
+	if err != nil {
+		return nil, fmt.Errorf("LoadOrCreateOPRFShare: %w", err)
+	}
+	if logger != nil {
+		logger.Info("Loaded OPRF share from Secret Manager",
+			zap.String("role", role),
+			zap.String("deployment_key", deploymentKey))
+	}
+	return share, nil
 }
 
 // Helper functions to access session state

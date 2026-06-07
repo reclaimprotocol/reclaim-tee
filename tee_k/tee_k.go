@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -151,14 +152,59 @@ func NewTEEK(port int) *TEEK {
 	}
 }
 
-// initializeOPRFKeyShare returns the OPRF key share used by both TEE_K and
-// TEE_T for the MPC OPRF protocol. Currently a process-local constant
-// (no persistent storage in router mode yet); both TEEs derive the same
-// 16 bytes so the protocol can run.
+// initializeOPRFKeyShare returns TEE_K's MPC OPRF key share. When
+// KMS_ENCLAVE_DOMAIN_KEY is set the share is loaded from (or created in)
+// GCP Secret Manager — same secret name + envelope format as the legacy
+// EnclaveCache, so existing V1 shares are picked up unchanged. When the
+// env var is empty (local dev / standalone), a hardcoded share is used.
 func initializeOPRFKeyShare(logger *shared.Logger) []byte {
-	keyShare := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
-	logger.Info("Using static OPRF key share")
-	return keyShare
+	deploymentKey := shared.GetEnvOrDefault("KMS_ENCLAVE_DOMAIN_KEY", "")
+	if deploymentKey == "" {
+		keyShare := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
+		logger.Info("Using static OPRF key share (KMS_ENCLAVE_DOMAIN_KEY unset)")
+		return keyShare
+	}
+	share, err := loadPersistentOPRFShare(deploymentKey, "tee_k", logger)
+	if err != nil {
+		log.Fatalf("[TEE_K] CRITICAL: load OPRF share: %v", err)
+	}
+	return share
+}
+
+// loadPersistentOPRFShare bridges initializeOPRFKeyShare to shared.SecretStore.
+// Fails fatally if any of the supporting env vars are missing — operators
+// must set all of them when KMS_ENCLAVE_DOMAIN_KEY is in use.
+func loadPersistentOPRFShare(deploymentKey, role string, logger *shared.Logger) ([]byte, error) {
+	projectID := shared.GetEnvOrDefault("GOOGLE_PROJECT_ID", "")
+	kmsLocation := shared.GetEnvOrDefault("GOOGLE_KMS_LOCATION", "")
+	kmsKeyRing := shared.GetEnvOrDefault("GOOGLE_KMS_KEYRING", "")
+	kmsKey := shared.GetEnvOrDefault("GOOGLE_KMS_KEY", "")
+	for name, v := range map[string]string{
+		"GOOGLE_PROJECT_ID":   projectID,
+		"GOOGLE_KMS_LOCATION": kmsLocation,
+		"GOOGLE_KMS_KEYRING":  kmsKeyRing,
+		"GOOGLE_KMS_KEY":      kmsKey,
+	} {
+		if v == "" {
+			return nil, fmt.Errorf("%s required when KMS_ENCLAVE_DOMAIN_KEY is set", name)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	store, err := shared.NewSecretStore(ctx, projectID, kmsLocation, kmsKeyRing, kmsKey)
+	if err != nil {
+		return nil, fmt.Errorf("new secret store: %w", err)
+	}
+	share, err := store.LoadOrCreateOPRFShare(ctx, role, deploymentKey)
+	if err != nil {
+		return nil, fmt.Errorf("LoadOrCreateOPRFShare: %w", err)
+	}
+	logger.Info("Loaded OPRF share from Secret Manager",
+		zap.String("role", role),
+		zap.String("deployment_key", deploymentKey))
+	return share, nil
 }
 
 // SetTEETURL sets the TEE_T connection URL
