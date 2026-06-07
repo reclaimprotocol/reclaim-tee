@@ -65,6 +65,12 @@ func runPeerListener(
 		// then drips bytes; the WebSocket upgrade itself sets its own
 		// deadlines once the handshake starts.
 		ReadHeaderTimeout: 10 * time.Second,
+		// BaseContext makes r.Context() in each handler a descendant of
+		// our outer ctx, so cancelling outer ctx also cancels in-flight
+		// request contexts. Without this, r.Context() is rooted at
+		// context.Background() and the ctx-cancel guard in handlePeerConn
+		// would never fire on shutdown.
+		BaseContext: func(_ net.Listener) context.Context { return ctx },
 	}
 
 	// Force-close server on ctx cancel. http.Server.Shutdown waits for
