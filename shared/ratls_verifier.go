@@ -36,6 +36,14 @@ type RATLSVerifyOptions struct {
 //
 // Any failure returns an error, which the TLS handshake propagates as a
 // connection failure.
+//
+// Standalone (non-enclave) peers — i.e. RATLSManager instances that booted
+// without the GCP launcher socket — present certs without the attestation
+// extension and will be rejected here with "attestation extension not
+// present on certificate". This is deliberate: production deployments must
+// always go through enclave attestation. Local-dev TEE↔TEE comms that
+// want to tolerate missing attestation should use a different verifier
+// path (e.g. a thin wrapper that returns nil for the standalone case).
 func VerifyRATLSPeer(opts RATLSVerifyOptions) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {

@@ -82,3 +82,64 @@ func TestSPKINoncePrefix(t *testing.T) {
 		t.Fatalf("tee_t prefix: %q", got)
 	}
 }
+
+// TestRATLSManager_RefreshRotatesCert verifies that Refresh produces a
+// different cert (new serial number) while keeping the same keypair. This
+// is the property that makes attestation rotation work without breaking
+// in-flight TLS sessions.
+func TestRATLSManager_RefreshRotatesCert(t *testing.T) {
+	m, err := NewRATLSManager(t.Context(), "tee_k", nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	before := m.Certificate()
+	beforeSPKI := m.SPKIHash()
+
+	if err := m.Refresh(t.Context()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	after := m.Certificate()
+	afterSPKI := m.SPKIHash()
+
+	if before == after {
+		t.Fatal("expected Refresh to swap the cert pointer")
+	}
+	if before.Leaf.SerialNumber.Cmp(after.Leaf.SerialNumber) == 0 {
+		t.Fatal("expected new serial after Refresh")
+	}
+	if beforeSPKI != afterSPKI {
+		t.Fatal("SPKI hash must NOT change across Refresh (keypair is stable)")
+	}
+}
+
+// TestRATLSManager_GetCertificateAfterRefresh confirms a tls.Config wired
+// up with GetCertificate sees the latest cert after a Refresh — this is
+// the property that lets in-flight TLS configs auto-pick-up rotations.
+func TestRATLSManager_GetCertificateAfterRefresh(t *testing.T) {
+	m, err := NewRATLSManager(t.Context(), "tee_k", nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	before, err := m.GetCertificate(nil)
+	if err != nil {
+		t.Fatalf("get cert: %v", err)
+	}
+	if err := m.Refresh(t.Context()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	after, err := m.GetCertificate(nil)
+	if err != nil {
+		t.Fatalf("get cert after refresh: %v", err)
+	}
+	if before.Leaf.SerialNumber.Cmp(after.Leaf.SerialNumber) == 0 {
+		t.Fatal("GetCertificate returned the old cert after Refresh")
+	}
+}
+
+// TestIsEnclaveMode_LocalDev: on the developer machine running this test,
+// the launcher socket should not exist.
+func TestIsEnclaveMode_LocalDev(t *testing.T) {
+	if IsEnclaveMode() {
+		t.Skip("running on a machine with the Confidential Space launcher socket present — unusual for local dev")
+	}
+}

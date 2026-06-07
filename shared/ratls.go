@@ -13,8 +13,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math/big"
+	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +29,11 @@ import (
 // Enterprise Number when one is registered (1.3.6.1.4.1.<PEN>.1).
 var AttestationOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 1}
 
+// launcherSocketPath is where the Confidential Space launcher exposes its
+// attestation API. Its presence is how we tell "running in an enclave" apart
+// from "running locally for dev." Kept in sync with shared/gcp_attestation.go.
+const launcherSocketPath = "/run/container_launcher/teeserver.sock"
+
 // SPKINoncePrefix returns the eat_nonce prefix used to bind the TLS public
 // key hash into the attestation report. role is "tee_k" or "tee_t".
 func SPKINoncePrefix(role string) string {
@@ -33,44 +42,73 @@ func SPKINoncePrefix(role string) string {
 
 // RATLSManager owns an ephemeral ECDSA P-256 keypair and a self-signed
 // X.509 certificate that embeds a GCP attestation report as an extension.
-// Cert lifetime is the lifetime of the manager (i.e. the enclave process);
-// the verifier never checks NotBefore/NotAfter — trust comes from the
-// attestation, not chain time.
+//
+// The keypair is generated once at NewRATLSManager and never rotated; the
+// SPKI hash that the attestation binds to is therefore stable for the
+// lifetime of the manager. The cert + its embedded attestation, however,
+// must be rotated periodically — GCP attestations have a TTL of ~5 minutes,
+// after which new TLS handshakes verifying via `VerifyRATLSPeer` will fail
+// the `exp` check on the embedded JWT. Callers should arrange to call
+// Refresh on a ticker (e.g. every 4 minutes, matching the existing
+// per-TEE attestation refresh cadence).
+//
+// All accessors are safe for concurrent use; Refresh atomically swaps the
+// cert without disrupting in-flight handshakes (Go's TLS stack reads
+// GetCertificate per-handshake, so existing sessions are unaffected).
 type RATLSManager struct {
-	cert     *tls.Certificate
-	spkiHash [32]byte
-	role     string
+	role        string
+	extraNonces []string
+	priv        *ecdsa.PrivateKey
+	spkiHash    [32]byte
+	cert        atomic.Pointer[tls.Certificate]
 }
 
-// NewRATLSManager generates a fresh keypair, requests a GCP attestation
-// over the SPKI hash plus any extraNonces (e.g. an eth-address binding),
-// and builds a self-signed cert with the attestation embedded.
-//
-// In standalone mode (no Confidential Space launcher socket), the cert is
-// still produced but without the attestation extension — peers verifying
-// in standalone mode skip the attestation step. This lets local dev keep
-// using the same code path as enclave deployments.
+// NewRATLSManager generates a fresh keypair and builds the initial cert.
+// Returns an error if the launcher socket exists (i.e. we're in an enclave)
+// and the attestation request fails — a launcher failure in enclave mode
+// is a real production issue and we must not silently mask it as
+// standalone-dev mode.
 func NewRATLSManager(ctx context.Context, role string, extraNonces []string) (*RATLSManager, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate ecdsa key: %w", err)
 	}
-
 	spkiDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("marshal SPKI: %w", err)
 	}
-	spkiHash := sha256.Sum256(spkiDER)
-	spkiNonce := SPKINoncePrefix(role) + hex.EncodeToString(spkiHash[:])
+	m := &RATLSManager{
+		role:        role,
+		extraNonces: extraNonces,
+		priv:        priv,
+		spkiHash:    sha256.Sum256(spkiDER),
+	}
+	if err := m.Refresh(ctx); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// Refresh requests a new attestation, builds a new cert with the same
+// keypair plus the fresh attestation, and atomically swaps it in. Existing
+// TLS sessions continue to use whatever cert was active at handshake time;
+// new handshakes pick up the new cert via GetCertificate.
+//
+// In standalone (non-enclave) mode — detected by the absence of the
+// Confidential Space launcher socket — Refresh produces a cert without
+// the attestation extension. Peers verifying via VerifyRATLSPeer will
+// reject such certs; standalone-mode TEE↔TEE comms must use a different
+// TLS verifier path.
+func (m *RATLSManager) Refresh(ctx context.Context) error {
+	spkiNonce := SPKINoncePrefix(m.role) + hex.EncodeToString(m.spkiHash[:])
+	nonces := append([]string{spkiNonce}, m.extraNonces...)
+
+	attestation, err := tryGenerateAttestation(ctx, nonces)
+	if err != nil {
+		return fmt.Errorf("ratls refresh: %w", err)
+	}
 
 	var extraExts []pkix.Extension
-	nonces := append([]string{spkiNonce}, extraNonces...)
-	attestation, err := GenerateGCPAttestation(ctx, nonces...)
-	if err != nil {
-		// Standalone mode: launcher socket unavailable. Fall through with no
-		// extension; verifier must accept this only in matching mode.
-		attestation = nil
-	}
 	if len(attestation) > 0 {
 		extraExts = append(extraExts, pkix.Extension{
 			Id:       AttestationOID,
@@ -81,73 +119,113 @@ func NewRATLSManager(ctx context.Context, role string, extraNonces []string) (*R
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return nil, fmt.Errorf("random serial: %w", err)
+		return fmt.Errorf("ratls refresh: random serial: %w", err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: role},
-		// Time bounds are formality only — RA-TLS verification doesn't use
-		// them. Set a 1-year window so any consumer doing strict checks still
-		// accepts during normal enclave lifetime.
+		Subject:      pkix.Name{CommonName: m.role},
+		// Cert time bounds are formality only — RA-TLS verification doesn't
+		// check them. Set a 1-day window so any consumer doing strict checks
+		// catches stale certs and prompts a Refresh.
 		NotBefore:             time.Now().Add(-1 * time.Hour),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 		ExtraExtensions:       extraExts,
 	}
-	derCert, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	derCert, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &m.priv.PublicKey, m.priv)
 	if err != nil {
-		return nil, fmt.Errorf("create cert: %w", err)
+		return fmt.Errorf("ratls refresh: create cert: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(derCert)
+	if err != nil {
+		return fmt.Errorf("ratls refresh: parse just-created cert: %w", err)
 	}
 
-	return &RATLSManager{
-		cert: &tls.Certificate{
-			Certificate: [][]byte{derCert},
-			PrivateKey:  priv,
-			Leaf:        mustParse(derCert),
-		},
-		spkiHash: spkiHash,
-		role:     role,
-	}, nil
+	m.cert.Store(&tls.Certificate{
+		Certificate: [][]byte{derCert},
+		PrivateKey:  m.priv,
+		Leaf:        leaf,
+	})
+	return nil
 }
 
-// Certificate returns the manager's TLS certificate, suitable for use in a
-// tls.Config.Certificates list.
+// Certificate returns the currently-active certificate. Mostly used by tests
+// and admin endpoints; live TLS configs should use GetCertificate so they
+// automatically pick up Refresh()es.
 func (m *RATLSManager) Certificate() *tls.Certificate {
-	return m.cert
+	return m.cert.Load()
 }
 
-// CertificateRaw returns the DER-encoded leaf certificate. Provided for
-// callers (e.g. attestation refresh code) that need the raw bytes — kept
+// CertificateRaw returns the DER-encoded leaf of the currently-active cert.
 // API-compatible with the LegoManager.GetCertificateRaw() shape it replaces.
 func (m *RATLSManager) CertificateRaw() []byte {
-	return m.cert.Certificate[0]
+	c := m.cert.Load()
+	if c == nil {
+		return nil
+	}
+	return c.Certificate[0]
 }
 
-// SPKIHash returns sha256(SPKI) of the TLS keypair. Exposed for callers
-// that need to log it or cross-reference against the attestation.
+// SPKIHash returns sha256(SPKI) of the TLS keypair. Stable for the lifetime
+// of the manager (key never rotates).
 func (m *RATLSManager) SPKIHash() [32]byte {
 	return m.spkiHash
 }
 
-// ServerTLSConfig returns a tls.Config that serves this cert. No client
-// auth here — peer verification is done by the WebSocket-level RA-TLS
-// verifier wired up by the application.
+// GetCertificate is intended for tls.Config.GetCertificate. Always returns
+// the current cert, so handshakes that arrive after a Refresh() see the
+// fresh attestation.
+func (m *RATLSManager) GetCertificate(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	c := m.cert.Load()
+	if c == nil {
+		return nil, errors.New("ratls: no cert available (Refresh never succeeded)")
+	}
+	return c, nil
+}
+
+// GetClientCertificate is intended for tls.Config.GetClientCertificate when
+// the TEE acts as TLS client and the peer requires client certs (mTLS).
+func (m *RATLSManager) GetClientCertificate(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	return m.GetCertificate(nil)
+}
+
+// ServerTLSConfig returns a base tls.Config suitable for a TEE acting as a
+// TLS server. It installs GetCertificate so refreshes are picked up, but
+// does NOT set ClientAuth or VerifyPeerCertificate — callers wiring up
+// mTLS for TEE↔TEE links must add those themselves with a verifier built
+// from `VerifyRATLSPeer`.
 func (m *RATLSManager) ServerTLSConfig() *tls.Config {
 	return &tls.Config{
-		Certificates: []tls.Certificate{*m.cert},
-		MinVersion:   tls.VersionTLS12,
-		MaxVersion:   tls.VersionTLS13,
+		GetCertificate: m.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
+		MaxVersion:     tls.VersionTLS13,
 	}
 }
 
-// mustParse parses the DER cert we just created. CreateCertificate produces
-// well-formed DER by construction, so a parse failure here would be a bug.
-func mustParse(der []byte) *x509.Certificate {
-	c, err := x509.ParseCertificate(der)
-	if err != nil {
-		panic(fmt.Sprintf("ratls: parse just-created cert: %v", err))
+// IsEnclaveMode reports whether the process appears to be running inside a
+// GCP Confidential Space launcher (the attestation socket is present).
+// Useful for callers that need to take different code paths in dev vs prod
+// — but production code paths should be the default; reach for this only
+// when local-dev parity is genuinely required.
+func IsEnclaveMode() bool {
+	_, err := os.Stat(launcherSocketPath)
+	return err == nil
+}
+
+// tryGenerateAttestation calls GenerateGCPAttestation only if the launcher
+// socket is present. In standalone mode it returns (nil, nil); in enclave
+// mode it propagates whatever GenerateGCPAttestation returns.
+//
+// This separates two cases that previously looked identical:
+//   - launcher socket missing → standalone dev → OK to ship a cert without
+//     attestation
+//   - launcher socket present but call failed → real production bug → must
+//     surface as an error, not silently fall through
+func tryGenerateAttestation(ctx context.Context, nonces []string) ([]byte, error) {
+	if _, err := os.Stat(launcherSocketPath); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
 	}
-	return c
+	return GenerateGCPAttestation(ctx, nonces...)
 }

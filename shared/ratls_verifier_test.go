@@ -3,12 +3,17 @@
 package shared
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"math/big"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestExtractAttestationFromCert handles a cert that does and doesn't carry
@@ -101,4 +106,79 @@ func TestFindNonceValue(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+
+	t.Run("malformed base64 in payload", func(t *testing.T) {
+		// Three segments, but the payload isn't valid base64url.
+		_, err := findNonceValue([]byte("hdr.!!!notb64!!!.sig"), "x")
+		if err == nil {
+			t.Fatal("expected decode error")
+		}
+	})
+
+	t.Run("payload is not JSON", func(t *testing.T) {
+		// Valid base64url but the decoded payload isn't JSON.
+		jwt := base64.RawURLEncoding.EncodeToString([]byte("hdr")) +
+			"." + base64.RawURLEncoding.EncodeToString([]byte("not-json")) +
+			".sig"
+		_, err := findNonceValue([]byte(jwt), "x")
+		if err == nil {
+			t.Fatal("expected unmarshal error")
+		}
+	})
+}
+
+// TestVerifyRATLSPeer_RejectsCertWithoutAttestationExtension proves that
+// a peer cert lacking the AttestationOID extension is rejected — the
+// "standalone-mode peers cannot talk RA-TLS" contract documented on
+// VerifyRATLSPeer.
+func TestVerifyRATLSPeer_RejectsCertWithoutAttestationExtension(t *testing.T) {
+	m, err := NewRATLSManager(t.Context(), "tee_k", nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	// Local dev → no launcher socket → cert lacks extension. Confirm verifier
+	// rejects it instead of crashing or silently passing.
+	verify := VerifyRATLSPeer(RATLSVerifyOptions{
+		PeerRole:            "tee_k",
+		ExpectedImageDigest: "sha256:anything",
+	})
+	err = verify([][]byte{m.CertificateRaw()}, nil)
+	if err == nil {
+		t.Fatal("expected error for cert without attestation extension")
+	}
+	if !strings.Contains(err.Error(), "extension") {
+		t.Fatalf("expected extension-related error, got: %v", err)
+	}
+}
+
+// TestVerifyRATLSPeer_RejectsGarbageAttestation builds a cert that DOES
+// carry an extension under AttestationOID but with bytes that aren't a
+// valid JWT. Verifier should fail at the JWT-validation step, not crash.
+func TestVerifyRATLSPeer_RejectsGarbageAttestation(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "tee_k"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		ExtraExtensions: []pkix.Extension{
+			{Id: AttestationOID, Value: []byte("this is not a JWT")},
+		},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+
+	verify := VerifyRATLSPeer(RATLSVerifyOptions{
+		PeerRole:            "tee_k",
+		ExpectedImageDigest: "sha256:anything",
+	})
+	err = verify([][]byte{der}, nil)
+	if err == nil {
+		t.Fatal("expected error for cert with garbage attestation bytes")
+	}
 }

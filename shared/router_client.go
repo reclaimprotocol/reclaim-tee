@@ -95,9 +95,11 @@ func (c *RouterClient) Heartbeat(ctx context.Context, req HeartbeatRequest) (*He
 	return &resp, nil
 }
 
-// ErrRouterNotFound is returned when the router replies 404 — most commonly
-// from /heartbeat for an unknown pair_id. Callers can match this with
-// errors.Is(err, shared.ErrRouterNotFound) and trigger a re-register.
+// ErrRouterNotFound is returned when the router responds 404. The only
+// router endpoint that currently returns 404 in normal operation is
+// /heartbeat for an unknown pair_id, so callers can treat this as a signal
+// to re-register (e.g. after a router restart in single-replica mode wiped
+// in-memory state). Match with errors.Is.
 var ErrRouterNotFound = errors.New("router: not found")
 
 func (c *RouterClient) postJSON(ctx context.Context, path string, reqBody, respBody any) error {
