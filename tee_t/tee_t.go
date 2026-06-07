@@ -1,12 +1,9 @@
 package main
 
 import (
-	"context"
-	"crypto/rand"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,17 +43,10 @@ type TEET struct {
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
 
-	// Enclave manager for attestation generation
-	enclaveManager *shared.EnclaveManager
-
 	// Attestation caching for performance optimization
 	cachedAttestation *teeproto.AttestationReport
 	attestationMutex  sync.RWMutex
 	attestationExpiry time.Time
-
-	// Mutual attestation: expected PCR0 (legacy) or image digest (router-mode)
-	// of the TEE_K peer. The verify code path is the same regardless of source.
-	expectedTEEKPCR0 string
 
 	// Persistent OPRF key share (loaded from cloud storage)
 	oprfKeyShare []byte
@@ -108,142 +98,63 @@ type TEET struct {
 // reduce log volume during a sustained wedge.
 const OTReadyRejectLogInterval = 30 * time.Second
 
-// NewTEETWithLogger creates a TEET with a specific logger
+// NewTEETWithLogger creates a baseline TEET with a specific logger.
+// Higher-level constructors (NewTEETForRouter) layer mode-specific wiring
+// on top.
 func NewTEETWithLogger(port int, logger *shared.Logger) *TEET {
-	return NewTEETWithEnclaveManagerAndLogger(port, nil, logger)
-}
-
-// NewTEETForRouter constructs a TEET wired for the V2 router-mode path.
-// expectedPeerImageDigest is the value the router-mode env var
-// EXPECTED_PEER_IMAGE_DIGEST carries; it's checked against the GCP
-// attestation's image_digest claim during the existing
-// verifyTEEKAttestation flow (same code path, different env source).
-//
-// pair_id is NOT set here — it arrives over the peer connection in
-// TEE_K's TEEKPairAssignment envelope. The connection manager fills
-// it in via teet.pairID.Store(&pid).
-func NewTEETForRouter(
-	port int,
-	ratls *shared.RATLSManager,
-	router *shared.RouterClient,
-	expectedPeerImageDigest string,
-	logger *shared.Logger,
-) *TEET {
-	teet := NewTEETWithEnclaveManagerAndLogger(port, nil, logger)
-	teet.ratls = ratls
-	teet.router = router
-	teet.expectedTEEKPCR0 = expectedPeerImageDigest
-	return teet
-}
-
-// NewTEETWithEnclaveManagerAndLogger creates a TEET with enclave manager and logger
-func NewTEETWithEnclaveManagerAndLogger(port int, enclaveManager *shared.EnclaveManager, logger *shared.Logger) *TEET {
 	sessionTerminator := shared.NewSessionTerminator(logger)
 
-	// Generate ECDSA signing key pair
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
-		// Critical failure - cannot operate without signing capability
 		if logger != nil {
 			logger.Fatal("CRITICAL: Failed to generate signing key pair", zap.Error(err))
 		}
-		// Fallback if logger is nil
 		log.Fatalf("[TEE_T] CRITICAL: Failed to generate signing key pair: %v", err)
 	}
 	if logger != nil {
 		logger.Info("Generated ECDSA signing key pair", zap.String("curve", "P-256"))
 	}
 
-	// Initialize OPRF key share (persistent across restarts)
-	oprfKeyShare := initializeOPRFKeyShare(enclaveManager, logger, "tee_t")
+	oprfKeyShare := initializeOPRFKeyShare(logger)
 
 	sessionManager := NewTEETSessionManager()
 	sessionManager.SetLogger(logger)
 
-	teet := &TEET{
+	return &TEET{
 		port:              port,
 		sessionManager:    sessionManager,
 		logger:            logger,
 		sessionTerminator: sessionTerminator,
 		signingKeyPair:    signingKeyPair,
-		enclaveManager:    enclaveManager,
-		expectedTEEKPCR0:  os.Getenv("EXPECTED_TEEK_PCR0"),
 		oprfKeyShare:      oprfKeyShare,
 	}
+}
 
+// NewTEETForRouter constructs a TEET wired for the V2 router-mode path.
+// pair_id is NOT set here — it arrives over the peer connection in
+// TEE_K's TEEKPairAssignment envelope. The connection manager fills it
+// in via teet.pairID.Store(&pid). The expected peer image digest is
+// consumed directly by router_boot's RA-TLS verifier.
+func NewTEETForRouter(
+	port int,
+	ratls *shared.RATLSManager,
+	router *shared.RouterClient,
+	logger *shared.Logger,
+) *TEET {
+	teet := NewTEETWithLogger(port, logger)
+	teet.ratls = ratls
+	teet.router = router
 	return teet
 }
 
-// initializeOPRFKeyShare loads OPRF key share from cloud storage or generates and saves a new one
-func initializeOPRFKeyShare(enclaveManager *shared.EnclaveManager, logger *shared.Logger, serviceName string) []byte {
-	const oprfKeyShareSize = 16
-
-	// Build domain-specific key name (e.g., "eu-tt-oprf-key-share" for eu.tt.reclaimprotocol.org)
-	oprfKeyShareKey := "oprf-key-share" // default for standalone
-	if enclaveManager != nil {
-		if cfg := enclaveManager.GetConfig(); cfg != nil && cfg.Domain != "" {
-			// Use domain prefix for region-specific keys
-			oprfKeyShareKey = cfg.Domain + "-oprf-key-share"
-		}
+// initializeOPRFKeyShare returns this side's MPC OPRF key share. Currently
+// a process-local constant (no persistent storage in router mode yet);
+// the value here XORs with TEE_K's static share to form the joint OPRF key.
+func initializeOPRFKeyShare(logger *shared.Logger) []byte {
+	keyShare := []byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20}
+	if logger != nil {
+		logger.Info("Using static OPRF key share")
 	}
-
-	// In standalone mode (no enclave manager), use static key for testing
-	if enclaveManager == nil {
-		keyShare := []byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20}
-		if logger != nil {
-			logger.Info("Using static OPRF key share (standalone mode)")
-		}
-		return keyShare
-	}
-
-	// Try to load from cloud storage
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cache := enclaveManager.GetCache()
-	if cache == nil {
-		if logger != nil {
-			logger.Error("EnclaveManager has no cache - OPRF keys will not persist!")
-		}
-	} else {
-		existingKey, err := cache.Get(ctx, oprfKeyShareKey)
-		if err == nil && len(existingKey) == oprfKeyShareSize {
-			if logger != nil {
-				logger.Info("Loaded OPRF key share from cloud storage")
-			}
-			return existingKey
-		}
-		if err != nil {
-			if logger != nil {
-				logger.Info("OPRF key share not found in cloud storage, will generate new one", zap.Error(err))
-			}
-		} else if len(existingKey) == 0 {
-			if logger != nil {
-				logger.Error("Cache returned empty data without error - GCP adapter may be nil")
-			}
-		}
-	}
-
-	// Generate new key share
-	keyShare := make([]byte, oprfKeyShareSize)
-	if _, err := rand.Read(keyShare); err != nil {
-		log.Fatalf("[%s] CRITICAL: Failed to generate OPRF key share: %v", serviceName, err)
-	}
-
-	// Save to cloud storage
-	if cache != nil {
-		if err := cache.Put(ctx, oprfKeyShareKey, keyShare); err != nil {
-			if logger != nil {
-				logger.Error("Failed to save OPRF key share to cloud storage", zap.Error(err))
-			}
-			// Continue anyway - we have a valid key share in memory
-		} else if logger != nil {
-			logger.Info("Generated and saved OPRF key share to cloud storage")
-		}
-	} else if logger != nil {
-		logger.Info("Generated OPRF key share (no cache available)")
-	}
-
 	return keyShare
 }
 

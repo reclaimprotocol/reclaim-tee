@@ -22,20 +22,15 @@ func main() {
 	logger := shared.GetTEETLogger()
 	defer logger.Sync()
 
-	// Router mode (Phase 3+, multi-pair architecture) takes precedence.
-	// Legacy enclave/standalone paths remain for old prod.
+	// Router mode is the production path (multi-pair, RA-TLS, router-mediated).
+	// Standalone mode remains for local dev only — no TLS, no attestation.
 	if config.RouterMode() {
 		startRouterMode(context.Background(), config, logger)
 		return
 	}
 
-	if config.EnclaveMode {
-		logger.Info("Starting TEE_T in enclave mode")
-		startEnclaveMode(config, logger)
-	} else {
-		logger.Info("Starting TEE_T in standalone mode")
-		startStandaloneMode(config, logger)
-	}
+	logger.Info("Starting TEE_T in standalone mode")
+	startStandaloneMode(config, logger)
 }
 
 func startStandaloneMode(config *TEETConfig, logger *shared.Logger) {

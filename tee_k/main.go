@@ -28,20 +28,11 @@ func main() {
 
 	config := LoadTEEKConfig()
 
-	// Router mode (Phase 3+, multi-pair architecture) takes precedence — it's
-	// the forward path. Legacy enclave/standalone modes remain so old prod
-	// continues to deploy unchanged.
+	// Router mode is the production path (multi-pair, RA-TLS, router-mediated).
+	// Standalone mode remains for local dev only — no TLS, no attestation,
+	// static OPRF key.
 	if config.RouterMode() {
 		startRouterMode(context.Background(), config, logger)
-		return
-	}
-
-	enclaveMode := shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true"
-	if enclaveMode {
-		logger.Info("=== TEE_K Enclave Mode ===")
-		logger.Info("Loaded config from environment",
-			zap.String("domain", config.Domain))
-		startEnclaveMode(config, logger)
 		return
 	}
 

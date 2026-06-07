@@ -210,11 +210,13 @@ func NewLogger(config LoggerConfig) (*Logger, error) {
 	}, nil
 }
 
-// NewLoggerFromEnv creates a logger using environment variables
+// NewLoggerFromEnv creates a logger using environment variables. EnclaveMode
+// is auto-detected from the presence of the GCP Confidential Space launcher
+// socket (same signal as RA-TLS attestation generation).
 func NewLoggerFromEnv(serviceName string) (*Logger, error) {
 	config := LoggerConfig{
 		ServiceName: serviceName,
-		EnclaveMode: GetEnvOrDefault("ENCLAVE_MODE", "false") == "true",
+		EnclaveMode: IsEnclaveMode(),
 		Development: GetEnvOrDefault("DEVELOPMENT", "false") == "true",
 	}
 	return NewLogger(config)

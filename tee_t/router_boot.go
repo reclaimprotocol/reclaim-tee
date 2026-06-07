@@ -52,7 +52,7 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 
 	router := shared.NewRouterClient(config.RouterURL, shared.MetadataServerTokenSource)
 
-	teet := NewTEETForRouter(config.Port, ratls, router, config.ExpectedPeerImageDigest, logger)
+	teet := NewTEETForRouter(config.Port, ratls, router, logger)
 	teet.sessionManager.StartCleanupRoutine()
 
 	register := func(ctx context.Context, pairID string) error {

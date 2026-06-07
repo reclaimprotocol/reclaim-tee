@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"crypto/rand"
 	"fmt"
 	"log"
 	"sync"
@@ -49,9 +47,6 @@ type TEEK struct {
 	// Single Session Mode: ECDSA signing keys
 	signingKeyPair *shared.SigningKeyPair // ECDSA key pair for signing transcripts
 
-	// Enclave manager for attestation generation
-	enclaveManager *shared.EnclaveManager
-
 	// Attestation caching for performance optimization
 	cachedAttestation *teeproto.AttestationReport
 	attestationMutex  sync.RWMutex
@@ -87,7 +82,7 @@ type TEEK struct {
 
 // NewTEEKWithConfig creates a new TEEK instance with the provided configuration
 func NewTEEKWithConfig(config *TEEKConfig) *TEEK {
-	teek := NewTEEKWithEnclaveManager(config.Port, nil)
+	teek := NewTEEK(config.Port)
 	teek.SetTEETURL(config.TEETURL)
 	teek.SetForceTLSVersion(config.ForceTLSVersion)
 	teek.SetForceCipherSuite(config.ForceCipherSuite)
@@ -107,7 +102,7 @@ func NewTEEKForRouter(
 	router *shared.RouterClient,
 	pairID string,
 ) *TEEK {
-	teek := NewTEEKWithEnclaveManager(config.Port, nil)
+	teek := NewTEEK(config.Port)
 	teek.ratls = ratls
 	teek.router = router
 	teek.pairID = pairID
@@ -121,33 +116,25 @@ func NewTEEKForRouter(
 	return teek
 }
 
-// NewTEEKWithEnclaveManager creates a new TEEK instance with optional enclave manager
-func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) *TEEK {
-	// Generate ECDSA signing key pair
+// NewTEEK constructs a baseline TEEK on the given port. Higher-level
+// constructors (NewTEEKWithConfig, NewTEEKForRouter) layer mode-specific
+// wiring on top.
+func NewTEEK(port int) *TEEK {
 	signingKeyPair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
-		// Critical failure - cannot operate without signing capability
 		log.Fatalf("[TEE_K] CRITICAL: Failed to generate signing key pair: %v", err)
 	}
 
-	// Get logger
 	logger := shared.GetTEEKLogger()
 	logger.Info("Generated ECDSA signing key pair")
 
-	// Initialize cached certificate fetcher (shared across all TLS connections)
-	certFetcher, err := NewCertificateFetcher(enclaveManager, logger)
+	certFetcher, err := NewCertificateFetcher(logger)
 	if err != nil {
 		log.Fatalf("[TEE_K] CRITICAL: Failed to initialize certificate fetcher: %v", err)
 	}
-	logger.Info("Initialized cached certificate fetcher", zap.String("mode", func() string {
-		if enclaveManager != nil {
-			return "enclave"
-		}
-		return "http"
-	}()))
+	logger.Info("Initialized cached certificate fetcher")
 
-	// Initialize OPRF key share (persistent across restarts)
-	oprfKeyShare := initializeOPRFKeyShare(enclaveManager, logger, "tee_k")
+	oprfKeyShare := initializeOPRFKeyShare(logger)
 
 	sessionManager := NewTEEKSessionManager()
 	sessionManager.SetLogger(logger)
@@ -159,70 +146,18 @@ func NewTEEKWithEnclaveManager(port int, enclaveManager *shared.EnclaveManager) 
 		logger:            logger,
 		teetURL:           "ws://localhost:8081/teek", // Default TEE_T URL
 		signingKeyPair:    signingKeyPair,
-		enclaveManager:    enclaveManager,
 		certFetcher:       certFetcher,
 		oprfKeyShare:      oprfKeyShare,
 	}
 }
 
-// initializeOPRFKeyShare loads OPRF key share from cloud storage or generates and saves a new one
-func initializeOPRFKeyShare(enclaveManager *shared.EnclaveManager, logger *shared.Logger, serviceName string) []byte {
-	const oprfKeyShareSize = 16
-
-	// Build domain-specific key name (e.g., "eu-tk-oprf-key-share" for eu.tk.reclaimprotocol.org)
-	oprfKeyShareKey := "oprf-key-share" // default for standalone
-	if enclaveManager != nil {
-		if cfg := enclaveManager.GetConfig(); cfg != nil && cfg.Domain != "" {
-			// Use domain prefix for region-specific keys
-			oprfKeyShareKey = cfg.Domain + "-oprf-key-share"
-		}
-	}
-
-	// In standalone mode (no enclave manager), use static key for testing
-	if enclaveManager == nil {
-		keyShare := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
-		logger.Info("Using static OPRF key share (standalone mode)")
-		return keyShare
-	}
-
-	// Try to load from cloud storage
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cache := enclaveManager.GetCache()
-	if cache == nil {
-		logger.Error("EnclaveManager has no cache - OPRF keys will not persist!")
-	} else {
-		existingKey, err := cache.Get(ctx, oprfKeyShareKey)
-		if err == nil && len(existingKey) == oprfKeyShareSize {
-			logger.Info("Loaded OPRF key share from cloud storage")
-			return existingKey
-		}
-		if err != nil {
-			logger.Info("OPRF key share not found in cloud storage, will generate new one", zap.Error(err))
-		} else if len(existingKey) == 0 {
-			logger.Error("Cache returned empty data without error - GCP adapter may be nil")
-		}
-	}
-
-	// Generate new key share
-	keyShare := make([]byte, oprfKeyShareSize)
-	if _, err := rand.Read(keyShare); err != nil {
-		log.Fatalf("[%s] CRITICAL: Failed to generate OPRF key share: %v", serviceName, err)
-	}
-
-	// Save to cloud storage
-	if cache != nil {
-		if err := cache.Put(ctx, oprfKeyShareKey, keyShare); err != nil {
-			logger.Error("Failed to save OPRF key share to cloud storage", zap.Error(err))
-			// Continue anyway - we have a valid key share in memory
-		} else {
-			logger.Info("Generated and saved OPRF key share to cloud storage")
-		}
-	} else {
-		logger.Info("Generated OPRF key share (no cache available)")
-	}
-
+// initializeOPRFKeyShare returns the OPRF key share used by both TEE_K and
+// TEE_T for the MPC OPRF protocol. Currently a process-local constant
+// (no persistent storage in router mode yet); both TEEs derive the same
+// 16 bytes so the protocol can run.
+func initializeOPRFKeyShare(logger *shared.Logger) []byte {
+	keyShare := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
+	logger.Info("Using static OPRF key share")
 	return keyShare
 }
 
