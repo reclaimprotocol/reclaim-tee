@@ -32,6 +32,18 @@ type Config struct {
 	// behind Cloud Run + IAP, this can stay empty since IAP enforces auth at
 	// the network edge; for non-IAP deployments or local ops, set ADMIN_TOKEN.
 	AdminToken string
+
+	// FirestoreProjectID, when set, selects the Firestore-backed Store
+	// instead of the in-memory one. Required for multi-replica deployments.
+	FirestoreProjectID string
+
+	// KMSKeyName, when set, selects the KMS-backed Signer instead of the
+	// in-process LocalSigner. Format:
+	//
+	//	projects/<proj>/locations/<loc>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>
+	//
+	// Key must be EC_SIGN_P256_SHA256.
+	KMSKeyName string
 }
 
 // Load reads configuration from environment variables. Returns an error if
@@ -88,6 +100,8 @@ func Load() (*Config, error) {
 		ControlUnhealthy:   controlUnhealthy,
 		OTNotReady:         otNotReady,
 		AdminToken:         os.Getenv("ADMIN_TOKEN"),
+		FirestoreProjectID: os.Getenv("FIRESTORE_PROJECT_ID"),
+		KMSKeyName:         os.Getenv("KMS_KEY_NAME"),
 	}, nil
 }
 

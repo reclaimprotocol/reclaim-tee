@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,13 +31,23 @@ func main() {
 		logger.Fatal("config load failed", zap.Error(err))
 	}
 
-	localSigner, err := signer.NewLocalSigner()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pairStore, storeCloser, err := buildStore(ctx, cfg, logger)
+	if err != nil {
+		logger.Fatal("store init failed", zap.Error(err))
+	}
+	defer func() { _ = storeCloser.Close() }()
+
+	tokenSigner, signerCloser, err := buildSigner(ctx, cfg, logger)
 	if err != nil {
 		logger.Fatal("signer init failed", zap.Error(err))
 	}
+	defer func() { _ = signerCloser.Close() }()
 
 	srv := &handlers.Server{
-		Store: store.NewMemoryStore(),
+		Store: pairStore,
 		SAValidator: auth.NewGoogleSAValidator(
 			auth.NewGoogleJWKSFetcher(),
 			cfg.ApprovedSAPattern,
@@ -44,7 +55,7 @@ func main() {
 		),
 		AttestValidator: auth.NewCSAttestationValidator(logger),
 		Allowlist:       auth.NewAllowlist(cfg.ApprovedDigests),
-		Signer:          localSigner,
+		Signer:          tokenSigner,
 		Logger:          logger,
 		Config:          cfg,
 	}
@@ -67,9 +78,64 @@ func main() {
 	<-stop
 
 	logger.Info("shutting down")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := httpSrv.Shutdown(ctx); err != nil {
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown failed", zap.Error(err))
 	}
 }
+
+// buildStore returns a Firestore-backed store if FIRESTORE_PROJECT_ID is set,
+// otherwise an in-memory store. The second return value is a closer; for
+// MemoryStore it's a no-op.
+func buildStore(ctx context.Context, cfg *config.Config, logger *zap.Logger) (store.Store, io.Closer, error) {
+	if cfg.FirestoreProjectID == "" {
+		logger.Warn("using in-memory pair store — state will not survive restart; do not run multi-replica",
+			zap.String("hint", "set FIRESTORE_PROJECT_ID for production"))
+		return store.NewMemoryStore(), noopCloser{}, nil
+	}
+	fs, err := store.NewFirestoreStore(ctx, cfg.FirestoreProjectID)
+	if err != nil {
+		return nil, nil, err
+	}
+	logger.Info("using Firestore pair store",
+		zap.String("project_id", cfg.FirestoreProjectID),
+		zap.String("collection", store.FirestoreCollection))
+	return fs, fs, nil
+}
+
+// buildSigner returns a KMS-backed signer if KMS_KEY_NAME is set, otherwise
+// a local in-process signer. Logs the public key at startup either way so
+// operators can copy it into TEE image metadata.
+func buildSigner(ctx context.Context, cfg *config.Config, logger *zap.Logger) (signer.Signer, io.Closer, error) {
+	var s signer.Signer
+	var closer io.Closer
+	if cfg.KMSKeyName == "" {
+		logger.Warn("using local in-process signer — pub key will change on restart",
+			zap.String("hint", "set KMS_KEY_NAME for production"))
+		ls, err := signer.NewLocalSigner()
+		if err != nil {
+			return nil, nil, err
+		}
+		s, closer = ls, noopCloser{}
+	} else {
+		ks, err := signer.NewKMSSigner(ctx, cfg.KMSKeyName)
+		if err != nil {
+			return nil, nil, err
+		}
+		logger.Info("using KMS signer", zap.String("key", cfg.KMSKeyName))
+		s, closer = ks, ks
+	}
+
+	pem, err := s.PublicKeyPEM()
+	if err != nil {
+		return nil, nil, err
+	}
+	logger.Info("signer public key (embed into TEE metadata as JWT_PUBLIC_KEY)",
+		zap.String("pem", string(pem)))
+	return s, closer, nil
+}
+
+type noopCloser struct{}
+
+func (noopCloser) Close() error { return nil }
