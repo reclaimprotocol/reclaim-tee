@@ -17,8 +17,9 @@ import (
 
 // RouterClient talks to the multi-pair router service from inside a TEE.
 // All requests carry a GCP service-account identity token in
-// Authorization: Bearer. The token is fetched fresh per call via the
-// supplied TokenSource (which in production hits the GCP metadata server).
+// Authorization: Bearer. The token is minted with the router's URL as its
+// `aud` claim, which must match the SA_TOKEN_AUDIENCE the router validates
+// against — operator's responsibility to keep these aligned at deploy time.
 type RouterClient struct {
 	baseURL    string
 	httpClient *http.Client
@@ -31,8 +32,8 @@ type RouterClient struct {
 type TokenSource func(ctx context.Context, audience string) (string, error)
 
 // NewRouterClient builds a client pointing at the router base URL (e.g.
-// "https://tee.reclaimprotocol.org"). The token source is invoked per
-// authenticated request; pass MetadataServerTokenSource for production.
+// "https://tee.reclaimprotocol.org"). The same URL is used as the
+// `aud` claim when minting SA identity tokens.
 func NewRouterClient(baseURL string, tokens TokenSource) *RouterClient {
 	return &RouterClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),

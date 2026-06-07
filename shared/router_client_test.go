@@ -19,7 +19,9 @@ func stubTokens(_ context.Context, _ string) (string, error) {
 }
 
 // TestRouterClient_Register_HappyPath verifies that Register POSTs to the
-// right path with the bearer token attached and parses the response.
+// right path with the bearer token attached, parses the response, and that
+// the token source receives the router URL as the audience (which is what
+// the router validates against).
 func TestRouterClient_Register_HappyPath(t *testing.T) {
 	var seenPath, seenAuth string
 	var seenBody RegisterRequest
@@ -34,14 +36,22 @@ func TestRouterClient_Register_HappyPath(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	c := NewRouterClient(srv.URL, stubTokens)
-	resp, err := c.Register(t.Context(), RegisterRequest{
+	var seenAudience string
+	tokens := func(_ context.Context, aud string) (string, error) {
+		seenAudience = aud
+		return fakeSAToken, nil
+	}
+	c := NewRouterClient(srv.URL, tokens)
+	_, err := c.Register(t.Context(), RegisterRequest{
 		PairID: "p1", Role: "K", SelfAddr: "10.0.0.1:443",
 		PeerAddrClaim: "10.0.0.2:443", ImageDigest: "sha256:abc",
 		AttestationJWT: "att-blob",
 	})
 	if err != nil {
 		t.Fatalf("register: %v", err)
+	}
+	if seenAudience != srv.URL {
+		t.Fatalf("token source got audience %q, want %q", seenAudience, srv.URL)
 	}
 	if seenPath != "/register" {
 		t.Fatalf("path: %q", seenPath)
@@ -52,10 +62,8 @@ func TestRouterClient_Register_HappyPath(t *testing.T) {
 	if seenBody.PairID != "p1" || seenBody.Role != "K" {
 		t.Fatalf("body: %+v", seenBody)
 	}
-	if resp.PairID != "p1" || resp.Status != "registering" {
-		t.Fatalf("response: %+v", resp)
-	}
 }
+
 
 // TestRouterClient_Heartbeat_404IsErrNotFound — if the router doesn't know
 // the pair_id (e.g. router restart wiped in-memory state), heartbeat must

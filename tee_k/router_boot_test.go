@@ -41,7 +41,6 @@ func TestValidateRouterConfig(t *testing.T) {
 		SelfAddr:                "10.0.0.1:443",
 		PeerAddr:                "10.0.0.2:443",
 		ExpectedPeerImageDigest: "sha256:abc",
-		SATokenAudience:         "https://router",
 		JWTPublicKey:            "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----",
 	}
 	if err := validateRouterConfig(&base); err != nil {
@@ -56,7 +55,6 @@ func TestValidateRouterConfig(t *testing.T) {
 		{"missing SELF_ADDR", func(c *TEEKConfig) { c.SelfAddr = "" }, "SELF_ADDR"},
 		{"missing PEER_ADDR", func(c *TEEKConfig) { c.PeerAddr = "" }, "PEER_ADDR"},
 		{"missing EXPECTED_PEER_IMAGE_DIGEST", func(c *TEEKConfig) { c.ExpectedPeerImageDigest = "" }, "EXPECTED_PEER_IMAGE_DIGEST"},
-		{"missing SA_TOKEN_AUDIENCE", func(c *TEEKConfig) { c.SATokenAudience = "" }, "SA_TOKEN_AUDIENCE"},
 		{"missing JWT_PUBLIC_KEY", func(c *TEEKConfig) { c.JWTPublicKey = "" }, "JWT_PUBLIC_KEY"},
 	}
 	for _, tc := range cases {

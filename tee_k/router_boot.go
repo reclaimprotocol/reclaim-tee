@@ -119,6 +119,20 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	state := &heartbeatState{}
 	go runHeartbeats(ctx, router, state, pairID, "K", logger, register, heartbeatInterval)
 
+	// Peer connection goroutine: dials PEER_ADDR over RA-TLS, holds the
+	// connection open as a liveness signal, and writes state.controlHealthy
+	// on connect/disconnect. No protocol messages flow yet — pair_id
+	// exchange and OT precompute on top of this come in PR 3.2d.
+	peerTLS := buildPeerTLSConfig(
+		shared.VerifyRATLSPeer(shared.RATLSVerifyOptions{
+			PeerRole:            "tee_t",
+			ExpectedImageDigest: config.ExpectedPeerImageDigest,
+			Logger:              logger,
+		}),
+		ratls,
+	)
+	go runPeerConnection(ctx, config.PeerAddr, peerTLS, state, logger)
+
 	// Block on shutdown signal. Peer connection and session serving come
 	// in subsequent PRs.
 	sigChan := make(chan os.Signal, 1)
@@ -183,8 +197,6 @@ func validateRouterConfig(c *TEEKConfig) error {
 		return errors.New("PEER_ADDR is required in router mode")
 	case c.ExpectedPeerImageDigest == "":
 		return errors.New("EXPECTED_PEER_IMAGE_DIGEST is required in router mode")
-	case c.SATokenAudience == "":
-		return errors.New("SA_TOKEN_AUDIENCE is required in router mode")
 	case c.JWTPublicKey == "":
 		return errors.New("JWT_PUBLIC_KEY is required in router mode")
 	}

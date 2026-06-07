@@ -32,11 +32,14 @@ type TEEKConfig struct {
 	// Router-mode settings (multi-pair architecture, Phase 3+).
 	// Presence of RouterURL is what flips boot into router mode. When empty,
 	// the binary falls back to the existing Lego/ACME enclave path.
+	//
+	// The TEE mints SA identity tokens with RouterURL as the `aud` claim;
+	// the router validates against its own SA_TOKEN_AUDIENCE env var, so the
+	// operator must keep router-side SA_TOKEN_AUDIENCE == TEE-side RouterURL.
 	RouterURL               string `json:"router_url,omitempty"`
 	SelfAddr                string `json:"self_addr,omitempty"`
 	PeerAddr                string `json:"peer_addr,omitempty"`
 	ExpectedPeerImageDigest string `json:"expected_peer_image_digest,omitempty"`
-	SATokenAudience         string `json:"sa_token_audience,omitempty"`
 	// JWTPublicKey is the PEM-encoded ES256 verification key the router signs
 	// allocation JWTs with. Read here so it's part of the bootstrapped config;
 	// consumption is added in a later PR (client-WS JWT validation).
@@ -96,7 +99,6 @@ func LoadTEEKConfig() *TEEKConfig {
 		SelfAddr:                shared.GetEnvOrDefault("SELF_ADDR", ""),
 		PeerAddr:                shared.GetEnvOrDefault("PEER_ADDR", ""),
 		ExpectedPeerImageDigest: shared.GetEnvOrDefault("EXPECTED_PEER_IMAGE_DIGEST", ""),
-		SATokenAudience:         shared.GetEnvOrDefault("SA_TOKEN_AUDIENCE", ""),
 		JWTPublicKey:            shared.GetEnvOrDefault("JWT_PUBLIC_KEY", ""),
 	}
 }
