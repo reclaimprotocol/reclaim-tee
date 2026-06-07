@@ -410,6 +410,7 @@ func (t *TEEK) clearOTPool() {
 		t.otPrecomputeState.pendingIsInitial = false
 		t.otPrecomputeState.ready = false
 		t.otPrecomputeState.mu.Unlock()
+		t.otReady.Store(false)
 		t.logger.Info("Cleared OT pool due to disconnect")
 	}
 }

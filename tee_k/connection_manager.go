@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"strings"
 	"sync"
@@ -148,6 +149,7 @@ func (cm *TEETConnectionManager) EstablishControlConnection() error {
 			cm.mu.Lock()
 			cm.controlConn = nil
 			cm.mu.Unlock()
+			cm.teek.controlHealthy.Store(false)
 			// Mirror the disconnect path: a failed OT exchange leaves state.ready
 			// potentially stale-true from a prior cycle. Without this, the next
 			// successful precompute would skip sendOTPrecomputeComplete (gated on
@@ -158,31 +160,78 @@ func (cm *TEETConnectionManager) EstablishControlConnection() error {
 			continue
 		}
 
+		cm.teek.otReady.Store(true)
 		cm.logger.Info("OT precomputation complete on control connection")
 		return nil
 	}
+}
+
+// dialer returns the WebSocket dialer to use for the given URL.
+// In router mode (cm.teek.ratls != nil) wss:// dials go through an
+// RA-TLS-verified mTLS handshake: server is verified by attestation
+// extension, client presents its own RA-TLS cert. In standalone mode
+// wss:// uses the existing shared TLS config; ws:// uses the default dialer.
+func (cm *TEETConnectionManager) dialer(wsURL string) *websocket.Dialer {
+	if cm.teek.ratls != nil && strings.HasPrefix(wsURL, "wss://") {
+		return &websocket.Dialer{
+			TLSClientConfig: &tls.Config{
+				GetClientCertificate: cm.teek.ratls.GetClientCertificate,
+				// RA-TLS uses self-signed certs; standard chain verification
+				// is replaced by the attestation check in VerifyPeerCertificate.
+				InsecureSkipVerify: true,
+				VerifyPeerCertificate: shared.VerifyRATLSPeer(shared.RATLSVerifyOptions{
+					PeerRole:            "tee_t",
+					ExpectedImageDigest: cm.teek.expectedPeerImageDigest,
+					Logger:              cm.logger,
+				}),
+				MinVersion: tls.VersionTLS12,
+			},
+		}
+	}
+	if strings.HasPrefix(wsURL, "wss://") {
+		return createTLSWebSocketDialer()
+	}
+	return websocket.DefaultDialer
+}
+
+// sendPairAssignment writes the router-mode pair_id handshake envelope onto a
+// freshly-dialed control connection. It is the very first message TEE_T sees
+// on the wire — its existing TEEKAttestation handshake comes next.
+func (cm *TEETConnectionManager) sendPairAssignment(conn *websocket.Conn) error {
+	env := &teeproto.Envelope{
+		SessionId:   "control",
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_TeekPairAssignment{
+			TeekPairAssignment: &teeproto.TEEKPairAssignment{PairId: cm.teek.pairID},
+		},
+	}
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 // attemptControlConnection performs a single connection attempt with attestation
 func (cm *TEETConnectionManager) attemptControlConnection() (*websocket.Conn, error) {
 	cm.logger.Debug("Starting control connection attempt")
 
-	// Dial WebSocket
-	var conn *websocket.Conn
-	var err error
-
-	if strings.HasPrefix(cm.controlURL, "wss://") {
-		dialer := createTLSWebSocketDialer()
-		conn, _, err = dialer.Dial(cm.controlURL, nil)
-	} else {
-		conn, _, err = websocket.DefaultDialer.Dial(cm.controlURL, nil)
-	}
-
+	conn, _, err := cm.dialer(cm.controlURL).Dial(cm.controlURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	cm.logger.Info("Control WebSocket connected, starting attestation exchange")
+
+	// Router mode: announce the pair_id as the very first envelope so TEE_T
+	// can register with the router under the same ID. Standalone mode skips
+	// this entirely.
+	if cm.teek.pairID != "" {
+		if err := cm.sendPairAssignment(conn); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("send pair assignment: %w", err)
+		}
+	}
 
 	// Generate and send TEE_K attestation
 	attestation, err := cm.teek.generateAttestationForTEET()
@@ -252,6 +301,9 @@ func (cm *TEETConnectionManager) attemptControlConnection() (*websocket.Conn, er
 	cm.teek.teetAttestationVerified = true
 	cm.teek.teetAttestationMutex.Unlock()
 
+	// Router-mode heartbeat read this; harmless in standalone mode.
+	cm.teek.controlHealthy.Store(true)
+
 	cm.logger.Info("TEE_T attestation verified on control connection")
 
 	return conn, nil
@@ -287,7 +339,9 @@ func (cm *TEETConnectionManager) handleControlMessages() {
 			cm.teek.teetAttestationVerified = false
 			cm.teek.teetAttestationMutex.Unlock()
 
-			// Clear OT pool
+			cm.teek.controlHealthy.Store(false)
+
+			// clearOTPool also clears the otReady atomic.
 			cm.teek.clearOTPool()
 
 			// Clear the broken connection
@@ -402,17 +456,10 @@ func (cm *TEETConnectionManager) EstablishSessionConnection(sessionID string) er
 		return fmt.Errorf("cannot establish session connection: control attestation not verified")
 	}
 
-	// Dial session WebSocket
-	var conn *websocket.Conn
-	var err error
-
-	if strings.HasPrefix(cm.sessionURL, "wss://") {
-		dialer := createTLSWebSocketDialer()
-		conn, _, err = dialer.Dial(cm.sessionURL, nil)
-	} else {
-		conn, _, err = websocket.DefaultDialer.Dial(cm.sessionURL, nil)
-	}
-
+	// Dial session WebSocket — same dialer policy as the control link.
+	// Per-session dials skip the pair-assignment handshake; that runs only
+	// once on control.
+	conn, _, err := cm.dialer(cm.sessionURL).Dial(cm.sessionURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to dial session connection: %v", err)
 	}

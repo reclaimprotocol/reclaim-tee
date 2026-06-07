@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,40 +16,20 @@ import (
 )
 
 // ratlsRefreshInterval is how often we rotate the RA-TLS certificate's
-// attestation. GCP Confidential Space tokens have a TTL of ~5 minutes, so
-// 4 minutes matches the existing attestation-refresh cadence used by the
-// legacy Lego/ACME path and leaves a comfortable margin.
+// attestation. GCP Confidential Space tokens have a TTL of ~5 minutes;
+// 4 minutes matches the existing attestation-refresh cadence and leaves
+// a comfortable margin.
 const ratlsRefreshInterval = 4 * time.Minute
 
 // heartbeatInterval is the cadence at which TEE_K reports liveness +
-// health observations to the router. Matches the router's expected window
+// observation state to the router. Matches the router's expected window
 // (3 missed = ~15s = "dead").
 const heartbeatInterval = 5 * time.Second
 
-// heartbeatState holds the slowly-changing per-TEE state we report to the
-// router. Each field is owned by a different subsystem — peer reconnect
-// flips controlHealthy, OT precompute completion flips otReady, the
-// session manager updates activeSessions — and read concurrently by the
-// heartbeat goroutine. Atomics for lock-free access from any goroutine.
-//
-// In this PR all writers are still missing; everything stays false/0 until
-// PR 3.2c (peer connection) and PR 3.2d (session JWT validation) land.
-type heartbeatState struct {
-	controlHealthy atomic.Bool
-	otReady        atomic.Bool
-	activeSessions atomic.Int32
-}
-
-// startRouterMode is the boot path used when ROUTER_URL is set. It brings
-// up an RA-TLS-backed identity for the TEE, registers with the router,
-// starts the heartbeat goroutine, dials the peer over RA-TLS, and blocks
-// on a shutdown signal.
-//
-// Still missing vs. full Phase 3: client-websocket JWT validation
-// (lands in 3.2d) and OT-precompute / session-protocol on top of the
-// peer connection (also 3.2d). Old TEE_K logic in connection_manager.go,
-// websocket.go, attestation.go is intentionally left untouched — the
-// legacy enclave path uses it, the router path doesn't.
+// startRouterMode is TEE_K's V2 boot path, used when ROUTER_URL is set.
+// It brings up an RA-TLS identity, registers with the router, kicks off
+// the existing control-connection flow against PEER_ADDR, and runs the
+// heartbeat goroutine.
 func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.Logger) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -78,17 +57,16 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 
 	router := shared.NewRouterClient(config.RouterURL, shared.MetadataServerTokenSource)
 
-	// register pulls a fresh attestation off the current RA-TLS cert each
-	// time, so the same closure also serves as the re-register path triggered
-	// by a 404 from /heartbeat (e.g. after a router restart in single-replica
-	// mode wiped in-memory state).
+	teek := NewTEEKForRouter(config, ratls, router, pairID)
+	teek.sessionManager.StartCleanupRoutine()
+
 	register := func(ctx context.Context) error {
-		imageDigest, attestationJWT, err := extractIdentityFromRATLS(ratls, logger)
+		imageDigest, attestationJWT, err := extractIdentityFromRATLS(teek.ratls, logger)
 		if err != nil {
 			return fmt.Errorf("extract identity: %w", err)
 		}
-		resp, err := router.Register(ctx, shared.RegisterRequest{
-			PairID:         pairID,
+		resp, err := teek.router.Register(ctx, shared.RegisterRequest{
+			PairID:         teek.pairID,
 			Role:           "K",
 			SelfAddr:       config.SelfAddr,
 			PeerAddrClaim:  config.PeerAddr,
@@ -109,27 +87,18 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 		return
 	}
 
-	// Background RA-TLS refresh keeps the embedded attestation fresh so
-	// later TLS handshakes verifying via VerifyRATLSPeer don't trip on the
-	// JWT's exp claim.
-	go runRATLSRefresh(ctx, ratls, logger)
+	go runRATLSRefresh(ctx, teek.ratls, logger)
+	go runHeartbeats(ctx, teek, "K", logger, register, heartbeatInterval)
 
-	// Heartbeat goroutine reports liveness + observation state to router.
-	// State writes happen via the existing connection-manager flow once it
-	// gets wired into router mode in the next step.
-	state := &heartbeatState{}
-	go runHeartbeats(ctx, router, state, pairID, "K", logger, register, heartbeatInterval)
-
-	// Peer connection wiring lands in the next step — the existing
-	// tee_k/connection_manager.go gets adapted to dial PEER_ADDR over
-	// RA-TLS and to send TEEKPairAssignment as its first envelope. For
-	// now, router-mode TEE_K registers + heartbeats but does not connect
-	// to its peer.
+	// Bring up the existing control connection (and OT precomputation) against
+	// PEER_ADDR. The connection manager picks up router mode via teek.ratls
+	// (RA-TLS dialer + mTLS) and teek.pairID (sends TEEKPairAssignment first).
+	go teek.establishSharedTEETConnection()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	logger.Info("TEE_K router-mode bootstrap complete",
-		zap.String("pair_id", pairID))
+		zap.String("pair_id", teek.pairID))
 	<-sigChan
 	logger.Info("shutting down router-mode TEE_K")
 }
@@ -140,9 +109,8 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 // other errors are logged but don't abort the loop.
 func runHeartbeats(
 	ctx context.Context,
-	router *shared.RouterClient,
-	state *heartbeatState,
-	pairID, role string,
+	teek *TEEK,
+	role string,
 	logger *shared.Logger,
 	onLost func(context.Context) error,
 	interval time.Duration,
@@ -155,19 +123,19 @@ func runHeartbeats(
 			return
 		case <-ticker.C:
 			req := shared.HeartbeatRequest{
-				PairID:         pairID,
+				PairID:         teek.pairID,
 				Role:           role,
-				ControlHealthy: state.controlHealthy.Load(),
-				OTReady:        state.otReady.Load(),
-				ActiveSessions: int(state.activeSessions.Load()),
+				ControlHealthy: teek.controlHealthy.Load(),
+				OTReady:        teek.otReady.Load(),
+				ActiveSessions: int(teek.activeSessions.Load()),
 			}
-			_, err := router.Heartbeat(ctx, req)
+			_, err := teek.router.Heartbeat(ctx, req)
 			switch {
 			case err == nil:
 				// happy path
 			case errors.Is(err, shared.ErrRouterNotFound):
 				logger.Warn("router lost pair_id, re-registering",
-					zap.String("pair_id", pairID))
+					zap.String("pair_id", teek.pairID))
 				if regErr := onLost(ctx); regErr != nil {
 					logger.Error("re-register failed", zap.Error(regErr))
 				}
@@ -178,8 +146,8 @@ func runHeartbeats(
 	}
 }
 
-// validateRouterConfig surfaces missing router-mode env vars at boot rather
-// than failing mysteriously deep in router/register or RA-TLS code.
+// validateRouterConfig surfaces missing router-mode env vars at boot
+// rather than failing mysteriously inside RA-TLS or router-client code.
 func validateRouterConfig(c *TEEKConfig) error {
 	switch {
 	case c.SelfAddr == "":

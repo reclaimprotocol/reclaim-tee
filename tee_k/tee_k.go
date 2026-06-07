@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/reclaimprotocol/reclaim-tee/minitls"
@@ -65,12 +66,56 @@ type TEEK struct {
 
 	// OT precomputation state for 2-round OPRF protocol
 	otPrecomputeState *OTPrecomputeState
+
+	// V2 router-mode wiring. Nil/zero in standalone mode; filled in by
+	// NewTEEKForRouter when ROUTER_URL is set. The connection manager,
+	// attestation code, and heartbeat goroutine all read these.
+	ratls                   *shared.RATLSManager
+	router                  *shared.RouterClient
+	pairID                  string
+	expectedPeerImageDigest string // sha256:... of TEE_T container image, for RA-TLS peer verification
+
+	// Heartbeat observation state — written by the connection manager
+	// (controlHealthy on peer connect/disconnect), OT precompute code
+	// (otReady on pool ready/cleared), and the session manager
+	// (activeSessions). Read by the router-heartbeat goroutine each tick.
+	// Atomic so reads stay lock-free.
+	controlHealthy atomic.Bool
+	otReady        atomic.Bool
+	activeSessions atomic.Int32
 }
 
 // NewTEEKWithConfig creates a new TEEK instance with the provided configuration
 func NewTEEKWithConfig(config *TEEKConfig) *TEEK {
 	teek := NewTEEKWithEnclaveManager(config.Port, nil)
 	teek.SetTEETURL(config.TEETURL)
+	teek.SetForceTLSVersion(config.ForceTLSVersion)
+	teek.SetForceCipherSuite(config.ForceCipherSuite)
+	return teek
+}
+
+// NewTEEKForRouter constructs a TEEK wired for the V2 router-mode path:
+// RA-TLS instead of ACME-issued certs, router client for register +
+// heartbeat, deterministic pair_id generated at boot. Used only when
+// ROUTER_URL is set; standalone-mode boot continues to use NewTEEKWithConfig.
+//
+// Returns a fully-initialized TEEK with router-mode fields populated but
+// no peer connection or HTTP server started yet — the caller wires those up.
+func NewTEEKForRouter(
+	config *TEEKConfig,
+	ratls *shared.RATLSManager,
+	router *shared.RouterClient,
+	pairID string,
+) *TEEK {
+	teek := NewTEEKWithEnclaveManager(config.Port, nil)
+	teek.ratls = ratls
+	teek.router = router
+	teek.pairID = pairID
+	teek.expectedPeerImageDigest = config.ExpectedPeerImageDigest
+	// In router mode the peer URL is derived from PEER_ADDR rather than
+	// the legacy TEET_URL env var. /ws is the base path; the connection
+	// manager extends it to /ws/control and /ws/session.
+	teek.SetTEETURL("wss://" + config.PeerAddr + "/ws")
 	teek.SetForceTLSVersion(config.ForceTLSVersion)
 	teek.SetForceCipherSuite(config.ForceCipherSuite)
 	return teek

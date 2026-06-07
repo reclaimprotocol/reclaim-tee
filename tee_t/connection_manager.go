@@ -69,6 +69,38 @@ func NewTEEKConnectionManager(teet *TEET, logger *shared.Logger) *TEEKConnection
 	}
 }
 
+// readPairAssignment consumes the first envelope on a router-mode control
+// connection and expects it to be TEEKPairAssignment. The decoded pair_id
+// is stored on TEET and the onPairAssigned hook (set by router_boot) is
+// invoked synchronously — that hook handles router registration and
+// kicks off the heartbeat goroutine.
+func (cm *TEEKConnectionManager) readPairAssignment(conn *websocket.Conn) error {
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, msgBytes, err := conn.ReadMessage()
+	conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		return fmt.Errorf("read first envelope: %w", err)
+	}
+	var env teeproto.Envelope
+	if err := proto.Unmarshal(msgBytes, &env); err != nil {
+		return fmt.Errorf("parse first envelope: %w", err)
+	}
+	pa, ok := env.Payload.(*teeproto.Envelope_TeekPairAssignment)
+	if !ok {
+		return fmt.Errorf("expected TEEKPairAssignment first, got %T", env.Payload)
+	}
+	pairID := pa.TeekPairAssignment.GetPairId()
+	if pairID == "" {
+		return fmt.Errorf("TEEKPairAssignment carried empty pair_id")
+	}
+	cm.teet.pairID.Store(&pairID)
+	cm.logger.Info("Received pair_id from TEE_K", zap.String("pair_id", pairID))
+	if cm.teet.onPairAssigned != nil {
+		cm.teet.onPairAssigned(pairID)
+	}
+	return nil
+}
+
 // HandleControlConnection handles a new control connection from TEE_K
 // This performs attestation and then handles control messages
 func (cm *TEEKConnectionManager) HandleControlConnection(conn *websocket.Conn) error {
@@ -76,6 +108,17 @@ func (cm *TEEKConnectionManager) HandleControlConnection(conn *websocket.Conn) e
 
 	// Set read limit
 	conn.SetReadLimit(MaxWebSocketMessageSize)
+
+	// Router mode: the very first envelope on the wire is TEEKPairAssignment,
+	// announcing the pair_id TEE_K generated. Consume it here, store the
+	// pair_id, fire the registration hook, then fall through to the existing
+	// TEEKAttestation read. Standalone mode skips this and reads
+	// TEEKAttestation as the first envelope.
+	if cm.teet.ratls != nil {
+		if err := cm.readPairAssignment(conn); err != nil {
+			return fmt.Errorf("pair assignment: %w", err)
+		}
+	}
 
 	// Wait for attestation request (first message)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -143,6 +186,7 @@ func (cm *TEEKConnectionManager) HandleControlConnection(conn *websocket.Conn) e
 
 	// Update TEET's connection state
 	cm.teet.setTEEKConnected(true)
+	cm.teet.controlHealthy.Store(true)
 
 	// Bidirectional ping/pong heartbeat. Sets the read deadline that
 	// handleControlMessages relies on, so a dead peer is detected even when no
@@ -174,8 +218,9 @@ func (cm *TEEKConnectionManager) HandleControlConnection(conn *websocket.Conn) e
 	cm.mu.Unlock()
 
 	cm.teet.setTEEKConnected(false)
+	cm.teet.controlHealthy.Store(false)
 
-	// Clear OT pool on disconnect
+	// clearOTReceiverPool clears the ready flag (and otReady atomic).
 	cm.teet.clearOTReceiverPool()
 
 	return nil

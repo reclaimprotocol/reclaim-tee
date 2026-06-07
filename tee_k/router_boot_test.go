@@ -34,8 +34,6 @@ func TestTEEKConfig_RouterModeDetection(t *testing.T) {
 }
 
 func TestValidateRouterConfig(t *testing.T) {
-	// Base config with everything set; each subtest blanks one field and
-	// confirms validation flags it.
 	base := TEEKConfig{
 		RouterURL:               "https://router",
 		SelfAddr:                "10.0.0.1:443",
@@ -135,6 +133,13 @@ func newFakeRouter() (*fakeRouter, *httptest.Server) {
 	return f, httptest.NewServer(f.handler())
 }
 
+// minimalTEEK builds just enough of a TEEK for runHeartbeats to read its
+// router-mode fields. The full TEEK constructor pulls in attestation +
+// session-manager state that the heartbeat loop doesn't touch.
+func minimalTEEK(router *shared.RouterClient, pairID string) *TEEK {
+	return &TEEK{router: router, pairID: pairID}
+}
+
 func TestRunHeartbeats_SendsPeriodically(t *testing.T) {
 	f, srv := newFakeRouter()
 	t.Cleanup(srv.Close)
@@ -145,17 +150,16 @@ func TestRunHeartbeats_SendsPeriodically(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 
-	state := &heartbeatState{}
+	teek := minimalTEEK(router, "test-pair")
 	done := make(chan struct{})
 	go func() {
-		runHeartbeats(ctx, router, state, "test-pair", "K",
+		runHeartbeats(ctx, teek, "K",
 			shared.GetTEEKLogger(),
 			func(_ context.Context) error { return nil },
 			5*time.Millisecond)
 		close(done)
 	}()
 
-	// Allow ~25ms which should fit 4-5 ticks at 5ms.
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 	<-done
@@ -186,10 +190,10 @@ func TestRunHeartbeats_ReregistersOn404(t *testing.T) {
 		return nil
 	}
 
-	state := &heartbeatState{}
+	teek := minimalTEEK(router, "test-pair")
 	done := make(chan struct{})
 	go func() {
-		runHeartbeats(ctx, router, state, "test-pair", "K",
+		runHeartbeats(ctx, teek, "K",
 			shared.GetTEEKLogger(),
 			onLost, 5*time.Millisecond)
 		close(done)
@@ -216,10 +220,10 @@ func TestRunHeartbeats_ContextCancelStops(t *testing.T) {
 	router := shared.NewRouterClient(srv.URL, tokens)
 
 	ctx, cancel := context.WithCancel(t.Context())
-	state := &heartbeatState{}
+	teek := minimalTEEK(router, "p")
 	done := make(chan struct{})
 	go func() {
-		runHeartbeats(ctx, router, state, "p", "K",
+		runHeartbeats(ctx, teek, "K",
 			shared.GetTEEKLogger(),
 			func(_ context.Context) error { return nil },
 			50*time.Millisecond)
@@ -232,25 +236,5 @@ func TestRunHeartbeats_ContextCancelStops(t *testing.T) {
 		// expected
 	case <-time.After(time.Second):
 		t.Fatal("runHeartbeats did not return within 1s of context cancel")
-	}
-}
-
-func TestHeartbeatState_ConcurrentReadsWrites(t *testing.T) {
-	// Sanity check under -race: atomic fields don't lie.
-	s := &heartbeatState{}
-	var wg sync.WaitGroup
-	for range 50 {
-		wg.Go(func() {
-			s.controlHealthy.Store(true)
-			s.otReady.Store(true)
-			s.activeSessions.Add(1)
-			_ = s.controlHealthy.Load()
-			_ = s.otReady.Load()
-			_ = s.activeSessions.Load()
-		})
-	}
-	wg.Wait()
-	if s.activeSessions.Load() != 50 {
-		t.Fatalf("expected 50 sessions, got %d", s.activeSessions.Load())
 	}
 }

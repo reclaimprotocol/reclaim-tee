@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
@@ -53,7 +54,8 @@ type TEET struct {
 	attestationMutex  sync.RWMutex
 	attestationExpiry time.Time
 
-	// Mutual attestation
+	// Mutual attestation: expected PCR0 (legacy) or image digest (router-mode)
+	// of the TEE_K peer. The verify code path is the same regardless of source.
 	expectedTEEKPCR0 string
 
 	// Persistent OPRF key share (loaded from cloud storage)
@@ -77,6 +79,28 @@ type TEET struct {
 	// so alerting fires without log spam.
 	lastOTRejectLog   time.Time
 	lastOTRejectLogMu sync.Mutex
+
+	// V2 router-mode wiring. Nil/zero in standalone mode; filled by
+	// NewTEETForRouter when ROUTER_URL is set.
+	//
+	// pairID is unknown until TEE_K's first envelope arrives on the
+	// control connection — atomic.Pointer so the heartbeat goroutine,
+	// connection manager, and OT code can all read/write without locks.
+	ratls  *shared.RATLSManager
+	router *shared.RouterClient
+	pairID atomic.Pointer[string]
+
+	// Heartbeat observation state — same shape as TEEK's. Written by the
+	// connection manager / OT code; read by the heartbeat goroutine.
+	controlHealthy atomic.Bool
+	otReady        atomic.Bool
+	activeSessions atomic.Int32
+
+	// onPairAssigned is fired by the connection manager when it reads
+	// TEE_K's TEEKPairAssignment envelope. Nil in standalone mode; set by
+	// router_boot to register with the router and spin up the heartbeat
+	// goroutine using the pair_id TEE_K just told us about.
+	onPairAssigned func(pairID string)
 }
 
 // OTReadyRejectLogInterval is the minimum gap between ERROR-level "pool not
@@ -87,6 +111,29 @@ const OTReadyRejectLogInterval = 30 * time.Second
 // NewTEETWithLogger creates a TEET with a specific logger
 func NewTEETWithLogger(port int, logger *shared.Logger) *TEET {
 	return NewTEETWithEnclaveManagerAndLogger(port, nil, logger)
+}
+
+// NewTEETForRouter constructs a TEET wired for the V2 router-mode path.
+// expectedPeerImageDigest is the value the router-mode env var
+// EXPECTED_PEER_IMAGE_DIGEST carries; it's checked against the GCP
+// attestation's image_digest claim during the existing
+// verifyTEEKAttestation flow (same code path, different env source).
+//
+// pair_id is NOT set here — it arrives over the peer connection in
+// TEE_K's TEEKPairAssignment envelope. The connection manager fills
+// it in via teet.pairID.Store(&pid).
+func NewTEETForRouter(
+	port int,
+	ratls *shared.RATLSManager,
+	router *shared.RouterClient,
+	expectedPeerImageDigest string,
+	logger *shared.Logger,
+) *TEET {
+	teet := NewTEETWithEnclaveManagerAndLogger(port, nil, logger)
+	teet.ratls = ratls
+	teet.router = router
+	teet.expectedTEEKPCR0 = expectedPeerImageDigest
+	return teet
 }
 
 // NewTEETWithEnclaveManagerAndLogger creates a TEET with enclave manager and logger

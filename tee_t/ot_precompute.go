@@ -182,6 +182,8 @@ func (t *TEET) handleOTPrecomputeComplete(msg *teeproto.OTPrecomputeComplete) er
 	}
 	t.otReceiverStateMu.Unlock()
 
+	t.otReady.Store(true)
+
 	return nil
 }
 
@@ -216,5 +218,6 @@ func (t *TEET) clearOTReceiverPool() {
 		t.otReceiverState.pool.Clear()
 		t.otReceiverState.ready = false
 	}
+	t.otReady.Store(false)
 	t.logger.Info("Cleared OT receiver pool")
 }
