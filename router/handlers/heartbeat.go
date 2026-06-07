@@ -36,10 +36,12 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := s.Logger
 
-	if _, err := s.authenticateSA(r); err != nil {
-		log.Warn("heartbeat: SA token invalid", zap.Error(err))
-		writeErr(w, http.StatusUnauthorized, "invalid SA token")
-		return
+	if !s.Config.Standalone {
+		if _, err := s.authenticateSA(r); err != nil {
+			log.Warn("heartbeat: SA token invalid", zap.Error(err))
+			writeErr(w, http.StatusUnauthorized, "invalid SA token")
+			return
+		}
 	}
 
 	var req heartbeatRequest
@@ -66,7 +68,7 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "role has not registered for this pair")
 		return
 	}
-	if !sourceIPMatches(r.RemoteAddr, registeredAddr) {
+	if !s.Config.Standalone && !sourceIPMatches(r.RemoteAddr, registeredAddr) {
 		log.Warn("heartbeat: source IP mismatch",
 			zap.String("remote", r.RemoteAddr),
 			zap.String("registered", registeredAddr),

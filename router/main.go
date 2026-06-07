@@ -47,17 +47,21 @@ func main() {
 	defer func() { _ = signerCloser.Close() }()
 
 	srv := &handlers.Server{
-		Store: pairStore,
-		SAValidator: auth.NewGoogleSAValidator(
+		Store:  pairStore,
+		Signer: tokenSigner,
+		Logger: logger,
+		Config: cfg,
+	}
+	if cfg.Standalone {
+		logger.Warn("router running in STANDALONE mode — no SA token, attestation, allowlist, or source-IP checks. Local dev only.")
+	} else {
+		srv.SAValidator = auth.NewGoogleSAValidator(
 			auth.NewGoogleJWKSFetcher(),
 			cfg.ApprovedSAPattern,
 			cfg.SATokenAudience,
-		),
-		AttestValidator: auth.NewCSAttestationValidator(logger),
-		Allowlist:       auth.NewAllowlist(cfg.ApprovedDigests),
-		Signer:          tokenSigner,
-		Logger:          logger,
-		Config:          cfg,
+		)
+		srv.AttestValidator = auth.NewCSAttestationValidator(logger)
+		srv.Allowlist = auth.NewAllowlist(cfg.ApprovedDigests)
 	}
 
 	httpSrv := &http.Server{

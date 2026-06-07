@@ -44,18 +44,30 @@ type Config struct {
 	//
 	// Key must be EC_SIGN_P256_SHA256.
 	KMSKeyName string
+
+	// Standalone is true when ROUTER_STANDALONE=true. In this mode the
+	// router accepts unauthenticated /register and /heartbeat calls,
+	// skips attestation + image-digest checks, and skips source-IP
+	// cross-consistency. Intended for local dev (demo.sh) only. The
+	// in-memory store and in-process signer are already auto-selected
+	// when FIRESTORE_PROJECT_ID / KMS_KEY_NAME are unset, so no
+	// additional infra wiring is needed.
+	Standalone bool
 }
 
 // Load reads configuration from environment variables. Returns an error if
 // any required value is missing or any value is malformed.
 func Load() (*Config, error) {
-	digestsRaw := os.Getenv("APPROVED_IMAGE_DIGESTS")
-	if digestsRaw == "" {
+	standalone := os.Getenv("ROUTER_STANDALONE") == "true"
+
+	var digests []string
+	if digestsRaw := os.Getenv("APPROVED_IMAGE_DIGESTS"); digestsRaw != "" {
+		digests = strings.Split(digestsRaw, ",")
+		for i, d := range digests {
+			digests[i] = strings.TrimSpace(d)
+		}
+	} else if !standalone {
 		return nil, fmt.Errorf("APPROVED_IMAGE_DIGESTS is required")
-	}
-	digests := strings.Split(digestsRaw, ",")
-	for i, d := range digests {
-		digests[i] = strings.TrimSpace(d)
 	}
 
 	saPatternRaw := cmp.Or(
@@ -68,7 +80,7 @@ func Load() (*Config, error) {
 	}
 
 	saAudience := os.Getenv("SA_TOKEN_AUDIENCE")
-	if saAudience == "" {
+	if saAudience == "" && !standalone {
 		return nil, fmt.Errorf("SA_TOKEN_AUDIENCE is required (audience TEEs must mint identity tokens with)")
 	}
 
@@ -102,6 +114,7 @@ func Load() (*Config, error) {
 		AdminToken:         os.Getenv("ADMIN_TOKEN"),
 		FirestoreProjectID: os.Getenv("FIRESTORE_PROJECT_ID"),
 		KMSKeyName:         os.Getenv("KMS_KEY_NAME"),
+		Standalone:         standalone,
 	}, nil
 }
 

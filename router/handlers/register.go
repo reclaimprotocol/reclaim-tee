@@ -30,16 +30,23 @@ type registerResponse struct {
 // HandleRegister implements the three-signal /register endpoint per the
 // multi-pair architecture plan: SA identity token + Confidential Space
 // attestation + source-IP cross-consistency. Any single failure rejects.
+//
+// In standalone mode (ROUTER_STANDALONE=true) all three signals are
+// skipped — the local dev demo can't produce real SA tokens or
+// attestations. The claimed image_digest from the body is trusted as-is.
 func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := s.Logger
 
-	// Signal 1: SA identity token.
-	saClaims, err := s.authenticateSA(r)
-	if err != nil {
-		log.Warn("register: SA token invalid", zap.Error(err))
-		writeErr(w, http.StatusUnauthorized, "invalid SA token")
-		return
+	var saEmail string
+	if !s.Config.Standalone {
+		saClaims, err := s.authenticateSA(r)
+		if err != nil {
+			log.Warn("register: SA token invalid", zap.Error(err))
+			writeErr(w, http.StatusUnauthorized, "invalid SA token")
+			return
+		}
+		saEmail = saClaims.Email
 	}
 
 	var req registerRequest
@@ -52,32 +59,34 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Signal 2: Confidential Space attestation, must match claimed image digest.
-	digest, err := s.AttestValidator.Validate([]byte(req.AttestationJWT))
-	if err != nil {
-		log.Warn("register: attestation invalid",
-			zap.String("pair_id", req.PairID), zap.Error(err))
-		writeErr(w, http.StatusUnauthorized, "invalid attestation")
-		return
-	}
-	if digest != req.ImageDigest {
-		writeErr(w, http.StatusBadRequest,
-			"image_digest body does not match attestation claim")
-		return
-	}
-	if !s.Allowlist.Contains(digest) {
-		writeErr(w, http.StatusForbidden, "image digest not in allowlist")
-		return
-	}
+	digest := req.ImageDigest
+	if !s.Config.Standalone {
+		validated, err := s.AttestValidator.Validate([]byte(req.AttestationJWT))
+		if err != nil {
+			log.Warn("register: attestation invalid",
+				zap.String("pair_id", req.PairID), zap.Error(err))
+			writeErr(w, http.StatusUnauthorized, "invalid attestation")
+			return
+		}
+		if validated != req.ImageDigest {
+			writeErr(w, http.StatusBadRequest,
+				"image_digest body does not match attestation claim")
+			return
+		}
+		if !s.Allowlist.Contains(validated) {
+			writeErr(w, http.StatusForbidden, "image digest not in allowlist")
+			return
+		}
+		digest = validated
 
-	// Signal 3: HTTP source IP must match self_addr.
-	if !sourceIPMatches(r.RemoteAddr, req.SelfAddr) {
-		log.Warn("register: source IP mismatch",
-			zap.String("remote", r.RemoteAddr),
-			zap.String("self_addr", req.SelfAddr),
-			zap.String("pair_id", req.PairID))
-		writeErr(w, http.StatusForbidden, "source IP does not match self_addr")
-		return
+		if !sourceIPMatches(r.RemoteAddr, req.SelfAddr) {
+			log.Warn("register: source IP mismatch",
+				zap.String("remote", r.RemoteAddr),
+				zap.String("self_addr", req.SelfAddr),
+				zap.String("pair_id", req.PairID))
+			writeErr(w, http.StatusForbidden, "source IP does not match self_addr")
+			return
+		}
 	}
 
 	// Lookup or create pair record, populate this role, enforce cross-consistency
@@ -133,7 +142,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	log.Info("register: pair member registered",
 		zap.String("pair_id", req.PairID),
 		zap.String("role", req.Role),
-		zap.String("sa_email", saClaims.Email),
+		zap.String("sa_email", saEmail),
 		zap.String("image_digest", digest))
 
 	writeJSON(w, http.StatusOK, registerResponse{
