@@ -42,14 +42,15 @@ type heartbeatState struct {
 }
 
 // startRouterMode is the boot path used when ROUTER_URL is set. It brings
-// up an RA-TLS-backed identity for the TEE, registers the pair with the
-// router, and stays alive.
+// up an RA-TLS-backed identity for the TEE, registers with the router,
+// starts the heartbeat goroutine, dials the peer over RA-TLS, and blocks
+// on a shutdown signal.
 //
-// This PR keeps scope tight: it does NOT yet rewire the TEE_K↔TEE_T
-// control connection (still TEET_URL-based in the existing connection
-// manager), does NOT yet validate allocation JWTs on the client websocket,
-// and does NOT yet send heartbeats. Those land in subsequent PRs against
-// this same boot path.
+// Still missing vs. full Phase 3: client-websocket JWT validation
+// (lands in 3.2d) and OT-precompute / session-protocol on top of the
+// peer connection (also 3.2d). Old TEE_K logic in connection_manager.go,
+// websocket.go, attestation.go is intentionally left untouched — the
+// legacy enclave path uses it, the router path doesn't.
 func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.Logger) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -133,11 +134,11 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	)
 	go runPeerConnection(ctx, config.PeerAddr, peerTLS, state, logger)
 
-	// Block on shutdown signal. Peer connection and session serving come
-	// in subsequent PRs.
+	// Block on shutdown signal. Session serving on top of the peer
+	// connection is still to come (PR 3.2d).
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	logger.Info("TEE_K router-mode bootstrap complete; idle until peer + session logic lands",
+	logger.Info("TEE_K router-mode bootstrap complete",
 		zap.String("pair_id", pairID))
 	<-sigChan
 	logger.Info("shutting down router-mode TEE_K")
