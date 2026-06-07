@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,6 +21,25 @@ import (
 // 4 minutes matches the existing attestation-refresh cadence used by the
 // legacy Lego/ACME path and leaves a comfortable margin.
 const ratlsRefreshInterval = 4 * time.Minute
+
+// heartbeatInterval is the cadence at which TEE_K reports liveness +
+// health observations to the router. Matches the router's expected window
+// (3 missed = ~15s = "dead").
+const heartbeatInterval = 5 * time.Second
+
+// heartbeatState holds the slowly-changing per-TEE state we report to the
+// router. Each field is owned by a different subsystem — peer reconnect
+// flips controlHealthy, OT precompute completion flips otReady, the
+// session manager updates activeSessions — and read concurrently by the
+// heartbeat goroutine. Atomics for lock-free access from any goroutine.
+//
+// In this PR all writers are still missing; everything stays false/0 until
+// PR 3.2c (peer connection) and PR 3.2d (session JWT validation) land.
+type heartbeatState struct {
+	controlHealthy atomic.Bool
+	otReady        atomic.Bool
+	activeSessions atomic.Int32
+}
 
 // startRouterMode is the boot path used when ROUTER_URL is set. It brings
 // up an RA-TLS-backed identity for the TEE, registers the pair with the
@@ -55,42 +75,102 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	logger.Info("RA-TLS manager initialized",
 		zap.String("spki_hash", fmt.Sprintf("%x", ratls.SPKIHash())))
 
-	imageDigest, attestationJWT, err := extractIdentityFromRATLS(ratls, logger)
-	if err != nil {
-		logger.Critical("could not extract identity from RA-TLS cert", zap.Error(err))
-		return
+	router := shared.NewRouterClient(config.RouterURL, shared.MetadataServerTokenSource)
+
+	// register pulls a fresh attestation off the current RA-TLS cert each
+	// time, so the same closure also serves as the re-register path triggered
+	// by a 404 from /heartbeat (e.g. after a router restart in single-replica
+	// mode wiped in-memory state).
+	register := func(ctx context.Context) error {
+		imageDigest, attestationJWT, err := extractIdentityFromRATLS(ratls, logger)
+		if err != nil {
+			return fmt.Errorf("extract identity: %w", err)
+		}
+		resp, err := router.Register(ctx, shared.RegisterRequest{
+			PairID:         pairID,
+			Role:           "K",
+			SelfAddr:       config.SelfAddr,
+			PeerAddrClaim:  config.PeerAddr,
+			ImageDigest:    imageDigest,
+			AttestationJWT: string(attestationJWT),
+		})
+		if err != nil {
+			return err
+		}
+		logger.Info("registered with router",
+			zap.String("pair_id", resp.PairID),
+			zap.String("status", resp.Status))
+		return nil
 	}
 
-	router := shared.NewRouterClient(config.RouterURL, shared.MetadataServerTokenSource)
-	regResp, err := router.Register(ctx, shared.RegisterRequest{
-		PairID:         pairID,
-		Role:           "K",
-		SelfAddr:       config.SelfAddr,
-		PeerAddrClaim:  config.PeerAddr,
-		ImageDigest:    imageDigest,
-		AttestationJWT: string(attestationJWT),
-	})
-	if err != nil {
+	if err := register(ctx); err != nil {
 		logger.Critical("router registration failed", zap.Error(err))
 		return
 	}
-	logger.Info("registered with router",
-		zap.String("pair_id", regResp.PairID),
-		zap.String("status", regResp.Status))
 
 	// Background RA-TLS refresh keeps the embedded attestation fresh so
 	// later TLS handshakes verifying via VerifyRATLSPeer don't trip on the
 	// JWT's exp claim.
 	go runRATLSRefresh(ctx, ratls, logger)
 
-	// Block on shutdown signal. Peer connection, heartbeat, and session
-	// serving come in subsequent PRs.
+	// Heartbeat goroutine reports liveness + observation state to router.
+	// State writes happen elsewhere (in subsequent PRs); this PR just
+	// reports whatever's currently in heartbeatState.
+	state := &heartbeatState{}
+	go runHeartbeats(ctx, router, state, pairID, "K", logger, register, heartbeatInterval)
+
+	// Block on shutdown signal. Peer connection and session serving come
+	// in subsequent PRs.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	logger.Info("TEE_K router-mode bootstrap complete; idle until peer + session logic lands",
 		zap.String("pair_id", pairID))
 	<-sigChan
 	logger.Info("shutting down router-mode TEE_K")
+}
+
+// runHeartbeats fires a heartbeat to the router every `interval` until
+// ctx is cancelled. On ErrRouterNotFound (router lost our pair_id, e.g.
+// after a restart in single-replica mode), it calls onLost to re-register;
+// other errors are logged but don't abort the loop.
+func runHeartbeats(
+	ctx context.Context,
+	router *shared.RouterClient,
+	state *heartbeatState,
+	pairID, role string,
+	logger *shared.Logger,
+	onLost func(context.Context) error,
+	interval time.Duration,
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			req := shared.HeartbeatRequest{
+				PairID:         pairID,
+				Role:           role,
+				ControlHealthy: state.controlHealthy.Load(),
+				OTReady:        state.otReady.Load(),
+				ActiveSessions: int(state.activeSessions.Load()),
+			}
+			_, err := router.Heartbeat(ctx, req)
+			switch {
+			case err == nil:
+				// happy path
+			case errors.Is(err, shared.ErrRouterNotFound):
+				logger.Warn("router lost pair_id, re-registering",
+					zap.String("pair_id", pairID))
+				if regErr := onLost(ctx); regErr != nil {
+					logger.Error("re-register failed", zap.Error(regErr))
+				}
+			default:
+				logger.Error("heartbeat failed", zap.Error(err))
+			}
+		}
+	}
 }
 
 // validateRouterConfig surfaces missing router-mode env vars at boot rather

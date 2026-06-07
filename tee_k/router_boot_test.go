@@ -1,8 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/reclaimprotocol/reclaim-tee/shared"
 )
@@ -81,5 +88,171 @@ func TestExtractIdentityFromRATLS_StandaloneMode(t *testing.T) {
 	_, _, err = extractIdentityFromRATLS(ratls, logger)
 	if err == nil {
 		t.Fatal("expected error in standalone mode (no attestation extension)")
+	}
+}
+
+// fakeRouter is a minimal stand-in for the multi-pair router: counts
+// heartbeats/registers, and can be told to 404 the first heartbeat to
+// exercise the re-register path.
+type fakeRouter struct {
+	mu                sync.Mutex
+	heartbeats        int
+	registers         int
+	heartbeat404Until int // 404 the first N heartbeats
+}
+
+func (f *fakeRouter) handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch r.URL.Path {
+		case "/register":
+			f.registers++
+			_ = json.NewEncoder(w).Encode(shared.RegisterResponse{
+				PairID: "test-pair", Status: "registering",
+			})
+		case "/heartbeat":
+			f.heartbeats++
+			if f.heartbeats <= f.heartbeat404Until {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(shared.HeartbeatResponse{
+				PairID: "test-pair", Status: "degraded",
+			})
+		default:
+			http.Error(w, "unknown path", http.StatusNotFound)
+		}
+	}
+}
+
+func (f *fakeRouter) snapshot() (heartbeats, registers int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.heartbeats, f.registers
+}
+
+func newFakeRouter() (*fakeRouter, *httptest.Server) {
+	f := &fakeRouter{}
+	return f, httptest.NewServer(f.handler())
+}
+
+func TestRunHeartbeats_SendsPeriodically(t *testing.T) {
+	f, srv := newFakeRouter()
+	t.Cleanup(srv.Close)
+
+	tokens := func(_ context.Context, _ string) (string, error) { return "fake", nil }
+	router := shared.NewRouterClient(srv.URL, tokens)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	state := &heartbeatState{}
+	done := make(chan struct{})
+	go func() {
+		runHeartbeats(ctx, router, state, "test-pair", "K",
+			shared.GetTEEKLogger(),
+			func(_ context.Context) error { return nil },
+			5*time.Millisecond)
+		close(done)
+	}()
+
+	// Allow ~25ms which should fit 4-5 ticks at 5ms.
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	<-done
+
+	hb, regs := f.snapshot()
+	if hb < 3 {
+		t.Fatalf("expected at least 3 heartbeats in 30ms@5ms, got %d", hb)
+	}
+	if regs != 0 {
+		t.Fatalf("expected no re-registers when heartbeats succeed, got %d", regs)
+	}
+}
+
+func TestRunHeartbeats_ReregistersOn404(t *testing.T) {
+	f, srv := newFakeRouter()
+	f.heartbeat404Until = 1 // only the very first heartbeat 404s
+	t.Cleanup(srv.Close)
+
+	tokens := func(_ context.Context, _ string) (string, error) { return "fake", nil }
+	router := shared.NewRouterClient(srv.URL, tokens)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	var reregisterCalls atomic.Int32
+	onLost := func(_ context.Context) error {
+		reregisterCalls.Add(1)
+		return nil
+	}
+
+	state := &heartbeatState{}
+	done := make(chan struct{})
+	go func() {
+		runHeartbeats(ctx, router, state, "test-pair", "K",
+			shared.GetTEEKLogger(),
+			onLost, 5*time.Millisecond)
+		close(done)
+	}()
+
+	time.Sleep(40 * time.Millisecond)
+	cancel()
+	<-done
+
+	if got := reregisterCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 re-register triggered by 404, got %d", got)
+	}
+	hb, _ := f.snapshot()
+	if hb < 3 {
+		t.Fatalf("expected heartbeats to keep firing after 404, got %d", hb)
+	}
+}
+
+func TestRunHeartbeats_ContextCancelStops(t *testing.T) {
+	_, srv := newFakeRouter()
+	t.Cleanup(srv.Close)
+
+	tokens := func(_ context.Context, _ string) (string, error) { return "fake", nil }
+	router := shared.NewRouterClient(srv.URL, tokens)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	state := &heartbeatState{}
+	done := make(chan struct{})
+	go func() {
+		runHeartbeats(ctx, router, state, "p", "K",
+			shared.GetTEEKLogger(),
+			func(_ context.Context) error { return nil },
+			50*time.Millisecond)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+		// expected
+	case <-time.After(time.Second):
+		t.Fatal("runHeartbeats did not return within 1s of context cancel")
+	}
+}
+
+func TestHeartbeatState_ConcurrentReadsWrites(t *testing.T) {
+	// Sanity check under -race: atomic fields don't lie.
+	s := &heartbeatState{}
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Go(func() {
+			s.controlHealthy.Store(true)
+			s.otReady.Store(true)
+			s.activeSessions.Add(1)
+			_ = s.controlHealthy.Load()
+			_ = s.otReady.Load()
+			_ = s.activeSessions.Load()
+		})
+	}
+	wg.Wait()
+	if s.activeSessions.Load() != 50 {
+		t.Fatalf("expected 50 sessions, got %d", s.activeSessions.Load())
 	}
 }
