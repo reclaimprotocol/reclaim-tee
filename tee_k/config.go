@@ -28,6 +28,26 @@ type TEEKConfig struct {
 	// TLS configuration
 	ForceTLSVersion  string `json:"force_tls_version"`  // Force specific TLS version: "1.2", "1.3", or "" for auto
 	ForceCipherSuite string `json:"force_cipher_suite"` // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
+
+	// Router-mode settings (multi-pair architecture, Phase 3+).
+	// Presence of RouterURL is what flips boot into router mode. When empty,
+	// the binary falls back to the existing Lego/ACME enclave path.
+	RouterURL               string `json:"router_url,omitempty"`
+	SelfAddr                string `json:"self_addr,omitempty"`
+	PeerAddr                string `json:"peer_addr,omitempty"`
+	ExpectedPeerImageDigest string `json:"expected_peer_image_digest,omitempty"`
+	SATokenAudience         string `json:"sa_token_audience,omitempty"`
+	// JWTPublicKey is the PEM-encoded ES256 verification key the router signs
+	// allocation JWTs with. Read here so it's part of the bootstrapped config;
+	// consumption is added in a later PR (client-WS JWT validation).
+	JWTPublicKey string `json:"jwt_public_key,omitempty"`
+}
+
+// RouterMode returns true when the new multi-pair router boot path should be
+// used. Detection is by presence of ROUTER_URL — all other router-mode env
+// vars are required only when this is true.
+func (c *TEEKConfig) RouterMode() bool {
+	return c.RouterURL != ""
 }
 
 func LoadTEEKConfig() *TEEKConfig {
@@ -71,5 +91,12 @@ func LoadTEEKConfig() *TEEKConfig {
 		GoogleKeyName:    shared.GetEnvOrDefault("GOOGLE_KMS_KEY", ""),
 		ForceTLSVersion:  shared.GetEnvOrDefault("FORCE_TLS_VERSION", ""),
 		ForceCipherSuite: shared.GetEnvOrDefault("FORCE_CIPHER_SUITE", ""),
+
+		RouterURL:               shared.GetEnvOrDefault("ROUTER_URL", ""),
+		SelfAddr:                shared.GetEnvOrDefault("SELF_ADDR", ""),
+		PeerAddr:                shared.GetEnvOrDefault("PEER_ADDR", ""),
+		ExpectedPeerImageDigest: shared.GetEnvOrDefault("EXPECTED_PEER_IMAGE_DIGEST", ""),
+		SATokenAudience:         shared.GetEnvOrDefault("SA_TOKEN_AUDIENCE", ""),
+		JWTPublicKey:            shared.GetEnvOrDefault("JWT_PUBLIC_KEY", ""),
 	}
 }

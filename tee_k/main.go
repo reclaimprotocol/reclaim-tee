@@ -26,23 +26,27 @@ func main() {
 	// Start background root CA updater (fetches fresh certs from curl.se daily)
 	StartRootCAUpdater(logger)
 
-	enclaveMode := shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true"
+	config := LoadTEEKConfig()
 
-	var config *TEEKConfig
+	// Router mode (Phase 3+, multi-pair architecture) takes precedence — it's
+	// the forward path. Legacy enclave/standalone modes remain so old prod
+	// continues to deploy unchanged.
+	if config.RouterMode() {
+		startRouterMode(context.Background(), config, logger)
+		return
+	}
+
+	enclaveMode := shared.GetEnvOrDefault("ENCLAVE_MODE", "false") == "true"
 	if enclaveMode {
 		logger.Info("=== TEE_K Enclave Mode ===")
-
-		// GCP: Configuration comes from environment variables
-		config = LoadTEEKConfig()
 		logger.Info("Loaded config from environment",
 			zap.String("domain", config.Domain))
-
 		startEnclaveMode(config, logger)
-	} else {
-		logger.Info("=== TEE_K Standalone Mode ===")
-		config = LoadTEEKConfig()
-		startStandaloneMode(config, logger)
+		return
 	}
+
+	logger.Info("=== TEE_K Standalone Mode ===")
+	startStandaloneMode(config, logger)
 }
 
 func startStandaloneMode(config *TEEKConfig, logger *shared.Logger) {
