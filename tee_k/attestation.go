@@ -14,6 +14,32 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// getCurrentCertRaw returns the bytes of the certificate currently being
+// served on this TEE_K's TLS endpoint. In router mode that's the RA-TLS
+// cert (rotated by RATLSManager.Refresh); in standalone/legacy mode it's
+// the ACME-issued cert held by the enclave manager.
+func (t *TEEK) getCurrentCertRaw() ([]byte, error) {
+	if t.ratls != nil {
+		raw := t.ratls.CertificateRaw()
+		if raw == nil {
+			return nil, fmt.Errorf("RA-TLS cert not yet available")
+		}
+		return raw, nil
+	}
+	return t.enclaveManager.GetCertificateRaw()
+}
+
+// generateAttestationDoc produces a fresh GCP attestation token bound to
+// the supplied nonces. Router mode talks to the launcher socket directly
+// (RA-TLS owns the cert lifecycle, not the enclave manager); legacy mode
+// goes through the enclave manager.
+func (t *TEEK) generateAttestationDoc(ctx context.Context, nonces ...string) ([]byte, error) {
+	if t.ratls != nil {
+		return shared.GenerateGCPAttestation(ctx, nonces...)
+	}
+	return t.enclaveManager.GenerateAttestation(ctx, nonces...)
+}
+
 // startAttestationRefresh starts a background goroutine that pre-generates and refreshes attestations
 func (t *TEEK) startAttestationRefresh(ctx context.Context) {
 	t.logger.Debug("Starting background attestation refresh")
@@ -46,16 +72,16 @@ func (t *TEEK) startAttestationRefresh(ctx context.Context) {
 
 // refreshAttestation generates a new attestation and caches it
 func (t *TEEK) refreshAttestation() error {
-	// Skip in standalone mode
-	if t.enclaveManager == nil {
+	// Skip in standalone mode (neither RA-TLS nor enclave manager active).
+	if t.ratls == nil && t.enclaveManager == nil {
 		return nil
 	}
 
 	// Get ETH address for this key pair
 	ethAddress := t.signingKeyPair.GetEthAddress()
 
-	// Get TLS certificate hash to bind attestation to our TLS identity
-	tlsCert, err := t.enclaveManager.GetCertificateRaw()
+	// Get TLS certificate hash to bind attestation to our TLS identity.
+	tlsCert, err := t.getCurrentCertRaw()
 	if err != nil {
 		return fmt.Errorf("failed to get TLS certificate: %v", err)
 	}
@@ -65,7 +91,7 @@ func (t *TEEK) refreshAttestation() error {
 	publicKeyNonce := fmt.Sprintf("tee_k_public_key:%s", ethAddress.Hex())
 	certHashNonce := fmt.Sprintf("tee_k_cert_hash:%x", certHash[:])
 
-	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), publicKeyNonce, certHashNonce)
+	attestationDoc, err := t.generateAttestationDoc(context.Background(), publicKeyNonce, certHashNonce)
 	if err != nil {
 		return fmt.Errorf("failed to generate attestation: %v", err)
 	}
@@ -90,7 +116,7 @@ func (t *TEEK) refreshAttestation() error {
 // getCachedAttestation returns the cached attestation if valid, otherwise generates a new one
 func (t *TEEK) getCachedAttestation(sessionID string) (*teeproto.AttestationReport, error) {
 	// Skip in standalone mode
-	if t.enclaveManager == nil {
+	if t.ratls == nil && t.enclaveManager == nil {
 		return nil, nil
 	}
 
@@ -129,17 +155,19 @@ func (t *TEEK) generateAttestationReport(sessionID string) (*teeproto.Attestatio
 // generateAttestationForTEET generates attestation for mutual auth with TEE_T
 func (t *TEEK) generateAttestationForTEET() (*teeproto.AttestationReport, error) {
 	// Standalone mode: return "standalone" string
-	if t.enclaveManager == nil {
+	if t.ratls == nil && t.enclaveManager == nil {
 		return &teeproto.AttestationReport{
 			Type:   "standalone",
 			Report: []byte("standalone"),
 		}, nil
 	}
 
-	// Enclave mode: generate attestation with eth address and cert hash in userData
+	// Enclave/router mode: generate attestation with eth address and cert
+	// hash in userData. The cert source switches between RA-TLS and the
+	// enclave manager based on mode; the wire format is identical.
 	ethAddress := t.signingKeyPair.GetEthAddress()
 
-	tlsCert, err := t.enclaveManager.GetCertificateRaw()
+	tlsCert, err := t.getCurrentCertRaw()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get TLS certificate: %v", err)
 	}
@@ -148,7 +176,7 @@ func (t *TEEK) generateAttestationForTEET() (*teeproto.AttestationReport, error)
 	publicKeyNonce := fmt.Sprintf("tee_k_public_key:%s", ethAddress.Hex())
 	certHashNonce := fmt.Sprintf("tee_k_cert_hash:%x", certHash[:])
 
-	attestationDoc, err := t.enclaveManager.GenerateAttestation(context.Background(), publicKeyNonce, certHashNonce)
+	attestationDoc, err := t.generateAttestationDoc(context.Background(), publicKeyNonce, certHashNonce)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate attestation: %v", err)
 	}
@@ -180,15 +208,15 @@ func (t *TEEK) verifyTEETAttestation(msgBytes []byte, tlsCert []byte) error {
 
 	// Standalone mode
 	if attestation.Type == "standalone" {
-		if t.enclaveManager == nil && string(attestation.Report) == "standalone" {
+		if t.ratls == nil && t.enclaveManager == nil && string(attestation.Report) == "standalone" {
 			t.logger.Debug("Standalone mode attestation accepted")
 			return nil
 		}
 		return fmt.Errorf("mode mismatch: received standalone but in enclave mode")
 	}
 
-	// Enclave mode
-	if t.enclaveManager == nil {
+	// Enclave/router mode
+	if t.ratls == nil && t.enclaveManager == nil {
 		return fmt.Errorf("mode mismatch: received enclave attestation but in standalone mode")
 	}
 
@@ -219,7 +247,14 @@ func (t *TEEK) verifyTEETAttestation(msgBytes []byte, tlsCert []byte) error {
 
 	t.logger.Debug("TEE_T certificate hash verified")
 
-	// Verify PCR0
+	// Router mode: RA-TLS already verified the peer image_digest at the
+	// TLS handshake layer (against teek.expectedPeerImageDigest), so the
+	// inner PCR0 check would just duplicate that work. Skip it.
+	if t.ratls != nil {
+		return nil
+	}
+
+	// Legacy enclave mode: verify PCR0 against the env var.
 	expectedPCR0 := os.Getenv("EXPECTED_TEET_PCR0")
 	if expectedPCR0 != "" {
 		pcr0, err := shared.ExtractPCR0FromAttestation(attestation, t.logger)
