@@ -115,27 +115,17 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	go runRATLSRefresh(ctx, ratls, logger)
 
 	// Heartbeat goroutine reports liveness + observation state to router.
-	// State writes happen elsewhere (in subsequent PRs); this PR just
-	// reports whatever's currently in heartbeatState.
+	// State writes happen via the existing connection-manager flow once it
+	// gets wired into router mode in the next step.
 	state := &heartbeatState{}
 	go runHeartbeats(ctx, router, state, pairID, "K", logger, register, heartbeatInterval)
 
-	// Peer connection goroutine: dials PEER_ADDR over RA-TLS, holds the
-	// connection open as a liveness signal, and writes state.controlHealthy
-	// on connect/disconnect. No protocol messages flow yet — pair_id
-	// exchange and OT precompute on top of this come in PR 3.2d.
-	peerTLS := buildPeerTLSConfig(
-		shared.VerifyRATLSPeer(shared.RATLSVerifyOptions{
-			PeerRole:            "tee_t",
-			ExpectedImageDigest: config.ExpectedPeerImageDigest,
-			Logger:              logger,
-		}),
-		ratls,
-	)
-	go runPeerConnection(ctx, config.PeerAddr, pairID, peerTLS, state, logger)
+	// Peer connection wiring lands in the next step — the existing
+	// tee_k/connection_manager.go gets adapted to dial PEER_ADDR over
+	// RA-TLS and to send TEEKPairAssignment as its first envelope. For
+	// now, router-mode TEE_K registers + heartbeats but does not connect
+	// to its peer.
 
-	// Block on shutdown signal. Session serving on top of the peer
-	// connection is still to come (PR 3.2d).
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	logger.Info("TEE_K router-mode bootstrap complete",
