@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -96,6 +97,13 @@ type ConfigJSON struct {
 	TEEKURL     string `json:"teekUrl,omitempty"`
 	TEETURL     string `json:"teetUrl,omitempty"`
 	RequestID   string `json:"requestId,omitempty"`
+	// RouterURL, when set, triggers router-mode: the library hits
+	// /allocate on this URL, overrides TEEKURL/TEETURL with the
+	// addresses the router returned, and presents the issued JWT as
+	// ClientAuth first envelope on each TEE connection. Mutually
+	// exclusive with TEEKURL/TEETURL in practice — direct URLs are
+	// ignored when RouterURL is set.
+	RouterURL string `json:"routerUrl,omitempty"`
 }
 
 // Default URLs for TEE services
@@ -157,6 +165,7 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 	teekURL := DefaultTEEKURL
 	teetURL := DefaultTEETURL
 	var requestID string
+	var routerURL, routerJWT string
 
 	if configJSON != "" {
 		var cfg ConfigJSON
@@ -171,8 +180,31 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 				teetURL = cfg.TEETURL
 			}
 			requestID = cfg.RequestID
+			routerURL = cfg.RouterURL
 		}
 		// Ignore parse errors - use defaults
+	}
+
+	// Router mode: hit /allocate, override TEEKURL/TEETURL with the
+	// addresses the router hands back, and capture the JWT. The JWT
+	// gets sent as ClientAuth on each TEE connection (see
+	// client.SetRouterJWT).
+	if routerURL != "" {
+		nonce := requestID
+		if nonce == "" {
+			nonce = fmt.Sprintf("libreclaim-%d", time.Now().UnixNano())
+		}
+		alloc, err := AllocatePair(routerURL, nonce)
+		if err != nil {
+			return nil, fmt.Errorf("router allocate: %v", err)
+		}
+		scheme := "ws"
+		if strings.HasPrefix(routerURL, "https://") {
+			scheme = "wss"
+		}
+		teekURL = fmt.Sprintf("%s://%s/ws", scheme, alloc.TEEKAddr)
+		teetURL = fmt.Sprintf("%s://%s/ws", scheme, alloc.TEETAddr)
+		routerJWT = alloc.JWT
 	}
 
 	// Initialize logger
@@ -198,6 +230,7 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 		ProviderContext:      context,
 		Logger:               logger,
 		RequestId:            requestID,
+		RouterJWT:            routerJWT,
 	}
 
 	return NewReclaimClient(config), nil
