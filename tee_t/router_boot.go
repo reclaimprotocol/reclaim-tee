@@ -130,9 +130,14 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		go shared.RunRATLSRefresh(ctx, teet.ratls, logger)
 	}
 
+	// Build the mux once; choose whether to wrap it with the peer-mTLS
+	// gate based on whether we're serving HTTPS (production) or plain
+	// HTTP (local dev — TEE_K dials over plain ws:// without a client
+	// cert, so the gate would reject all peer traffic).
+	mux := setupRoutes(teet)
+	var handler http.Handler = mux
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
-		Handler:      enforcePeerMTLS(setupRoutes(teet)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
@@ -149,14 +154,12 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 			Logger:              logger,
 		})
 		server.TLSConfig = srvTLS
+		handler = enforcePeerMTLS(mux)
+		server.Handler = handler
 		logger.Info("Starting router-mode HTTPS server", zap.Int("port", config.Port))
 		go func() { serveErrCh <- server.ListenAndServeTLS("", "") }()
 	} else {
-		// Local dev: plain HTTP, no peer mTLS at all. enforcePeerMTLS
-		// rejects /ws/control + /ws/session calls — but local TEE_K
-		// dials over plain ws:// without a client cert in this mode, so
-		// we have to skip the peer-mTLS check here too.
-		server.Handler = setupRoutes(teet)
+		server.Handler = handler
 		logger.Info("Starting router-mode HTTP server (local dev, no RA-TLS)", zap.Int("port", config.Port))
 		go func() { serveErrCh <- server.ListenAndServe() }()
 	}
