@@ -24,72 +24,99 @@ type RATLSVerifyOptions struct {
 	Logger              *Logger
 }
 
-// VerifyRATLSPeer returns a tls.Config.VerifyPeerCertificate callback that
-// validates a peer presenting an RA-TLS certificate:
+// validateRATLSCertStructure parses + validates an RA-TLS leaf cert
+// without pinning a specific image_digest. Steps:
 //
-//  1. Pulls the GCP attestation JWT out of the AttestationOID extension.
-//  2. Validates the JWT signature against Google's roots (reuses the
-//     existing GoogleAttestor).
-//  3. Confirms submods.container.image_digest matches the expected value.
-//  4. Confirms the SPKI hash nonce in the JWT matches the actual SPKI of
-//     the cert that was presented.
+//  1. Pull the GCP attestation JWT out of the AttestationOID extension.
+//  2. Validate JWT signature against Google's roots.
+//  3. Confirm the SPKI hash nonce inside the JWT matches the cert's
+//     actual SPKI (binds the keypair to this attestation).
 //
-// Any failure returns an error, which the TLS handshake propagates as a
-// connection failure.
+// Returns the image_digest claim so callers can either pin it
+// (TEE-to-TEE) or capture it for downstream use (clients).
 //
-// Standalone (non-enclave) peers — i.e. RATLSManager instances that booted
-// without the GCP launcher socket — present certs without the attestation
-// extension and will be rejected here with "attestation extension not
-// present on certificate". This is deliberate: production deployments must
-// always go through enclave attestation. Local-dev TEE↔TEE comms that
-// want to tolerate missing attestation should use a different verifier
-// path (e.g. a thin wrapper that returns nil for the standalone case).
+// Standalone certs (no attestation extension) are rejected. Local-dev
+// flows must avoid this verifier.
+func validateRATLSCertStructure(rawCerts [][]byte, peerRole string, logger *Logger) (imageDigest string, err error) {
+	if len(rawCerts) == 0 {
+		return "", errors.New("ratls: no peer certificate")
+	}
+	leaf, err := x509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return "", fmt.Errorf("ratls: parse peer cert: %w", err)
+	}
+
+	attestation, err := ExtractAttestationFromCert(leaf)
+	if err != nil {
+		return "", fmt.Errorf("ratls: %w", err)
+	}
+
+	attestor, err := NewGoogleAttestor()
+	if err != nil {
+		return "", fmt.Errorf("ratls: build attestor: %w", err)
+	}
+	if err := attestor.Validate(attestation, logger); err != nil {
+		return "", fmt.Errorf("ratls: attestation invalid: %w", err)
+	}
+
+	imageDigest, err = ExtractImageDigestFromGCPAttestation(attestation, logger)
+	if err != nil {
+		return "", fmt.Errorf("ratls: extract image digest: %w", err)
+	}
+
+	spkiDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+	if err != nil {
+		return "", fmt.Errorf("ratls: marshal peer SPKI: %w", err)
+	}
+	actualHash := sha256.Sum256(spkiDER)
+	actualHex := hex.EncodeToString(actualHash[:])
+
+	expectedHex, err := findNonceValue(attestation, SPKINoncePrefix(peerRole))
+	if err != nil {
+		return "", fmt.Errorf("ratls: %w", err)
+	}
+	if expectedHex != actualHex {
+		return "", fmt.Errorf("ratls: SPKI hash mismatch: attestation says %q, cert is %q",
+			expectedHex, actualHex)
+	}
+	return imageDigest, nil
+}
+
+// VerifyRATLSPeer returns a tls.Config.VerifyPeerCertificate callback for
+// TEE↔TEE mTLS: validates the cert structure and pins the image_digest
+// to opts.ExpectedImageDigest. Any failure aborts the TLS handshake.
 func VerifyRATLSPeer(opts RATLSVerifyOptions) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return errors.New("ratls: no peer certificate")
-		}
-		leaf, err := x509.ParseCertificate(rawCerts[0])
+		gotDigest, err := validateRATLSCertStructure(rawCerts, opts.PeerRole, opts.Logger)
 		if err != nil {
-			return fmt.Errorf("ratls: parse peer cert: %w", err)
-		}
-
-		attestation, err := ExtractAttestationFromCert(leaf)
-		if err != nil {
-			return fmt.Errorf("ratls: %w", err)
-		}
-
-		attestor, err := NewGoogleAttestor()
-		if err != nil {
-			return fmt.Errorf("ratls: build attestor: %w", err)
-		}
-		if err := attestor.Validate(attestation, opts.Logger); err != nil {
-			return fmt.Errorf("ratls: attestation invalid: %w", err)
-		}
-
-		gotDigest, err := ExtractImageDigestFromGCPAttestation(attestation, opts.Logger)
-		if err != nil {
-			return fmt.Errorf("ratls: extract image digest: %w", err)
+			return err
 		}
 		if gotDigest != opts.ExpectedImageDigest {
 			return fmt.Errorf("ratls: image_digest mismatch: expected %q, got %q",
 				opts.ExpectedImageDigest, gotDigest)
 		}
+		return nil
+	}
+}
 
-		spkiDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+// VerifyRATLSAttestation returns a tls.Config.VerifyPeerCertificate
+// callback for CLIENT→TEE connections: validates cert structure +
+// attestation integrity without pinning image_digest. The attested
+// image_digest is delivered via onAttested so the client can stash it
+// for the verification bundle the attestor later signs.
+//
+// Clients deliberately do NOT pin image_digest themselves — that's the
+// attestor's job downstream. The router is not trusted to dictate what
+// image_digest is acceptable; the client just records what the TEE
+// attested to and lets the attestor judge.
+func VerifyRATLSAttestation(peerRole string, logger *Logger, onAttested func(imageDigest string)) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		digest, err := validateRATLSCertStructure(rawCerts, peerRole, logger)
 		if err != nil {
-			return fmt.Errorf("ratls: marshal peer SPKI: %w", err)
+			return err
 		}
-		actualHash := sha256.Sum256(spkiDER)
-		actualHex := hex.EncodeToString(actualHash[:])
-
-		expectedHex, err := findNonceValue(attestation, SPKINoncePrefix(opts.PeerRole))
-		if err != nil {
-			return fmt.Errorf("ratls: %w", err)
-		}
-		if expectedHex != actualHex {
-			return fmt.Errorf("ratls: SPKI hash mismatch: attestation says %q, cert is %q",
-				expectedHex, actualHex)
+		if onAttested != nil {
+			onAttested(digest)
 		}
 		return nil
 	}
