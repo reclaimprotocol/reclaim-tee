@@ -142,6 +142,14 @@ func (c *RouterClient) postJSON(ctx context.Context, path string, reqBody, respB
 	return nil
 }
 
+// NoopTokenSource always returns an empty token. Use in local-dev when
+// talking to a router that runs in ROUTER_STANDALONE mode (it skips SA
+// token validation), so a developer laptop without GCP credentials can
+// still exercise the /register + /heartbeat path.
+func NoopTokenSource(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
 // MetadataServerTokenSource is the production TokenSource: it asks the GCP
 // instance metadata server for an SA identity token scoped to the given
 // audience. Works only on GCE VMs (incl. Confidential Space).

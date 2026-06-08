@@ -56,7 +56,13 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 			zap.String("spki_hash", fmt.Sprintf("%x", ratls.SPKIHash())))
 	}
 
-	router := shared.NewRouterClient(config.RouterURL, shared.MetadataServerTokenSource)
+	tokenSource := shared.MetadataServerTokenSource
+	if devMode {
+		// Local dev: router-standalone skips SA token validation, and the
+		// laptop has no metadata server to mint one anyway.
+		tokenSource = shared.NoopTokenSource
+	}
+	router := shared.NewRouterClient(config.RouterURL, tokenSource)
 
 	teet := NewTEETForRouter(config, ratls, router, logger)
 	if config.JWTPublicKey != "" {
