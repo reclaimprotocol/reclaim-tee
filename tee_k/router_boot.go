@@ -119,7 +119,10 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	}
 
 	if teek.ratls != nil {
-		go shared.RunRATLSRefresh(ctx, teek.ratls, logger)
+		// Regenerate the per-session cached attestation on every cert
+		// rotation so its cert_hash nonce stays in lockstep with the
+		// live cert. Single ticker drives both — no drift window.
+		go shared.RunRATLSRefresh(ctx, teek.ratls, teek.refreshAttestation, logger)
 	}
 	go shared.RunHeartbeats(ctx, teek, "K", logger, register, shared.RouterHeartbeatInterval)
 

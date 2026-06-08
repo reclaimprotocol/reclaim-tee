@@ -30,36 +30,6 @@ func (t *TEEK) generateAttestationDoc(ctx context.Context, nonces ...string) ([]
 	return shared.GenerateGCPAttestation(ctx, nonces...)
 }
 
-// startAttestationRefresh starts a background goroutine that pre-generates and refreshes attestations
-func (t *TEEK) startAttestationRefresh(ctx context.Context) {
-	t.logger.Debug("Starting background attestation refresh")
-
-	// Pre-generate the first attestation
-	if err := t.refreshAttestation(); err != nil {
-		t.logger.Error("Failed to pre-generate initial attestation", zap.Error(err))
-	} else {
-		t.logger.Debug("Pre-generated initial attestation")
-	}
-
-	// Set up 4-minute ticker for refresh
-	ticker := time.NewTicker(4 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			t.logger.Debug("Stopping attestation refresh")
-			return
-		case <-ticker.C:
-			if err := t.refreshAttestation(); err != nil {
-				t.logger.Error("Failed to refresh attestation", zap.Error(err))
-			} else {
-				t.logger.Debug("Refreshed attestation")
-			}
-		}
-	}
-}
-
 // refreshAttestation generates a new attestation and caches it
 func (t *TEEK) refreshAttestation() error {
 	// Skip in standalone mode (no RA-TLS — no attestation primitives).

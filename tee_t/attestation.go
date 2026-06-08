@@ -29,30 +29,6 @@ func (t *TEET) generateAttestationDoc(ctx context.Context, nonces ...string) ([]
 	return shared.GenerateGCPAttestation(ctx, nonces...)
 }
 
-func (t *TEET) startAttestationRefresh(ctx context.Context) {
-	t.logger.Debug("Starting background attestation refresh (4-minute interval)")
-	if err := t.refreshAttestation(); err != nil {
-		t.logger.Error("Failed to pre-generate initial attestation", zap.Error(err))
-	} else {
-		t.logger.Debug("Successfully pre-generated initial attestation")
-	}
-	ticker := time.NewTicker(4 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			t.logger.Debug("Stopping attestation refresh due to context cancellation")
-			return
-		case <-ticker.C:
-			if err := t.refreshAttestation(); err != nil {
-				t.logger.Error("Failed to refresh attestation", zap.Error(err))
-			} else {
-				t.logger.Debug("Successfully refreshed attestation")
-			}
-		}
-	}
-}
-
 func (t *TEET) refreshAttestation() error {
 	if t.ratls == nil {
 		return nil

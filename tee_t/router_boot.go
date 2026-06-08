@@ -148,7 +148,10 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	}
 
 	if teet.ratls != nil {
-		go shared.RunRATLSRefresh(ctx, teet.ratls, logger)
+		// Regenerate per-session cached attestation on every cert rotation
+		// — single ticker drives both so cert_hash nonce can't drift from
+		// the live cert.
+		go shared.RunRATLSRefresh(ctx, teet.ratls, teet.refreshAttestation, logger)
 	}
 
 	// Build the mux once; choose whether to wrap it with the peer-mTLS

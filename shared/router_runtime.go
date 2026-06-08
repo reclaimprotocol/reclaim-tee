@@ -126,7 +126,14 @@ func RegisterWithRetry(ctx context.Context, register func(context.Context) error
 // RunRATLSRefresh rotates the RA-TLS cert on a fixed interval until ctx
 // is cancelled. Errors are logged; the loop continues so a transient
 // launcher-socket failure doesn't kill the goroutine.
-func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, logger *Logger) {
+//
+// postRefresh runs synchronously after each successful cert rotation,
+// inside the same tick. TEEs use it to regenerate any per-session
+// attestation cache that binds to the cert hash — keeping the cert and
+// the cached attestation atomically in sync from any consumer's point
+// of view (no window where the cert is new but the cached attestation
+// still references the old hash). Pass nil if not needed.
+func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func() error, logger *Logger) {
 	ticker := time.NewTicker(RATLSRefreshInterval)
 	defer ticker.Stop()
 	for {
@@ -137,6 +144,12 @@ func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, logger *Logger) {
 			if err := ratls.Refresh(ctx); err != nil {
 				logger.Error("RA-TLS refresh failed", zap.Error(err))
 				continue
+			}
+			if postRefresh != nil {
+				if err := postRefresh(); err != nil {
+					logger.Error("RA-TLS post-refresh hook failed", zap.Error(err))
+					continue
+				}
 			}
 			logger.Debug("RA-TLS refreshed")
 		}
