@@ -48,6 +48,20 @@ func TestEffectiveStatus(t *testing.T) {
 			want: StatusReady,
 		},
 		{
+			// Right after /register: heartbeats freshly seeded, but the
+			// bools are still false because no heartbeat has fired yet.
+			// Must NOT be Ready — selector would otherwise allocate a pair
+			// whose TEEs haven't even finished OT precompute.
+			name: "both registered, no heartbeat yet → Registering",
+			p: Pair{
+				TEEKAddr: "10.0.0.1:443", TEETAddr: "10.0.0.2:443",
+				LastHeartbeatK: t0, LastHeartbeatT: t0,
+				// bools all false, ReadyAt zero
+			},
+			at:   t0,
+			want: StatusRegistering,
+		},
+		{
 			name: "K heartbeat stale → Dead",
 			p: Pair{
 				TEEKAddr: "10.0.0.1:443", TEETAddr: "10.0.0.2:443",

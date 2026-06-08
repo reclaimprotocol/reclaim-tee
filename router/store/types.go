@@ -86,6 +86,16 @@ func (p *Pair) EffectiveStatus(
 	if p.heartbeatsStale(now, heartbeatStaleness) {
 		return StatusDead
 	}
+	// A fresh pair where both sides have registered but neither has yet
+	// sent a heartbeat with ControlHealthy + OTReady true is still warming
+	// up — the duration-based checks below would say "Ready" because the
+	// *UnhealthySince timestamps were just seeded to `now`. Require explicit
+	// positive signal from both sides at least once before the selector
+	// considers the pair allocatable.
+	allHealthy := p.ControlHealthyK && p.ControlHealthyT && p.OTReadyK && p.OTReadyT
+	if !allHealthy && p.ReadyAt.IsZero() {
+		return StatusRegistering
+	}
 	controlBad := durationExceeded(p.ControlUnhealthySinceK, now, controlUnhealthy) ||
 		durationExceeded(p.ControlUnhealthySinceT, now, controlUnhealthy)
 	otBad := durationExceeded(p.OTUnreadySinceK, now, otNotReady) ||
