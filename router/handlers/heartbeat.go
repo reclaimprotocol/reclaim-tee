@@ -68,9 +68,10 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "role has not registered for this pair")
 		return
 	}
-	if !s.Config.Standalone && !sourceIPMatches(r.RemoteAddr, registeredAddr) {
+	if !s.Config.Standalone && !sourceIPMatches(r, registeredAddr) {
 		log.Warn("heartbeat: source IP mismatch",
 			zap.String("remote", r.RemoteAddr),
+			zap.String("x_forwarded_for", r.Header.Get("X-Forwarded-For")),
 			zap.String("registered", registeredAddr),
 			zap.String("pair_id", req.PairID),
 			zap.String("role", req.Role))

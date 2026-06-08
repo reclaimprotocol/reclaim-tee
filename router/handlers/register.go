@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/reclaimprotocol/reclaim-tee/router/store"
@@ -79,9 +80,10 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		digest = validated
 
-		if !sourceIPMatches(r.RemoteAddr, req.SelfAddr) {
+		if !sourceIPMatches(r, req.SelfAddr) {
 			log.Warn("register: source IP mismatch",
 				zap.String("remote", r.RemoteAddr),
+				zap.String("x_forwarded_for", r.Header.Get("X-Forwarded-For")),
 				zap.String("self_addr", req.SelfAddr),
 				zap.String("pair_id", req.PairID))
 			writeErr(w, http.StatusForbidden, "source IP does not match self_addr")
@@ -181,17 +183,35 @@ func (req registerRequest) validate() error {
 	return nil
 }
 
-// sourceIPMatches returns true if the host portion of the HTTP RemoteAddr
-// matches the host portion of self_addr. Both are tolerated in bare-host
+// sourceIPMatches returns true if the request's source IP matches the
+// host portion of self_addr. When the router runs behind Cloud Run /
+// GFE, r.RemoteAddr is the load balancer's IP — useless for this
+// check; X-Forwarded-For carries the actual client IP (leftmost entry,
+// per Cloud Run conventions). Both inputs are tolerated in bare-host
 // form for tests where RemoteAddr may not include a port.
-func sourceIPMatches(remoteAddr, selfAddr string) bool {
-	src, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		src = remoteAddr
-	}
+func sourceIPMatches(r *http.Request, selfAddr string) bool {
+	src := requestSourceIP(r)
 	claimed, _, err := net.SplitHostPort(selfAddr)
 	if err != nil {
 		claimed = selfAddr
 	}
 	return src == claimed
+}
+
+// requestSourceIP returns the most-trustworthy client IP this router can
+// see: the leftmost X-Forwarded-For entry when present (set by GFE /
+// Cloud Run), otherwise r.RemoteAddr's host portion. The leftmost XFF
+// entry is the original client; subsequent entries are intermediate
+// proxies appended by each hop.
+func requestSourceIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// "client, proxy1, proxy2" — first entry is the original client.
+		first, _, _ := strings.Cut(xff, ",")
+		return strings.TrimSpace(first)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
