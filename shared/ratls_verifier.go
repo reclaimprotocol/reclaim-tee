@@ -101,24 +101,17 @@ func VerifyRATLSPeer(opts RATLSVerifyOptions) func(rawCerts [][]byte, _ [][]*x50
 
 // VerifyRATLSAttestation returns a tls.Config.VerifyPeerCertificate
 // callback for CLIENT→TEE connections: validates cert structure +
-// attestation integrity without pinning image_digest. The attested
-// image_digest is delivered via onAttested so the client can stash it
-// for the verification bundle the attestor later signs.
+// attestation integrity without pinning image_digest.
 //
-// Clients deliberately do NOT pin image_digest themselves — that's the
-// attestor's job downstream. The router is not trusted to dictate what
-// image_digest is acceptable; the client just records what the TEE
-// attested to and lets the attestor judge.
-func VerifyRATLSAttestation(peerRole string, logger *Logger, onAttested func(imageDigest string)) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+// Clients deliberately do NOT pin image_digest themselves — the TEEs
+// embed their full attestation reports into the signed claim bundles
+// the attestor later inspects. The client's only job at TLS time is to
+// confirm the cert is genuine RA-TLS (Google-signed attestation + SPKI
+// binding). What's INSIDE the attestation is decided downstream.
+func VerifyRATLSAttestation(peerRole string, logger *Logger) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		digest, err := validateRATLSCertStructure(rawCerts, peerRole, logger)
-		if err != nil {
-			return err
-		}
-		if onAttested != nil {
-			onAttested(digest)
-		}
-		return nil
+		_, err := validateRATLSCertStructure(rawCerts, peerRole, logger)
+		return err
 	}
 }
 

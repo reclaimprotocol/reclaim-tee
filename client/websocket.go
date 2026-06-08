@@ -37,12 +37,11 @@ func (c *Client) ConnectToTEEK() error {
 		}
 	} else if c.routerJWT != "" && strings.HasPrefix(c.teekURL, "wss://") {
 		// Router mode + wss:// — production path. TEE serves an RA-TLS
-		// cert; client verifies the attestation embedded in the cert
-		// and captures the image_digest for the verification bundle.
+		// cert; the dialer verifies the embedded attestation but doesn't
+		// inspect what's inside it (the TEE's signed bundles carry the
+		// full attestation downstream).
 		c.logger.Info("Router mode detected for TEE_K - using RA-TLS dialer")
-		dialer := newRATLSWebSocketDialer("tee_k", c.logger, func(digest string) {
-			c.teekImageDigest = digest
-		})
+		dialer := newRATLSWebSocketDialer("tee_k", c.logger)
 		conn, _, err = dialer.Dial(u.String(), nil)
 	} else if strings.HasPrefix(c.teekURL, "wss://") && strings.Contains(c.teekURL, "reclaimprotocol.org") {
 		// Legacy direct-URL enclave mode: use custom dialer with TLS config
@@ -122,12 +121,11 @@ func (c *Client) ConnectToTEET() error {
 			return fmt.Errorf("native WebSocket connect failed: %w", err)
 		}
 	} else if c.routerJWT != "" && strings.HasPrefix(c.teetURL, "wss://") {
-		// Router mode + wss:// — production path. Capture TEE_T's
-		// attested image_digest for the verification bundle.
+		// Router mode + wss:// — production path. RA-TLS verification
+		// only; the TEE's signed bundles carry the attestation contents
+		// for downstream verification.
 		c.logger.Info("Router mode detected for TEE_T - using RA-TLS dialer")
-		dialer := newRATLSWebSocketDialer("tee_t", c.logger, func(digest string) {
-			c.teetImageDigest = digest
-		})
+		dialer := newRATLSWebSocketDialer("tee_t", c.logger)
 		conn, _, err = dialer.Dial(u.String(), nil)
 	} else if strings.HasPrefix(c.teetURL, "wss://") && strings.Contains(c.teetURL, "reclaimprotocol.org") {
 		// Legacy direct-URL enclave mode: use custom dialer with TLS config

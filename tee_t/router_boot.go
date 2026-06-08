@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -110,20 +111,19 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	}
 
 	// The pair_id arrives on the wire from TEE_K, not the env. When it does,
-	// register + spin up the heartbeat. Guarded so a peer reconnect doesn't
-	// trigger a duplicate goroutine — the pair_id never changes for the life
-	// of this process.
-	heartbeatStarted := false
+	// register + spin up the heartbeat. TEE_K may reconnect over the life
+	// of the process, firing this hook each time; sync.Once guarantees we
+	// register + start the heartbeat exactly once. The pair_id never
+	// changes for the life of this process.
+	var startOnce sync.Once
 	teet.onPairAssigned = func(pairID string) {
-		if heartbeatStarted {
-			return
-		}
-		heartbeatStarted = true
-		if err := register(ctx); err != nil {
-			logger.Critical("router registration failed", zap.Error(err))
-			return
-		}
-		go shared.RunHeartbeats(ctx, teet, "T", logger, register, shared.RouterHeartbeatInterval)
+		startOnce.Do(func() {
+			if err := register(ctx); err != nil {
+				logger.Critical("router registration failed", zap.Error(err))
+				return
+			}
+			go shared.RunHeartbeats(ctx, teet, "T", logger, register, shared.RouterHeartbeatInterval)
+		})
 	}
 
 	if teet.ratls != nil {
