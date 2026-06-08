@@ -152,7 +152,11 @@ func TestRegisterBothSidesCrossConsistency(t *testing.T) {
 	}
 }
 
-func TestRegisterRejectsPeerAddrMismatch(t *testing.T) {
+func TestRegisterAcceptsPeerAddrDivergence(t *testing.T) {
+	// In V2 K's self_addr is its external IP (what /allocate returns to
+	// clients) while T's peer_addr_claim is K's internal DNS — the two
+	// can't match. The router stopped cross-checking them; pair_id +
+	// SA token + attestation + image_digest authenticate the caller.
 	s := newTestServer(t)
 
 	w := doRegister(t, s,
@@ -162,11 +166,12 @@ func TestRegisterRejectsPeerAddrMismatch(t *testing.T) {
 		t.Fatalf("K status: %d", w.Code)
 	}
 
-	// T claims a different K address than the one that registered first.
+	// T claims a different K address than the one K registered with.
+	// Must be accepted now.
 	body := validBody("T", teetIP+":443", "10.0.0.99:443")
 	w = doRegister(t, s, body, teetIP+":54321", "Bearer fake-sa-token")
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 on peer mismatch, got %d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with diverging peer claims, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

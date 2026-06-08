@@ -110,24 +110,22 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// On first registration of a side, the side has not yet reported healthy
 	// observations — seed the "unhealthy since" timestamps so threshold-based
 	// degradation has a starting point.
+	// peer_addr_claim cross-consistency was a V1 defense-in-depth check that
+	// assumed each side claimed the same form of the peer's address. In V2
+	// the addresses serve different purposes — SelfAddr is the external IP
+	// the router hands to clients via /allocate, while PeerAddrClaim is
+	// the GCE-internal DNS name the TEEs use to dial each other. They
+	// don't match by design. pair_id is the authoritative identifier;
+	// SA token + attestation + image_digest already authenticate the
+	// caller. The peer-addr claim is now informational only.
 	switch store.Role(req.Role) {
 	case store.RoleK:
-		if p.TEETAddr != "" && p.TEETAddr != req.PeerAddrClaim {
-			writeErr(w, http.StatusBadRequest,
-				"peer_addr_claim does not match already-registered TEE_T address")
-			return
-		}
 		p.TEEKAddr = req.SelfAddr
 		p.TEEKImageDigest = digest
 		p.LastHeartbeatK = now
 		p.ControlUnhealthySinceK = now
 		p.OTUnreadySinceK = now
 	case store.RoleT:
-		if p.TEEKAddr != "" && p.TEEKAddr != req.PeerAddrClaim {
-			writeErr(w, http.StatusBadRequest,
-				"peer_addr_claim does not match already-registered TEE_K address")
-			return
-		}
 		p.TEETAddr = req.SelfAddr
 		p.TEETImageDigest = digest
 		p.LastHeartbeatT = now
