@@ -18,6 +18,9 @@ cd tee_k && go build -o ../bin/tee_k . && cd ..
 echo "  Building TEE_T..."
 cd tee_t && go build -o ../bin/tee_t . && cd ..
 
+echo "  Building Router..."
+cd router && go build -o ../bin/router . && cd ..
+
 echo "  Building Client..."
 cd demo_standalone && go build -o ../bin/client . && cd ..
 
