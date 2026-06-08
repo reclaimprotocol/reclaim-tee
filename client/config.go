@@ -6,10 +6,12 @@ import (
 	"time"
 )
 
-// ClientConfig contains all configuration options for the ReclaimClient
+// ClientConfig contains all configuration options for the ReclaimClient.
+// Direct TEE addresses are intentionally absent — V2 clients always go
+// through the router. Set RouterURL and the constructor will resolve
+// the pair via /allocate.
 type ClientConfig struct {
-	TEEKURL              string                              // TEE_K WebSocket URL
-	TEETURL              string                              // TEE_T WebSocket URL
+	RouterURL            string                              // Required: router base URL, e.g. https://tee.reclaimprotocol.org
 	AttestorURL          string                              // Attestor WebSocket URL
 	Timeout              time.Duration                       // Connection timeout
 	Mode                 ClientMode                          // Client operational mode
@@ -20,7 +22,6 @@ type ClientConfig struct {
 	ForceCipherSuite     string                              // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
 	Logger               *shared.Logger                      // Optional logger with request context
 	RequestId            string                              // Request ID for tracking across system
-	RouterJWT            string                              // Allocation JWT; sent as ClientAuth first envelope when set
 }
 
 // RedactionSpec defines a redaction specification for request data

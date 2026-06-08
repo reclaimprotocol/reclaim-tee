@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/http"
@@ -168,11 +169,21 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		// by enforcePeerMTLS) while anonymous clients hit /ws.
 		srvTLS := ratls.ServerTLSConfig()
 		srvTLS.ClientAuth = tls.RequestClientCert
-		srvTLS.VerifyPeerCertificate = shared.VerifyRATLSPeer(shared.RATLSVerifyOptions{
+		// VerifyPeerCertificate fires for every handshake — including
+		// anonymous /ws clients who send no cert. Skip the RA-TLS check
+		// in that case; enforcePeerMTLS rejects no-cert connections on
+		// the peer-only routes at the HTTP layer.
+		verifyPeer := shared.VerifyRATLSPeer(shared.RATLSVerifyOptions{
 			PeerRole:            "tee_k",
 			ExpectedImageDigest: teet.expectedPeerImageDigest,
 			Logger:              logger,
 		})
+		srvTLS.VerifyPeerCertificate = func(rawCerts [][]byte, chains [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return nil
+			}
+			return verifyPeer(rawCerts, chains)
+		}
 		server.TLSConfig = srvTLS
 		handler = enforcePeerMTLS(mux)
 		server.Handler = handler

@@ -35,23 +35,17 @@ func (c *Client) ConnectToTEEK() error {
 			c.logger.Error("Native WebSocket dial failed for TEE_K", zap.String("url", c.teekURL), zap.Error(err))
 			return fmt.Errorf("native WebSocket connect failed: %w", err)
 		}
-	} else if c.routerJWT != "" && strings.HasPrefix(c.teekURL, "wss://") {
-		// Router mode + wss:// — production path. TEE serves an RA-TLS
-		// cert; the dialer verifies the embedded attestation but doesn't
-		// inspect what's inside it (the TEE's signed bundles carry the
-		// full attestation downstream).
-		c.logger.Info("Router mode detected for TEE_K - using RA-TLS dialer")
+	} else if strings.HasPrefix(c.teekURL, "wss://") {
+		// Router-allocated wss:// — TEE serves an RA-TLS cert; the dialer
+		// verifies the embedded attestation but doesn't inspect what's
+		// inside it (the TEE's signed bundles carry the full attestation
+		// downstream).
+		c.logger.Info("Using RA-TLS dialer for TEE_K")
 		dialer := newRATLSWebSocketDialer("tee_k", c.logger)
 		conn, _, err = dialer.Dial(u.String(), nil)
-	} else if strings.HasPrefix(c.teekURL, "wss://") && strings.Contains(c.teekURL, "reclaimprotocol.org") {
-		// Legacy direct-URL enclave mode: use custom dialer with TLS config
-		c.logger.Info("Enclave mode detected for TEE_K - using custom dialer")
-		dialer := createEnclaveWebSocketDialer()
-		conn, _, err = dialer.Dial(u.String(), nil)
 	} else {
-		// Standalone mode (or router mode over plain ws://, e.g. local dev):
-		// use default dialer
-		c.logger.Info("Standalone mode detected for TEE_K - using default dialer")
+		// Local-dev router-standalone over plain ws://.
+		c.logger.Info("Using default dialer for TEE_K (local dev)")
 		conn, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
 	}
 
@@ -120,22 +114,16 @@ func (c *Client) ConnectToTEET() error {
 			c.logger.Error("Native WebSocket dial failed for TEE_T", zap.String("url", c.teetURL), zap.Error(err))
 			return fmt.Errorf("native WebSocket connect failed: %w", err)
 		}
-	} else if c.routerJWT != "" && strings.HasPrefix(c.teetURL, "wss://") {
-		// Router mode + wss:// — production path. RA-TLS verification
-		// only; the TEE's signed bundles carry the attestation contents
-		// for downstream verification.
-		c.logger.Info("Router mode detected for TEE_T - using RA-TLS dialer")
+	} else if strings.HasPrefix(c.teetURL, "wss://") {
+		// Router-allocated wss:// — RA-TLS verification only; the TEE's
+		// signed bundles carry the attestation contents for downstream
+		// verification.
+		c.logger.Info("Using RA-TLS dialer for TEE_T")
 		dialer := newRATLSWebSocketDialer("tee_t", c.logger)
 		conn, _, err = dialer.Dial(u.String(), nil)
-	} else if strings.HasPrefix(c.teetURL, "wss://") && strings.Contains(c.teetURL, "reclaimprotocol.org") {
-		// Legacy direct-URL enclave mode: use custom dialer with TLS config
-		c.logger.Info("Enclave mode detected for TEE_T - using custom dialer")
-		dialer := createEnclaveWebSocketDialer()
-		conn, _, err = dialer.Dial(u.String(), nil)
 	} else {
-		// Standalone mode (or router mode over plain ws://, e.g. local dev):
-		// use default dialer
-		c.logger.Info("Standalone mode detected for TEE_T - using default dialer")
+		// Local-dev router-standalone over plain ws://.
+		c.logger.Info("Using default dialer for TEE_T (local dev)")
 		conn, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
 	}
 

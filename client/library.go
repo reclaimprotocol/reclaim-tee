@@ -35,52 +35,61 @@ type ReclaimClient struct {
 	logger *shared.Logger
 }
 
-// NewReclaimClient creates a new ReclaimClient with the given configuration
-func NewReclaimClient(config ClientConfig) *ReclaimClient {
+// NewReclaimClient creates a new ReclaimClient. RouterURL is required —
+// the constructor hits /allocate to resolve the TEE pair and JWT. There
+// is no direct-URL path; V2 clients always go through the router.
+//
+// Returns an error if RouterURL is empty or /allocate fails.
+func NewReclaimClient(config ClientConfig) (*ReclaimClient, error) {
+	if config.RouterURL == "" {
+		return nil, fmt.Errorf("RouterURL is required")
+	}
+
 	// Apply defaults if not specified
 	if config.Timeout == 0 {
 		config.Timeout = 30 * time.Second
 	}
+
+	// Hit /allocate to learn this session's pair addresses + JWT.
+	nonce := config.RequestId
+	if nonce == "" {
+		nonce = fmt.Sprintf("client-%d", time.Now().UnixNano())
+	}
+	alloc, err := AllocatePair(config.RouterURL, nonce)
+	if err != nil {
+		return nil, fmt.Errorf("router allocate: %v", err)
+	}
+	scheme := "ws"
+	if strings.HasPrefix(config.RouterURL, "https://") {
+		scheme = "wss"
+	}
+	teekURL := fmt.Sprintf("%s://%s/ws", scheme, alloc.TEEKAddr)
+	teetURL := fmt.Sprintf("%s://%s/ws", scheme, alloc.TEETAddr)
+
 	if config.Mode == ModeAuto {
-		config.Mode = detectMode(config.TEEKURL, config.TEETURL)
+		config.Mode = detectMode(teekURL, teetURL)
 	}
 
-	// Create internal client with TEE_K URL
-	client := NewClient(config.TEEKURL)
+	client := NewClient(teekURL)
+	client.SetTEETURL(teetURL)
+	client.SetRouterJWT(alloc.JWT)
 
-	// Use provided logger if available and store requestId
 	if config.Logger != nil {
 		client.logger = config.Logger
 	}
-	// Store request ID for tracking
 	if config.RequestId != "" {
 		client.requestId = config.RequestId
 	}
 
-	// Configure TEE_T URL if provided
-	if config.TEETURL != "" {
-		client.SetTEETURL(config.TEETURL)
-	}
-
-	// Router mode: the JWT is sent as ClientAuth first envelope to both TEEs.
-	if config.RouterJWT != "" {
-		client.SetRouterJWT(config.RouterJWT)
-	}
-
-	// Store attestor URL
 	client.attestorURL = config.AttestorURL
-
-	// Store config for later use
 	client.forceTLSVersion = config.ForceTLSVersion
 	client.forceCipherSuite = config.ForceCipherSuite
 	client.proxyURL = shared.GetHTTPSProxyURL()
 	client.SetMode(config.Mode)
 
-	// Set provider params for automatic response redactions
 	client.providerParams = config.ProviderParams
 	client.providerSecretParams = config.ProviderSecretParams
 
-	// Initialize logger with Flutter callback support
 	isEnclaveMode := client.clientMode == ModeEnclave
 	logger := GetLogger("client", isEnclaveMode)
 
@@ -88,29 +97,21 @@ func NewReclaimClient(config ClientConfig) *ReclaimClient {
 		Client: client,
 		config: config,
 		logger: logger,
-	}
+	}, nil
 }
 
-// ConfigJSON represents optional configuration for the client
+// ConfigJSON is the JSON shape accepted by NewReclaimClientFromJSON.
+// RouterURL is required — the library always resolves the TEE pair via
+// /allocate. No direct TEE URLs.
 type ConfigJSON struct {
+	RouterURL   string `json:"routerUrl"`
 	AttestorURL string `json:"attestorUrl,omitempty"`
-	TEEKURL     string `json:"teekUrl,omitempty"`
-	TEETURL     string `json:"teetUrl,omitempty"`
 	RequestID   string `json:"requestId,omitempty"`
-	// RouterURL, when set, triggers router-mode: the library hits
-	// /allocate on this URL, overrides TEEKURL/TEETURL with the
-	// addresses the router returned, and presents the issued JWT as
-	// ClientAuth first envelope on each TEE connection. Mutually
-	// exclusive with TEEKURL/TEETURL in practice — direct URLs are
-	// ignored when RouterURL is set.
-	RouterURL string `json:"routerUrl,omitempty"`
 }
 
 // Default URLs for TEE services
 const (
 	DefaultAttestorURL = "wss://eu.attestor.reclaimprotocol.org:444/ws"
-	DefaultTEEKURL     = "wss://eu.tk.reclaimprotocol.org/ws"
-	DefaultTEETURL     = "wss://eu.tt.reclaimprotocol.org/ws"
 )
 
 // NewReclaimClientFromJSON creates a new ReclaimClient with JSON-encoded provider params and optional config
@@ -160,12 +161,9 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 		}
 	}
 
-	// Parse config with defaults
+	// Parse config — RouterURL is required.
 	attestorURL := DefaultAttestorURL
-	teekURL := DefaultTEEKURL
-	teetURL := DefaultTEETURL
-	var requestID string
-	var routerURL, routerJWT string
+	var requestID, routerURL string
 
 	if configJSON != "" {
 		var cfg ConfigJSON
@@ -173,38 +171,13 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 			if cfg.AttestorURL != "" {
 				attestorURL = cfg.AttestorURL
 			}
-			if cfg.TEEKURL != "" {
-				teekURL = cfg.TEEKURL
-			}
-			if cfg.TEETURL != "" {
-				teetURL = cfg.TEETURL
-			}
 			requestID = cfg.RequestID
 			routerURL = cfg.RouterURL
 		}
-		// Ignore parse errors - use defaults
 	}
 
-	// Router mode: hit /allocate, override TEEKURL/TEETURL with the
-	// addresses the router hands back, and capture the JWT. The JWT
-	// gets sent as ClientAuth on each TEE connection (see
-	// client.SetRouterJWT).
-	if routerURL != "" {
-		nonce := requestID
-		if nonce == "" {
-			nonce = fmt.Sprintf("libreclaim-%d", time.Now().UnixNano())
-		}
-		alloc, err := AllocatePair(routerURL, nonce)
-		if err != nil {
-			return nil, fmt.Errorf("router allocate: %v", err)
-		}
-		scheme := "ws"
-		if strings.HasPrefix(routerURL, "https://") {
-			scheme = "wss"
-		}
-		teekURL = fmt.Sprintf("%s://%s/ws", scheme, alloc.TEEKAddr)
-		teetURL = fmt.Sprintf("%s://%s/ws", scheme, alloc.TEETAddr)
-		routerJWT = alloc.JWT
+	if routerURL == "" {
+		return nil, fmt.Errorf("routerUrl is required in config")
 	}
 
 	// Initialize logger
@@ -218,10 +191,8 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 		}
 	}
 
-	// Create config with validated provider params
 	config := ClientConfig{
-		TEEKURL:              teekURL,
-		TEETURL:              teetURL,
+		RouterURL:            routerURL,
 		AttestorURL:          attestorURL,
 		Timeout:              30 * time.Second,
 		Mode:                 ModeAuto,
@@ -230,10 +201,9 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 		ProviderContext:      context,
 		Logger:               logger,
 		RequestId:            requestID,
-		RouterJWT:            routerJWT,
 	}
 
-	return NewReclaimClient(config), nil
+	return NewReclaimClient(config)
 }
 
 // Connect establishes connections to both TEE_K and TEE_T

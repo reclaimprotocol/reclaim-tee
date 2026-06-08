@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/reclaimprotocol/reclaim-tee/client"
 	"github.com/reclaimprotocol/reclaim-tee/minitls"
@@ -191,47 +190,46 @@ func main() {
 
 	// Show usage if requested
 	if len(os.Args) > 1 && (os.Args[1] == "-h" || os.Args[1] == "--help") {
-		fmt.Println("Usage: demo_standalone [teek_url] [tls_version] [cipher_suite] [attestor_url]")
-		fmt.Println("  teek_url:     TEE_K WebSocket URL (default: wss://tee-k.reclaimprotocol.org/ws)")
+		fmt.Println("Usage: demo_standalone --router-url=URL [tls_version] [cipher_suite] [attestor_url]")
+		fmt.Println("  --router-url: Router base URL (required), e.g. http://localhost:8090 or https://tee.reclaimprotocol.org")
 		fmt.Println("  tls_version:  Force TLS version: 1.2, 1.3, or empty for auto")
 		fmt.Println("  cipher_suite: Force cipher suite: hex (e.g. 0xc02f) or name")
 		fmt.Println("  attestor_url: Attestor WebSocket URL (default: ws://localhost:8001/ws)")
 		fmt.Println("\nExamples:")
-		fmt.Println("  demo_standalone")
-		fmt.Println("  demo_standalone ws://localhost:8080/ws")
-		fmt.Println("  demo_standalone ws://localhost:8080/ws 1.2")
-		fmt.Println("  demo_standalone ws://localhost:8080/ws 1.2 0xc02f ws://localhost:8001/ws")
+		fmt.Println("  demo_standalone --router-url=http://localhost:8090")
+		fmt.Println("  demo_standalone --router-url=https://tee.reclaimprotocol.org 1.2 0xc02f")
 		os.Exit(0)
 	}
 
 	logger.Info("=== Client ===")
 
-	// Default to enclave mode, fallback to standalone if specified
-	teekURL := "ws://localhost:8080/ws"     // Default to enclave
-	attestorURL := "ws://localhost:8001/ws" // Default attestor URL
-	forceTLSVersion := ""                   // Default to auto-negotiate
-	forceCipherSuite := ""                  // Default to auto-negotiate
-	routerURL := ""                         // Router base URL — when set, allocate first
+	attestorURL := "ws://localhost:8001/ws"
+	forceTLSVersion := ""
+	forceCipherSuite := ""
+	routerURL := ""
 
-	// Pull out --router-url=... from positional args; everything else stays
-	// in os.Args at its current index for the existing parser.
-	args := make([]string, 0, len(os.Args))
-	for _, a := range os.Args {
+	// Pull out --router-url=... from args; the remainder is positional.
+	positional := make([]string, 0, len(os.Args))
+	for i, a := range os.Args {
+		if i == 0 {
+			positional = append(positional, a)
+			continue
+		}
 		if strings.HasPrefix(a, "--router-url=") {
 			routerURL = strings.TrimPrefix(a, "--router-url=")
 			continue
 		}
-		args = append(args, a)
-	}
-	os.Args = args
-
-	if len(os.Args) > 1 {
-		teekURL = os.Args[1]
+		positional = append(positional, a)
 	}
 
-	// Check for TLS version argument
-	if len(os.Args) > 2 {
-		forceTLSVersion = os.Args[2]
+	if routerURL == "" {
+		fmt.Println("error: --router-url=URL is required")
+		fmt.Println("run with --help for usage")
+		os.Exit(1)
+	}
+
+	if len(positional) > 1 {
+		forceTLSVersion = positional[1]
 		if forceTLSVersion != "1.2" && forceTLSVersion != "1.3" && forceTLSVersion != "" {
 			logger.Error("Invalid TLS version", zap.String("version", forceTLSVersion))
 			fmt.Printf("Invalid TLS version '%s'. Use '1.2', '1.3', or omit for auto-negotiation\n", forceTLSVersion)
@@ -239,10 +237,8 @@ func main() {
 		}
 	}
 
-	// Check for cipher suite argument
-	if len(os.Args) > 3 {
-		forceCipherSuite = os.Args[3]
-		// Validate cipher suite format (hex or name)
+	if len(positional) > 2 {
+		forceCipherSuite = positional[2]
 		if forceCipherSuite != "" && !isValidCipherSuite(forceCipherSuite) {
 			logger.Error("Invalid cipher suite", zap.String("cipher_suite", forceCipherSuite))
 			fmt.Printf("Invalid cipher suite '%s'. Use hex format (e.g. '0xc02f') or valid name\n", forceCipherSuite)
@@ -250,13 +246,12 @@ func main() {
 		}
 	}
 
-	// Check for attestor URL argument
-	if len(os.Args) > 4 {
-		attestorURL = os.Args[4]
+	if len(positional) > 3 {
+		attestorURL = positional[3]
 		logger.Info("Using custom attestor URL", zap.String("attestor_url", attestorURL))
 	}
 
-	logger.Info("Starting Client", zap.String("teek_url", teekURL), zap.String("attestor_url", attestorURL))
+	logger.Info("Starting Client", zap.String("router_url", routerURL), zap.String("attestor_url", attestorURL))
 	if forceTLSVersion != "" {
 		logger.Info("Forcing TLS version", zap.String("version", forceTLSVersion))
 	} else {
@@ -266,32 +261,6 @@ func main() {
 		logger.Info("Forcing cipher suite", zap.String("cipher_suite", forceCipherSuite))
 	} else {
 		logger.Info("Cipher suite auto-negotiation enabled")
-	}
-
-	// Router mode: hit /allocate once, override teekURL+teetURL, capture JWT.
-	// Plain http://router → ws:// on TEEs (local dev); https://router → wss://.
-	var teetURL, routerJWT string
-	if routerURL != "" {
-		nonce := fmt.Sprintf("demo-%d", time.Now().UnixNano())
-		alloc, err := client.AllocatePair(routerURL, nonce)
-		if err != nil {
-			logger.Error("Router allocate failed", zap.Error(err))
-			log.Fatalf("Router allocate failed: %v", err)
-		}
-		scheme := "ws"
-		if strings.HasPrefix(routerURL, "https://") {
-			scheme = "wss"
-		}
-		teekURL = fmt.Sprintf("%s://%s/ws", scheme, alloc.TEEKAddr)
-		teetURL = fmt.Sprintf("%s://%s/ws", scheme, alloc.TEETAddr)
-		routerJWT = alloc.JWT
-		logger.Info("Router allocated pair",
-			zap.String("pair_id", alloc.PairID),
-			zap.String("teek_url", teekURL),
-			zap.String("teet_url", teetURL))
-	} else {
-		teetURL = autoDetectTEETURL(teekURL)
-		logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
 	}
 
 	providerParams := &providers.HTTPProviderParams{
@@ -332,20 +301,20 @@ func main() {
 
 	logger.Info("Demo provider params configured")
 
-	// Create reclaimClient configuration with basic settings
 	config := client.ClientConfig{
-		TEEKURL:          teekURL,
-		TEETURL:          teetURL,
+		RouterURL:        routerURL,
 		AttestorURL:      attestorURL,
 		Timeout:          client.DefaultConnectionTimeout,
 		Mode:             client.ModeAuto,
 		ForceTLSVersion:  forceTLSVersion,
 		ForceCipherSuite: forceCipherSuite,
-		RouterJWT:        routerJWT,
 	}
 
-	// Create reclaimClient using library interface
-	reclaimClient := client.NewReclaimClient(config)
+	reclaimClient, err := client.NewReclaimClient(config)
+	if err != nil {
+		logger.Error("Failed to create reclaim client", zap.Error(err))
+		log.Fatalf("Failed to create reclaim client: %v", err)
+	}
 	defer reclaimClient.Close()
 
 	// Execute the complete protocol with progress reporting
@@ -444,27 +413,7 @@ func main() {
 
 }
 
-// autoDetectTEETURL automatically detects the appropriate TEE_T URL based on TEE_K URL
 // isValidCipherSuite validates cipher suite format and name
 func isValidCipherSuite(cipherSuite string) bool {
 	return minitls.IsValidCipherSuite(cipherSuite)
-}
-
-func autoDetectTEETURL(teekURL string) string {
-	if strings.HasPrefix(teekURL, "wss://") && strings.Contains(teekURL, "reclaimprotocol.org") {
-		// Enclave mode: TEE_K is using enclave domain, so TEE_T should too
-		return "wss://tee-t-gcp.reclaimprotocol.org/ws"
-	} else if strings.HasPrefix(teekURL, "ws://") && strings.Contains(teekURL, "localhost") {
-		// Standalone mode: TEE_K is using localhost, so TEE_T should too
-		return "ws://localhost:8081/ws"
-	} else {
-		// Custom URL - try to infer the pattern
-		if strings.HasPrefix(teekURL, "wss://") {
-			// Assume enclave mode for any wss:// URL
-			return "wss://tee-t-gcp.reclaimprotocol.org/ws"
-		} else {
-			// Assume standalone mode for any ws:// URL
-			return "ws://localhost:8081/ws"
-		}
-	}
 }
