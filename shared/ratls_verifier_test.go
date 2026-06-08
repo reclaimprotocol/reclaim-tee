@@ -44,7 +44,7 @@ func TestExtractAttestationFromCert(t *testing.T) {
 }
 
 // fakeJWT produces a JWT-shaped string (header.payload.signature) where
-// payload is the JSON-encoded claims. Signature is bogus but findNonceValue
+// payload is the JSON-encoded claims. Signature is bogus but FindNonceValue
 // doesn't inspect it — signature validity is the GoogleAttestor's concern,
 // covered by separate tests.
 func fakeJWT(claims map[string]any) string {
@@ -57,7 +57,7 @@ func fakeJWT(claims map[string]any) string {
 func TestFindNonceValue(t *testing.T) {
 	t.Run("string form", func(t *testing.T) {
 		jwt := fakeJWT(map[string]any{"eat_nonce": "tee_k_spki_hash:abcd1234"})
-		got, err := findNonceValue([]byte(jwt), "tee_k_spki_hash:")
+		got, err := FindNonceValue([]byte(jwt), "tee_k_spki_hash:")
 		if err != nil {
 			t.Fatalf("find: %v", err)
 		}
@@ -72,7 +72,7 @@ func TestFindNonceValue(t *testing.T) {
 			"tee_k_spki_hash:cafef00d",
 			"some_other:value",
 		}})
-		got, err := findNonceValue([]byte(jwt), "tee_k_spki_hash:")
+		got, err := FindNonceValue([]byte(jwt), "tee_k_spki_hash:")
 		if err != nil {
 			t.Fatalf("find: %v", err)
 		}
@@ -83,7 +83,7 @@ func TestFindNonceValue(t *testing.T) {
 
 	t.Run("no matching prefix", func(t *testing.T) {
 		jwt := fakeJWT(map[string]any{"eat_nonce": "tee_k_public_key:0xabc"})
-		_, err := findNonceValue([]byte(jwt), "tee_k_spki_hash:")
+		_, err := FindNonceValue([]byte(jwt), "tee_k_spki_hash:")
 		if err == nil {
 			t.Fatal("expected error when no nonce matches prefix")
 		}
@@ -91,14 +91,14 @@ func TestFindNonceValue(t *testing.T) {
 
 	t.Run("missing eat_nonce claim", func(t *testing.T) {
 		jwt := fakeJWT(map[string]any{"sub": "something"})
-		_, err := findNonceValue([]byte(jwt), "tee_k_spki_hash:")
+		_, err := FindNonceValue([]byte(jwt), "tee_k_spki_hash:")
 		if err == nil {
 			t.Fatal("expected error when eat_nonce absent")
 		}
 	})
 
 	t.Run("malformed JWT", func(t *testing.T) {
-		_, err := findNonceValue([]byte("not.a.jwt.at.all"), "x")
+		_, err := FindNonceValue([]byte("not.a.jwt.at.all"), "x")
 		if err == nil {
 			t.Fatal("expected error on malformed JWT")
 		}
@@ -109,7 +109,7 @@ func TestFindNonceValue(t *testing.T) {
 
 	t.Run("malformed base64 in payload", func(t *testing.T) {
 		// Three segments, but the payload isn't valid base64url.
-		_, err := findNonceValue([]byte("hdr.!!!notb64!!!.sig"), "x")
+		_, err := FindNonceValue([]byte("hdr.!!!notb64!!!.sig"), "x")
 		if err == nil {
 			t.Fatal("expected decode error")
 		}
@@ -120,7 +120,7 @@ func TestFindNonceValue(t *testing.T) {
 		jwt := base64.RawURLEncoding.EncodeToString([]byte("hdr")) +
 			"." + base64.RawURLEncoding.EncodeToString([]byte("not-json")) +
 			".sig"
-		_, err := findNonceValue([]byte(jwt), "x")
+		_, err := FindNonceValue([]byte(jwt), "x")
 		if err == nil {
 			t.Fatal("expected unmarshal error")
 		}

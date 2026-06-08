@@ -71,7 +71,7 @@ func validateRATLSCertStructure(rawCerts [][]byte, peerRole string, logger *Logg
 	actualHash := sha256.Sum256(spkiDER)
 	actualHex := hex.EncodeToString(actualHash[:])
 
-	expectedHex, err := findNonceValue(attestation, SPKINoncePrefix(peerRole))
+	expectedHex, err := FindNonceValue(attestation, SPKINoncePrefix(peerRole))
 	if err != nil {
 		return "", fmt.Errorf("ratls: %w", err)
 	}
@@ -127,10 +127,13 @@ func ExtractAttestationFromCert(cert *x509.Certificate) ([]byte, error) {
 	return nil, errors.New("attestation extension not present on certificate")
 }
 
-// findNonceValue inspects the eat_nonce claim of an attestation JWT for a
+// FindNonceValue inspects the eat_nonce claim of an attestation JWT for a
 // nonce starting with the given prefix and returns the substring after the
 // prefix. Handles both string and []any forms of eat_nonce.
-func findNonceValue(attestation []byte, prefix string) (string, error) {
+//
+// Does NOT validate the JWT signature — call attestor.Validate first. The
+// attestation parameter is the raw JWT bytes.
+func FindNonceValue(attestation []byte, prefix string) (string, error) {
 	tokenStr := strings.TrimSpace(string(attestation))
 	parts := strings.Split(tokenStr, ".")
 	if len(parts) != 3 {

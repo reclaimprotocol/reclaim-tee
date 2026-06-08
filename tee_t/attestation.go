@@ -157,10 +157,14 @@ func (t *TEET) generateAttestationForTEEK() (*teeproto.AttestationReport, error)
 }
 
 // verifyTEEKAttestation verifies TEE_K's attestation request. Symmetric to
-// TEE_K's verifyTEETAttestation: extract the eat_nonce userData from the
-// GCP attestation JWT and confirm it equals "tee_k_cert_hash:<sha256(peer
-// cert)>" — binding the inner attestation to the TLS cert TEE_K presented
-// during the mTLS handshake.
+// TEE_K's verifyTEETAttestation: validates the JWT signature, then confirms
+// the eat_nonce array carries a `tee_k_cert_hash:<sha256(peer cert)>` entry
+// — binding the inner attestation to the TLS cert TEE_K presented during
+// the mTLS handshake.
+//
+// TEE_K's attestation carries TWO nonces (tee_k_public_key:<eth-addr> and
+// tee_k_cert_hash:<hash>), so we look up by prefix rather than reading
+// nonce[0].
 //
 // peerCert is the raw DER of TEE_K's client cert (PeerCertificates[0] of
 // the TLS connection underlying this control WebSocket). Pass nil in
@@ -189,15 +193,22 @@ func (t *TEET) verifyTEEKAttestation(req *teeproto.TEEKAttestationRequest, peerC
 	// RA-TLS already verified peer image_digest at the TLS handshake (against
 	// EXPECTED_PEER_IMAGE_DIGEST). Here we additionally bind the attestation
 	// to the TLS cert via the cert_hash nonce, mirroring TEE_K's check.
-	certHash := sha256.Sum256(peerCert)
-	expectedUserData := fmt.Sprintf("tee_k_cert_hash:%x", certHash[:])
-
-	actualUserData, err := shared.ExtractUserDataFromGCPAttestation(attestation.Report, t.logger)
+	attestor, err := shared.NewGoogleAttestor()
 	if err != nil {
-		return fmt.Errorf("extract userData from TEE_K attestation: %w", err)
+		return fmt.Errorf("build attestor: %w", err)
 	}
-	if actualUserData != expectedUserData {
-		return fmt.Errorf("TEE_K cert hash mismatch: attestation nonce %q does not match peer cert", actualUserData)
+	if err := attestor.Validate(attestation.Report, t.logger); err != nil {
+		return fmt.Errorf("validate TEE_K attestation JWT: %w", err)
+	}
+
+	certHash := sha256.Sum256(peerCert)
+	expectedHex := fmt.Sprintf("%x", certHash[:])
+	gotHex, err := shared.FindNonceValue(attestation.Report, "tee_k_cert_hash:")
+	if err != nil {
+		return fmt.Errorf("find tee_k_cert_hash nonce: %w", err)
+	}
+	if gotHex != expectedHex {
+		return fmt.Errorf("TEE_K cert hash mismatch: attestation says %q, peer cert hashes to %q", gotHex, expectedHex)
 	}
 
 	t.logger.Debug("TEE_K cert hash verified")
