@@ -45,6 +45,18 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		return
 	}
 
+	// Discover own external IP from GCE metadata if SELF_ADDR was not
+	// explicitly set. Same reasoning as TEE_K.
+	if config.SelfAddr == "" {
+		ip, err := shared.DiscoverGCEExternalIP(ctx)
+		if err != nil {
+			logger.Critical("SELF_ADDR not set and GCE metadata unreachable", zap.Error(err))
+			return
+		}
+		config.SelfAddr = fmt.Sprintf("%s:%d", ip, config.Port)
+		logger.Info("Discovered SELF_ADDR from GCE metadata", zap.String("self_addr", config.SelfAddr))
+	}
+
 	var ratls *shared.RATLSManager
 	if !devMode {
 		var err error
@@ -202,11 +214,13 @@ func enforcePeerMTLS(next http.Handler) http.Handler {
 	})
 }
 
+// validateRouterConfig surfaces missing router-mode env vars at boot.
+// SELF_ADDR is intentionally NOT required here — startRouterMode
+// auto-discovers it from GCE metadata when unset.
 func validateRouterConfig(c *TEETConfig) error {
 	required := []struct {
 		name, value string
 	}{
-		{"SELF_ADDR", c.SelfAddr},
 		{"PEER_ADDR", c.PeerAddr},
 		{"JWT_PUBLIC_KEY", c.JWTPublicKey},
 		{"EXPECTED_JWT_ISSUER", c.ExpectedJWTIssuer},

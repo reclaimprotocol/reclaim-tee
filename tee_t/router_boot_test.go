@@ -41,12 +41,13 @@ func TestValidateRouterConfig(t *testing.T) {
 	// EXPECTED_PEER_IMAGE_DIGEST and KMS_ENCLAVE_DOMAIN_KEY become required
 	// only inside a real enclave (gated by shared.IsEnclaveMode); they are
 	// not exercised here because the test environment has no launcher socket.
+	// SELF_ADDR is auto-discovered from GCE metadata in startRouterMode
+	// when unset, so it's not required by the config validator.
 	cases := []struct {
 		name   string
 		mutate func(*TEETConfig)
 		want   string
 	}{
-		{"missing SELF_ADDR", func(c *TEETConfig) { c.SelfAddr = "" }, "SELF_ADDR"},
 		{"missing PEER_ADDR", func(c *TEETConfig) { c.PeerAddr = "" }, "PEER_ADDR"},
 		{"missing JWT_PUBLIC_KEY", func(c *TEETConfig) { c.JWTPublicKey = "" }, "JWT_PUBLIC_KEY"},
 		{"missing EXPECTED_JWT_ISSUER", func(c *TEETConfig) { c.ExpectedJWTIssuer = "" }, "EXPECTED_JWT_ISSUER"},

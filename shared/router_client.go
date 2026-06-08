@@ -142,6 +142,38 @@ func (c *RouterClient) postJSON(ctx context.Context, path string, reqBody, respB
 	return nil
 }
 
+// DiscoverGCEExternalIP returns the external (NAT) IP assigned to the
+// first network interface of the current GCE VM, queried via the
+// instance metadata server. Used by TEEs in router mode to fill in
+// SELF_ADDR automatically — ephemeral IPs aren't known at create time,
+// so the binary discovers its own at boot.
+//
+// Returns an error if the metadata server is unreachable (i.e. we're
+// not running on GCE) or if the access-configs[0]/external-ip field is
+// absent (instance has no external IP).
+func DiscoverGCEExternalIP(ctx context.Context) (string, error) {
+	const u = "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("metadata server: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("metadata server returned %d: %s", resp.StatusCode, string(body))
+	}
+	ip := string(bytes.TrimSpace(body))
+	if ip == "" {
+		return "", errors.New("metadata server returned empty external IP (instance has no external NIC?)")
+	}
+	return ip, nil
+}
+
 // NoopTokenSource always returns an empty token. Use in local-dev when
 // talking to a router that runs in ROUTER_STANDALONE mode (it skips SA
 // token validation), so a developer laptop without GCP credentials can

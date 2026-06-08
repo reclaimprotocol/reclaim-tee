@@ -43,6 +43,20 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 		return
 	}
 
+	// Discover own external IP from GCE metadata if SELF_ADDR was not
+	// explicitly set. Production multi-pair deploys use ephemeral
+	// external IPs — assigned at VM boot — so the binary has to
+	// auto-discover. Local dev / standalone always sets it explicitly.
+	if config.SelfAddr == "" {
+		ip, err := shared.DiscoverGCEExternalIP(ctx)
+		if err != nil {
+			logger.Critical("SELF_ADDR not set and GCE metadata unreachable", zap.Error(err))
+			return
+		}
+		config.SelfAddr = fmt.Sprintf("%s:%d", ip, config.Port)
+		logger.Info("Discovered SELF_ADDR from GCE metadata", zap.String("self_addr", config.SelfAddr))
+	}
+
 	pairID := uuid.NewString()
 	logger.Info("Generated pair ID", zap.String("pair_id", pairID))
 
@@ -156,12 +170,12 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 // OPRF-storage code. Order matters for the error message: we report the
 // first unset var encountered. EXPECTED_PEER_IMAGE_DIGEST and
 // KMS_ENCLAVE_DOMAIN_KEY are required only inside a real enclave —
-// local dev skips attestation + persistent OPRF storage.
+// local dev skips attestation + persistent OPRF storage. SELF_ADDR is
+// auto-discovered from GCE metadata after this check if empty.
 func validateRouterConfig(c *TEEKConfig) error {
 	required := []struct {
 		name, value string
 	}{
-		{"SELF_ADDR", c.SelfAddr},
 		{"PEER_ADDR", c.PeerAddr},
 		{"JWT_PUBLIC_KEY", c.JWTPublicKey},
 		{"EXPECTED_JWT_ISSUER", c.ExpectedJWTIssuer},
