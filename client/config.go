@@ -20,6 +20,7 @@ type ClientConfig struct {
 	ForceCipherSuite     string                              // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
 	Logger               *shared.Logger                      // Optional logger with request context
 	RequestId            string                              // Request ID for tracking across system
+	RouterJWT            string                              // Allocation JWT; sent as ClientAuth first envelope when set
 }
 
 // RedactionSpec defines a redaction specification for request data

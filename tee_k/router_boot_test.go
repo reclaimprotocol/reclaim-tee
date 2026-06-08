@@ -38,6 +38,9 @@ func TestValidateRouterConfig(t *testing.T) {
 		t.Fatalf("full config should validate: %v", err)
 	}
 
+	// EXPECTED_PEER_IMAGE_DIGEST and KMS_ENCLAVE_DOMAIN_KEY become required
+	// only inside a real enclave (gated by shared.IsEnclaveMode); they are
+	// not exercised here because the test environment has no launcher socket.
 	cases := []struct {
 		name   string
 		mutate func(*TEEKConfig)
@@ -45,10 +48,8 @@ func TestValidateRouterConfig(t *testing.T) {
 	}{
 		{"missing SELF_ADDR", func(c *TEEKConfig) { c.SelfAddr = "" }, "SELF_ADDR"},
 		{"missing PEER_ADDR", func(c *TEEKConfig) { c.PeerAddr = "" }, "PEER_ADDR"},
-		{"missing EXPECTED_PEER_IMAGE_DIGEST", func(c *TEEKConfig) { c.ExpectedPeerImageDigest = "" }, "EXPECTED_PEER_IMAGE_DIGEST"},
 		{"missing JWT_PUBLIC_KEY", func(c *TEEKConfig) { c.JWTPublicKey = "" }, "JWT_PUBLIC_KEY"},
 		{"missing EXPECTED_JWT_ISSUER", func(c *TEEKConfig) { c.ExpectedJWTIssuer = "" }, "EXPECTED_JWT_ISSUER"},
-		{"missing KMS_ENCLAVE_DOMAIN_KEY", func(c *TEEKConfig) { c.KMSEnclaveDomainKey = "" }, "KMS_ENCLAVE_DOMAIN_KEY"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

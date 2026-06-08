@@ -120,8 +120,13 @@ func NewTEEKForRouter(
 	}
 	// In router mode the peer URL is derived from PEER_ADDR rather than
 	// the legacy TEET_URL env var. /ws is the base path; the connection
-	// manager extends it to /ws/control and /ws/session.
-	teek.SetTEETURL("wss://" + config.PeerAddr + "/ws")
+	// manager extends it to /ws/control and /ws/session. Scheme tracks
+	// whether we have an RA-TLS identity (prod) or not (local dev).
+	scheme := "wss"
+	if ratls == nil {
+		scheme = "ws"
+	}
+	teek.SetTEETURL(scheme + "://" + config.PeerAddr + "/ws")
 	teek.SetForceTLSVersion(config.ForceTLSVersion)
 	teek.SetForceCipherSuite(config.ForceCipherSuite)
 	return teek

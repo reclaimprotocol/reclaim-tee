@@ -17,30 +17,44 @@ import (
 )
 
 // startRouterMode is TEE_T's V2 boot path. TEE_T cannot register at boot —
-// it doesn't know the pair_id yet — so it brings up the RA-TLS HTTPS
-// server, sets an onPairAssigned hook that will register + start the
-// heartbeat the moment TEE_K's first envelope arrives, and waits.
+// it doesn't know the pair_id yet — so it brings up the server, sets an
+// onPairAssigned hook that registers + starts the heartbeat the moment
+// TEE_K's first envelope arrives, and waits.
+//
+// In production (running inside GCP Confidential Space, detected via
+// launcher socket) the server is HTTPS over RA-TLS + mTLS for peer
+// connections. In local dev the server is plain HTTP; JWT validation
+// and pair-assignment exchange still happen.
 func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.Logger) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
+	devMode := !shared.IsEnclaveMode()
 	logger.Info("=== TEE_T Router Mode ===",
 		zap.String("router_url", config.RouterURL),
 		zap.String("self_addr", config.SelfAddr),
-		zap.String("peer_addr", config.PeerAddr))
+		zap.String("peer_addr", config.PeerAddr),
+		zap.Bool("local_dev", devMode))
+	if devMode {
+		logger.Warn("LOCAL-DEV MODE: launcher socket absent, attestation checks relaxed — do not run in production")
+	}
 
 	if err := validateRouterConfig(config); err != nil {
 		logger.Critical("router-mode config invalid", zap.Error(err))
 		return
 	}
 
-	ratls, err := shared.NewRATLSManager(ctx, "tee_t", nil)
-	if err != nil {
-		logger.Critical("RA-TLS manager init failed", zap.Error(err))
-		return
+	var ratls *shared.RATLSManager
+	if !devMode {
+		var err error
+		ratls, err = shared.NewRATLSManager(ctx, "tee_t", nil)
+		if err != nil {
+			logger.Critical("RA-TLS manager init failed", zap.Error(err))
+			return
+		}
+		logger.Info("RA-TLS manager initialized",
+			zap.String("spki_hash", fmt.Sprintf("%x", ratls.SPKIHash())))
 	}
-	logger.Info("RA-TLS manager initialized",
-		zap.String("spki_hash", fmt.Sprintf("%x", ratls.SPKIHash())))
 
 	router := shared.NewRouterClient(config.RouterURL, shared.MetadataServerTokenSource)
 
@@ -61,9 +75,16 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		if pid == "" {
 			return errors.New("register: pair_id not yet known")
 		}
-		imageDigest, attestationJWT, err := shared.ExtractIdentityFromRATLS(teet.ratls, logger)
-		if err != nil {
-			return fmt.Errorf("extract identity: %w", err)
+		var imageDigest string
+		var attestationJWT []byte
+		if teet.ratls != nil {
+			var err error
+			imageDigest, attestationJWT, err = shared.ExtractIdentityFromRATLS(teet.ratls, logger)
+			if err != nil {
+				return fmt.Errorf("extract identity: %w", err)
+			}
+		} else {
+			imageDigest = "local-dev"
 		}
 		resp, err := teet.router.Register(ctx, shared.RegisterRequest{
 			PairID:         pid,
@@ -99,39 +120,43 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		go shared.RunHeartbeats(ctx, teet, "T", logger, register, shared.RouterHeartbeatInterval)
 	}
 
-	go shared.RunRATLSRefresh(ctx, teet.ratls, logger)
-
-	// Single RA-TLS-protected HTTPS server serving both peers and clients:
-	//   - TEE_K peer dials /ws/control + /ws/session, presents its RA-TLS
-	//     client cert; VerifyPeerCertificate validates it against the
-	//     expected tee_k image_digest.
-	//   - Clients dial /ws, present no client cert; JWT auth on first
-	//     envelope (see tee_t/websocket_handlers.go).
-	// ClientAuth=RequestClientCert lets both flows complete the TLS
-	// handshake; enforcePeerMTLS gates the peer routes on a verified cert
-	// at the HTTP layer.
-	srvTLS := ratls.ServerTLSConfig()
-	srvTLS.ClientAuth = tls.RequestClientCert
-	srvTLS.VerifyPeerCertificate = shared.VerifyRATLSPeer(shared.RATLSVerifyOptions{
-		PeerRole:            "tee_k",
-		ExpectedImageDigest: teet.expectedPeerImageDigest,
-		Logger:              logger,
-	})
+	if teet.ratls != nil {
+		go shared.RunRATLSRefresh(ctx, teet.ratls, logger)
+	}
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
 		Handler:      enforcePeerMTLS(setupRoutes(teet)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
-		TLSConfig:    srvTLS,
 	}
-
-	logger.Info("Starting router-mode HTTPS server", zap.Int("port", config.Port))
+	serveErrCh := make(chan error, 1)
+	if teet.ratls != nil {
+		// Production: RA-TLS-protected HTTPS, RequestClientCert so peers
+		// can present an attested client cert (gated on the peer routes
+		// by enforcePeerMTLS) while anonymous clients hit /ws.
+		srvTLS := ratls.ServerTLSConfig()
+		srvTLS.ClientAuth = tls.RequestClientCert
+		srvTLS.VerifyPeerCertificate = shared.VerifyRATLSPeer(shared.RATLSVerifyOptions{
+			PeerRole:            "tee_k",
+			ExpectedImageDigest: teet.expectedPeerImageDigest,
+			Logger:              logger,
+		})
+		server.TLSConfig = srvTLS
+		logger.Info("Starting router-mode HTTPS server", zap.Int("port", config.Port))
+		go func() { serveErrCh <- server.ListenAndServeTLS("", "") }()
+	} else {
+		// Local dev: plain HTTP, no peer mTLS at all. enforcePeerMTLS
+		// rejects /ws/control + /ws/session calls — but local TEE_K
+		// dials over plain ws:// without a client cert in this mode, so
+		// we have to skip the peer-mTLS check here too.
+		server.Handler = setupRoutes(teet)
+		logger.Info("Starting router-mode HTTP server (local dev, no RA-TLS)", zap.Int("port", config.Port))
+		go func() { serveErrCh <- server.ListenAndServe() }()
+	}
 	go func() {
-		// Cert + key are sourced from TLSConfig.GetCertificate, so
-		// ListenAndServeTLS is called with empty cert/key paths.
-		if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Critical("HTTPS server failed", zap.Error(err))
+		if err := <-serveErrCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Critical("HTTP server failed", zap.Error(err))
 		}
 	}()
 
@@ -144,20 +169,17 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("HTTPS server shutdown error", zap.Error(err))
+		logger.Error("HTTP server shutdown error", zap.Error(err))
 	}
 }
 
 // enforcePeerMTLS gates the peer routes (/ws/control, /ws/session) on a
-// verified RA-TLS client certificate. The router-mode TLS config uses
-// RequestClientCert (not Require) so client connections to /ws can
-// complete the handshake without a cert; this middleware adds the
-// route-specific assertion at the HTTP layer.
+// verified RA-TLS client certificate. Only used in production (HTTPS
+// mode) — local dev wires setupRoutes(teet) directly without this
+// middleware because there is no client cert to check.
 //
 // A non-empty r.TLS.PeerCertificates here means the cert ALSO passed
-// tls.Config.VerifyPeerCertificate (image_digest + SPKI binding). An
-// empty PeerCertificates means no cert was sent — those requests must
-// not reach the peer routes.
+// tls.Config.VerifyPeerCertificate (image_digest + SPKI binding).
 func enforcePeerMTLS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -177,10 +199,14 @@ func validateRouterConfig(c *TEETConfig) error {
 	}{
 		{"SELF_ADDR", c.SelfAddr},
 		{"PEER_ADDR", c.PeerAddr},
-		{"EXPECTED_PEER_IMAGE_DIGEST", c.ExpectedPeerImageDigest},
 		{"JWT_PUBLIC_KEY", c.JWTPublicKey},
 		{"EXPECTED_JWT_ISSUER", c.ExpectedJWTIssuer},
-		{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey},
+	}
+	if shared.IsEnclaveMode() {
+		required = append(required,
+			struct{ name, value string }{"EXPECTED_PEER_IMAGE_DIGEST", c.ExpectedPeerImageDigest},
+			struct{ name, value string }{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey},
+		)
 	}
 	for _, r := range required {
 		if r.value == "" {

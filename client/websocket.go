@@ -54,10 +54,40 @@ func (c *Client) ConnectToTEEK() error {
 	c.wsConn = conn
 	c.logger.Info("WebSocket connection to TEE_K established successfully")
 
+	// Router mode: TEE_K's handleWebSocket requires ClientAuth as the very
+	// first envelope. Send it now, before the message-handling goroutine
+	// starts, so the response read (SessionReady) lands cleanly on its
+	// dedicated loop. In direct-URL standalone mode this is a no-op.
+	if c.routerJWT != "" {
+		if err := sendClientAuth(conn, c.routerJWT); err != nil {
+			c.logger.Error("Failed to send ClientAuth to TEE_K", zap.Error(err))
+			conn.Close()
+			c.wsConn = nil
+			return fmt.Errorf("send ClientAuth to TEE_K: %w", err)
+		}
+	}
+
 	// Start message handling goroutine
 	go c.handleMessages()
 
 	return nil
+}
+
+// sendClientAuth writes the ClientAuth(jwt) envelope as the very first
+// frame on a TEE-bound WebSocket. Used in router mode so the TEE can
+// validate the JWT before allocating any session resources.
+func sendClientAuth(conn *websocket.Conn, jwt string) error {
+	env := &teeproto.Envelope{
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_ClientAuth{
+			ClientAuth: &teeproto.ClientAuth{Jwt: jwt},
+		},
+	}
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal ClientAuth: %w", err)
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
 // ConnectToTEET establishes WebSocket connection to TEE_T
@@ -99,6 +129,17 @@ func (c *Client) ConnectToTEET() error {
 
 	c.teetConn = conn
 	c.logger.Info("WebSocket connection to TEE_T established successfully")
+
+	// Router mode: TEE_T's client handler requires ClientAuth as the first
+	// envelope, same as TEE_K. Send it before starting the read loop.
+	if c.routerJWT != "" {
+		if err := sendClientAuth(conn, c.routerJWT); err != nil {
+			c.logger.Error("Failed to send ClientAuth to TEE_T", zap.Error(err))
+			conn.Close()
+			c.teetConn = nil
+			return fmt.Errorf("send ClientAuth to TEE_T: %w", err)
+		}
+	}
 
 	// Start message handling goroutine for TEE_T
 	go c.handleTEETMessages()

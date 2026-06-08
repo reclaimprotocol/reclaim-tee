@@ -130,6 +130,7 @@ type Client struct {
 
 	teekURL           string
 	teetURL           string
+	routerJWT         string // allocation JWT; sent as ClientAuth first envelope when non-empty
 	attestorURL       string
 	forceTLSVersion   string // Force specific TLS version: "1.2", "1.3", or "" for auto
 	forceCipherSuite  string // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
@@ -280,6 +281,13 @@ func NewClient(teekURL string) *Client {
 // SetTEETURL sets the TEE_T connection URL
 func (c *Client) SetTEETURL(url string) {
 	c.teetURL = url
+}
+
+// SetRouterJWT installs the allocation JWT the client received from the
+// router. When set, ConnectToTEEK / ConnectToTEET send a ClientAuth
+// envelope as the first message before any other protocol traffic.
+func (c *Client) SetRouterJWT(jwt string) {
+	c.routerJWT = jwt
 }
 
 // SetMode sets the client operational mode

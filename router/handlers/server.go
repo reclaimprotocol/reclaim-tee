@@ -30,6 +30,7 @@ type Server struct {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.HandleHealthz)
+	mux.HandleFunc("GET /jwt-pubkey", s.HandleJWTPubKey)
 	mux.HandleFunc("POST /register", s.HandleRegister)
 	mux.HandleFunc("POST /heartbeat", s.HandleHeartbeat)
 	mux.HandleFunc("POST /allocate", s.HandleAllocate)

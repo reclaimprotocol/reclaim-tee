@@ -112,9 +112,11 @@ func (cm *TEEKConnectionManager) HandleControlConnection(conn *websocket.Conn) e
 	// Router mode: the very first envelope on the wire is TEEKPairAssignment,
 	// announcing the pair_id TEE_K generated. Consume it here, store the
 	// pair_id, fire the registration hook, then fall through to the existing
-	// TEEKAttestation read. Standalone mode skips this and reads
-	// TEEKAttestation as the first envelope.
-	if cm.teet.ratls != nil {
+	// TEEKAttestation read. Detection uses `router != nil` (not ratls) so
+	// local-dev router mode — which has no RA-TLS — still exchanges pair_id.
+	// Standalone mode (no router) skips this and reads TEEKAttestation as
+	// the first envelope.
+	if cm.teet.router != nil {
 		if err := cm.readPairAssignment(conn); err != nil {
 			return fmt.Errorf("pair assignment: %w", err)
 		}

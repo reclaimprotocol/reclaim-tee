@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/reclaimprotocol/reclaim-tee/client"
 	"github.com/reclaimprotocol/reclaim-tee/minitls"
@@ -210,6 +211,19 @@ func main() {
 	attestorURL := "ws://localhost:8001/ws" // Default attestor URL
 	forceTLSVersion := ""                   // Default to auto-negotiate
 	forceCipherSuite := ""                  // Default to auto-negotiate
+	routerURL := ""                         // Router base URL — when set, allocate first
+
+	// Pull out --router-url=... from positional args; everything else stays
+	// in os.Args at its current index for the existing parser.
+	args := make([]string, 0, len(os.Args))
+	for _, a := range os.Args {
+		if strings.HasPrefix(a, "--router-url=") {
+			routerURL = strings.TrimPrefix(a, "--router-url=")
+			continue
+		}
+		args = append(args, a)
+	}
+	os.Args = args
 
 	if len(os.Args) > 1 {
 		teekURL = os.Args[1]
@@ -254,9 +268,31 @@ func main() {
 		logger.Info("Cipher suite auto-negotiation enabled")
 	}
 
-	// Auto-detect TEE_T URL based on TEE_K URL
-	teetURL := autoDetectTEETURL(teekURL)
-	logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
+	// Router mode: hit /allocate once, override teekURL+teetURL, capture JWT.
+	// Plain http://router → ws:// on TEEs (local dev); https://router → wss://.
+	var teetURL, routerJWT string
+	if routerURL != "" {
+		nonce := fmt.Sprintf("demo-%d", time.Now().UnixNano())
+		alloc, err := client.AllocatePair(routerURL, nonce)
+		if err != nil {
+			logger.Error("Router allocate failed", zap.Error(err))
+			log.Fatalf("Router allocate failed: %v", err)
+		}
+		scheme := "ws"
+		if strings.HasPrefix(routerURL, "https://") {
+			scheme = "wss"
+		}
+		teekURL = fmt.Sprintf("%s://%s/ws", scheme, alloc.TEEKAddr)
+		teetURL = fmt.Sprintf("%s://%s/ws", scheme, alloc.TEETAddr)
+		routerJWT = alloc.JWT
+		logger.Info("Router allocated pair",
+			zap.String("pair_id", alloc.PairID),
+			zap.String("teek_url", teekURL),
+			zap.String("teet_url", teetURL))
+	} else {
+		teetURL = autoDetectTEETURL(teekURL)
+		logger.Info("Auto-detected TEE_T URL", zap.String("teet_url", teetURL))
+	}
 
 	providerParams := &providers.HTTPProviderParams{
 		URL:    "https://vpic.nhtsa.dot.gov/",
@@ -314,6 +350,7 @@ func main() {
 		Mode:             client.ModeAuto,
 		ForceTLSVersion:  forceTLSVersion,
 		ForceCipherSuite: forceCipherSuite,
+		RouterJWT:        routerJWT,
 	}
 
 	// Create reclaimClient using library interface

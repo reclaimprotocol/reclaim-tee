@@ -61,6 +61,11 @@ func NewReclaimClient(config ClientConfig) *ReclaimClient {
 		client.SetTEETURL(config.TEETURL)
 	}
 
+	// Router mode: the JWT is sent as ClientAuth first envelope to both TEEs.
+	if config.RouterJWT != "" {
+		client.SetRouterJWT(config.RouterJWT)
+	}
+
 	// Store attestor URL
 	client.attestorURL = config.AttestorURL
 

@@ -18,17 +18,25 @@ import (
 )
 
 // startRouterMode is TEE_K's V2 boot path, used when ROUTER_URL is set.
-// It brings up an RA-TLS identity, registers with the router, kicks off
-// the existing control-connection flow against PEER_ADDR, and runs the
-// heartbeat goroutine.
+// In production (running inside a GCP Confidential Space, detected via
+// the launcher socket) it brings up RA-TLS identity, serves HTTPS, dials
+// the peer over RA-TLS-verified mTLS, and registers with a real
+// attestation JWT. In local dev (no launcher socket) it serves plain
+// HTTP / dials plain ws:// and registers with a sentinel image digest —
+// the JWT / pair-assignment / OPRF / session protocol all still run.
 func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.Logger) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
+	devMode := !shared.IsEnclaveMode()
 	logger.Info("=== TEE_K Router Mode ===",
 		zap.String("router_url", config.RouterURL),
 		zap.String("self_addr", config.SelfAddr),
-		zap.String("peer_addr", config.PeerAddr))
+		zap.String("peer_addr", config.PeerAddr),
+		zap.Bool("local_dev", devMode))
+	if devMode {
+		logger.Warn("LOCAL-DEV MODE: launcher socket absent, attestation checks relaxed — do not run in production")
+	}
 
 	if err := validateRouterConfig(config); err != nil {
 		logger.Critical("router-mode config invalid", zap.Error(err))
@@ -38,13 +46,17 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	pairID := uuid.NewString()
 	logger.Info("Generated pair ID", zap.String("pair_id", pairID))
 
-	ratls, err := shared.NewRATLSManager(ctx, "tee_k", nil)
-	if err != nil {
-		logger.Critical("RA-TLS manager init failed", zap.Error(err))
-		return
+	var ratls *shared.RATLSManager
+	if !devMode {
+		var err error
+		ratls, err = shared.NewRATLSManager(ctx, "tee_k", nil)
+		if err != nil {
+			logger.Critical("RA-TLS manager init failed", zap.Error(err))
+			return
+		}
+		logger.Info("RA-TLS manager initialized",
+			zap.String("spki_hash", fmt.Sprintf("%x", ratls.SPKIHash())))
 	}
-	logger.Info("RA-TLS manager initialized",
-		zap.String("spki_hash", fmt.Sprintf("%x", ratls.SPKIHash())))
 
 	router := shared.NewRouterClient(config.RouterURL, shared.MetadataServerTokenSource)
 
@@ -52,9 +64,17 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	teek.sessionManager.StartCleanupRoutine()
 
 	register := func(ctx context.Context) error {
-		imageDigest, attestationJWT, err := shared.ExtractIdentityFromRATLS(teek.ratls, logger)
-		if err != nil {
-			return fmt.Errorf("extract identity: %w", err)
+		var imageDigest string
+		var attestationJWT []byte
+		if teek.ratls != nil {
+			var err error
+			imageDigest, attestationJWT, err = shared.ExtractIdentityFromRATLS(teek.ratls, logger)
+			if err != nil {
+				return fmt.Errorf("extract identity: %w", err)
+			}
+		} else {
+			// Local-dev: router-standalone trusts the body image_digest.
+			imageDigest = "local-dev"
 		}
 		resp, err := teek.router.Register(ctx, shared.RegisterRequest{
 			PairID:         teek.pairID,
@@ -78,30 +98,36 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 		return
 	}
 
-	go shared.RunRATLSRefresh(ctx, teek.ratls, logger)
+	if teek.ratls != nil {
+		go shared.RunRATLSRefresh(ctx, teek.ratls, logger)
+	}
 	go shared.RunHeartbeats(ctx, teek, "K", logger, register, shared.RouterHeartbeatInterval)
 
-	// Bring up the existing control connection (and OT precomputation) against
-	// PEER_ADDR. The connection manager picks up router mode via teek.ratls
-	// (RA-TLS dialer + mTLS) and teek.pairID (sends TEEKPairAssignment first).
+	// Bring up the control connection to TEE_T. Connection manager picks
+	// up router mode via teek.pairID (sends TEEKPairAssignment first);
+	// transport choice (wss+RA-TLS vs ws) is driven by teek.ratls.
 	go teek.establishSharedTEETConnection()
 
-	// Client-facing HTTPS server: serves /ws (client) over RA-TLS with no
-	// client cert required. Clients authenticate via ClientAuth (JWT) as
-	// their first envelope — see tee_k/websocket.go.
-	srvTLS := teek.ratls.ServerTLSConfig()
-	srvTLS.ClientAuth = tls.NoClientCert
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
 		Handler:      setupRoutes(teek),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
-		TLSConfig:    srvTLS,
 	}
-	logger.Info("Starting router-mode HTTPS server", zap.Int("port", config.Port))
+	serveErrCh := make(chan error, 1)
+	if teek.ratls != nil {
+		srvTLS := teek.ratls.ServerTLSConfig()
+		srvTLS.ClientAuth = tls.NoClientCert
+		server.TLSConfig = srvTLS
+		logger.Info("Starting router-mode HTTPS server", zap.Int("port", config.Port))
+		go func() { serveErrCh <- server.ListenAndServeTLS("", "") }()
+	} else {
+		logger.Info("Starting router-mode HTTP server (local dev, no RA-TLS)", zap.Int("port", config.Port))
+		go func() { serveErrCh <- server.ListenAndServe() }()
+	}
 	go func() {
-		if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Critical("HTTPS server failed", zap.Error(err))
+		if err := <-serveErrCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Critical("HTTP server failed", zap.Error(err))
 		}
 	}()
 
@@ -115,24 +141,30 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("HTTPS server shutdown error", zap.Error(err))
+		logger.Error("HTTP server shutdown error", zap.Error(err))
 	}
 }
 
 // validateRouterConfig surfaces missing router-mode env vars at boot
 // rather than failing mysteriously inside RA-TLS, router-client, or
 // OPRF-storage code. Order matters for the error message: we report the
-// first unset var encountered.
+// first unset var encountered. EXPECTED_PEER_IMAGE_DIGEST and
+// KMS_ENCLAVE_DOMAIN_KEY are required only inside a real enclave —
+// local dev skips attestation + persistent OPRF storage.
 func validateRouterConfig(c *TEEKConfig) error {
 	required := []struct {
 		name, value string
 	}{
 		{"SELF_ADDR", c.SelfAddr},
 		{"PEER_ADDR", c.PeerAddr},
-		{"EXPECTED_PEER_IMAGE_DIGEST", c.ExpectedPeerImageDigest},
 		{"JWT_PUBLIC_KEY", c.JWTPublicKey},
 		{"EXPECTED_JWT_ISSUER", c.ExpectedJWTIssuer},
-		{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey},
+	}
+	if shared.IsEnclaveMode() {
+		required = append(required,
+			struct{ name, value string }{"EXPECTED_PEER_IMAGE_DIGEST", c.ExpectedPeerImageDigest},
+			struct{ name, value string }{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey},
+		)
 	}
 	for _, r := range required {
 		if r.value == "" {
