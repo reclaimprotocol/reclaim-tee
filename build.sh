@@ -24,9 +24,6 @@ cd router && go build -o ../bin/router . && cd ..
 echo "  Building Client..."
 cd demo_standalone && go build -o ../bin/client . && cd ..
 
-echo "  Building Proxy..."
-cd proxy && go mod download && go build -o ../bin/proxy . && cd ..
-
 echo " All services built successfully!"
 echo ""
 echo "Executables available in bin/:"

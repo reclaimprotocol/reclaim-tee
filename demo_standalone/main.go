@@ -295,7 +295,7 @@ func main() {
 	}
 
 	providerParams := &providers.HTTPProviderParams{
-		URL:    "https://vpic.nhtsa.dot.gov/",
+		URL:    "https://example.com/",
 		Method: "GET",
 		// GeoLocation: "US",
 		ResponseMatches: []providers.ResponseMatch{
@@ -303,25 +303,16 @@ func main() {
 				Value: "{{addr}}",
 				Type:  "contains",
 			},
-			{
-				Type:  "regex",
-				Value: "Manufacturer(?<portal>\\w+)",
-			},
 		},
 		ResponseRedactions: []providers.ResponseRedaction{
 			{
-				XPath: "/html/body/footer/div[2]/div/div[1]/ul[3]/li[2]/a",
-				Regex: "href=\"https://(?<addr>www.trafficsafetymarketing.gov)/\"",
+				XPath: "/html/body/div/p[2]/a",
+				Regex: "href=\"https://(?<addr>iana.org)/.*?\"",
 				Hash:  providers.HASH_TYPE_OPRF_MPC, // Use MPC OPRF instead of client-side TOPRF
-			},
-			{
-				XPath: "/html/body/div[2]/main/div[5]/div[1]/h3/text()",
-				Regex: "Manufacturer(?<portal> Portal)",
-				Hash:  providers.HASH_TYPE_OPRF_MPC,
 			},
 		},
 		ParamValues: map[string]string{
-			"addr": "www.trafficsafetymarketing.gov",
+			"addr": "iana.org",
 		},
 	}
 
