@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/reclaimprotocol/reclaim-tee/oprfmpc"
@@ -122,10 +123,25 @@ func (cm *TEETConnectionManager) EstablishControlConnection() error {
 	var readyOnce sync.Once
 	signalReady := func() { readyOnce.Do(func() { close(ready) }) }
 
+	// Until we've successfully connected at least once, dial failures are
+	// almost always the boot race (TEE_T's listener not up yet). Log
+	// those at WARN so they don't trigger alert metrics keyed on ERROR.
+	// After the first successful session, any future failure is a real
+	// disconnect and gets ERROR.
+	var everConnected atomic.Bool
+	onReady := func() {
+		signalReady()
+		everConnected.Store(true)
+	}
+
 	go func() {
 		for {
-			if err := cm.connectAndServe(signalReady); err != nil {
-				cm.logger.Error("control session ended with error, retrying", zap.Error(err))
+			if err := cm.connectAndServe(onReady); err != nil {
+				if everConnected.Load() {
+					cm.logger.Error("control session ended with error, retrying", zap.Error(err))
+				} else {
+					cm.logger.Warn("control session attempt failed during bootstrap, retrying", zap.Error(err))
+				}
 			} else {
 				cm.logger.Info("control session ended, reconnecting")
 			}
