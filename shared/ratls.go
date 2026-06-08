@@ -40,6 +40,31 @@ func SPKINoncePrefix(role string) string {
 	return role + "_spki_hash:"
 }
 
+// SPKIHashFromCertDER parses the given DER-encoded X.509 certificate and
+// returns sha256(MarshalPKIXPublicKey(cert.PublicKey)) — the value the
+// SPKI nonce in an RA-TLS attestation binds to. This MUST be computed
+// identically on all peers, so the implementation lives in one place.
+//
+// Used by:
+//   - The TEEs when building the SPKI nonce for their per-session
+//     attestation (binding the signed bundle to the TLS keypair, which
+//     is invariant across cert refreshes).
+//   - The TEEs when verifying the peer's per-session attestation against
+//     the peer's TLS cert.
+//   - The client when verifying TEE_K/TEE_T's per-session attestation
+//     against the cert it saw on its WS connection.
+func SPKIHashFromCertDER(certDER []byte) ([32]byte, error) {
+	leaf, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("parse cert: %w", err)
+	}
+	spkiDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("marshal SPKI: %w", err)
+	}
+	return sha256.Sum256(spkiDER), nil
+}
+
 // RATLSManager owns an ephemeral ECDSA P-256 keypair and a self-signed
 // X.509 certificate that embeds a GCP attestation report as an extension.
 //

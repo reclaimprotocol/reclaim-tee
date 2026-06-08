@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -40,18 +39,19 @@ func (t *TEEK) refreshAttestation() error {
 	// Get ETH address for this key pair
 	ethAddress := t.signingKeyPair.GetEthAddress()
 
-	// Get TLS certificate hash to bind attestation to our TLS identity.
-	tlsCert, err := t.getCurrentCertRaw()
-	if err != nil {
-		return fmt.Errorf("failed to get TLS certificate: %v", err)
-	}
-	certHash := sha256.Sum256(tlsCert)
+	// Bind the attestation to the TLS *keypair* via SPKI hash — invariant
+	// across cert refreshes. The cert envelope (DER bytes) changes every
+	// 4 minutes when the cert rotates, but the keypair (and therefore the
+	// SPKI) is generated once and never rotates. A previous version used
+	// sha256(cert.DER) here; that produced mismatches when a session
+	// straddled a cert refresh because the client's TLS conn was frozen
+	// on the old DER while this cached attestation moved to the new one.
+	spkiHash := t.ratls.SPKIHash()
 
-	// Generate attestation with public key and cert hash as separate nonces
 	publicKeyNonce := fmt.Sprintf("tee_k_public_key:%s", ethAddress.Hex())
-	certHashNonce := fmt.Sprintf("tee_k_cert_hash:%x", certHash[:])
+	spkiHashNonce := shared.SPKINoncePrefix("tee_k") + fmt.Sprintf("%x", spkiHash[:])
 
-	attestationDoc, err := t.generateAttestationDoc(context.Background(), publicKeyNonce, certHashNonce)
+	attestationDoc, err := t.generateAttestationDoc(context.Background(), publicKeyNonce, spkiHashNonce)
 	if err != nil {
 		return fmt.Errorf("failed to generate attestation: %v", err)
 	}
@@ -124,20 +124,16 @@ func (t *TEEK) generateAttestationForTEET() (*teeproto.AttestationReport, error)
 		}, nil
 	}
 
-	// Router mode: generate attestation with eth address and cert hash in
-	// userData, sourced from the active RA-TLS cert.
+	// Router mode: generate attestation with eth address and SPKI hash.
+	// SPKI is invariant across cert refreshes; binding to it eliminates
+	// the mid-session-refresh race that cert-DER hashing introduced.
 	ethAddress := t.signingKeyPair.GetEthAddress()
-
-	tlsCert, err := t.getCurrentCertRaw()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get TLS certificate: %v", err)
-	}
-	certHash := sha256.Sum256(tlsCert)
+	spkiHash := t.ratls.SPKIHash()
 
 	publicKeyNonce := fmt.Sprintf("tee_k_public_key:%s", ethAddress.Hex())
-	certHashNonce := fmt.Sprintf("tee_k_cert_hash:%x", certHash[:])
+	spkiHashNonce := shared.SPKINoncePrefix("tee_k") + fmt.Sprintf("%x", spkiHash[:])
 
-	attestationDoc, err := t.generateAttestationDoc(context.Background(), publicKeyNonce, certHashNonce)
+	attestationDoc, err := t.generateAttestationDoc(context.Background(), publicKeyNonce, spkiHashNonce)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate attestation: %v", err)
 	}
@@ -181,35 +177,34 @@ func (t *TEEK) verifyTEETAttestation(msgBytes []byte, tlsCert []byte) error {
 		return fmt.Errorf("mode mismatch: received GCP attestation but in standalone mode")
 	}
 
-	// Verify cert hash in userData - properly parse attestation document
-	certHash := sha256.Sum256(tlsCert)
-	expectedUserData := fmt.Sprintf("tee_t_cert_hash:%x", certHash[:])
-
-	t.logger.Debug("Verifying TEE_T certificate hash")
-
-	// Extract userData from attestation document based on type
-	var actualUserData string
-	var err error
-
-	switch attestation.Type {
-	case "gcp":
-		actualUserData, err = shared.ExtractUserDataFromGCPAttestation(attestation.Report, t.logger)
-		if err != nil {
-			return fmt.Errorf("failed to extract userData from GCP attestation: %v", err)
-		}
-	default:
+	// Verify the SPKI hash in the attestation against TEE_T's TLS keypair.
+	// Binding to SPKI (not the full cert DER) means the check is stable
+	// across cert refreshes — the keypair is invariant.
+	if attestation.Type != "gcp" {
 		return fmt.Errorf("unsupported attestation type: %s", attestation.Type)
 	}
-
-	if actualUserData != expectedUserData {
-		t.logger.Error("Cert hash mismatch")
-		return fmt.Errorf("cert hash mismatch")
+	attestor, err := shared.NewGoogleAttestor()
+	if err != nil {
+		return fmt.Errorf("build attestor: %w", err)
+	}
+	if err := attestor.Validate(attestation.Report, t.logger); err != nil {
+		return fmt.Errorf("validate TEE_T attestation: %w", err)
 	}
 
-	t.logger.Debug("TEE_T certificate hash verified")
+	expectedSPKI, err := shared.SPKIHashFromCertDER(tlsCert)
+	if err != nil {
+		return fmt.Errorf("compute TEE_T SPKI hash: %w", err)
+	}
+	expectedHex := fmt.Sprintf("%x", expectedSPKI[:])
+	gotHex, err := shared.FindNonceValue(attestation.Report, shared.SPKINoncePrefix("tee_t"))
+	if err != nil {
+		return fmt.Errorf("find tee_t_spki_hash nonce: %w", err)
+	}
+	if gotHex != expectedHex {
+		t.logger.Error("SPKI hash mismatch", zap.String("expected", expectedHex), zap.String("got", gotHex))
+		return fmt.Errorf("TEE_T SPKI hash mismatch")
+	}
 
-	// RA-TLS already verified the peer image_digest at the TLS handshake
-	// layer (against teek.expectedPeerImageDigest); the cert-hash check
-	// above completes the inner attestation flow.
+	t.logger.Debug("TEE_T SPKI hash verified")
 	return nil
 }

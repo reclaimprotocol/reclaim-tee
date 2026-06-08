@@ -74,6 +74,55 @@ func TestRATLSManager_DistinctInstancesGetDistinctKeys(t *testing.T) {
 	}
 }
 
+// TestSPKIHashFromCertDER_MatchesManager verifies the helper returns the
+// same value as RATLSManager.SPKIHash() — so all callers (TEEs computing
+// the nonce, peers verifying it, client verifying it) agree exactly.
+func TestSPKIHashFromCertDER_MatchesManager(t *testing.T) {
+	m, err := NewRATLSManager(t.Context(), "tee_k", nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	want := m.SPKIHash()
+	got, err := SPKIHashFromCertDER(m.CertificateRaw())
+	if err != nil {
+		t.Fatalf("SPKIHashFromCertDER: %v", err)
+	}
+	if got != want {
+		t.Fatalf("SPKIHashFromCertDER mismatch:\n  manager: %x\n  helper:  %x", want, got)
+	}
+}
+
+// TestSPKIHashFromCertDER_StableAcrossRefresh is the property we're
+// betting the world on: the SPKI hash computed from any cert this
+// manager has ever produced must be identical, because the keypair is
+// stable. If this test fails, the in-flight-refresh race is back.
+func TestSPKIHashFromCertDER_StableAcrossRefresh(t *testing.T) {
+	m, err := NewRATLSManager(t.Context(), "tee_k", nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	certBefore := m.CertificateRaw()
+	hashBefore, err := SPKIHashFromCertDER(certBefore)
+	if err != nil {
+		t.Fatalf("hash before: %v", err)
+	}
+
+	if err := m.Refresh(t.Context()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	certAfter := m.CertificateRaw()
+	if string(certBefore) == string(certAfter) {
+		t.Fatal("Refresh should have changed the cert DER")
+	}
+	hashAfter, err := SPKIHashFromCertDER(certAfter)
+	if err != nil {
+		t.Fatalf("hash after: %v", err)
+	}
+	if hashBefore != hashAfter {
+		t.Fatalf("SPKI hash CHANGED across refresh:\n  before: %x\n  after:  %x", hashBefore, hashAfter)
+	}
+}
+
 func TestSPKINoncePrefix(t *testing.T) {
 	if got := SPKINoncePrefix("tee_k"); got != "tee_k_spki_hash:" {
 		t.Fatalf("tee_k prefix: %q", got)

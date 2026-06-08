@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -35,16 +34,15 @@ func (t *TEET) refreshAttestation() error {
 	}
 	ethAddress := t.signingKeyPair.GetEthAddress()
 
-	tlsCert, err := t.getCurrentCertRaw()
-	if err != nil {
-		return fmt.Errorf("failed to get TLS certificate: %v", err)
-	}
-	certHash := sha256.Sum256(tlsCert)
+	// Bind to SPKI (stable across cert refreshes), not cert DER (changes
+	// every 4 min). See tee_k/attestation.go's refreshAttestation for the
+	// full rationale.
+	spkiHash := t.ratls.SPKIHash()
 
 	publicKeyNonce := fmt.Sprintf("tee_t_public_key:%s", ethAddress.Hex())
-	certHashNonce := fmt.Sprintf("tee_t_cert_hash:%x", certHash[:])
+	spkiHashNonce := shared.SPKINoncePrefix("tee_t") + fmt.Sprintf("%x", spkiHash[:])
 
-	raw, err := t.generateAttestationDoc(context.Background(), publicKeyNonce, certHashNonce)
+	raw, err := t.generateAttestationDoc(context.Background(), publicKeyNonce, spkiHashNonce)
 	if err != nil {
 		return fmt.Errorf("failed to generate attestation: %v", err)
 	}
@@ -100,20 +98,11 @@ func (t *TEET) generateAttestationForTEEK() (*teeproto.AttestationReport, error)
 		}, nil
 	}
 
-	// Router mode: cert hash sourced from the active RA-TLS cert.
-	tlsCert, err := t.getCurrentCertRaw()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get current TLS certificate: %v", err)
-	}
-	if len(tlsCert) == 0 {
-		return nil, fmt.Errorf("TLS certificate not loaded")
-	}
+	// SPKI binding — see refreshAttestation comment for rationale.
+	spkiHash := t.ratls.SPKIHash()
+	userData := shared.SPKINoncePrefix("tee_t") + fmt.Sprintf("%x", spkiHash[:])
 
-	certHash := sha256.Sum256(tlsCert)
-	userData := fmt.Sprintf("tee_t_cert_hash:%x", certHash[:])
-
-	t.logger.Debug("Generating attestation for TEE_K",
-		zap.Int("cert_bytes", len(tlsCert)))
+	t.logger.Debug("Generating attestation for TEE_K (SPKI-bound)")
 
 	attestationDoc, err := t.generateAttestationDoc(context.Background(), userData)
 	if err != nil {
@@ -163,12 +152,12 @@ func (t *TEET) verifyTEEKAttestation(req *teeproto.TEEKAttestationRequest, peerC
 	}
 
 	if len(peerCert) == 0 {
-		return fmt.Errorf("no peer TLS certificate available for cert-hash binding")
+		return fmt.Errorf("no peer TLS certificate available for SPKI binding")
 	}
 
-	// RA-TLS already verified peer image_digest at the TLS handshake (against
-	// EXPECTED_PEER_IMAGE_DIGEST). Here we additionally bind the attestation
-	// to the TLS cert via the cert_hash nonce, mirroring TEE_K's check.
+	// RA-TLS already verified peer image_digest at the TLS handshake.
+	// Bind the attestation to TEE_K's TLS keypair via the SPKI nonce —
+	// stable across cert refreshes, unlike a full cert-DER hash.
 	attestor, err := shared.NewGoogleAttestor()
 	if err != nil {
 		return fmt.Errorf("build attestor: %w", err)
@@ -177,16 +166,19 @@ func (t *TEET) verifyTEEKAttestation(req *teeproto.TEEKAttestationRequest, peerC
 		return fmt.Errorf("validate TEE_K attestation JWT: %w", err)
 	}
 
-	certHash := sha256.Sum256(peerCert)
-	expectedHex := fmt.Sprintf("%x", certHash[:])
-	gotHex, err := shared.FindNonceValue(attestation.Report, "tee_k_cert_hash:")
+	expectedSPKI, err := shared.SPKIHashFromCertDER(peerCert)
 	if err != nil {
-		return fmt.Errorf("find tee_k_cert_hash nonce: %w", err)
+		return fmt.Errorf("compute TEE_K SPKI hash: %w", err)
+	}
+	expectedHex := fmt.Sprintf("%x", expectedSPKI[:])
+	gotHex, err := shared.FindNonceValue(attestation.Report, shared.SPKINoncePrefix("tee_k"))
+	if err != nil {
+		return fmt.Errorf("find tee_k_spki_hash nonce: %w", err)
 	}
 	if gotHex != expectedHex {
-		return fmt.Errorf("TEE_K cert hash mismatch: attestation says %q, peer cert hashes to %q", gotHex, expectedHex)
+		return fmt.Errorf("TEE_K SPKI mismatch: attestation says %q, peer cert SPKI hashes to %q", gotHex, expectedHex)
 	}
 
-	t.logger.Debug("TEE_K cert hash verified")
+	t.logger.Debug("TEE_K SPKI hash verified")
 	return nil
 }
