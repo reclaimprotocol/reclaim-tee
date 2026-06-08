@@ -18,13 +18,16 @@ type allocateRequest struct {
 	ClientNonce string `json:"client_nonce"`
 }
 
+// allocateResponse is what the client gets back from /allocate. It
+// deliberately does NOT include image digests or SPKI hashes: clients
+// don't trust the router for crypto identity — they verify the TEEs'
+// attestations themselves on connect. The router's only job is to point
+// the client at a healthy pair and authorize the session via the JWT.
 type allocateResponse struct {
-	PairID                  string `json:"pair_id"`
-	TEEKAddr                string `json:"teek_addr"`
-	TEETAddr                string `json:"teet_addr"`
-	ExpectedTEEKImageDigest string `json:"expected_teek_image_digest"`
-	ExpectedTEETImageDigest string `json:"expected_teet_image_digest"`
-	JWT                     string `json:"jwt"`
+	PairID   string `json:"pair_id"`
+	TEEKAddr string `json:"teek_addr"`
+	TEETAddr string `json:"teet_addr"`
+	JWT      string `json:"jwt"`
 }
 
 // HandleAllocate picks a ready pair and mints a short-lived JWT scoped to it.
@@ -84,11 +87,9 @@ func (s *Server) HandleAllocate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, allocateResponse{
-		PairID:                  picked.ID,
-		TEEKAddr:                picked.TEEKAddr,
-		TEETAddr:                picked.TEETAddr,
-		ExpectedTEEKImageDigest: picked.TEEKImageDigest,
-		ExpectedTEETImageDigest: picked.TEETImageDigest,
-		JWT:                     tokenStr,
+		PairID:   picked.ID,
+		TEEKAddr: picked.TEEKAddr,
+		TEETAddr: picked.TEETAddr,
+		JWT:      tokenStr,
 	})
 }

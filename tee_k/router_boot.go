@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -95,12 +97,37 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	// (RA-TLS dialer + mTLS) and teek.pairID (sends TEEKPairAssignment first).
 	go teek.establishSharedTEETConnection()
 
+	// Client-facing HTTPS server: serves /ws (client) over RA-TLS with no
+	// client cert required. Clients authenticate via ClientAuth (JWT) as
+	// their first envelope — see tee_k/websocket.go.
+	srvTLS := teek.ratls.ServerTLSConfig()
+	srvTLS.ClientAuth = tls.NoClientCert
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%d", config.Port),
+		Handler:      setupRoutes(teek),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		TLSConfig:    srvTLS,
+	}
+	logger.Info("Starting router-mode HTTPS server", zap.Int("port", config.Port))
+	go func() {
+		if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Critical("HTTPS server failed", zap.Error(err))
+		}
+	}()
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	logger.Info("TEE_K router-mode bootstrap complete",
 		zap.String("pair_id", teek.pairID))
 	<-sigChan
 	logger.Info("shutting down router-mode TEE_K")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("HTTPS server shutdown error", zap.Error(err))
+	}
 }
 
 // runHeartbeats fires a heartbeat to the router every `interval` until

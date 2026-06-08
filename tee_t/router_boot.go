@@ -104,10 +104,17 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 
 	go runRATLSRefresh(ctx, teet.ratls, logger)
 
-	// Build the RA-TLS-protected HTTPS server: same routes as standalone,
-	// but the TLS layer enforces mTLS with attestation-verified peer.
+	// Single RA-TLS-protected HTTPS server serving both peers and clients:
+	//   - TEE_K peer dials /ws/control + /ws/session, presents its RA-TLS
+	//     client cert; VerifyPeerCertificate validates it against the
+	//     expected tee_k image_digest.
+	//   - Clients dial /ws, present no client cert; JWT auth on first
+	//     envelope (see tee_t/websocket_handlers.go).
+	// ClientAuth=RequestClientCert lets both flows complete the TLS
+	// handshake; enforcePeerMTLS gates the peer routes on a verified cert
+	// at the HTTP layer.
 	srvTLS := ratls.ServerTLSConfig()
-	srvTLS.ClientAuth = tls.RequireAnyClientCert
+	srvTLS.ClientAuth = tls.RequestClientCert
 	srvTLS.VerifyPeerCertificate = shared.VerifyRATLSPeer(shared.RATLSVerifyOptions{
 		PeerRole:            "tee_k",
 		ExpectedImageDigest: config.ExpectedPeerImageDigest,
@@ -116,7 +123,7 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
-		Handler:      setupRoutes(teet),
+		Handler:      enforcePeerMTLS(setupRoutes(teet)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		TLSConfig:    srvTLS,
@@ -142,6 +149,29 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("HTTPS server shutdown error", zap.Error(err))
 	}
+}
+
+// enforcePeerMTLS gates the peer routes (/ws/control, /ws/session) on a
+// verified RA-TLS client certificate. The router-mode TLS config uses
+// RequestClientCert (not Require) so client connections to /ws can
+// complete the handshake without a cert; this middleware adds the
+// route-specific assertion at the HTTP layer.
+//
+// A non-empty r.TLS.PeerCertificates here means the cert ALSO passed
+// tls.Config.VerifyPeerCertificate (image_digest + SPKI binding). An
+// empty PeerCertificates means no cert was sent — those requests must
+// not reach the peer routes.
+func enforcePeerMTLS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ws/control", "/ws/session":
+			if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+				http.Error(w, "peer certificate required", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func validateRouterConfig(c *TEETConfig) error {

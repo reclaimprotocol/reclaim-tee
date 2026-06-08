@@ -80,9 +80,6 @@ func TestAllocateHappyPath(t *testing.T) {
 	if resp.TEEKAddr != teekIP+":443" || resp.TEETAddr != teetIP+":443" {
 		t.Fatalf("addrs: %+v", resp)
 	}
-	if resp.ExpectedTEEKImageDigest != approvedDigest || resp.ExpectedTEETImageDigest != approvedDigest {
-		t.Fatalf("expected digests: %+v", resp)
-	}
 	if resp.JWT == "" {
 		t.Fatal("empty jwt")
 	}
