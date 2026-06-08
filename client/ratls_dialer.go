@@ -27,7 +27,11 @@ func newRATLSWebSocketDialer(peerRole string, logger *shared.Logger) *websocket.
 			// the proof, not a CA-issued cert.
 			InsecureSkipVerify:    true,
 			VerifyPeerCertificate: shared.VerifyRATLSAttestation(peerRole, logger),
-			MinVersion:            tls.VersionTLS12,
+			// TLS 1.3 only — both ends are our Go binaries, no legacy
+			// compatibility constraint. Independent of minitls's
+			// separate target-server handshake.
+			MinVersion: tls.VersionTLS13,
+			MaxVersion: tls.VersionTLS13,
 		},
 	}
 }

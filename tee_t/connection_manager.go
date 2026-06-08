@@ -141,8 +141,19 @@ func (cm *TEEKConnectionManager) HandleControlConnection(conn *websocket.Conn) e
 		return fmt.Errorf("expected attestation as first message, got %T", env.Payload)
 	}
 
+	// Pull TEE_K's client cert off the underlying TLS connection so the
+	// attestation can be cert-hash-bound. Nil in standalone mode (no TLS),
+	// which verifyTEEKAttestation handles separately.
+	var peerCert []byte
+	if cm.teet.ratls != nil {
+		peerCert, err = shared.ExtractTLSCertFromWebSocket(conn)
+		if err != nil {
+			return fmt.Errorf("extract TEE_K peer cert: %v", err)
+		}
+	}
+
 	// Verify TEE_K attestation
-	if err := cm.teet.verifyTEEKAttestation(req.TeekAttestation); err != nil {
+	if err := cm.teet.verifyTEEKAttestation(req.TeekAttestation, peerCert); err != nil {
 		return fmt.Errorf("attestation verification failed: %v", err)
 	}
 

@@ -244,7 +244,7 @@ func main() {
 	// TEE pair and JWT. attestorUrl is optional.
 	configData := map[string]interface{}{
 		"routerUrl":   "https://tee.reclaimprotocol.org",
-		"attestorUrl": "wss://attestor.reclaimprotocol.org:444/ws",
+		"attestorUrl": "ws://localhost:8001/ws",
 	}
 
 	providerJSON, err := json.Marshal(providerData)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -157,8 +156,16 @@ func (t *TEET) generateAttestationForTEEK() (*teeproto.AttestationReport, error)
 	}, nil
 }
 
-// verifyTEEKAttestation verifies TEE_K's attestation request
-func (t *TEET) verifyTEEKAttestation(req *teeproto.TEEKAttestationRequest) error {
+// verifyTEEKAttestation verifies TEE_K's attestation request. Symmetric to
+// TEE_K's verifyTEETAttestation: extract the eat_nonce userData from the
+// GCP attestation JWT and confirm it equals "tee_k_cert_hash:<sha256(peer
+// cert)>" — binding the inner attestation to the TLS cert TEE_K presented
+// during the mTLS handshake.
+//
+// peerCert is the raw DER of TEE_K's client cert (PeerCertificates[0] of
+// the TLS connection underlying this control WebSocket). Pass nil in
+// standalone mode; the function will branch into the standalone path.
+func (t *TEET) verifyTEEKAttestation(req *teeproto.TEEKAttestationRequest, peerCert []byte) error {
 	attestation := req.AttestationReport
 
 	// Standalone (local-dev) mode
@@ -175,19 +182,24 @@ func (t *TEET) verifyTEEKAttestation(req *teeproto.TEEKAttestationRequest) error
 		return fmt.Errorf("mode mismatch: received GCP attestation but in standalone mode")
 	}
 
-	// RA-TLS already verified the peer image_digest at the TLS handshake
-	// layer against EXPECTED_PEER_IMAGE_DIGEST. Inner PCR0 check is dropped.
-
-	// Verify attestation contains TEE_K public key identifier
-	// For GCP, the public key is in the eat_nonce claim of the JWT
-	userData, err := shared.ExtractUserDataFromGCPAttestation(attestation.Report, t.logger)
-	if err != nil {
-		t.logger.Warn("Failed to extract user data from TEE_K attestation", zap.Error(err))
-	} else if bytes.Contains([]byte(userData), []byte("tee_k_public_key:")) {
-		t.logger.Debug("TEE_K attestation contains valid public key identifier")
-	} else {
-		t.logger.Warn("TEE_K attestation missing public key identifier")
+	if len(peerCert) == 0 {
+		return fmt.Errorf("no peer TLS certificate available for cert-hash binding")
 	}
 
+	// RA-TLS already verified peer image_digest at the TLS handshake (against
+	// EXPECTED_PEER_IMAGE_DIGEST). Here we additionally bind the attestation
+	// to the TLS cert via the cert_hash nonce, mirroring TEE_K's check.
+	certHash := sha256.Sum256(peerCert)
+	expectedUserData := fmt.Sprintf("tee_k_cert_hash:%x", certHash[:])
+
+	actualUserData, err := shared.ExtractUserDataFromGCPAttestation(attestation.Report, t.logger)
+	if err != nil {
+		return fmt.Errorf("extract userData from TEE_K attestation: %w", err)
+	}
+	if actualUserData != expectedUserData {
+		return fmt.Errorf("TEE_K cert hash mismatch: attestation nonce %q does not match peer cert", actualUserData)
+	}
+
+	t.logger.Debug("TEE_K cert hash verified")
 	return nil
 }

@@ -37,6 +37,17 @@ func (s *Server) HandleAllocate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := s.Logger
 
+	// Per-IP rate limit (1 req/sec, small burst). /allocate is anonymous +
+	// each call drives KMS sign + ties up a TEE pair — without this, a
+	// spammer can drive cost and starve real clients. XFF is used as the
+	// identity dimension; see clientIP for why that's safe for rate limiting
+	// (but not for auth).
+	if !s.getAllocateLimiter().Allow(clientIP(r)) {
+		w.Header().Set("Retry-After", "1")
+		writeErr(w, http.StatusTooManyRequests, "rate limit exceeded; try again in a moment")
+		return
+	}
+
 	var req allocateRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "decode body: "+err.Error())

@@ -222,17 +222,6 @@ func TestRegisterRejectsDigestNotInAllowlist(t *testing.T) {
 	}
 }
 
-func TestRegisterRejectsSourceIPMismatch(t *testing.T) {
-	s := newTestServer(t)
-	// Body claims self_addr=10.0.0.1 but request comes from 10.0.0.99
-	w := doRegister(t, s,
-		validBody("K", teekIP+":443", teetIP+":443"),
-		"10.0.0.99:12345", "Bearer x")
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
-	}
-}
-
 func TestRegisterRejectsBadRole(t *testing.T) {
 	s := newTestServer(t)
 	body := validBody("X", teekIP+":443", teetIP+":443")

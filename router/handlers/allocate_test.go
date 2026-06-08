@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -120,6 +121,25 @@ func TestAllocateRequiresClientNonce(t *testing.T) {
 	w := doAllocate(t, s, "")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestAllocateRateLimitedAfterBurst(t *testing.T) {
+	s, _ := newTestServerWithSigner(t)
+	bothSidesReady(t, s)
+
+	// burst=3 — first three should pass, fourth from the same IP should 429.
+	// httptest.NewRequest assigns the same RemoteAddr to every call, so all
+	// four hit the same bucket.
+	for i := range 3 {
+		w := doAllocate(t, s, fmt.Sprintf("nonce-%d", i))
+		if w.Code != http.StatusOK {
+			t.Fatalf("burst call %d: expected 200, got %d body=%s", i, w.Code, w.Body.String())
+		}
+	}
+	w := doAllocate(t, s, "nonce-4")
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("post-burst call: expected 429, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

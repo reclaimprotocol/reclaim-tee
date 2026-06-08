@@ -173,19 +173,6 @@ func TestHeartbeatRecoveryAfterDegraded(t *testing.T) {
 	}
 }
 
-func TestHeartbeatRejectsSourceIPMismatch(t *testing.T) {
-	s := newTestServer(t)
-	seedRegisteredPair(t, s)
-
-	w := doHeartbeat(t, s, heartbeatRequest{
-		PairID: pairID, Role: "K",
-		ControlHealthy: true, OTReady: true,
-	}, "10.0.0.99:12345", "Bearer x") // wrong IP for K
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
-	}
-}
-
 func TestHeartbeatRejectsUnknownPair(t *testing.T) {
 	s := newTestServer(t)
 	w := doHeartbeat(t, s, heartbeatRequest{

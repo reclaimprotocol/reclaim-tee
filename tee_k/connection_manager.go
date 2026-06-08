@@ -246,7 +246,10 @@ func (cm *TEETConnectionManager) dialer(wsURL string) *websocket.Dialer {
 					ExpectedImageDigest: cm.teek.expectedPeerImageDigest,
 					Logger:              cm.logger,
 				}),
-				MinVersion: tls.VersionTLS12,
+				// TLS 1.3 only on the TEE↔TEE peer link. Independent of
+				// minitls's separate target-server handshake which keeps 1.2.
+				MinVersion: tls.VersionTLS13,
+				MaxVersion: tls.VersionTLS13,
 			},
 		}
 	}

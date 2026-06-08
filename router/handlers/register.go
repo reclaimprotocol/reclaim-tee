@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/reclaimprotocol/reclaim-tee/router/store"
@@ -28,13 +27,21 @@ type registerResponse struct {
 	Status store.Status `json:"status"`
 }
 
-// HandleRegister implements the three-signal /register endpoint per the
-// multi-pair architecture plan: SA identity token + Confidential Space
-// attestation + source-IP cross-consistency. Any single failure rejects.
+// HandleRegister implements the /register endpoint. Identity is established
+// by two signals: SA identity token (caller proves it holds an approved SA
+// SA credential) + Confidential Space attestation (image_digest matches the
+// router's APPROVED_IMAGE_DIGESTS allowlist).
 //
-// In standalone mode (ROUTER_STANDALONE=true) all three signals are
-// skipped — the local dev demo can't produce real SA tokens or
-// attestations. The claimed image_digest from the body is trusted as-is.
+// A source-IP cross-check used to live here but was removed: the router runs
+// behind a GCP global HTTPS LB, where X-Forwarded-For's leftmost entry is
+// attacker-controlled (the LB appends rather than overwrites), and
+// r.RemoteAddr is the LB's IP. Any defense-in-depth from a leftmost-XFF
+// check would have been bypassable. Move that enforcement to the LB / Cloud
+// Armor if needed.
+//
+// In standalone mode (ROUTER_STANDALONE=true) both signals are skipped —
+// the local dev demo can't produce real SA tokens or attestations. The
+// claimed image_digest from the body is trusted as-is.
 func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := s.Logger
@@ -79,16 +86,6 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		digest = validated
-
-		if !sourceIPMatches(r, req.SelfAddr) {
-			log.Warn("register: source IP mismatch",
-				zap.String("remote", r.RemoteAddr),
-				zap.String("x_forwarded_for", r.Header.Get("X-Forwarded-For")),
-				zap.String("self_addr", req.SelfAddr),
-				zap.String("pair_id", req.PairID))
-			writeErr(w, http.StatusForbidden, "source IP does not match self_addr")
-			return
-		}
 	}
 
 	// Lookup or create pair record, populate this role, enforce cross-consistency
@@ -181,35 +178,3 @@ func (req registerRequest) validate() error {
 	return nil
 }
 
-// sourceIPMatches returns true if the request's source IP matches the
-// host portion of self_addr. When the router runs behind Cloud Run /
-// GFE, r.RemoteAddr is the load balancer's IP — useless for this
-// check; X-Forwarded-For carries the actual client IP (leftmost entry,
-// per Cloud Run conventions). Both inputs are tolerated in bare-host
-// form for tests where RemoteAddr may not include a port.
-func sourceIPMatches(r *http.Request, selfAddr string) bool {
-	src := requestSourceIP(r)
-	claimed, _, err := net.SplitHostPort(selfAddr)
-	if err != nil {
-		claimed = selfAddr
-	}
-	return src == claimed
-}
-
-// requestSourceIP returns the most-trustworthy client IP this router can
-// see: the leftmost X-Forwarded-For entry when present (set by GFE /
-// Cloud Run), otherwise r.RemoteAddr's host portion. The leftmost XFF
-// entry is the original client; subsequent entries are intermediate
-// proxies appended by each hop.
-func requestSourceIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// "client, proxy1, proxy2" — first entry is the original client.
-		first, _, _ := strings.Cut(xff, ",")
-		return strings.TrimSpace(first)
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}

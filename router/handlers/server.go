@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/reclaimprotocol/reclaim-tee/router/auth"
 	"github.com/reclaimprotocol/reclaim-tee/router/config"
@@ -24,6 +25,19 @@ type Server struct {
 	Signer          signer.Signer
 	Logger          *zap.Logger
 	Config          *config.Config
+
+	// allocateLimiter caps /allocate at ~1 req/sec per client IP. Built on
+	// first use via getAllocateLimiter so test servers constructed as struct
+	// literals don't need to wire it.
+	allocateLimiterOnce sync.Once
+	allocateLimiter     *ipRateLimiter
+}
+
+func (s *Server) getAllocateLimiter() *ipRateLimiter {
+	s.allocateLimiterOnce.Do(func() {
+		s.allocateLimiter = newIPRateLimiter(allocateRPS, allocateBurst, rateLimiterTTL, rateLimiterMaxLen)
+	})
+	return s.allocateLimiter
 }
 
 // Routes returns the router's HTTP mux. New endpoints are wired here.

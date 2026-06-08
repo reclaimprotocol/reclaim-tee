@@ -70,13 +70,22 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("APPROVED_IMAGE_DIGESTS is required")
 	}
 
-	saPatternRaw := cmp.Or(
-		os.Getenv("APPROVED_SA_PATTERN"),
-		`^tee-vm-[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com$`,
-	)
-	saPattern, err := regexp.Compile(saPatternRaw)
-	if err != nil {
-		return nil, fmt.Errorf("compile APPROVED_SA_PATTERN: %w", err)
+	// APPROVED_SA_PATTERN must be set explicitly in production. There is no
+	// safe default: the previous fallback (`^tee-vm-[a-z0-9-]+@...`) matched
+	// any SA in any GCP project whose email started with tee-vm-, which is
+	// far too permissive. Standalone mode skips SA auth entirely so the env
+	// var is not needed there.
+	saPatternRaw := os.Getenv("APPROVED_SA_PATTERN")
+	if saPatternRaw == "" && !standalone {
+		return nil, fmt.Errorf("APPROVED_SA_PATTERN is required (regex pinning which SA emails may /register and /heartbeat)")
+	}
+	var saPattern *regexp.Regexp
+	if saPatternRaw != "" {
+		var err error
+		saPattern, err = regexp.Compile(saPatternRaw)
+		if err != nil {
+			return nil, fmt.Errorf("compile APPROVED_SA_PATTERN: %w", err)
+		}
 	}
 
 	saAudience := os.Getenv("SA_TOKEN_AUDIENCE")

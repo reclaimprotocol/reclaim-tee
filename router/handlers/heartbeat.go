@@ -29,9 +29,10 @@ type heartbeatResponse struct {
 }
 
 // HandleHeartbeat updates a pair's liveness + health observations from one
-// side. Source IP must match the address registered for that role and the
-// SA identity token must still validate. Attestation is not re-checked —
-// the initial /register verification carries forward.
+// side. Identity rests on the SA identity token; attestation is not
+// re-checked here — the initial /register carries it forward. A source-IP
+// cross-check used to live here but was dropped along with the equivalent
+// check in /register (XFF leftmost is attacker-controlled behind GCP LB).
 func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := s.Logger
@@ -66,16 +67,6 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if registeredAddr == "" {
 		writeErr(w, http.StatusNotFound, "role has not registered for this pair")
-		return
-	}
-	if !s.Config.Standalone && !sourceIPMatches(r, registeredAddr) {
-		log.Warn("heartbeat: source IP mismatch",
-			zap.String("remote", r.RemoteAddr),
-			zap.String("x_forwarded_for", r.Header.Get("X-Forwarded-For")),
-			zap.String("registered", registeredAddr),
-			zap.String("pair_id", req.PairID),
-			zap.String("role", req.Role))
-		writeErr(w, http.StatusForbidden, "source IP does not match registered address")
 		return
 	}
 

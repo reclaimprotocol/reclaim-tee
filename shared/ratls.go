@@ -197,9 +197,12 @@ func (m *RATLSManager) GetClientCertificate(_ *tls.CertificateRequestInfo) (*tls
 // mTLS for TEE↔TEE links must add those themselves with a verifier built
 // from `VerifyRATLSPeer`.
 func (m *RATLSManager) ServerTLSConfig() *tls.Config {
+	// TLS 1.3 only on the RA-TLS layer (TEE↔TEE peer link, client↔TEE).
+	// This is independent of the protocol's separate TLS-to-target
+	// handshake handled by minitls, which must keep 1.2 support.
 	return &tls.Config{
 		GetCertificate: m.GetCertificate,
-		MinVersion:     tls.VersionTLS12,
+		MinVersion:     tls.VersionTLS13,
 		MaxVersion:     tls.VersionTLS13,
 	}
 }
