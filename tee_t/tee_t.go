@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"fmt"
 	"log"
 	"net/http"
@@ -77,9 +78,10 @@ type TEET struct {
 	// pairID is unknown until TEE_K's first envelope arrives on the
 	// control connection — atomic.Pointer so the heartbeat goroutine,
 	// connection manager, and OT code can all read/write without locks.
-	ratls  *shared.RATLSManager
-	router *shared.RouterClient
-	pairID atomic.Pointer[string]
+	ratls     *shared.RATLSManager
+	router    *shared.RouterClient
+	pairID    atomic.Pointer[string]
+	jwtPubKey *ecdsa.PublicKey // verifies client allocation JWTs (nil = no JWT check, local dev)
 
 	// Heartbeat observation state — same shape as TEEK's. Written by the
 	// connection manager / OT code; read by the heartbeat goroutine.

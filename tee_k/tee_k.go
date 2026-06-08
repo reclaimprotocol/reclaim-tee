@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"fmt"
 	"log"
 	"sync"
@@ -69,7 +70,8 @@ type TEEK struct {
 	ratls                   *shared.RATLSManager
 	router                  *shared.RouterClient
 	pairID                  string
-	expectedPeerImageDigest string // sha256:... of TEE_T container image, for RA-TLS peer verification
+	expectedPeerImageDigest string             // sha256:... of TEE_T container image, for RA-TLS peer verification
+	jwtPubKey               *ecdsa.PublicKey   // verifies client allocation JWTs (nil = no JWT check, local dev)
 
 	// Heartbeat observation state — written by the connection manager
 	// (controlHealthy on peer connect/disconnect), OT precompute code
@@ -108,6 +110,13 @@ func NewTEEKForRouter(
 	teek.router = router
 	teek.pairID = pairID
 	teek.expectedPeerImageDigest = config.ExpectedPeerImageDigest
+	if config.JWTPublicKey != "" {
+		pubKey, err := shared.ParseECDSAPublicKeyPEM([]byte(config.JWTPublicKey))
+		if err != nil {
+			log.Fatalf("[TEE_K] CRITICAL: parse JWT_PUBLIC_KEY: %v", err)
+		}
+		teek.jwtPubKey = pubKey
+	}
 	// In router mode the peer URL is derived from PEER_ADDR rather than
 	// the legacy TEET_URL env var. /ws is the base path; the connection
 	// manager extends it to /ws/control and /ws/session.

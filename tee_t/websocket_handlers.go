@@ -52,6 +52,27 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Set read limit to prevent DoS via large messages
 	conn.SetReadLimit(MaxWebSocketMessageSize)
 
+	// Router mode: require a valid allocation JWT as the very first envelope.
+	// jwtPubKey is nil in standalone (local-dev) mode, where the JWT step
+	// is skipped and the loop below reads the legacy first envelope directly.
+	if t.jwtPubKey != nil {
+		pidPtr := t.pairID.Load()
+		if pidPtr == nil {
+			t.logger.Warn("Rejecting client: pair_id not yet known (peer link not up)")
+			_ = conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(1013, "not ready"),
+				time.Now().Add(time.Second))
+			return
+		}
+		if _, err := shared.ReadAndVerifyClientAuth(conn, t.jwtPubKey, *pidPtr); err != nil {
+			t.logger.Warn("Rejecting client: ClientAuth invalid", zap.Error(err))
+			_ = conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(4001, "unauthorized"),
+				time.Now().Add(time.Second))
+			return
+		}
+	}
+
 	t.logger.Debug("Client WebSocket connection established")
 
 	var sessionID string

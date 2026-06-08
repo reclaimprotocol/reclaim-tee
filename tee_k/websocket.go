@@ -291,6 +291,21 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Set maximum message size to prevent memory exhaustion
 	conn.SetReadLimit(MaxWebSocketMessageSize)
 
+	// Router mode: require a valid allocation JWT as the very first envelope.
+	// jwtPubKey is nil in standalone (local-dev) mode, where the JWT step
+	// is skipped and the first wire message is whatever the legacy protocol
+	// expects.
+	if t.jwtPubKey != nil {
+		if _, err := shared.ReadAndVerifyClientAuth(conn, t.jwtPubKey, t.pairID); err != nil {
+			t.logger.Warn("Rejecting client: ClientAuth invalid", zap.Error(err))
+			_ = conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(4001, "unauthorized"),
+				time.Now().Add(time.Second))
+			conn.Close()
+			return
+		}
+	}
+
 	// Create session for this client connection
 	wsConn := shared.NewWSConnection(conn)
 	sessionID, err := t.sessionManager.CreateSession(wsConn)

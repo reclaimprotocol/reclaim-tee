@@ -53,6 +53,14 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	router := shared.NewRouterClient(config.RouterURL, shared.MetadataServerTokenSource)
 
 	teet := NewTEETForRouter(config.Port, ratls, router, logger)
+	if config.JWTPublicKey != "" {
+		pubKey, err := shared.ParseECDSAPublicKeyPEM([]byte(config.JWTPublicKey))
+		if err != nil {
+			logger.Critical("parse JWT_PUBLIC_KEY failed", zap.Error(err))
+			return
+		}
+		teet.jwtPubKey = pubKey
+	}
 	teet.sessionManager.StartCleanupRoutine()
 
 	register := func(ctx context.Context, pairID string) error {

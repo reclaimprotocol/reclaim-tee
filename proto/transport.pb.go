@@ -121,6 +121,7 @@ type Envelope struct {
 	//	*Envelope_SessionClosed
 	//	*Envelope_SessionCreatedAck
 	//	*Envelope_TeekPairAssignment
+	//	*Envelope_ClientAuth
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -540,6 +541,15 @@ func (x *Envelope) GetTeekPairAssignment() *TEEKPairAssignment {
 	return nil
 }
 
+func (x *Envelope) GetClientAuth() *ClientAuth {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_ClientAuth); ok {
+			return x.ClientAuth
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Payload interface {
 	isEnvelope_Payload()
 }
@@ -707,6 +717,12 @@ type Envelope_TeekPairAssignment struct {
 	TeekPairAssignment *TEEKPairAssignment `protobuf:"bytes,84,opt,name=teek_pair_assignment,json=teekPairAssignment,proto3,oneof"` // TEE_K -> TEE_T (first message on /ws/peer)
 }
 
+type Envelope_ClientAuth struct {
+	// Router-mode client authentication. The first envelope a client sends
+	// on /ws to either TEE; carries the allocation JWT minted by /allocate.
+	ClientAuth *ClientAuth `protobuf:"bytes,85,opt,name=client_auth,json=clientAuth,proto3,oneof"` // Client -> TEE_K/TEE_T
+}
+
 func (*Envelope_ConnectionReady) isEnvelope_Payload() {}
 
 func (*Envelope_TcpReady) isEnvelope_Payload() {}
@@ -782,6 +798,8 @@ func (*Envelope_SessionClosed) isEnvelope_Payload() {}
 func (*Envelope_SessionCreatedAck) isEnvelope_Payload() {}
 
 func (*Envelope_TeekPairAssignment) isEnvelope_Payload() {}
+
+func (*Envelope_ClientAuth) isEnvelope_Payload() {}
 
 // Basic types aligned with existing JSON models
 type RequestConnection struct {
@@ -3179,6 +3197,55 @@ func (x *TEEKPairAssignment) GetPairId() string {
 	return ""
 }
 
+// ClientAuth is the first envelope a client sends on its WebSocket
+// connection to TEE_K or TEE_T in router mode. The jwt field is the
+// ES256 token the router minted at /allocate; the TEE verifies signature,
+// expiry, and that the `aud` claim matches its own pair_id before
+// accepting any further messages from the client.
+type ClientAuth struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Jwt           string                 `protobuf:"bytes,1,opt,name=jwt,proto3" json:"jwt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClientAuth) Reset() {
+	*x = ClientAuth{}
+	mi := &file_transport_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClientAuth) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClientAuth) ProtoMessage() {}
+
+func (x *ClientAuth) ProtoReflect() protoreflect.Message {
+	mi := &file_transport_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClientAuth.ProtoReflect.Descriptor instead.
+func (*ClientAuth) Descriptor() ([]byte, []int) {
+	return file_transport_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *ClientAuth) GetJwt() string {
+	if x != nil {
+		return x.Jwt
+	}
+	return ""
+}
+
 type BatchedResponseLengths_Length struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Length        int32                  `protobuf:"varint,1,opt,name=length,proto3" json:"length,omitempty"`
@@ -3191,7 +3258,7 @@ type BatchedResponseLengths_Length struct {
 
 func (x *BatchedResponseLengths_Length) Reset() {
 	*x = BatchedResponseLengths_Length{}
-	mi := &file_transport_proto_msgTypes[42]
+	mi := &file_transport_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3203,7 +3270,7 @@ func (x *BatchedResponseLengths_Length) String() string {
 func (*BatchedResponseLengths_Length) ProtoMessage() {}
 
 func (x *BatchedResponseLengths_Length) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[42]
+	mi := &file_transport_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3257,7 +3324,7 @@ type BatchedTagSecrets_TagSecret struct {
 
 func (x *BatchedTagSecrets_TagSecret) Reset() {
 	*x = BatchedTagSecrets_TagSecret{}
-	mi := &file_transport_proto_msgTypes[43]
+	mi := &file_transport_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3269,7 +3336,7 @@ func (x *BatchedTagSecrets_TagSecret) String() string {
 func (*BatchedTagSecrets_TagSecret) ProtoMessage() {}
 
 func (x *BatchedTagSecrets_TagSecret) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[43]
+	mi := &file_transport_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3310,7 +3377,7 @@ type BatchedTagVerifications_Verification struct {
 
 func (x *BatchedTagVerifications_Verification) Reset() {
 	*x = BatchedTagVerifications_Verification{}
-	mi := &file_transport_proto_msgTypes[44]
+	mi := &file_transport_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3322,7 +3389,7 @@ func (x *BatchedTagVerifications_Verification) String() string {
 func (*BatchedTagVerifications_Verification) ProtoMessage() {}
 
 func (x *BatchedTagVerifications_Verification) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_proto_msgTypes[44]
+	mi := &file_transport_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3363,7 +3430,7 @@ var File_transport_proto protoreflect.FileDescriptor
 
 const file_transport_proto_rawDesc = "" +
 	"\n" +
-	"\x0ftransport.proto\x12\bteeproto\x1a\fcommon.proto\x1a\rsigning.proto\x1a\x12attestor_api.proto\"\xe5\x18\n" +
+	"\x0ftransport.proto\x12\bteeproto\x1a\fcommon.proto\x1a\rsigning.proto\x1a\x12attestor_api.proto\"\x9e\x19\n" +
 	"\bEnvelope\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x10\n" +
@@ -3409,7 +3476,9 @@ const file_transport_proto_rawDesc = "" +
 	"\x16session_connection_ack\x18Q \x01(\v2\x1e.teeproto.SessionConnectionAckH\x00R\x14sessionConnectionAck\x12@\n" +
 	"\x0esession_closed\x18R \x01(\v2\x17.teeproto.SessionClosedH\x00R\rsessionClosed\x12M\n" +
 	"\x13session_created_ack\x18S \x01(\v2\x1b.teeproto.SessionCreatedAckH\x00R\x11sessionCreatedAck\x12P\n" +
-	"\x14teek_pair_assignment\x18T \x01(\v2\x1c.teeproto.TEEKPairAssignmentH\x00R\x12teekPairAssignmentB\t\n" +
+	"\x14teek_pair_assignment\x18T \x01(\v2\x1c.teeproto.TEEKPairAssignmentH\x00R\x12teekPairAssignment\x127\n" +
+	"\vclient_auth\x18U \x01(\v2\x14.teeproto.ClientAuthH\x00R\n" +
+	"clientAuthB\t\n" +
 	"\apayload\"\xc3\x01\n" +
 	"\x11RequestConnection\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12\x12\n" +
@@ -3613,7 +3682,10 @@ const file_transport_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"-\n" +
 	"\x12TEEKPairAssignment\x12\x17\n" +
-	"\apair_id\x18\x01 \x01(\tR\x06pairId*U\n" +
+	"\apair_id\x18\x01 \x01(\tR\x06pairId\"\x1e\n" +
+	"\n" +
+	"ClientAuth\x12\x10\n" +
+	"\x03jwt\x18\x01 \x01(\tR\x03jwt*U\n" +
 	"\x06Sender\x12\x16\n" +
 	"\x12SENDER_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vSENDER_USER\x10\x01\x12\x10\n" +
@@ -3633,7 +3705,7 @@ func file_transport_proto_rawDescGZIP() []byte {
 }
 
 var file_transport_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_transport_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_transport_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_transport_proto_goTypes = []any{
 	(Sender)(0),                                    // 0: teeproto.Sender
 	(*Envelope)(nil),                               // 1: teeproto.Envelope
@@ -3678,24 +3750,25 @@ var file_transport_proto_goTypes = []any{
 	(*SessionConnectionAck)(nil),                   // 40: teeproto.SessionConnectionAck
 	(*SessionClosed)(nil),                          // 41: teeproto.SessionClosed
 	(*TEEKPairAssignment)(nil),                     // 42: teeproto.TEEKPairAssignment
-	(*BatchedResponseLengths_Length)(nil),          // 43: teeproto.BatchedResponseLengths.Length
-	(*BatchedTagSecrets_TagSecret)(nil),            // 44: teeproto.BatchedTagSecrets.TagSecret
-	(*BatchedTagVerifications_Verification)(nil),   // 45: teeproto.BatchedTagVerifications.Verification
-	(*ErrorData)(nil),                              // 46: teeproto.ErrorData
-	(*FinishedMessage)(nil),                        // 47: teeproto.FinishedMessage
-	(*SignedMessage)(nil),                          // 48: teeproto.SignedMessage
-	(*RequestRedactionRange)(nil),                  // 49: teeproto.RequestRedactionRange
-	(*ResponseRedactionRange)(nil),                 // 50: teeproto.ResponseRedactionRange
-	(*ResponseDecryptionStreamData)(nil),           // 51: teeproto.ResponseDecryptionStreamData
-	(*SignedRedactedDecryptionStream)(nil),         // 52: teeproto.SignedRedactedDecryptionStream
-	(*AttestationReport)(nil),                      // 53: teeproto.AttestationReport
+	(*ClientAuth)(nil),                             // 43: teeproto.ClientAuth
+	(*BatchedResponseLengths_Length)(nil),          // 44: teeproto.BatchedResponseLengths.Length
+	(*BatchedTagSecrets_TagSecret)(nil),            // 45: teeproto.BatchedTagSecrets.TagSecret
+	(*BatchedTagVerifications_Verification)(nil),   // 46: teeproto.BatchedTagVerifications.Verification
+	(*ErrorData)(nil),                              // 47: teeproto.ErrorData
+	(*FinishedMessage)(nil),                        // 48: teeproto.FinishedMessage
+	(*SignedMessage)(nil),                          // 49: teeproto.SignedMessage
+	(*RequestRedactionRange)(nil),                  // 50: teeproto.RequestRedactionRange
+	(*ResponseRedactionRange)(nil),                 // 51: teeproto.ResponseRedactionRange
+	(*ResponseDecryptionStreamData)(nil),           // 52: teeproto.ResponseDecryptionStreamData
+	(*SignedRedactedDecryptionStream)(nil),         // 53: teeproto.SignedRedactedDecryptionStream
+	(*AttestationReport)(nil),                      // 54: teeproto.AttestationReport
 }
 var file_transport_proto_depIdxs = []int32{
 	0,  // 0: teeproto.Envelope.sender:type_name -> teeproto.Sender
 	3,  // 1: teeproto.Envelope.connection_ready:type_name -> teeproto.ConnectionReady
 	4,  // 2: teeproto.Envelope.tcp_ready:type_name -> teeproto.TCPReady
-	46, // 3: teeproto.Envelope.error:type_name -> teeproto.ErrorData
-	47, // 4: teeproto.Envelope.finished:type_name -> teeproto.FinishedMessage
+	47, // 3: teeproto.Envelope.error:type_name -> teeproto.ErrorData
+	48, // 4: teeproto.Envelope.finished:type_name -> teeproto.FinishedMessage
 	26, // 5: teeproto.Envelope.session_created:type_name -> teeproto.SessionCreated
 	28, // 6: teeproto.Envelope.session_ready:type_name -> teeproto.SessionReady
 	2,  // 7: teeproto.Envelope.request_connection:type_name -> teeproto.RequestConnection
@@ -3715,7 +3788,7 @@ var file_transport_proto_depIdxs = []int32{
 	22, // 21: teeproto.Envelope.batched_tag_secrets:type_name -> teeproto.BatchedTagSecrets
 	23, // 22: teeproto.Envelope.batched_tag_verifications:type_name -> teeproto.BatchedTagVerifications
 	24, // 23: teeproto.Envelope.batched_decryption_streams:type_name -> teeproto.BatchedDecryptionStreams
-	48, // 24: teeproto.Envelope.signed_message:type_name -> teeproto.SignedMessage
+	49, // 24: teeproto.Envelope.signed_message:type_name -> teeproto.SignedMessage
 	29, // 25: teeproto.Envelope.teek_attestation:type_name -> teeproto.TEEKAttestationRequest
 	30, // 26: teeproto.Envelope.teet_attestation:type_name -> teeproto.TEETAttestationResponse
 	32, // 27: teeproto.Envelope.oprf_ranges_submission:type_name -> teeproto.OPRFRangesSubmission
@@ -3730,25 +3803,26 @@ var file_transport_proto_depIdxs = []int32{
 	41, // 36: teeproto.Envelope.session_closed:type_name -> teeproto.SessionClosed
 	27, // 37: teeproto.Envelope.session_created_ack:type_name -> teeproto.SessionCreatedAck
 	42, // 38: teeproto.Envelope.teek_pair_assignment:type_name -> teeproto.TEEKPairAssignment
-	11, // 39: teeproto.BatchedEncryptedDataResponse.fragments:type_name -> teeproto.EncryptedDataResponse
-	49, // 40: teeproto.RedactedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
-	50, // 41: teeproto.ResponseRedactionSpec.ranges:type_name -> teeproto.ResponseRedactionRange
-	17, // 42: teeproto.BatchedEncryptedRequest.fragments:type_name -> teeproto.EncryptedRequest
-	49, // 43: teeproto.EncryptedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
-	18, // 44: teeproto.BatchedEncryptedResponses.responses:type_name -> teeproto.EncryptedResponseData
-	43, // 45: teeproto.BatchedResponseLengths.lengths:type_name -> teeproto.BatchedResponseLengths.Length
-	44, // 46: teeproto.BatchedTagSecrets.tag_secrets:type_name -> teeproto.BatchedTagSecrets.TagSecret
-	45, // 47: teeproto.BatchedTagVerifications.verifications:type_name -> teeproto.BatchedTagVerifications.Verification
-	51, // 48: teeproto.BatchedDecryptionStreams.decryption_streams:type_name -> teeproto.ResponseDecryptionStreamData
-	52, // 49: teeproto.BatchedSignedRedactedDecryptionStreams.signed_redacted_streams:type_name -> teeproto.SignedRedactedDecryptionStream
-	53, // 50: teeproto.TEEKAttestationRequest.attestation_report:type_name -> teeproto.AttestationReport
-	53, // 51: teeproto.TEETAttestationResponse.attestation_report:type_name -> teeproto.AttestationReport
-	31, // 52: teeproto.OPRFRangesSubmission.ranges:type_name -> teeproto.OPRFRangeSpec
-	53, // [53:53] is the sub-list for method output_type
-	53, // [53:53] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	43, // 39: teeproto.Envelope.client_auth:type_name -> teeproto.ClientAuth
+	11, // 40: teeproto.BatchedEncryptedDataResponse.fragments:type_name -> teeproto.EncryptedDataResponse
+	50, // 41: teeproto.RedactedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
+	51, // 42: teeproto.ResponseRedactionSpec.ranges:type_name -> teeproto.ResponseRedactionRange
+	17, // 43: teeproto.BatchedEncryptedRequest.fragments:type_name -> teeproto.EncryptedRequest
+	50, // 44: teeproto.EncryptedRequest.redaction_ranges:type_name -> teeproto.RequestRedactionRange
+	18, // 45: teeproto.BatchedEncryptedResponses.responses:type_name -> teeproto.EncryptedResponseData
+	44, // 46: teeproto.BatchedResponseLengths.lengths:type_name -> teeproto.BatchedResponseLengths.Length
+	45, // 47: teeproto.BatchedTagSecrets.tag_secrets:type_name -> teeproto.BatchedTagSecrets.TagSecret
+	46, // 48: teeproto.BatchedTagVerifications.verifications:type_name -> teeproto.BatchedTagVerifications.Verification
+	52, // 49: teeproto.BatchedDecryptionStreams.decryption_streams:type_name -> teeproto.ResponseDecryptionStreamData
+	53, // 50: teeproto.BatchedSignedRedactedDecryptionStreams.signed_redacted_streams:type_name -> teeproto.SignedRedactedDecryptionStream
+	54, // 51: teeproto.TEEKAttestationRequest.attestation_report:type_name -> teeproto.AttestationReport
+	54, // 52: teeproto.TEETAttestationResponse.attestation_report:type_name -> teeproto.AttestationReport
+	31, // 53: teeproto.OPRFRangesSubmission.ranges:type_name -> teeproto.OPRFRangeSpec
+	54, // [54:54] is the sub-list for method output_type
+	54, // [54:54] is the sub-list for method input_type
+	54, // [54:54] is the sub-list for extension type_name
+	54, // [54:54] is the sub-list for extension extendee
+	0,  // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_transport_proto_init() }
@@ -3798,6 +3872,7 @@ func file_transport_proto_init() {
 		(*Envelope_SessionClosed)(nil),
 		(*Envelope_SessionCreatedAck)(nil),
 		(*Envelope_TeekPairAssignment)(nil),
+		(*Envelope_ClientAuth)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -3805,7 +3880,7 @@ func file_transport_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_transport_proto_rawDesc), len(file_transport_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   45,
+			NumMessages:   46,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

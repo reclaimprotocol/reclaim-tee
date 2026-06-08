@@ -83,6 +83,10 @@ message Envelope {
 
     // Router-mode pair assignment (multi-pair architecture, Phase 3+)
     TEEKPairAssignment teek_pair_assignment = 84;         // TEE_K -> TEE_T (first message on /ws/peer)
+
+    // Router-mode client authentication. The first envelope a client sends
+    // on /ws to either TEE; carries the allocation JWT minted by /allocate.
+    ClientAuth client_auth = 85;                          // Client -> TEE_K/TEE_T
   }
 }
 
@@ -338,5 +342,14 @@ message SessionClosed {
 // under the same id so both /register calls land on the same record.
 message TEEKPairAssignment {
   string pair_id = 1;
+}
+
+// ClientAuth is the first envelope a client sends on its WebSocket
+// connection to TEE_K or TEE_T in router mode. The jwt field is the
+// ES256 token the router minted at /allocate; the TEE verifies signature,
+// expiry, and that the `aud` claim matches its own pair_id before
+// accepting any further messages from the client.
+message ClientAuth {
+  string jwt = 1;
 }
 
