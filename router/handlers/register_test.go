@@ -51,8 +51,14 @@ const (
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+	st := store.NewMemoryStore()
+	allowlist, err := auth.NewAllowlist(t.Context(), st, []string{approvedDigest}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewAllowlist: %v", err)
+	}
+	t.Cleanup(allowlist.Stop)
 	return &Server{
-		Store: store.NewMemoryStore(),
+		Store: st,
 		SAValidator: &fakeSAValidator{
 			claims: &auth.SAClaims{
 				Email:            "tee-vm-1@new-reclaim-architecture.iam.gserviceaccount.com",
@@ -60,7 +66,7 @@ func newTestServer(t *testing.T) *Server {
 			},
 		},
 		AttestValidator: &fakeAttestValidator{digest: approvedDigest},
-		Allowlist:       auth.NewAllowlist([]string{approvedDigest}),
+		Allowlist:       allowlist,
 		Logger:          zap.NewNop(),
 		Config: &config.Config{
 			HeartbeatStaleness: 15 * time.Second,

@@ -51,6 +51,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /pairs", s.HandleListPairs)
 	mux.HandleFunc("POST /pairs/{id}/drain", s.HandleDrainPair)
 	mux.HandleFunc("POST /pairs/{id}/dead", s.HandleKillPair)
+	mux.HandleFunc("GET /allowlist", s.HandleListAllowlist)
+	mux.HandleFunc("POST /allowlist", s.HandleAddDigest)
+	mux.HandleFunc("DELETE /allowlist/{digest}", s.HandleRemoveDigest)
 	return mux
 }
 

@@ -9,12 +9,16 @@ import (
 // development and tests. The production deployment uses a Firestore-backed
 // Store that is added later.
 type MemoryStore struct {
-	mu    sync.RWMutex
-	pairs map[string]*Pair
+	mu      sync.RWMutex
+	pairs   map[string]*Pair
+	digests map[string]struct{}
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{pairs: make(map[string]*Pair)}
+	return &MemoryStore{
+		pairs:   make(map[string]*Pair),
+		digests: make(map[string]struct{}),
+	}
 }
 
 func (s *MemoryStore) GetPair(_ context.Context, id string) (*Pair, error) {
@@ -54,5 +58,29 @@ func (s *MemoryStore) DeletePair(_ context.Context, id string) error {
 		return ErrNotFound
 	}
 	delete(s.pairs, id)
+	return nil
+}
+
+func (s *MemoryStore) ListDigests(_ context.Context) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.digests))
+	for d := range s.digests {
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) AddDigest(_ context.Context, digest string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.digests[digest] = struct{}{}
+	return nil
+}
+
+func (s *MemoryStore) RemoveDigest(_ context.Context, digest string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.digests, digest)
 	return nil
 }

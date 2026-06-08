@@ -15,6 +15,11 @@ import (
 // FirestoreCollection is the Firestore collection name for pair records.
 const FirestoreCollection = "pairs"
 
+// firestoreDigestCollection holds the approved-image-digest allowlist.
+// Doc ID = the digest itself (sha256:... — no Firestore-illegal chars).
+// The doc body is empty placeholder; existence is the only signal.
+const firestoreDigestCollection = "approved_digests"
+
 // FirestoreStore implements Store against Firestore Native mode.
 //
 // Documents are keyed by pair_id. Field names are tagged explicitly so a Go
@@ -96,6 +101,44 @@ func (s *FirestoreStore) DeletePair(ctx context.Context, id string) error {
 	}
 	if _, err := ref.Delete(ctx); err != nil {
 		return fmt.Errorf("firestore delete: %w", err)
+	}
+	return nil
+}
+
+func (s *FirestoreStore) ListDigests(ctx context.Context) ([]string, error) {
+	it := s.client.Collection(firestoreDigestCollection).Documents(ctx)
+	defer it.Stop()
+	var digests []string
+	for {
+		snap, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("firestore list digests: %w", err)
+		}
+		digests = append(digests, snap.Ref.ID)
+	}
+	return digests, nil
+}
+
+func (s *FirestoreStore) AddDigest(ctx context.Context, digest string) error {
+	// Empty body — existence of the doc IS the entry. Set is idempotent;
+	// re-adding an already-present digest is a no-op.
+	_, err := s.client.Collection(firestoreDigestCollection).Doc(digest).Set(ctx, map[string]any{})
+	if err != nil {
+		return fmt.Errorf("firestore add digest: %w", err)
+	}
+	return nil
+}
+
+func (s *FirestoreStore) RemoveDigest(ctx context.Context, digest string) error {
+	// Idempotent: deleting a missing doc is not an error here. Operators
+	// retrying a fleet drain shouldn't see 404s for digests that some
+	// concurrent op already removed.
+	_, err := s.client.Collection(firestoreDigestCollection).Doc(digest).Delete(ctx)
+	if err != nil {
+		return fmt.Errorf("firestore remove digest: %w", err)
 	}
 	return nil
 }

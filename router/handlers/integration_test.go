@@ -41,8 +41,14 @@ func newIntegrationServer(t *testing.T) *integrationServer {
 	if err != nil {
 		t.Fatalf("signer: %v", err)
 	}
+	st := store.NewMemoryStore()
+	allowlist, err := auth.NewAllowlist(t.Context(), st, []string{approvedDigest}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewAllowlist: %v", err)
+	}
+	t.Cleanup(allowlist.Stop)
 	srv := &Server{
-		Store: store.NewMemoryStore(),
+		Store: st,
 		SAValidator: &fakeSAValidator{
 			claims: &auth.SAClaims{
 				Email:            "tee-vm-1@new-reclaim-architecture.iam.gserviceaccount.com",
@@ -50,7 +56,7 @@ func newIntegrationServer(t *testing.T) *integrationServer {
 			},
 		},
 		AttestValidator: &fakeAttestValidator{digest: approvedDigest},
-		Allowlist:       auth.NewAllowlist([]string{approvedDigest}),
+		Allowlist:       allowlist,
 		Signer:          ls,
 		Logger:          zap.NewNop(),
 		Config: &config.Config{

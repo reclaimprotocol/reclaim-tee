@@ -61,7 +61,12 @@ func main() {
 			cfg.SATokenAudience,
 		)
 		srv.AttestValidator = auth.NewCSAttestationValidator(logger)
-		srv.Allowlist = auth.NewAllowlist(cfg.ApprovedDigests)
+		allowlist, err := auth.NewAllowlist(ctx, pairStore, cfg.ApprovedDigests, logger)
+		if err != nil {
+			logger.Fatal("allowlist init failed", zap.Error(err))
+		}
+		defer allowlist.Stop()
+		srv.Allowlist = allowlist
 	}
 
 	httpSrv := &http.Server{

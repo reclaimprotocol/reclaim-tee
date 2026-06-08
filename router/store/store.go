@@ -17,4 +17,12 @@ type Store interface {
 	UpsertPair(ctx context.Context, p *Pair) error
 	ListPairs(ctx context.Context) ([]*Pair, error)
 	DeletePair(ctx context.Context, id string) error
+
+	// Approved-image-digest allowlist. Source of truth lives in the store
+	// so that admin-API mutations survive router restarts (the env-var
+	// seed in config is only consulted on first boot when the store is
+	// empty). All three operations are idempotent.
+	ListDigests(ctx context.Context) ([]string, error)
+	AddDigest(ctx context.Context, digest string) error
+	RemoveDigest(ctx context.Context, digest string) error
 }
