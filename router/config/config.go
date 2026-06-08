@@ -101,7 +101,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	return &Config{
+	cfg := &Config{
 		Port:               cmp.Or(os.Getenv("PORT"), "8080"),
 		JWTIssuer:          cmp.Or(os.Getenv("JWT_ISSUER"), "router.reclaimprotocol.org"),
 		JWTExpiry:          jwtExpiry,
@@ -115,7 +115,17 @@ func Load() (*Config, error) {
 		FirestoreProjectID: os.Getenv("FIRESTORE_PROJECT_ID"),
 		KMSKeyName:         os.Getenv("KMS_KEY_NAME"),
 		Standalone:         standalone,
-	}, nil
+	}
+	if cfg.Standalone {
+		// Standalone mode forces zero external deps: in-memory store +
+		// in-process signer + no auth. Ignore any FIRESTORE_PROJECT_ID
+		// or KMS_KEY_NAME that may have bled in from the operator's
+		// shell, so a stray export can't accidentally pull real GCP
+		// resources into a local demo run.
+		cfg.FirestoreProjectID = ""
+		cfg.KMSKeyName = ""
+	}
+	return cfg, nil
 }
 
 func parseDurationSeconds(envVar string, defaultSec int) (time.Duration, error) {
