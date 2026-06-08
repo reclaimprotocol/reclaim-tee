@@ -16,14 +16,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// ratlsRefreshInterval matches TEE_K's cadence. GCP Confidential Space
-// tokens expire in ~5 minutes; refreshing every 4 keeps new handshakes
-// validating cleanly.
-const ratlsRefreshInterval = 4 * time.Minute
-
-// heartbeatInterval matches the router's 3-missed-in-15s tolerance.
-const heartbeatInterval = 5 * time.Second
-
 // startRouterMode is TEE_T's V2 boot path. TEE_T cannot register at boot —
 // it doesn't know the pair_id yet — so it brings up the RA-TLS HTTPS
 // server, sets an onPairAssigned hook that will register + start the
@@ -52,7 +44,7 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 
 	router := shared.NewRouterClient(config.RouterURL, shared.MetadataServerTokenSource)
 
-	teet := NewTEETForRouter(config.Port, ratls, router, logger)
+	teet := NewTEETForRouter(config, ratls, router, logger)
 	if config.JWTPublicKey != "" {
 		pubKey, err := shared.ParseECDSAPublicKeyPEM([]byte(config.JWTPublicKey))
 		if err != nil {
@@ -60,16 +52,21 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 			return
 		}
 		teet.jwtPubKey = pubKey
+		teet.expectedJWTIssuer = config.ExpectedJWTIssuer
 	}
 	teet.sessionManager.StartCleanupRoutine()
 
-	register := func(ctx context.Context, pairID string) error {
-		imageDigest, attestationJWT, err := extractIdentityFromRATLS(teet.ratls, logger)
+	register := func(ctx context.Context) error {
+		pid := teet.PairID()
+		if pid == "" {
+			return errors.New("register: pair_id not yet known")
+		}
+		imageDigest, attestationJWT, err := shared.ExtractIdentityFromRATLS(teet.ratls, logger)
 		if err != nil {
 			return fmt.Errorf("extract identity: %w", err)
 		}
 		resp, err := teet.router.Register(ctx, shared.RegisterRequest{
-			PairID:         pairID,
+			PairID:         pid,
 			Role:           "T",
 			SelfAddr:       config.SelfAddr,
 			PeerAddrClaim:  config.PeerAddr,
@@ -86,23 +83,23 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	}
 
 	// The pair_id arrives on the wire from TEE_K, not the env. When it does,
-	// register + spin up the heartbeat. Wrap in sync.Once via a guard so a
-	// reconnect doesn't trigger a duplicate goroutine — the pair_id never
-	// changes for the life of this process.
+	// register + spin up the heartbeat. Guarded so a peer reconnect doesn't
+	// trigger a duplicate goroutine — the pair_id never changes for the life
+	// of this process.
 	heartbeatStarted := false
 	teet.onPairAssigned = func(pairID string) {
 		if heartbeatStarted {
 			return
 		}
 		heartbeatStarted = true
-		if err := register(ctx, pairID); err != nil {
+		if err := register(ctx); err != nil {
 			logger.Critical("router registration failed", zap.Error(err))
 			return
 		}
-		go runHeartbeats(ctx, teet, "T", logger, register, heartbeatInterval)
+		go shared.RunHeartbeats(ctx, teet, "T", logger, register, shared.RouterHeartbeatInterval)
 	}
 
-	go runRATLSRefresh(ctx, teet.ratls, logger)
+	go shared.RunRATLSRefresh(ctx, teet.ratls, logger)
 
 	// Single RA-TLS-protected HTTPS server serving both peers and clients:
 	//   - TEE_K peer dials /ws/control + /ws/session, presents its RA-TLS
@@ -117,7 +114,7 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	srvTLS.ClientAuth = tls.RequestClientCert
 	srvTLS.VerifyPeerCertificate = shared.VerifyRATLSPeer(shared.RATLSVerifyOptions{
 		PeerRole:            "tee_k",
-		ExpectedImageDigest: config.ExpectedPeerImageDigest,
+		ExpectedImageDigest: teet.expectedPeerImageDigest,
 		Logger:              logger,
 	})
 
@@ -175,98 +172,20 @@ func enforcePeerMTLS(next http.Handler) http.Handler {
 }
 
 func validateRouterConfig(c *TEETConfig) error {
-	switch {
-	case c.SelfAddr == "":
-		return errors.New("SELF_ADDR is required in router mode")
-	case c.PeerAddr == "":
-		return errors.New("PEER_ADDR is required in router mode")
-	case c.ExpectedPeerImageDigest == "":
-		return errors.New("EXPECTED_PEER_IMAGE_DIGEST is required in router mode")
-	case c.JWTPublicKey == "":
-		return errors.New("JWT_PUBLIC_KEY is required in router mode")
+	required := []struct {
+		name, value string
+	}{
+		{"SELF_ADDR", c.SelfAddr},
+		{"PEER_ADDR", c.PeerAddr},
+		{"EXPECTED_PEER_IMAGE_DIGEST", c.ExpectedPeerImageDigest},
+		{"JWT_PUBLIC_KEY", c.JWTPublicKey},
+		{"EXPECTED_JWT_ISSUER", c.ExpectedJWTIssuer},
+		{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey},
+	}
+	for _, r := range required {
+		if r.value == "" {
+			return fmt.Errorf("%s is required in router mode", r.name)
+		}
 	}
 	return nil
-}
-
-// extractIdentityFromRATLS reads the in-flight RA-TLS cert and pulls the
-// attestation JWT + container image digest out of it. Same shape as the
-// TEE_K helper; kept package-local so each binary stays self-contained.
-func extractIdentityFromRATLS(ratls *shared.RATLSManager, logger *shared.Logger) (string, []byte, error) {
-	cert := ratls.Certificate()
-	if cert == nil || cert.Leaf == nil {
-		return "", nil, errors.New("RA-TLS manager has no current cert")
-	}
-	attestationJWT, err := shared.ExtractAttestationFromCert(cert.Leaf)
-	if err != nil {
-		return "", nil, fmt.Errorf("extract attestation: %w", err)
-	}
-	digest, err := shared.ExtractImageDigestFromGCPAttestation(attestationJWT, logger)
-	if err != nil {
-		return "", nil, fmt.Errorf("extract image digest: %w", err)
-	}
-	return digest, attestationJWT, nil
-}
-
-// runHeartbeats fires a heartbeat to the router every `interval` until
-// ctx is cancelled. Mirrors TEE_K's version but reads pair_id off the
-// atomic.Pointer since TEE_T learns it from the wire.
-func runHeartbeats(
-	ctx context.Context,
-	teet *TEET,
-	role string,
-	logger *shared.Logger,
-	onLost func(context.Context, string) error,
-	interval time.Duration,
-) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			pidPtr := teet.pairID.Load()
-			if pidPtr == nil {
-				continue
-			}
-			pid := *pidPtr
-			req := shared.HeartbeatRequest{
-				PairID:         pid,
-				Role:           role,
-				ControlHealthy: teet.controlHealthy.Load(),
-				OTReady:        teet.otReady.Load(),
-				ActiveSessions: int(teet.activeSessions.Load()),
-			}
-			_, err := teet.router.Heartbeat(ctx, req)
-			switch {
-			case err == nil:
-				// happy path
-			case errors.Is(err, shared.ErrRouterNotFound):
-				logger.Warn("router lost pair_id, re-registering",
-					zap.String("pair_id", pid))
-				if regErr := onLost(ctx, pid); regErr != nil {
-					logger.Error("re-register failed", zap.Error(regErr))
-				}
-			default:
-				logger.Error("heartbeat failed", zap.Error(err))
-			}
-		}
-	}
-}
-
-func runRATLSRefresh(ctx context.Context, ratls *shared.RATLSManager, logger *shared.Logger) {
-	ticker := time.NewTicker(ratlsRefreshInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := ratls.Refresh(ctx); err != nil {
-				logger.Error("RA-TLS refresh failed", zap.Error(err))
-				continue
-			}
-			logger.Debug("RA-TLS refreshed")
-		}
-	}
 }

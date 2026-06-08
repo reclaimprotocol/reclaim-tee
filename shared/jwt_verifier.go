@@ -52,14 +52,15 @@ func ParseECDSAPublicKeyPEM(pemBytes []byte) (*ecdsa.PublicKey, error) {
 // VerifyAllocationJWT validates an allocation JWT minted by the router:
 //   - ES256 signature against pubKey
 //   - `exp` not passed (jwt library enforces by default)
+//   - `iss` equals expectedIssuer (defense in depth: lets ops scope a key
+//     rotation by changing the issuer string)
 //   - `aud` claim contains expectedPairID
-//
-// Other RegisteredClaims (iss, iat, jti) are parsed but not enforced —
-// the router controls them; the TEE only needs to be sure the JWT was
-// scoped to this pair.
-func VerifyAllocationJWT(token string, pubKey *ecdsa.PublicKey, expectedPairID string) (*AllocationJWTClaims, error) {
+func VerifyAllocationJWT(token string, pubKey *ecdsa.PublicKey, expectedIssuer, expectedPairID string) (*AllocationJWTClaims, error) {
 	if pubKey == nil {
 		return nil, errors.New("jwt: no public key configured")
+	}
+	if expectedIssuer == "" {
+		return nil, errors.New("jwt: empty expected issuer")
 	}
 	if expectedPairID == "" {
 		return nil, errors.New("jwt: empty expected pair_id")
@@ -71,7 +72,7 @@ func VerifyAllocationJWT(token string, pubKey *ecdsa.PublicKey, expectedPairID s
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Method.Alg())
 		}
 		return pubKey, nil
-	}, jwt.WithExpirationRequired())
+	}, jwt.WithExpirationRequired(), jwt.WithIssuer(expectedIssuer))
 	if err != nil {
 		return nil, fmt.Errorf("jwt: parse/verify: %w", err)
 	}
@@ -92,7 +93,7 @@ func VerifyAllocationJWT(token string, pubKey *ecdsa.PublicKey, expectedPairID s
 // The connection's read deadline is set and cleared by this function
 // (5s, controlled by ClientAuthReadTimeout). Subsequent reads have no
 // deadline unless the caller reinstates one.
-func ReadAndVerifyClientAuth(conn *websocket.Conn, pubKey *ecdsa.PublicKey, expectedPairID string) (*AllocationJWTClaims, error) {
+func ReadAndVerifyClientAuth(conn *websocket.Conn, pubKey *ecdsa.PublicKey, expectedIssuer, expectedPairID string) (*AllocationJWTClaims, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(ClientAuthReadTimeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
@@ -112,5 +113,5 @@ func ReadAndVerifyClientAuth(conn *websocket.Conn, pubKey *ecdsa.PublicKey, expe
 	if !ok {
 		return nil, fmt.Errorf("expected ClientAuth as first envelope, got %T", env.Payload)
 	}
-	return VerifyAllocationJWT(auth.ClientAuth.GetJwt(), pubKey, expectedPairID)
+	return VerifyAllocationJWT(auth.ClientAuth.GetJwt(), pubKey, expectedIssuer, expectedPairID)
 }

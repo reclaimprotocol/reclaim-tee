@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"fmt"
 	"log"
@@ -78,10 +77,12 @@ type TEET struct {
 	// pairID is unknown until TEE_K's first envelope arrives on the
 	// control connection — atomic.Pointer so the heartbeat goroutine,
 	// connection manager, and OT code can all read/write without locks.
-	ratls     *shared.RATLSManager
-	router    *shared.RouterClient
-	pairID    atomic.Pointer[string]
-	jwtPubKey *ecdsa.PublicKey // verifies client allocation JWTs (nil = no JWT check, local dev)
+	ratls                   *shared.RATLSManager
+	router                  *shared.RouterClient
+	pairID                  atomic.Pointer[string]
+	jwtPubKey               *ecdsa.PublicKey // verifies client allocation JWTs (nil = no JWT check, local dev)
+	expectedJWTIssuer       string           // expected iss claim on client allocation JWTs
+	expectedPeerImageDigest string           // sha256:... of TEE_K container image, for RA-TLS peer verification
 
 	// Heartbeat observation state — same shape as TEEK's. Written by the
 	// connection manager / OT code; read by the heartbeat goroutine.
@@ -136,17 +137,17 @@ func NewTEETWithLogger(port int, logger *shared.Logger) *TEET {
 // NewTEETForRouter constructs a TEET wired for the V2 router-mode path.
 // pair_id is NOT set here — it arrives over the peer connection in
 // TEE_K's TEEKPairAssignment envelope. The connection manager fills it
-// in via teet.pairID.Store(&pid). The expected peer image digest is
-// consumed directly by router_boot's RA-TLS verifier.
+// in via teet.pairID.Store(&pid).
 func NewTEETForRouter(
-	port int,
+	config *TEETConfig,
 	ratls *shared.RATLSManager,
 	router *shared.RouterClient,
 	logger *shared.Logger,
 ) *TEET {
-	teet := NewTEETWithLogger(port, logger)
+	teet := NewTEETWithLogger(config.Port, logger)
 	teet.ratls = ratls
 	teet.router = router
+	teet.expectedPeerImageDigest = config.ExpectedPeerImageDigest
 	return teet
 }
 
@@ -164,49 +165,11 @@ func initializeOPRFKeyShare(logger *shared.Logger) []byte {
 		}
 		return keyShare
 	}
-	share, err := loadPersistentOPRFShare(deploymentKey, "tee_t", logger)
+	share, err := shared.LoadOPRFShare("tee_t", deploymentKey, logger)
 	if err != nil {
 		log.Fatalf("[TEE_T] CRITICAL: load OPRF share: %v", err)
 	}
 	return share
-}
-
-// loadPersistentOPRFShare bridges initializeOPRFKeyShare to shared.SecretStore.
-// Fails fatally if any of the supporting env vars are missing — operators
-// must set all of them when KMS_ENCLAVE_DOMAIN_KEY is in use.
-func loadPersistentOPRFShare(deploymentKey, role string, logger *shared.Logger) ([]byte, error) {
-	projectID := shared.GetEnvOrDefault("GOOGLE_PROJECT_ID", "")
-	kmsLocation := shared.GetEnvOrDefault("GOOGLE_KMS_LOCATION", "")
-	kmsKeyRing := shared.GetEnvOrDefault("GOOGLE_KMS_KEYRING", "")
-	kmsKey := shared.GetEnvOrDefault("GOOGLE_KMS_KEY", "")
-	for name, v := range map[string]string{
-		"GOOGLE_PROJECT_ID":   projectID,
-		"GOOGLE_KMS_LOCATION": kmsLocation,
-		"GOOGLE_KMS_KEYRING":  kmsKeyRing,
-		"GOOGLE_KMS_KEY":      kmsKey,
-	} {
-		if v == "" {
-			return nil, fmt.Errorf("%s required when KMS_ENCLAVE_DOMAIN_KEY is set", name)
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	store, err := shared.NewSecretStore(ctx, projectID, kmsLocation, kmsKeyRing, kmsKey)
-	if err != nil {
-		return nil, fmt.Errorf("new secret store: %w", err)
-	}
-	share, err := store.LoadOrCreateOPRFShare(ctx, role, deploymentKey)
-	if err != nil {
-		return nil, fmt.Errorf("LoadOrCreateOPRFShare: %w", err)
-	}
-	if logger != nil {
-		logger.Info("Loaded OPRF share from Secret Manager",
-			zap.String("role", role),
-			zap.String("deployment_key", deploymentKey))
-	}
-	return share, nil
 }
 
 // Helper functions to access session state
@@ -244,6 +207,22 @@ func (t *TEET) isTEEKConnected() bool {
 	return t.teekConnected
 }
 
+// PairID / Router / ControlHealthy / OTReady / ActiveSessions satisfy
+// shared.HeartbeatTarget so router heartbeat logic lives in shared/.
+// PairID returns "" until TEE_K's TEEKPairAssignment envelope arrives;
+// callers must tolerate the empty case.
+func (t *TEET) PairID() string {
+	p := t.pairID.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+func (t *TEET) Router() *shared.RouterClient { return t.router }
+func (t *TEET) ControlHealthy() bool         { return t.controlHealthy.Load() }
+func (t *TEET) OTReady() bool                { return t.otReady.Load() }
+func (t *TEET) ActiveSessions() int          { return int(t.activeSessions.Load()) }
+
 // cleanupSession performs complete cleanup of session resources
 // This function is idempotent - safe to call multiple times for the same session
 func (t *TEET) cleanupSession(sessionID string) {
@@ -253,6 +232,7 @@ func (t *TEET) cleanupSession(sessionID string) {
 		t.logger.WithSession(sessionID).Debug("Session already cleaned up", zap.Error(err))
 		return
 	}
+	t.activeSessions.Add(-1)
 
 	// Cleanup session terminator tracking
 	t.sessionTerminator.CleanupSession(sessionID)

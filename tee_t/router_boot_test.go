@@ -31,6 +31,8 @@ func TestValidateRouterConfig(t *testing.T) {
 		PeerAddr:                "10.0.0.1:443",
 		ExpectedPeerImageDigest: "sha256:abc",
 		JWTPublicKey:            "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----",
+		ExpectedJWTIssuer:       "router.reclaimprotocol.org",
+		KMSEnclaveDomainKey:     "tt.reclaimprotocol.org",
 	}
 	if err := validateRouterConfig(&base); err != nil {
 		t.Fatalf("full config should validate: %v", err)
@@ -45,6 +47,8 @@ func TestValidateRouterConfig(t *testing.T) {
 		{"missing PEER_ADDR", func(c *TEETConfig) { c.PeerAddr = "" }, "PEER_ADDR"},
 		{"missing EXPECTED_PEER_IMAGE_DIGEST", func(c *TEETConfig) { c.ExpectedPeerImageDigest = "" }, "EXPECTED_PEER_IMAGE_DIGEST"},
 		{"missing JWT_PUBLIC_KEY", func(c *TEETConfig) { c.JWTPublicKey = "" }, "JWT_PUBLIC_KEY"},
+		{"missing EXPECTED_JWT_ISSUER", func(c *TEETConfig) { c.ExpectedJWTIssuer = "" }, "EXPECTED_JWT_ISSUER"},
+		{"missing KMS_ENCLAVE_DOMAIN_KEY", func(c *TEETConfig) { c.KMSEnclaveDomainKey = "" }, "KMS_ENCLAVE_DOMAIN_KEY"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -29,7 +29,7 @@ type Server struct {
 // Routes returns the router's HTTP mux. New endpoints are wired here.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", Healthz)
+	mux.HandleFunc("GET /healthz", s.HandleHealthz)
 	mux.HandleFunc("POST /register", s.HandleRegister)
 	mux.HandleFunc("POST /heartbeat", s.HandleHeartbeat)
 	mux.HandleFunc("POST /allocate", s.HandleAllocate)

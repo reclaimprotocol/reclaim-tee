@@ -107,63 +107,109 @@ func deriveEndpointURL(baseURL, endpoint string) string {
 	return scheme + hostPort + endpoint
 }
 
-// EstablishControlConnection establishes the persistent control connection to TEE_T
-// This blocks until the connection is established, attestation is verified, and OT precomputation is complete
+// EstablishControlConnection brings up the persistent control connection
+// to TEE_T and keeps it up. Blocks until the FIRST connect succeeds
+// (attestation verified, OT precomputation done), then returns nil while
+// a supervisor goroutine reconnects forever on disconnect.
+//
+// Splitting first-connect from reconnect lets callers (router_boot,
+// standalone main) wait for "ready to serve clients" without owning the
+// reconnect loop themselves.
 func (cm *TEETConnectionManager) EstablishControlConnection() error {
 	cm.logger.Debug("Establishing control connection to TEE_T", zap.String("url", cm.controlURL))
 
-	for {
-		conn, err := cm.attemptControlConnection()
-		if err != nil {
-			cm.logger.Error("Failed to establish control connection, retrying", zap.Error(err))
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	signalReady := func() { readyOnce.Do(func() { close(ready) }) }
+
+	go func() {
+		for {
+			if err := cm.connectAndServe(signalReady); err != nil {
+				cm.logger.Error("control session ended with error, retrying", zap.Error(err))
+			} else {
+				cm.logger.Info("control session ended, reconnecting")
+			}
 			time.Sleep(1 * time.Second)
-			continue
 		}
+	}()
 
-		wsConn := shared.NewWSConnection(conn)
+	<-ready
+	return nil
+}
 
-		cm.mu.Lock()
-		cm.controlConn = wsConn
-		cm.mu.Unlock()
-
-		cm.logger.Info("Control connection to TEE_T established")
-
-		// Bidirectional ping/pong heartbeat. Sets the read deadline that the
-		// control read loop relies on, so a dead peer is detected even when no
-		// application messages are flowing.
-		wsConn.StartControlHeartbeat(cm.logger)
-
-		// Start control message handler FIRST - it needs to receive OT response
-		// Use a done channel to stop it if OT fails
-		handlerDone := make(chan struct{})
-		go func() {
-			cm.handleControlMessages()
-			close(handlerDone)
-		}()
-
-		// Perform OT precomputation
-		if err := cm.teek.performOTPrecomputation(oprfmpc.OTPoolInitialSize, true); err != nil {
-			cm.logger.Error("Failed to perform OT precomputation", zap.Error(err))
-			wsConn.Close() // This will cause handleControlMessages to exit
-			<-handlerDone  // Wait for handler to exit before retrying
-			cm.mu.Lock()
-			cm.controlConn = nil
-			cm.mu.Unlock()
-			cm.teek.controlHealthy.Store(false)
-			// Mirror the disconnect path: a failed OT exchange leaves state.ready
-			// potentially stale-true from a prior cycle. Without this, the next
-			// successful precompute would skip sendOTPrecomputeComplete (gated on
-			// pendingIsInitial post-fix, but historically gated on !state.ready)
-			// and TEE_T's receiver pool would never be marked ready.
-			cm.teek.clearOTPool()
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		cm.teek.otReady.Store(true)
-		cm.logger.Info("OT precomputation complete on control connection")
-		return nil
+// connectAndServe runs one full control-connection lifecycle: dial,
+// mutual attestation, OT precomputation, then read-loop until disconnect.
+// On clean disconnect returns nil; on any pre-serve failure returns the
+// error so the supervisor can log + retry. onReady is invoked exactly
+// once after OT precomp succeeds (use sync.Once at the call site for
+// the cross-iteration idempotence).
+func (cm *TEETConnectionManager) connectAndServe(onReady func()) error {
+	conn, err := cm.attemptControlConnection()
+	if err != nil {
+		return fmt.Errorf("attempt: %w", err)
 	}
+
+	wsConn := shared.NewWSConnection(conn)
+	cm.mu.Lock()
+	cm.controlConn = wsConn
+	cm.mu.Unlock()
+	cm.logger.Info("Control connection to TEE_T established")
+
+	// Bidirectional ping/pong heartbeat. Sets the read deadline that the
+	// control read loop relies on, so a dead peer is detected even when
+	// no application messages are flowing.
+	wsConn.StartControlHeartbeat(cm.logger)
+
+	// Start control message handler before OT precomp — it needs to
+	// receive the OT response messages. handleControlMessages now returns
+	// on disconnect rather than chaining a reconnect.
+	handlerDone := make(chan struct{})
+	go func() {
+		cm.handleControlMessages()
+		close(handlerDone)
+	}()
+
+	if err := cm.teek.performOTPrecomputation(oprfmpc.OTPoolInitialSize, true); err != nil {
+		wsConn.Close()
+		<-handlerDone
+		cm.tearDownControl()
+		return fmt.Errorf("OT precompute: %w", err)
+	}
+
+	// Flip both flags together — Audit #7. The router selector treats
+	// (control_healthy ∧ ot_ready) as the readiness signal; flipping them
+	// in lockstep avoids the brief window where one is true and the other
+	// isn't.
+	cm.teek.controlHealthy.Store(true)
+	cm.teek.otReady.Store(true)
+	cm.logger.Info("OT precomputation complete on control connection")
+	onReady()
+
+	// Block until the read loop returns (disconnect or read error).
+	<-handlerDone
+	cm.tearDownControl()
+	return nil
+}
+
+// tearDownControl resets the connection-scoped state shared with TEEK:
+// controlHealthy, OT pool, and cm.controlConn. Called from connectAndServe
+// on any exit path (OT failure, normal disconnect).
+func (cm *TEETConnectionManager) tearDownControl() {
+	cm.attestationMutex.Lock()
+	cm.attestationVerified = false
+	cm.attestationMutex.Unlock()
+
+	cm.teek.teetAttestationMutex.Lock()
+	cm.teek.teetAttestationVerified = false
+	cm.teek.teetAttestationMutex.Unlock()
+
+	cm.teek.controlHealthy.Store(false)
+	// clearOTPool also clears the otReady atomic.
+	cm.teek.clearOTPool()
+
+	cm.mu.Lock()
+	cm.controlConn = nil
+	cm.mu.Unlock()
 }
 
 // dialer returns the WebSocket dialer to use for the given URL.
@@ -291,30 +337,30 @@ func (cm *TEETConnectionManager) attemptControlConnection() (*websocket.Conn, er
 		return nil, fmt.Errorf("attestation verification failed: %v", err)
 	}
 
-	// Mark attestation as verified
+	// Mark attestation as verified. controlHealthy / otReady are flipped
+	// later in connectAndServe — only AFTER OT precomp completes — so
+	// router heartbeat never reports a half-ready state.
 	cm.attestationMutex.Lock()
 	cm.attestationVerified = true
 	cm.attestationMutex.Unlock()
 
-	// Also update TEEK's attestation flag for backward compatibility
 	cm.teek.teetAttestationMutex.Lock()
 	cm.teek.teetAttestationVerified = true
 	cm.teek.teetAttestationMutex.Unlock()
-
-	// Router-mode heartbeat read this; harmless in standalone mode.
-	cm.teek.controlHealthy.Store(true)
 
 	cm.logger.Info("TEE_T attestation verified on control connection")
 
 	return conn, nil
 }
 
-// handleControlMessages handles incoming messages on the control connection
+// handleControlMessages reads from the control connection until disconnect,
+// then returns. Connection teardown and reconnect are owned by the
+// supervisor goroutine in EstablishControlConnection — this function
+// just translates wire bytes into handler calls.
 func (cm *TEETConnectionManager) handleControlMessages() {
 	cm.mu.RLock()
 	conn := cm.controlConn
 	cm.mu.RUnlock()
-
 	if conn == nil {
 		return
 	}
@@ -329,32 +375,8 @@ func (cm *TEETConnectionManager) handleControlMessages() {
 			} else {
 				cm.logger.Error("Control connection lost", zap.Error(err))
 			}
-
-			// Clear attestation flag
-			cm.attestationMutex.Lock()
-			cm.attestationVerified = false
-			cm.attestationMutex.Unlock()
-
-			cm.teek.teetAttestationMutex.Lock()
-			cm.teek.teetAttestationVerified = false
-			cm.teek.teetAttestationMutex.Unlock()
-
-			cm.teek.controlHealthy.Store(false)
-
-			// clearOTPool also clears the otReady atomic.
-			cm.teek.clearOTPool()
-
-			// Clear the broken connection
-			cm.mu.Lock()
-			cm.controlConn = nil
-			cm.mu.Unlock()
-
-			// Reconnect
-			cm.EstablishControlConnection()
 			return
 		}
-
-		// Parse and handle control message
 		cm.handleControlMessage(msgBytes)
 	}
 }

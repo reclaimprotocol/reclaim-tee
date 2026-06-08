@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"fmt"
 	"log"
@@ -72,6 +71,7 @@ type TEEK struct {
 	pairID                  string
 	expectedPeerImageDigest string             // sha256:... of TEE_T container image, for RA-TLS peer verification
 	jwtPubKey               *ecdsa.PublicKey   // verifies client allocation JWTs (nil = no JWT check, local dev)
+	expectedJWTIssuer       string             // expected iss claim on client allocation JWTs
 
 	// Heartbeat observation state — written by the connection manager
 	// (controlHealthy on peer connect/disconnect), OT precompute code
@@ -116,6 +116,7 @@ func NewTEEKForRouter(
 			log.Fatalf("[TEE_K] CRITICAL: parse JWT_PUBLIC_KEY: %v", err)
 		}
 		teek.jwtPubKey = pubKey
+		teek.expectedJWTIssuer = config.ExpectedJWTIssuer
 	}
 	// In router mode the peer URL is derived from PEER_ADDR rather than
 	// the legacy TEET_URL env var. /ws is the base path; the connection
@@ -173,48 +174,20 @@ func initializeOPRFKeyShare(logger *shared.Logger) []byte {
 		logger.Info("Using static OPRF key share (KMS_ENCLAVE_DOMAIN_KEY unset)")
 		return keyShare
 	}
-	share, err := loadPersistentOPRFShare(deploymentKey, "tee_k", logger)
+	share, err := shared.LoadOPRFShare("tee_k", deploymentKey, logger)
 	if err != nil {
 		log.Fatalf("[TEE_K] CRITICAL: load OPRF share: %v", err)
 	}
 	return share
 }
 
-// loadPersistentOPRFShare bridges initializeOPRFKeyShare to shared.SecretStore.
-// Fails fatally if any of the supporting env vars are missing — operators
-// must set all of them when KMS_ENCLAVE_DOMAIN_KEY is in use.
-func loadPersistentOPRFShare(deploymentKey, role string, logger *shared.Logger) ([]byte, error) {
-	projectID := shared.GetEnvOrDefault("GOOGLE_PROJECT_ID", "")
-	kmsLocation := shared.GetEnvOrDefault("GOOGLE_KMS_LOCATION", "")
-	kmsKeyRing := shared.GetEnvOrDefault("GOOGLE_KMS_KEYRING", "")
-	kmsKey := shared.GetEnvOrDefault("GOOGLE_KMS_KEY", "")
-	for name, v := range map[string]string{
-		"GOOGLE_PROJECT_ID":   projectID,
-		"GOOGLE_KMS_LOCATION": kmsLocation,
-		"GOOGLE_KMS_KEYRING":  kmsKeyRing,
-		"GOOGLE_KMS_KEY":      kmsKey,
-	} {
-		if v == "" {
-			return nil, fmt.Errorf("%s required when KMS_ENCLAVE_DOMAIN_KEY is set", name)
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	store, err := shared.NewSecretStore(ctx, projectID, kmsLocation, kmsKeyRing, kmsKey)
-	if err != nil {
-		return nil, fmt.Errorf("new secret store: %w", err)
-	}
-	share, err := store.LoadOrCreateOPRFShare(ctx, role, deploymentKey)
-	if err != nil {
-		return nil, fmt.Errorf("LoadOrCreateOPRFShare: %w", err)
-	}
-	logger.Info("Loaded OPRF share from Secret Manager",
-		zap.String("role", role),
-		zap.String("deployment_key", deploymentKey))
-	return share, nil
-}
+// PairID / Router / ControlHealthy / OTReady / ActiveSessions satisfy
+// shared.HeartbeatTarget so router heartbeat logic lives in shared/.
+func (t *TEEK) PairID() string                { return t.pairID }
+func (t *TEEK) Router() *shared.RouterClient  { return t.router }
+func (t *TEEK) ControlHealthy() bool          { return t.controlHealthy.Load() }
+func (t *TEEK) OTReady() bool                 { return t.otReady.Load() }
+func (t *TEEK) ActiveSessions() int           { return int(t.activeSessions.Load()) }
 
 // SetTEETURL sets the TEE_T connection URL
 func (t *TEEK) SetTEETURL(url string) {
@@ -266,6 +239,7 @@ func (t *TEEK) cleanupSession(sessionID string) {
 		t.logger.WithSession(sessionID).Debug("Session already cleaned up", zap.Error(err))
 		return
 	}
+	t.activeSessions.Add(-1)
 
 	// Cleanup session terminator tracking
 	t.sessionTerminator.CleanupSession(sessionID)

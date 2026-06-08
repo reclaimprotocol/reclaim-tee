@@ -142,10 +142,20 @@ func TestIntegration_FullLifecycle(t *testing.T) {
 	adminAuth := map[string]string{"Authorization": "Bearer " + intAdminToken}
 	addr := i.loopbackAddr()
 
-	// 1. /healthz
+	// 1. /healthz — JSON body with standalone flag.
 	code, body := i.get(t, "/healthz", nil)
-	if code != http.StatusOK || string(body) != "ok" {
+	if code != http.StatusOK {
 		t.Fatalf("healthz: code=%d body=%q", code, body)
+	}
+	var healthz struct {
+		Status     string `json:"status"`
+		Standalone bool   `json:"standalone"`
+	}
+	if err := json.Unmarshal(body, &healthz); err != nil {
+		t.Fatalf("healthz body not JSON: %v (body=%q)", err, body)
+	}
+	if healthz.Status != "ok" || healthz.Standalone {
+		t.Fatalf("healthz unexpected: %+v", healthz)
 	}
 
 	// 2. Allocate before anything is ready → 503

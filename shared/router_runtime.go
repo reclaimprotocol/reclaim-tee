@@ -1,0 +1,163 @@
+//go:build !mobile
+
+package shared
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"go.uber.org/zap"
+)
+
+// HeartbeatTarget is satisfied by both TEEK and TEET via small accessor
+// methods. The router heartbeat goroutine reads through this interface so
+// the loop body lives in shared/ rather than being duplicated per side.
+//
+// PairID returns "" when the side does not yet know its pair_id (TEE_T at
+// boot, before TEE_K's TEEKPairAssignment envelope arrives); RunHeartbeats
+// skips ticks in that state.
+type HeartbeatTarget interface {
+	PairID() string
+	Router() *RouterClient
+	ControlHealthy() bool
+	OTReady() bool
+	ActiveSessions() int
+}
+
+// RouterHeartbeatInterval is the cadence each side reports liveness +
+// observation state to the router. Matches the router's 3-missed-in-15s
+// "dead" threshold.
+const RouterHeartbeatInterval = 5 * time.Second
+
+// RATLSRefreshInterval is how often each side regenerates its RA-TLS
+// cert. GCP Confidential Space attestations expire in ~5 minutes;
+// refreshing every 4 keeps new handshakes validating cleanly.
+const RATLSRefreshInterval = 4 * time.Minute
+
+// RunHeartbeats fires a heartbeat to the router every `interval` until
+// ctx is cancelled. On ErrRouterNotFound (router lost our pair_id, e.g.
+// after a restart in single-replica mode), it calls onLost to re-register;
+// other errors are logged but don't abort the loop.
+func RunHeartbeats(
+	ctx context.Context,
+	target HeartbeatTarget,
+	role string,
+	logger *Logger,
+	onLost func(context.Context) error,
+	interval time.Duration,
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pid := target.PairID()
+			if pid == "" {
+				continue
+			}
+			req := HeartbeatRequest{
+				PairID:         pid,
+				Role:           role,
+				ControlHealthy: target.ControlHealthy(),
+				OTReady:        target.OTReady(),
+				ActiveSessions: target.ActiveSessions(),
+			}
+			_, err := target.Router().Heartbeat(ctx, req)
+			switch {
+			case err == nil:
+				// happy path
+			case errors.Is(err, ErrRouterNotFound):
+				logger.Warn("router lost pair_id, re-registering",
+					zap.String("pair_id", pid))
+				if regErr := onLost(ctx); regErr != nil {
+					logger.Error("re-register failed", zap.Error(regErr))
+				}
+			default:
+				logger.Error("heartbeat failed", zap.Error(err))
+			}
+		}
+	}
+}
+
+// RunRATLSRefresh rotates the RA-TLS cert on a fixed interval until ctx
+// is cancelled. Errors are logged; the loop continues so a transient
+// launcher-socket failure doesn't kill the goroutine.
+func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, logger *Logger) {
+	ticker := time.NewTicker(RATLSRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := ratls.Refresh(ctx); err != nil {
+				logger.Error("RA-TLS refresh failed", zap.Error(err))
+				continue
+			}
+			logger.Debug("RA-TLS refreshed")
+		}
+	}
+}
+
+// ExtractIdentityFromRATLS reads the in-flight RA-TLS cert and pulls the
+// attestation JWT + container image digest out of it. The same JWT goes
+// into the router registration body; the digest is the router's
+// allowlist key.
+func ExtractIdentityFromRATLS(ratls *RATLSManager, logger *Logger) (imageDigest string, attestationJWT []byte, err error) {
+	cert := ratls.Certificate()
+	if cert == nil || cert.Leaf == nil {
+		return "", nil, errors.New("RA-TLS manager has no current cert")
+	}
+	attestationJWT, err = ExtractAttestationFromCert(cert.Leaf)
+	if err != nil {
+		return "", nil, fmt.Errorf("extract attestation: %w", err)
+	}
+	imageDigest, err = ExtractImageDigestFromGCPAttestation(attestationJWT, logger)
+	if err != nil {
+		return "", nil, fmt.Errorf("extract image digest: %w", err)
+	}
+	return imageDigest, attestationJWT, nil
+}
+
+// LoadOPRFShare reads (or creates) this side's persistent MPC OPRF key
+// share from GCP Secret Manager. role is "tee_k" or "tee_t"; deploymentKey
+// is the per-deployment discriminator (e.g. "tk.reclaimprotocol.org") that
+// disambiguates the secret name. Requires GOOGLE_PROJECT_ID, GOOGLE_KMS_
+// LOCATION, GOOGLE_KMS_KEYRING, GOOGLE_KMS_KEY to be set.
+func LoadOPRFShare(role, deploymentKey string, logger *Logger) ([]byte, error) {
+	required := []struct {
+		name, value string
+	}{
+		{"GOOGLE_PROJECT_ID", GetEnvOrDefault("GOOGLE_PROJECT_ID", "")},
+		{"GOOGLE_KMS_LOCATION", GetEnvOrDefault("GOOGLE_KMS_LOCATION", "")},
+		{"GOOGLE_KMS_KEYRING", GetEnvOrDefault("GOOGLE_KMS_KEYRING", "")},
+		{"GOOGLE_KMS_KEY", GetEnvOrDefault("GOOGLE_KMS_KEY", "")},
+	}
+	for _, r := range required {
+		if r.value == "" {
+			return nil, fmt.Errorf("%s required when KMS_ENCLAVE_DOMAIN_KEY is set", r.name)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	store, err := NewSecretStore(ctx, required[0].value, required[1].value, required[2].value, required[3].value)
+	if err != nil {
+		return nil, fmt.Errorf("new secret store: %w", err)
+	}
+	share, err := store.LoadOrCreateOPRFShare(ctx, role, deploymentKey)
+	if err != nil {
+		return nil, fmt.Errorf("LoadOrCreateOPRFShare: %w", err)
+	}
+	if logger != nil {
+		logger.Info("Loaded OPRF share from Secret Manager",
+			zap.String("role", role),
+			zap.String("deployment_key", deploymentKey))
+	}
+	return share, nil
+}

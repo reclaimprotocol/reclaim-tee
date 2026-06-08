@@ -22,6 +22,8 @@ type TEETConfig struct {
 	PeerAddr                string `json:"peer_addr,omitempty"`
 	ExpectedPeerImageDigest string `json:"expected_peer_image_digest,omitempty"`
 	JWTPublicKey            string `json:"jwt_public_key,omitempty"`
+	ExpectedJWTIssuer       string `json:"expected_jwt_issuer,omitempty"`
+	KMSEnclaveDomainKey     string `json:"kms_enclave_domain_key,omitempty"`
 }
 
 // RouterMode returns true when the router-mode boot path should be used.
@@ -45,5 +47,7 @@ func LoadTEETConfig() *TEETConfig {
 		PeerAddr:                shared.GetEnvOrDefault("PEER_ADDR", ""),
 		ExpectedPeerImageDigest: shared.GetEnvOrDefault("EXPECTED_PEER_IMAGE_DIGEST", ""),
 		JWTPublicKey:            shared.GetEnvOrDefault("JWT_PUBLIC_KEY", ""),
+		ExpectedJWTIssuer:       shared.GetEnvOrDefault("EXPECTED_JWT_ISSUER", ""),
+		KMSEnclaveDomainKey:     shared.GetEnvOrDefault("KMS_ENCLAVE_DOMAIN_KEY", ""),
 	}
 }

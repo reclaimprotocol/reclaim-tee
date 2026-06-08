@@ -296,7 +296,7 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// is skipped and the first wire message is whatever the legacy protocol
 	// expects.
 	if t.jwtPubKey != nil {
-		if _, err := shared.ReadAndVerifyClientAuth(conn, t.jwtPubKey, t.pairID); err != nil {
+		if _, err := shared.ReadAndVerifyClientAuth(conn, t.jwtPubKey, t.expectedJWTIssuer, t.pairID); err != nil {
 			t.logger.Warn("Rejecting client: ClientAuth invalid", zap.Error(err))
 			_ = conn.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(4001, "unauthorized"),
@@ -314,6 +314,7 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
+	t.activeSessions.Add(1)
 
 	t.logger.Info("Session created", zap.String("sid", shared.TruncateSessionID(sessionID)))
 
