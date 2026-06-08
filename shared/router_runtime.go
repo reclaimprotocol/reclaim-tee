@@ -31,6 +31,14 @@ type HeartbeatTarget interface {
 // "dead" threshold.
 const RouterHeartbeatInterval = 5 * time.Second
 
+// InitialRegisterRetryWindow bounds how long startRouterMode keeps
+// retrying /register before giving up. A transient router 5xx or a
+// stale source-IP check during router redeploy shouldn't kill the TEE
+// VM (tee-restart-policy=Never means a process exit terminates the VM
+// permanently). 2 minutes covers a Cloud Run revision swap plus a
+// bit of slack.
+const InitialRegisterRetryWindow = 2 * time.Minute
+
 // RATLSRefreshInterval is how often each side regenerates its RA-TLS
 // cert. GCP Confidential Space attestations expire in ~5 minutes;
 // refreshing every 4 keeps new handshakes validating cleanly.
@@ -79,6 +87,38 @@ func RunHeartbeats(
 			default:
 				logger.Error("heartbeat failed", zap.Error(err))
 			}
+		}
+	}
+}
+
+// RegisterWithRetry calls the supplied register fn with exponential
+// backoff up to InitialRegisterRetryWindow. Use at boot so a transient
+// router error (5xx, a stale source-IP check during router redeploy,
+// etc.) doesn't kill the TEE process — which would terminate the VM
+// permanently under tee-restart-policy=Never. Returns the last error
+// only if the window is exhausted.
+func RegisterWithRetry(ctx context.Context, register func(context.Context) error, logger *Logger) error {
+	deadline := time.Now().Add(InitialRegisterRetryWindow)
+	backoff := 1 * time.Second
+	var lastErr error
+	for {
+		err := register(ctx)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if time.Now().Add(backoff).After(deadline) {
+			return fmt.Errorf("register retry window exhausted: %w", lastErr)
+		}
+		logger.Warn("register failed, retrying", zap.Duration("backoff", backoff), zap.Error(err))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > 15*time.Second {
+			backoff = 15 * time.Second
 		}
 	}
 }

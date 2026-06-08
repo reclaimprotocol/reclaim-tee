@@ -130,8 +130,8 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	var startOnce sync.Once
 	teet.onPairAssigned = func(pairID string) {
 		startOnce.Do(func() {
-			if err := register(ctx); err != nil {
-				logger.Critical("router registration failed", zap.Error(err))
+			if err := shared.RegisterWithRetry(ctx, register, logger); err != nil {
+				logger.Critical("router registration failed after retries", zap.Error(err))
 				return
 			}
 			go shared.RunHeartbeats(ctx, teet, "T", logger, register, shared.RouterHeartbeatInterval)

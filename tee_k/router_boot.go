@@ -113,8 +113,8 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 		return nil
 	}
 
-	if err := register(ctx); err != nil {
-		logger.Critical("router registration failed", zap.Error(err))
+	if err := shared.RegisterWithRetry(ctx, register, logger); err != nil {
+		logger.Critical("router registration failed after retries", zap.Error(err))
 		return
 	}
 
