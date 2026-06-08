@@ -153,6 +153,10 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (req registerRequest) validate() error {
+	// AttestationJWT is intentionally NOT required here — the handler
+	// checks it (via AttestValidator) in production mode and skips it
+	// entirely in standalone mode. Validation at this layer is purely
+	// structural.
 	switch {
 	case req.PairID == "":
 		return errors.New("pair_id is required")
@@ -164,8 +168,6 @@ func (req registerRequest) validate() error {
 		return errors.New("peer_addr_claim is required")
 	case req.ImageDigest == "":
 		return errors.New("image_digest is required")
-	case req.AttestationJWT == "":
-		return errors.New("attestation_jwt is required")
 	}
 	if _, err := uuid.Parse(req.PairID); err != nil {
 		return errors.New("pair_id must be a valid UUID")
