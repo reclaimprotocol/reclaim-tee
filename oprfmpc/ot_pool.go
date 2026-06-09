@@ -182,11 +182,17 @@ type OTReceiverEntry struct {
 	Used              bool
 }
 
-// OTReceiverPool manages precomputed OT entries for the evaluator (TEE_T)
+// OTReceiverPool manages precomputed OT entries for the evaluator (TEE_T).
+//
+// Consumption is by ABSOLUTE INDEX (the sender, TEE_K, picks the index via
+// its own Reserve and tells TEE_T over the wire). The previous "monotonic
+// nextIndex" guard was unsound under concurrent sessions: each session has
+// its own per-session WS connection to TEE_T, so OPRF online messages
+// across sessions arrive in arbitrary order — sometimes higher indices
+// land first. The actual replay defense is the per-entry Used flag.
 type OTReceiverPool struct {
 	mu         sync.Mutex
 	entries    []*OTReceiverEntry
-	nextIndex  int // Next unused entry
 	totalCount int // Total entries allocated
 	usedCount  int // Consumed entries
 }
@@ -195,7 +201,6 @@ type OTReceiverPool struct {
 func NewOTReceiverPool(capacity int) *OTReceiverPool {
 	return &OTReceiverPool{
 		entries:    make([]*OTReceiverEntry, 0, capacity),
-		nextIndex:  0,
 		totalCount: 0,
 		usedCount:  0,
 	}
@@ -213,40 +218,37 @@ func (p *OTReceiverPool) AddEntries(entries []*OTReceiverEntry) {
 	p.totalCount += len(entries)
 }
 
-// Consume retrieves entries from the pool starting at the given index.
-// If startIndex is ahead of nextIndex, the skipped entries are marked as wasted
-// (this happens when TEE_K reserved entries but OPRF failed before reaching TEE_T).
+// Consume retrieves entries from the pool at the given absolute index.
+// Returns an error if the range is out of bounds or any entry is already
+// used. Order-independent — concurrent OPRF online messages from different
+// sessions can arrive at TEE_T in any order; only the per-entry Used flag
+// guards against replay/double-consume.
 func (p *OTReceiverPool) Consume(startIndex int, count int) ([]*OTReceiverEntry, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if startIndex < p.nextIndex {
-		return nil, fmt.Errorf("OT index behind: expected >= %d, got %d (possible replay)", p.nextIndex, startIndex)
+	if startIndex < 0 || count <= 0 {
+		return nil, fmt.Errorf("invalid OT range: startIndex=%d count=%d", startIndex, count)
 	}
-
-	// Skip ahead if TEE_K wasted entries (e.g., OPRF failed after reserving)
-	if startIndex > p.nextIndex {
-		skipped := startIndex - p.nextIndex
-		p.nextIndex = startIndex
-		p.usedCount += skipped
-	}
-
 	if startIndex+count > p.totalCount {
 		return nil, fmt.Errorf("insufficient OT entries: need %d at index %d, have %d total",
 			count, startIndex, p.totalCount)
 	}
 
+	// Validate all entries are unused BEFORE mutating any — keeps the pool
+	// consistent if a partial range is already used (no half-consumed state).
+	for i := 0; i < count; i++ {
+		if p.entries[startIndex+i].Used {
+			return nil, fmt.Errorf("OT entry %d already used (replay)", startIndex+i)
+		}
+	}
+
 	entries := make([]*OTReceiverEntry, count)
 	for i := 0; i < count; i++ {
-		entry := p.entries[p.nextIndex+i]
-		if entry.Used {
-			return nil, fmt.Errorf("OT entry %d already used (corruption detected)", p.nextIndex+i)
-		}
+		entry := p.entries[startIndex+i]
 		entry.Used = true
 		entries[i] = entry
 	}
-
-	p.nextIndex += count
 	p.usedCount += count
 
 	return entries, nil
@@ -272,7 +274,6 @@ func (p *OTReceiverPool) Clear() {
 	defer p.mu.Unlock()
 
 	p.entries = nil
-	p.nextIndex = 0
 	p.totalCount = 0
 	p.usedCount = 0
 }
