@@ -37,12 +37,15 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := s.Logger
 
+	var saEmail string
 	if !s.Config.Standalone {
-		if _, err := s.authenticateSA(r); err != nil {
+		saClaims, err := s.authenticateSA(r)
+		if err != nil {
 			log.Warn("heartbeat: SA token invalid", zap.Error(err))
 			writeErr(w, http.StatusUnauthorized, "invalid SA token")
 			return
 		}
+		saEmail = saClaims.Email
 	}
 
 	var req heartbeatRequest
@@ -62,11 +65,21 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	registeredAddr := p.TEEKAddr
+	expectedSAEmail := s.Config.TEEKSAEmail
 	if store.Role(req.Role) == store.RoleT {
 		registeredAddr = p.TEETAddr
+		expectedSAEmail = s.Config.TEETSAEmail
 	}
 	if registeredAddr == "" {
 		writeErr(w, http.StatusNotFound, "role has not registered for this pair")
+		return
+	}
+	if !s.Config.Standalone && expectedSAEmail != "" && expectedSAEmail != saEmail {
+		log.Warn("heartbeat: SA email not approved for role",
+			zap.String("role", req.Role),
+			zap.String("expected", expectedSAEmail),
+			zap.String("got", saEmail))
+		writeErr(w, http.StatusForbidden, "SA identity not approved for role")
 		return
 	}
 

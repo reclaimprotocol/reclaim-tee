@@ -228,6 +228,26 @@ func TestRegisterRejectsDigestNotInAllowlist(t *testing.T) {
 	}
 }
 
+// TEE_T's SA presenting role=K is rejected by per-role config pinning.
+func TestRegisterRejectsCrossRoleSA(t *testing.T) {
+	s := newTestServer(t)
+	s.Config.TEEKSAEmail = "tee-k-sa@new-reclaim-architecture.iam.gserviceaccount.com"
+	s.Config.TEETSAEmail = "tee-t-sa@new-reclaim-architecture.iam.gserviceaccount.com"
+
+	// SA validator returns the tee-t SA; the request claims role=K.
+	s.SAValidator = &fakeSAValidator{
+		claims: &auth.SAClaims{
+			Email:            "tee-t-sa@new-reclaim-architecture.iam.gserviceaccount.com",
+			RegisteredClaims: jwt.RegisteredClaims{},
+		},
+	}
+	w := doRegister(t, s, validBody("K", teekIP+":443", teetIP+":443"),
+		teekIP+":12345", "Bearer tee-t-token")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-role registration: got %d body=%s, want 403", w.Code, w.Body.String())
+	}
+}
+
 func TestRegisterRejectsBadRole(t *testing.T) {
 	s := newTestServer(t)
 	body := validBody("X", teekIP+":443", teetIP+":443")

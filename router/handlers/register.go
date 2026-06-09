@@ -115,6 +115,22 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// don't match by design. pair_id is the authoritative identifier;
 	// SA token + attestation + image_digest already authenticate the
 	// caller. The peer-addr claim is now informational only.
+	// Per-role SA binding: each role has one expected SA email (config-pinned).
+	if !s.Config.Standalone {
+		expected := s.Config.TEEKSAEmail
+		if store.Role(req.Role) == store.RoleT {
+			expected = s.Config.TEETSAEmail
+		}
+		if expected != "" && expected != saEmail {
+			log.Warn("register: SA email mismatch for role",
+				zap.String("role", req.Role),
+				zap.String("expected", expected),
+				zap.String("got", saEmail))
+			writeErr(w, http.StatusForbidden, "SA identity not approved for role")
+			return
+		}
+	}
+
 	switch store.Role(req.Role) {
 	case store.RoleK:
 		p.TEEKAddr = req.SelfAddr

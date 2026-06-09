@@ -24,6 +24,12 @@ type Config struct {
 	ApprovedDigests   []string       // image digests TEEs may attest to
 	ApprovedSAPattern *regexp.Regexp // GCP service account email pattern
 
+	// Single shared SA per role; the SA email a TEE_K (resp. TEE_T) MUST
+	// present in its identity token. Bound to role at /register and
+	// /heartbeat. Unset means no per-role binding (legacy / standalone).
+	TEEKSAEmail string
+	TEETSAEmail string
+
 	// Thresholds used by Pair.EffectiveStatus.
 	HeartbeatStaleness time.Duration // missed-heartbeat threshold before "dead"
 	ControlUnhealthy   time.Duration // control_healthy=false sustained → "degraded"
@@ -130,7 +136,14 @@ func Load() (*Config, error) {
 		AdminToken:         os.Getenv("ADMIN_TOKEN"),
 		FirestoreProjectID: os.Getenv("FIRESTORE_PROJECT_ID"),
 		KMSKeyName:         os.Getenv("KMS_KEY_NAME"),
+		TEEKSAEmail:        os.Getenv("TEE_K_SA_EMAIL"),
+		TEETSAEmail:        os.Getenv("TEE_T_SA_EMAIL"),
 		Standalone:         standalone,
+	}
+	if !standalone {
+		if cfg.TEEKSAEmail == "" || cfg.TEETSAEmail == "" {
+			return nil, fmt.Errorf("TEE_K_SA_EMAIL and TEE_T_SA_EMAIL are required (single shared SA per role)")
+		}
 	}
 	if cfg.Standalone {
 		// Standalone mode forces zero external deps: in-memory store +
