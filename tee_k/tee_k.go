@@ -161,7 +161,7 @@ func NewTEEK(port int) *TEEK {
 	sessionManager := NewTEEKSessionManager()
 	sessionManager.SetLogger(logger)
 
-	return &TEEK{
+	teek := &TEEK{
 		port:              port,
 		sessionManager:    sessionManager,
 		sessionTerminator: shared.NewSessionTerminator(logger),
@@ -171,6 +171,24 @@ func NewTEEK(port int) *TEEK {
 		certFetcher:       certFetcher,
 		oprfKeyShare:      oprfKeyShare,
 	}
+
+	// Wire the SessionManager expiry callback to do the same per-session
+	// cleanup the normal close path does. Without this, sessions removed
+	// by the 30-min inactivity ticker leak: the activeSessions atomic
+	// stays inflated (drain becomes untrustworthy), the per-session
+	// TEEKSessionState entry stays in teekStates, and the per-session WS
+	// to TEE_T stays open. See memory note: active-sessions-counter-leak.
+	sessionManager.SetOnSessionExpired(func(sessionID string) {
+		if teek.connManager != nil {
+			teek.connManager.CloseSessionConnection(sessionID, "session_expired")
+		}
+		sessionManager.RemoveTEEKSessionState(sessionID)
+		teek.activeSessions.Add(-1)
+		teek.sessionTerminator.CleanupSession(sessionID)
+		teek.logger.WithSession(sessionID).Info("Session expired and cleaned up by ticker")
+	})
+
+	return teek
 }
 
 // initializeOPRFKeyShare returns TEE_K's MPC OPRF key share. When

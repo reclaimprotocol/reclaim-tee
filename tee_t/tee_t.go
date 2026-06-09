@@ -128,7 +128,7 @@ func NewTEETWithLogger(port int, logger *shared.Logger) *TEET {
 	sessionManager := NewTEETSessionManager()
 	sessionManager.SetLogger(logger)
 
-	return &TEET{
+	teet := &TEET{
 		port:              port,
 		sessionManager:    sessionManager,
 		logger:            logger,
@@ -136,6 +136,24 @@ func NewTEETWithLogger(port int, logger *shared.Logger) *TEET {
 		signingKeyPair:    signingKeyPair,
 		oprfKeyShare:      oprfKeyShare,
 	}
+
+	// See the matching note on TEE_K: drive the same per-session cleanup
+	// from the SessionManager expiry ticker as the normal close path does,
+	// so activeSessions stays accurate and teetStates / per-session WS to
+	// peer don't leak.
+	sessionManager.SetOnSessionExpired(func(sessionID string) {
+		if teet.connManager != nil {
+			teet.connManager.CloseSessionConnection(sessionID)
+		}
+		sessionManager.RemoveTEETSessionState(sessionID)
+		teet.activeSessions.Add(-1)
+		teet.sessionTerminator.CleanupSession(sessionID)
+		if teet.logger != nil {
+			teet.logger.WithSession(sessionID).Info("Session expired and cleaned up by ticker")
+		}
+	})
+
+	return teet
 }
 
 // NewTEETForRouter constructs a TEET wired for the V2 router-mode path.
