@@ -81,5 +81,6 @@ require (
 
 replace (
 	github.com/consensys/gnark-crypto v0.20.1 => github.com/consensys/gnark-crypto v0.19.2
+	github.com/markkurossi/mpc => ./third_party/mpc
 	github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260407154851-d134fefd8eff => github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20251205140100-6fd752973b8f
 )

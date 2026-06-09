@@ -1,0 +1,130 @@
+// -*- go -*-
+//
+// Copyright (c) 2025 Markku Rossi
+//
+// All rights reserved.
+//
+
+// Package chacha205 implements the ChaCha20 stream cipher.
+package chacha20
+
+import (
+	"encoding/binary"
+)
+
+const (
+	// KeySize specifies the key size in bytes.
+	KeySize = 32
+
+	// NonceSize specifies the nonce size in bytes.
+	NonceSize = 12
+
+	// BlockSize specifies the block size in bytes.
+	BlockSize = 64
+)
+
+func add32(a, b uint32) uint32 {
+	return a + b
+}
+
+func xor32(a, b uint32) uint32 {
+	return a ^ b
+}
+
+func rotl32(x uint32, n uint32) uint32 {
+	return (x << n) | (x >> (32 - n))
+}
+
+func quarterRound(s *[16]uint32, a, b, c, d int) {
+	s[a] = add32(s[a], s[b])
+	s[d] = rotl32(xor32(s[d], s[a]), 16)
+
+	s[c] = add32(s[c], s[d])
+	s[b] = rotl32(xor32(s[b], s[c]), 12)
+
+	s[a] = add32(s[a], s[b])
+	s[d] = rotl32(xor32(s[d], s[a]), 8)
+
+	s[c] = add32(s[c], s[d])
+	s[b] = rotl32(xor32(s[b], s[c]), 7)
+}
+
+// Block creates one block fo ChaCha20 key stream for key, counter,
+// and nonce. Block uses a pre-compiled circuit so it is normally
+// faster than BlockMPCL.
+func Block(key [KeySize]byte, counter uint32, nonce [NonceSize]byte) [64]byte {
+	return native("chacha20block.mpclc", key, counter, nonce)
+}
+
+// BlockMPCL creates one block fo ChaCha20 key stream for key,
+// counter, and nonce.
+func BlockMPCL(key [KeySize]byte, counter uint32,
+	nonce [NonceSize]byte) [64]byte {
+
+	var state [16]uint32
+
+	// Constants "expand 32-byte k"
+	state[0] = 0x61707865
+	state[1] = 0x3320646e
+	state[2] = 0x79622d32
+	state[3] = 0x6b206574
+
+	// Key
+	for i := 0; i < 8; i++ {
+		state[4+i] = binary.GetUint32LSB(key[i*4 : (i+1)*4])
+	}
+
+	state[12] = counter
+
+	// Nonce
+	state[13] = binary.GetUint32LSB(nonce[0:4])
+	state[14] = binary.GetUint32LSB(nonce[4:8])
+	state[15] = binary.GetUint32LSB(nonce[8:12])
+
+	working := state
+
+	for i := 0; i < 10; i++ {
+		// column
+		quarterRound(&working, 0, 4, 8, 12)
+		quarterRound(&working, 1, 5, 9, 13)
+		quarterRound(&working, 2, 6, 10, 14)
+		quarterRound(&working, 3, 7, 11, 15)
+		// diagonal
+		quarterRound(&working, 0, 5, 10, 15)
+		quarterRound(&working, 1, 6, 11, 12)
+		quarterRound(&working, 2, 7, 8, 13)
+		quarterRound(&working, 3, 4, 9, 14)
+	}
+
+	for i := 0; i < 16; i++ {
+		working[i] = add32(working[i], state[i])
+	}
+
+	var out [64]byte
+	for i := 0; i < 16; i++ {
+		out = binary.PutUint32LSB(out, i*4, working[i])
+	}
+	return out
+}
+
+// XORKeyStream XORs each byte in the plaintext slice with a byte from
+// the cipher's key stream. The function returns the ciphertext.
+func XORKeyStream(key [KeySize]byte, nonce [NonceSize]byte, counter uint32,
+	plaintext []byte) []byte {
+
+	var cipher [len(plaintext)]byte
+	var block [BlockSize]byte
+
+	for i := 0; i < len(plaintext); i += BlockSize {
+		block = Block(key, counter, nonce)
+		counter++
+
+		for j := 0; j < BlockSize; j++ {
+			if i+j < len(plaintext) {
+				cipher[i+j] = plaintext[i+j] ^ block[j]
+			}
+		}
+	}
+
+	return cipher
+}

@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -93,13 +94,19 @@ func InstallSignalCrashHandler(logger *Logger) {
 	}()
 }
 
-// RunRuntimeStatsLogger logs goroutine count + memory stats every minute.
-// If the process is leaking goroutines or memory before dying, this is the
-// trail that tells us. Stop by cancelling ctx.
+// liveness tracks the last time RunRuntimeStatsLogger emitted a heartbeat.
+// The deadlock watchdog reads it from a fully-independent goroutine that
+// holds no locks the rest of the process uses.
+var liveness atomic.Int64 // unix nanos of last RunRuntimeStatsLogger tick
+
+// RunRuntimeStatsLogger logs goroutine count + memory stats every minute,
+// AND updates the global liveness atomic so RunDeadlockWatchdog can detect
+// the case where this very loop is no longer running. Stop by cancelling ctx.
 func RunRuntimeStatsLogger(ctx context.Context, logger *Logger) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	var ms runtime.MemStats
+	liveness.Store(time.Now().UnixNano())
 	for {
 		select {
 		case <-ctx.Done():
@@ -114,6 +121,80 @@ func RunRuntimeStatsLogger(ctx context.Context, logger *Logger) {
 				zap.Uint32("num_gc", ms.NumGC),
 				zap.Uint64("next_gc_mb", ms.NextGC/1024/1024),
 			)
+			liveness.Store(time.Now().UnixNano())
+		}
+	}
+}
+
+// RunDeadlockWatchdog catches the failure mode where every goroutine is
+// blocked (mutex deadlock, channel deadlock, scheduler stall) such that
+// neither the panic-recover defers nor the SIGTERM signal handler can run.
+//
+// Mechanism: the runtime-stats logger ticks every 60s and updates the
+// `liveness` atomic. If THIS goroutine wakes up and sees liveness more
+// than `deadlockThreshold` ago, the rest of the process is dead. We dump
+// every goroutine's stack — to stderr DIRECTLY (no zap, no buffered sink
+// — fmt.Fprintln to fd 2 is one syscall and survives a wedged scheduler)
+// — then os.Exit(137) so the launcher restarts us cleanly.
+//
+// Tunables:
+//   - deadlockThreshold: 120s. RunRuntimeStatsLogger ticks every 60s, so
+//     2x grace before declaring death. Bigger = fewer false positives;
+//     smaller = faster recovery from a real deadlock.
+//   - check interval: 30s. Cheap.
+//
+// Must be started AFTER RunRuntimeStatsLogger so the initial liveness
+// value is set.
+func RunDeadlockWatchdog(ctx context.Context, logger *Logger) {
+	const deadlockThreshold = 120 * time.Second
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			lastNanos := liveness.Load()
+			if lastNanos == 0 {
+				continue // stats logger hasn't started yet
+			}
+			gap := now.Sub(time.Unix(0, lastNanos))
+			if gap < deadlockThreshold {
+				continue
+			}
+
+			// DEADLOCK DETECTED. Dump everything to stderr SYNCHRONOUSLY
+			// before doing anything else — zap.Sync may itself be stuck
+			// on a mutex the wedged goroutines hold.
+			buf := make([]byte, 4<<20)
+			n := runtime.Stack(buf, true)
+
+			fmt.Fprintf(os.Stderr,
+				"\n=== DEADLOCK WATCHDOG TRIPPED ===\n"+
+					"last runtime-stats heartbeat: %v ago (threshold %v)\n"+
+					"goroutines: %d\n"+
+					"=== STACK DUMP (%d bytes) ===\n%s\n"+
+					"=== END DUMP ===\n",
+				gap, deadlockThreshold, runtime.NumGoroutine(), n, buf[:n])
+			_ = os.Stderr.Sync()
+
+			// Try to log structurally too, but don't trust it to finish.
+			if logger != nil {
+				go func() {
+					logger.Error("deadlock watchdog tripped",
+						zap.Duration("gap", gap),
+						zap.Int("num_goroutines", runtime.NumGoroutine()),
+						zap.ByteString("stacks", buf[:n]),
+					)
+					_ = logger.Logger.Sync()
+				}()
+			}
+
+			// Give stderr 1s to flush to the launcher's log capture,
+			// then take the process out. The launcher will see a non-
+			// zero exit, schedule a restart per the container policy.
+			time.Sleep(1 * time.Second)
+			os.Exit(137) // 128 + SIGKILL, mnemonic for "killed by watchdog"
 		}
 	}
 }

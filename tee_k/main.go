@@ -30,6 +30,14 @@ func main() {
 	defer shared.RecoverAndCrash(logger, "tee_k.main")
 	shared.InstallSignalCrashHandler(logger)
 	go shared.RunRuntimeStatsLogger(context.Background(), logger)
+	// Deadlock watchdog: if the runtime-stats logger stops ticking for
+	// 2 minutes, dump every goroutine to stderr and exit(137). Catches
+	// the wedge case where every goroutine is blocked on a lock and
+	// even the SIGTERM handler can't run.
+	go shared.RunDeadlockWatchdog(context.Background(), logger)
+	// pprof debug server — only when DEBUG_PPROF_PORT env is set
+	// (local dev only). Production never sets it.
+	shared.MaybeStartPprofServer(logger)
 
 	// Start background root CA updater (fetches fresh certs from curl.se daily)
 	StartRootCAUpdater(logger)

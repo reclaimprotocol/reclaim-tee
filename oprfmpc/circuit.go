@@ -119,6 +119,29 @@ type CMACOnlinePayload struct {
 	OutputHints   []ot.Wire    // For decoding output
 	DualMasks     []DualMask   // M0||M1 pairs for derandomized OT
 	OTStartIndex  int          // Starting index in precomputed OT pool
+
+	// garbled holds the *circuit.Garbled this payload was carved from
+	// (set only when produced by CMACGarblerOnline). When non-nil,
+	// GarbledTables and the other slice fields above point into pooled
+	// scratch buffers — caller MUST invoke Release after serializing
+	// the payload to the wire so the scratch returns to the pool.
+	garbled *circuit.Garbled
+}
+
+// Release returns the pooled garble scratch backing this payload's
+// GarbledTables / etc to the circuit's scratch pool. Safe to call on
+// payloads built from DeserializeOnlinePayload (no-op) and on a payload
+// that has already been released (no-op). After Release the payload's
+// GarbledTables slices MUST NOT be touched — the next garble may reuse
+// the same memory.
+func (p *CMACOnlinePayload) Release() {
+	if p == nil || p.garbled == nil {
+		return
+	}
+	g := p.garbled
+	p.garbled = nil
+	p.GarbledTables = nil
+	g.Release()
 }
 
 // CMACOnlineResult holds the evaluator's output
@@ -234,6 +257,7 @@ func CMACGarblerOnline(rng io.Reader, curve elliptic.Curve, garblerInput [80]byt
 		OutputHints:   outputHints,
 		DualMasks:     dualMasks,
 		OTStartIndex:  otStartIndex,
+		garbled:       garbled,
 	}
 
 	session := &CMACGarblerOnlineSession{

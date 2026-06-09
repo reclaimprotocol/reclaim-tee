@@ -130,8 +130,14 @@ func (t *TEEK) initiateOPRFForRange(sessionID string, teekState *TEEKSessionStat
 		return fmt.Errorf("failed to compute TLS session hash: %w", err)
 	}
 
-	// Serialize the payload
+	// Serialize the payload (drains the slab-backed slices).
 	serializedPayload := oprfmpc.SerializeOnlinePayload(payload)
+	serializedDualMasks := oprfmpc.SerializeDualMasks(payload.DualMasks)
+	// Return the garble scratch to the per-circuit pool now that all
+	// slab-backed slices have been read into the serialized buffers.
+	// Skipping this would still be correct — GC handles the buffers —
+	// but reuse cuts steady-state alloc traffic ~5x under sustained load.
+	payload.Release()
 
 	t.logger.WithSession(sessionID).Debug("Sending OPRF online full",
 		zap.Int("range", rangeIndex),
@@ -149,7 +155,7 @@ func (t *TEEK) initiateOPRFForRange(sessionID string, teekState *TEEKSessionStat
 		GarblerInputs:  nil,               // Included in serialized payload
 		OutputHints:    nil,               // Included in serialized payload
 		OtStartIndex:   uint32(startIdx),
-		DualMasks:      oprfmpc.SerializeDualMasks(payload.DualMasks),
+		DualMasks:      serializedDualMasks,
 	})
 }
 

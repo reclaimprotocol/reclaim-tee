@@ -28,6 +28,10 @@ func main() {
 	defer shared.RecoverAndCrash(logger, "tee_t.main")
 	shared.InstallSignalCrashHandler(logger)
 	go shared.RunRuntimeStatsLogger(context.Background(), logger)
+	// Deadlock watchdog — see comment in tee_k/main.go.
+	go shared.RunDeadlockWatchdog(context.Background(), logger)
+	// pprof debug server — local-dev only.
+	shared.MaybeStartPprofServer(logger)
 
 	// Router mode is the production path (multi-pair, RA-TLS, router-mediated).
 	// Standalone mode remains for local dev only — no TLS, no attestation.
