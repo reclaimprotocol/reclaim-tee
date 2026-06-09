@@ -39,6 +39,18 @@ type TEETSessionState struct {
 	// when BOTH halves have arrived") instead of approximating it.
 	RequestPartsArrived atomic.Int32
 
+	// CleanedUp is the CAS guard that makes cleanupSession idempotent
+	// w.r.t. the activeSessions atomic decrement. Multiple cleanup paths
+	// legitimately fire for the same session (websocket exit, per-session
+	// WS handler exit, terminate-on-error, expiry-ticker callback); only
+	// the caller that swaps this false→true owns the decrement and the
+	// rest of the side-effect cleanup. Before this guard existed, every
+	// cleanup-path race left one increment uncounted, and after a 2000/50
+	// load test the router's `/pairs.active_sessions` would persistently
+	// show hundreds of phantom sessions long after the session map went
+	// to zero.
+	CleanedUp atomic.Bool
+
 	// MPC OPRF state (2-round protocol - no session tracking needed)
 	OPRFKeyShare         []byte                     // 16-byte key share for MPC OPRF
 	ClientOPRFRanges     []*teeproto.OPRFRangeSpec  // Client-provided OPRF ranges

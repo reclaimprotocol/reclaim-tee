@@ -137,21 +137,9 @@ func NewTEETWithLogger(port int, logger *shared.Logger) *TEET {
 		oprfKeyShare:      oprfKeyShare,
 	}
 
-	// See the matching note on TEE_K: drive the same per-session cleanup
-	// from the SessionManager expiry ticker as the normal close path does,
-	// so activeSessions stays accurate and teetStates / per-session WS to
-	// peer don't leak.
-	sessionManager.SetOnSessionExpired(func(sessionID string) {
-		if teet.connManager != nil {
-			teet.connManager.CloseSessionConnection(sessionID)
-		}
-		sessionManager.RemoveTEETSessionState(sessionID)
-		teet.activeSessions.Add(-1)
-		teet.sessionTerminator.CleanupSession(sessionID)
-		if teet.logger != nil {
-			teet.logger.WithSession(sessionID).Info("Session expired and cleaned up by ticker")
-		}
-	})
+	// See tee_k.go's matching wiring: the expiry-ticker callback and the
+	// normal-close path now share one idempotent cleanupSession.
+	sessionManager.SetOnSessionExpired(teet.cleanupSession)
 
 	return teet
 }
@@ -245,20 +233,26 @@ func (t *TEET) ControlHealthy() bool         { return t.controlHealthy.Load() }
 func (t *TEET) OTReady() bool                { return t.otReady.Load() }
 func (t *TEET) ActiveSessions() int          { return int(t.activeSessions.Load()) }
 
-// cleanupSession performs complete cleanup of session resources
-// This function is idempotent - safe to call multiple times for the same session
+// cleanupSession performs complete cleanup of session resources.
+//
+// See tee_k.go's matching cleanupSession for the idempotency contract.
+// Same shape, fewer side effects (TEE_T has no per-session WS to a peer
+// to close from this side).
 func (t *TEET) cleanupSession(sessionID string) {
-	// Close the session in session manager (handles connections and state cleanup)
-	if err := t.sessionManager.CloseSession(sessionID); err != nil {
-		// Session already cleaned up - expected when both sides close proactively
-		t.logger.WithSession(sessionID).Debug("Session already cleaned up", zap.Error(err))
+	state, err := t.sessionManager.GetTEETSessionState(sessionID)
+	if err != nil {
+		t.logger.WithSession(sessionID).Debug("Session state missing, cleanup already ran")
 		return
 	}
+	if !state.CleanedUp.CompareAndSwap(false, true) {
+		t.logger.WithSession(sessionID).Debug("Session cleanup already claimed by another caller")
+		return
+	}
+
+	// We own the cleanup.
+	_ = t.sessionManager.CloseSession(sessionID)
 	t.activeSessions.Add(-1)
-
-	// Cleanup session terminator tracking
 	t.sessionTerminator.CleanupSession(sessionID)
-
 	t.logger.WithSession(sessionID).Info("Session terminated and cleaned up")
 }
 

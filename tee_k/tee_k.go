@@ -172,21 +172,13 @@ func NewTEEK(port int) *TEEK {
 		oprfKeyShare:      oprfKeyShare,
 	}
 
-	// Wire the SessionManager expiry callback to do the same per-session
-	// cleanup the normal close path does. Without this, sessions removed
-	// by the 30-min inactivity ticker leak: the activeSessions atomic
-	// stays inflated (drain becomes untrustworthy), the per-session
-	// TEEKSessionState entry stays in teekStates, and the per-session WS
-	// to TEE_T stays open. See memory note: active-sessions-counter-leak.
-	sessionManager.SetOnSessionExpired(func(sessionID string) {
-		if teek.connManager != nil {
-			teek.connManager.CloseSessionConnection(sessionID, "session_expired")
-		}
-		sessionManager.RemoveTEEKSessionState(sessionID)
-		teek.activeSessions.Add(-1)
-		teek.sessionTerminator.CleanupSession(sessionID)
-		teek.logger.WithSession(sessionID).Info("Session expired and cleaned up by ticker")
-	})
+	// Wire the SessionManager expiry callback through cleanupSession so the
+	// normal-close path and the expiry path share the same idempotent
+	// cleanup logic. Without this hook the 30-min inactivity ticker
+	// removes sessions from the SessionManager map but skips activeSessions
+	// decrement, TEEKSessionState removal, and per-session WS close — all
+	// of which cleanupSession now owns under its CAS guard.
+	sessionManager.SetOnSessionExpired(teek.cleanupSession)
 
 	return teek
 }
@@ -254,25 +246,48 @@ func (t *TEEK) getSessionResponseState(sessionID string) (*shared.ResponseSessio
 	return session.ResponseState, nil
 }
 
-// cleanupSession performs complete cleanup of session resources
-// This function is idempotent - safe to call multiple times for the same session
+// cleanupSession performs complete cleanup of session resources.
+//
+// Idempotency contract: this function is safe to call multiple times for
+// the same session, and EXACTLY ONE call per session creation will run
+// the side-effect work (counter decrement, connection close, session
+// terminator cleanup) — even when several legitimate cleanup paths fire
+// concurrently (websocket exit, per-session WS handler exit,
+// terminate-on-error, the expiry-ticker callback).
+//
+// Ownership is decided by a per-session atomic flag on TEEKSessionState
+// (CleanedUp). The first caller to flip it false→true owns the cleanup.
+// Subsequent callers no-op.
+//
+// Pre-guard era: this function bailed early when sessionManager.CloseSession
+// reported "already gone", which meant the activeSessions decrement was
+// gated on being FIRST. Multiple cleanup paths racing left the counter
+// inflated by however-many-times-they-raced, causing drain checks on
+// pair retire to see hundreds of phantom sessions.
 func (t *TEEK) cleanupSession(sessionID string) {
-	// Close per-session connection to TEE_T
+	state, err := t.sessionManager.GetTEEKSessionState(sessionID)
+	if err != nil {
+		// State already removed — the canonical cleanup must have already
+		// run via another path. Nothing to do.
+		t.logger.WithSession(sessionID).Debug("Session state missing, cleanup already ran")
+		return
+	}
+	if !state.CleanedUp.CompareAndSwap(false, true) {
+		t.logger.WithSession(sessionID).Debug("Session cleanup already claimed by another caller")
+		return
+	}
+
+	// We own the cleanup.
 	if t.connManager != nil {
 		t.connManager.CloseSessionConnection(sessionID, "session_cleanup")
 	}
-
-	// Close the session in session manager (handles connections and state cleanup)
-	if err := t.sessionManager.CloseSession(sessionID); err != nil {
-		// Session already cleaned up - expected when both sides close proactively
-		t.logger.WithSession(sessionID).Debug("Session already cleaned up", zap.Error(err))
-		return
-	}
+	// CloseSession may return "session not found" if the expiry ticker already
+	// removed the base SessionManager entry — that's fine, we still need to
+	// remove the TEEKSessionState entry (which TEEKSessionManager.CloseSession
+	// does unconditionally) and decrement the counter.
+	_ = t.sessionManager.CloseSession(sessionID)
 	t.activeSessions.Add(-1)
-
-	// Cleanup session terminator tracking
 	t.sessionTerminator.CleanupSession(sessionID)
-
 	t.logger.WithSession(sessionID).Info("Session terminated and cleaned up")
 }
 

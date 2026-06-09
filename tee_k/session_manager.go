@@ -44,6 +44,18 @@ type TEEKSessionState struct {
 	// Per-session mutex for thread-safe access to OPRF state
 	// Must be held when accessing GarblerOnlineSessions, OPRFResults, or OPRFRanges
 	oprfMu sync.Mutex
+
+	// CleanedUp is the CAS guard that makes cleanupSession idempotent
+	// w.r.t. the activeSessions atomic decrement. Multiple cleanup paths
+	// legitimately fire for the same session (websocket exit, per-session
+	// WS handler exit, terminate-on-error, expiry-ticker callback); only
+	// the caller that swaps this false→true owns the decrement and the
+	// rest of the side-effect cleanup. Before this guard existed, every
+	// cleanup-path race left one increment uncounted, and after a 2000/50
+	// load test the router's `/pairs.active_sessions` would persistently
+	// show hundreds of phantom sessions long after the session map went
+	// to zero.
+	CleanedUp atomic.Bool
 }
 
 type TEEKSessionManager struct {
