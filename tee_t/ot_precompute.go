@@ -116,7 +116,7 @@ func (t *TEET) handleOTPrecomputeRequest(conn *shared.WSConnection, msg *teeprot
 
 // generateReceiverChoices generates receiver choices for all OTs
 // Returns the receiver data to send to garbler and entries to store locally
-func (t *TEET) generateReceiverChoices(senderSetups []ot.COSenderSetup, curve elliptic.Curve) (*oprfmpc.OTReceiverData, []*oprfmpc.OTReceiverEntry, error) {
+func (t *TEET) generateReceiverChoices(senderSetups []oprfmpc.SenderPublicSetup, curve elliptic.Curve) (*oprfmpc.OTReceiverData, []*oprfmpc.OTReceiverEntry, error) {
 	if len(senderSetups) == 0 {
 		return nil, nil, fmt.Errorf("no sender setups provided")
 	}
