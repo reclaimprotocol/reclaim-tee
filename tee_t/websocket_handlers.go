@@ -195,15 +195,18 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sessionID != "" {
+		// Route through cleanupSession so every exit path shares one
+		// idempotent cleanup. The old open-coded sequence here did
+		// CloseSession + sessionTerminator + per-session WS close
+		// MANUALLY — but skipped activeSessions.Add(-1), and worse,
+		// the manual CloseSession removed the session from the map
+		// before any cleanupSession caller could see it, so the
+		// CAS-guarded decrement on the canonical path never fired
+		// either. Net result: every session exiting through this WS
+		// handler leaked one increment on the router's
+		// /pairs.active_sessions counter.
 		t.logger.Info("Session finished", zap.String("sid", shared.TruncateSessionID(sessionID)))
-		t.sessionManager.CloseSession(sessionID)
-		t.sessionTerminator.CleanupSession(sessionID)
-
-		// Close per-session connection to TEE_K
-		// This prevents TEE_K from timing out waiting for messages
-		if t.connManager != nil {
-			t.connManager.CloseSessionConnection(sessionID)
-		}
+		t.cleanupSession(sessionID)
 	}
 }
 

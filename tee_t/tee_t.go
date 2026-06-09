@@ -236,8 +236,11 @@ func (t *TEET) ActiveSessions() int          { return int(t.activeSessions.Load(
 // cleanupSession performs complete cleanup of session resources.
 //
 // See tee_k.go's matching cleanupSession for the idempotency contract.
-// Same shape, fewer side effects (TEE_T has no per-session WS to a peer
-// to close from this side).
+// Mirror shape: close the per-session WS to TEE_K (so TEE_K stops
+// waiting on messages from a dead session), then close the session in
+// the manager, decrement the counter, run sessionTerminator cleanup.
+// All gated behind a per-session CAS so the multi-path concurrent
+// cleanup is idempotent.
 func (t *TEET) cleanupSession(sessionID string) {
 	state, err := t.sessionManager.GetTEETSessionState(sessionID)
 	if err != nil {
@@ -250,6 +253,9 @@ func (t *TEET) cleanupSession(sessionID string) {
 	}
 
 	// We own the cleanup.
+	if t.connManager != nil {
+		t.connManager.CloseSessionConnection(sessionID)
+	}
 	_ = t.sessionManager.CloseSession(sessionID)
 	t.activeSessions.Add(-1)
 	t.sessionTerminator.CleanupSession(sessionID)
