@@ -265,10 +265,14 @@ func (l *Logger) WithCryptoOp(operation string) *zap.Logger {
 	return l.Logger.With(zap.String("crypto_operation", operation))
 }
 
-// Critical error logging - always logs even in enclave mode
+// Critical error logging - always logs even in enclave mode.
+// Synchronously flushes after writing — Critical() callers typically
+// follow with os.Exit, so unbuffered semantics are non-negotiable.
+// Without the Sync, the "critical" message disappears when the
+// process exits before zap's internal writer drains.
 func (l *Logger) Critical(msg string, fields ...zap.Field) {
-	// Critical errors are always logged regardless of mode
 	l.Logger.Error(msg, append(fields, zap.Bool("critical", true))...)
+	_ = l.Logger.Sync()
 }
 
 // Security event logging - for security-relevant events

@@ -16,6 +16,7 @@ import (
 
 // handleClientWebSocket handles WebSocket connections from clients
 func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
+	defer shared.RecoverAndCrash(t.logger, "tee_t.handleClientWebSocket")
 	// Reject connections if system not ready (prevents wasted client work)
 	if !t.isTEEKConnected() {
 		t.logger.Warn("Rejecting client connection - TEE_K not connected")
@@ -270,6 +271,7 @@ func (t *TEET) sendErrorAndClose(conn *websocket.Conn, sessionID string, errMsg 
 // handleControlWebSocket handles control connections from TEE_K
 // Control connection is used for: attestation, OT precomputation, session lifecycle
 func (t *TEET) handleControlWebSocket(w http.ResponseWriter, r *http.Request) {
+	defer shared.RecoverAndCrash(t.logger, "tee_t.handleControlWebSocket")
 	conn, err := teetUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		t.logger.Error("Failed to upgrade control websocket", zap.Error(err))
@@ -294,6 +296,7 @@ func (t *TEET) handleControlWebSocket(w http.ResponseWriter, r *http.Request) {
 // handleSessionWebSocket handles per-session connections from TEE_K
 // Session connections carry all session-specific data: encrypted requests, keystream, OPRF
 func (t *TEET) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) {
+	defer shared.RecoverAndCrash(t.logger, "tee_t.handleSessionWebSocket")
 	conn, err := teetUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		t.logger.Error("Failed to upgrade session websocket", zap.Error(err))

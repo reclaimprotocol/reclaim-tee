@@ -135,6 +135,7 @@ func (cm *TEETConnectionManager) EstablishControlConnection() error {
 	}
 
 	go func() {
+		defer shared.RecoverAndCrash(cm.logger, "tee_k.control_supervisor")
 		for {
 			if err := cm.connectAndServe(onReady); err != nil {
 				if everConnected.Load() {
@@ -181,6 +182,7 @@ func (cm *TEETConnectionManager) connectAndServe(onReady func()) error {
 	// on disconnect rather than chaining a reconnect.
 	handlerDone := make(chan struct{})
 	go func() {
+		defer shared.RecoverAndCrash(cm.logger, "tee_k.handleControlMessages")
 		cm.handleControlMessages()
 		close(handlerDone)
 	}()
@@ -604,7 +606,10 @@ func (cm *TEETConnectionManager) EstablishSessionConnection(sessionID string) er
 	cm.logger.WithSession(sessionID).Debug("Per-session connection established")
 
 	// Start session message handler in background
-	go cm.handleSessionMessages(sessionID)
+	go func() {
+		defer shared.RecoverAndCrash(cm.logger, "tee_k.handleSessionMessages")
+		cm.handleSessionMessages(sessionID)
+	}()
 
 	return nil
 }

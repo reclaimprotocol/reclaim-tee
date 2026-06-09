@@ -23,6 +23,14 @@ func main() {
 	logger := shared.GetTEEKLogger()
 	defer logger.Sync()
 
+	// Diagnostic safety net: dump goroutines + sync logger before exiting
+	// on SIGTERM/SIGINT, log runtime stats every minute, and catch any
+	// panic in the main goroutine. RecoverAndCrash re-panics after
+	// logging — observability, not error suppression.
+	defer shared.RecoverAndCrash(logger, "tee_k.main")
+	shared.InstallSignalCrashHandler(logger)
+	go shared.RunRuntimeStatsLogger(context.Background(), logger)
+
 	// Start background root CA updater (fetches fresh certs from curl.se daily)
 	StartRootCAUpdater(logger)
 
