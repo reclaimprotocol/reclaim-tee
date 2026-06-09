@@ -6,14 +6,7 @@ import (
 	"time"
 )
 
-// TestOnSessionExpiredCallback locks in the contract added in 2026-06-09:
-// cleanupExpiredSessions must invoke the registered onSessionExpired
-// callback for every session it removes, so owning TEEs can decrement
-// their activeSessions atomic + run per-session cleanup that
-// SessionManager itself can't reach.
-//
-// Without this guarantee the active_sessions field in the router's /pairs
-// response leaks on every expiry — see project_active_sessions_counter_leak.
+// cleanupExpiredSessions must fire onSessionExpired once per expired session.
 func TestOnSessionExpiredCallback(t *testing.T) {
 	sm := NewSessionManager()
 	// Force every session to look "stale" immediately. cleanupExpiredSessions
@@ -22,9 +15,9 @@ func TestOnSessionExpiredCallback(t *testing.T) {
 
 	var callbackCount atomic.Int64
 	seen := make(map[string]bool)
-	sm.SetOnSessionExpired(func(sessionID string) {
+	sm.SetOnSessionExpired(func(s *Session) {
 		callbackCount.Add(1)
-		seen[sessionID] = true
+		seen[s.ID] = true
 	})
 
 	const N = 5
@@ -34,9 +27,7 @@ func TestOnSessionExpiredCallback(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateSession: %v", err)
 		}
-		// CreateSession leaves State=SessionStateNew with ClientConn nil,
-		// which the cleanup code treats as "pending" (2-minute grace).
-		// Push the session into the active branch by activating it.
+		// Force the active-branch timeout instead of the 2-min pending one.
 		sm.mutex.Lock()
 		s := sm.sessions[sid]
 		s.State = SessionStateActive
@@ -65,9 +56,7 @@ func TestOnSessionExpiredCallback(t *testing.T) {
 	}
 }
 
-// TestOnSessionExpiredCallback_NilSafe — when no callback is registered,
-// cleanupExpiredSessions must still work (backward-compat for any caller
-// that hasn't opted in yet).
+// Nil callback must not panic.
 func TestOnSessionExpiredCallback_NilSafe(t *testing.T) {
 	sm := NewSessionManager()
 	sm.sessionTimeout = -1 * time.Second
@@ -86,10 +75,7 @@ func TestOnSessionExpiredCallback_NilSafe(t *testing.T) {
 	sm.cleanupExpiredSessions()
 }
 
-// TestOnSessionExpiredCallback_NoDeadlock — the callback is invoked
-// AFTER the SessionManager mutex is released, so it must be safe for the
-// callback to call back into SessionManager. Validate by having the
-// callback call CreateSession (acquires the same mutex).
+// Callback must run outside the SessionManager mutex (no re-entry deadlock).
 func TestOnSessionExpiredCallback_NoDeadlock(t *testing.T) {
 	sm := NewSessionManager()
 	sm.sessionTimeout = -1 * time.Second
@@ -105,7 +91,7 @@ func TestOnSessionExpiredCallback_NoDeadlock(t *testing.T) {
 	sm.mutex.Unlock()
 
 	done := make(chan struct{})
-	sm.SetOnSessionExpired(func(string) {
+	sm.SetOnSessionExpired(func(*Session) {
 		// If cleanupExpiredSessions still held the mutex this would deadlock.
 		_, _ = sm.CreateSession(nil)
 		close(done)

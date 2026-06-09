@@ -42,14 +42,9 @@ type SessionManager struct {
 	sessionTimeout time.Duration
 	logger         *Logger
 
-	// onSessionExpired is called once per session that the expiry ticker
-	// removes (NOT for sessions closed via the normal CloseSession path —
-	// those callers do their own bookkeeping). The owning TEE wires this
-	// to decrement its activeSessions atomic + run any per-session cleanup
-	// that the session manager itself can't reach (per-session WS to peer,
-	// session terminator state). Invoked AFTER the mutex is released, so
-	// the callback may call back into SessionManager safely.
-	onSessionExpired func(sessionID string)
+	// Fired once per session removed by the expiry ticker. Invoked
+	// outside the mutex; receives the just-removed *Session pointer.
+	onSessionExpired func(session *Session)
 }
 
 // Verify that SessionManager implements SessionManagerInterface
@@ -70,9 +65,7 @@ func (sm *SessionManager) SetLogger(logger *Logger) {
 	sm.logger = logger
 }
 
-// SetOnSessionExpired registers a callback invoked once per session that
-// the expiry ticker removes. See the onSessionExpired field doc.
-func (sm *SessionManager) SetOnSessionExpired(fn func(sessionID string)) {
+func (sm *SessionManager) SetOnSessionExpired(fn func(session *Session)) {
 	sm.onSessionExpired = fn
 }
 
@@ -254,11 +247,8 @@ func (sm *SessionManager) cleanupExpiredSessions() {
 	now := time.Now()
 	const pendingSessionTimeout = 2 * time.Minute // Short timeout for registered-but-not-activated sessions
 
-	// expired accumulates session IDs cleaned up in this tick. The
-	// onSessionExpired callback is invoked AFTER the mutex is released
-	// (deferred below) so the callback may take its own locks or even
-	// call back into SessionManager without deadlocking.
-	var expired []string
+	// Capture pointers; callbacks fire outside the lock.
+	var expired []*Session
 	var pending, active int
 
 	for sessionID, session := range sm.sessions {
@@ -274,7 +264,7 @@ func (sm *SessionManager) cleanupExpiredSessions() {
 		}
 
 		if shouldCleanup {
-			expired = append(expired, sessionID)
+			expired = append(expired, session)
 			session.IsClosed = true
 			if session.Cancel != nil {
 				session.Cancel()
@@ -299,12 +289,9 @@ func (sm *SessionManager) cleanupExpiredSessions() {
 	callback := sm.onSessionExpired
 	sm.mutex.Unlock()
 
-	// Fire callbacks outside the lock — the owning TEE typically uses these
-	// to drive its own bookkeeping (activeSessions atomic, per-session WS
-	// teardown, session terminator state) and may take additional locks.
 	if callback != nil {
-		for _, sid := range expired {
-			callback(sid)
+		for _, s := range expired {
+			callback(s)
 		}
 	}
 

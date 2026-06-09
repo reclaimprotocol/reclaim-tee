@@ -156,32 +156,18 @@ func makeLabels(rand io.Reader, r ot.Label) (ot.Wire, error) {
 	}, nil
 }
 
-// Garbled contains garbled circuit information.
-//
-// When a *Garbled is produced by Circuit.Garble, its Wires and Gates
-// slices are backed by buffers checked out from a per-circuit sync.Pool.
-// Callers SHOULD invoke Release() once they are done reading from it
-// (typically after serializing to the wire). After Release the slices
-// may be reused for a subsequent garble — the *Garbled MUST NOT be
-// touched. Releasing is optional: skipping it just forgoes the pooling
-// benefit, equivalent to the pre-pool behavior.
+// Garbled circuit. Wires/Gates may point into a per-circuit sync.Pool
+// when produced by Circuit.Garble; call Release() when done.
 type Garbled struct {
 	R     ot.Label
 	Wires []ot.Wire
 	Gates [][]ot.Label
 
-	// scratch holds the buffers this Garbled's slices are carved from.
-	// Release returns scratch to its origin pool. nil means this
-	// Garbled was not produced from a pool (e.g. zero value, or pool
-	// disabled — neither happens in the current implementation but
-	// keeping the field nil-safe avoids a panic on stray Releases).
 	scratch *garbledScratch
 	pool    *sync.Pool
 }
 
-// Release returns the underlying scratch buffers to the per-circuit
-// pool. Safe to call multiple times. After Release, the *Garbled must
-// not be used.
+// Returns scratch buffers to the pool. Idempotent; *Garbled unusable after.
 func (g *Garbled) Release() {
 	if g == nil || g.pool == nil {
 		return
@@ -193,31 +179,20 @@ func (g *Garbled) Release() {
 	g.Gates = nil
 }
 
-// garbledScratch holds the heap-resident buffers that Garble reuses
-// across calls on the same *Circuit. The label slab is sized exactly
-// for the circuit's garbled-table output: 2 labels per AND gate, 3
-// per OR (after row reduction), 1 per INV. The slice-of-slices header
-// array, the wire array, and the slab are all rooted in this struct
-// so a single sync.Pool put/get cycles all three together.
+// Heap buffers reused per circuit. Slab sized for AND(2)+OR(3)+INV(1) labels.
 type garbledScratch struct {
 	wires []ot.Wire
 	slab  []ot.Label
 	gates [][]ot.Label
 }
 
-// scratchPools holds one *sync.Pool per *Circuit. Different circuits
-// have different gate counts and slab sizes, so they cannot share a
-// pool. Lookup is keyed by pointer identity — Circuit values are
-// expected to be long-lived (compiled once and reused).
+// One sync.Pool per *Circuit; keyed by pointer identity.
 var scratchPools sync.Map // map[*Circuit]*sync.Pool
 
 func (c *Circuit) scratchPool() *sync.Pool {
 	if v, ok := scratchPools.Load(c); ok {
 		return v.(*sync.Pool)
 	}
-	// Sum the label slots each gate type writes into the output table.
-	// XOR/XNOR are "free" — no table entry. AND emits 2 (half-gate),
-	// OR emits 3 (row-reduced from 4), INV emits 1.
 	var slabSize int
 	for i := range c.Gates {
 		switch c.Gates[i].Op {
@@ -261,14 +236,7 @@ func (g *Garbled) SetLambda(wire Wire, val uint) {
 	g.Wires[wire] = w
 }
 
-// Garble garbles the circuit.
-//
-// The returned *Garbled is backed by a slab + wire array checked out
-// from a per-circuit sync.Pool. Callers should invoke Release() when
-// done — see the Garbled doc comment. Calling Release is optional:
-// without it the GC handles the buffers normally (same behavior as the
-// pre-pool version of this function, just one extra reference in the
-// pool's New until next GC).
+// Garble. Returned *Garbled backed by pooled scratch; caller should Release.
 func (c *Circuit) Garble(rand io.Reader, key []byte) (*Garbled, error) {
 	pool := c.scratchPool()
 	scratch := pool.Get().(*garbledScratch)
@@ -301,11 +269,7 @@ func (c *Circuit) Garble(rand io.Reader, key []byte) (*Garbled, error) {
 		wires[i] = w
 	}
 
-	// Garble gates. Each call writes its labels into a 4-slot stack
-	// table and returns (start, count); we copy those count labels
-	// into a fresh slice of the slab and stash the view in gates[i].
-	// The per-gate slice header allocation of the old API is gone —
-	// gates[i] now points into the pooled slab.
+	// Each gate writes labels into a stack table; we copy into the slab.
 	var data ot.LabelData
 	var id uint32
 	slabOff := 0
@@ -335,17 +299,7 @@ func (c *Circuit) Garble(rand io.Reader, key []byte) (*Garbled, error) {
 	}, nil
 }
 
-// garbleInto garbles the gate, writing its output table into the
-// caller-provided fixed-size buffer. Returns (start, count) such that
-// table[start : start+count] are the labels the caller should add to
-// its garbled output. table must be zeroed by the caller (the function
-// indexes into it both for read and write — pre-zeroing isn't strictly
-// required because every path that reads `table[...]` first writes it,
-// but keeping the convention reduces foot-gun risk).
-//
-// This replaces the pre-pool variant that allocated and returned its
-// own []ot.Label every call. Callers carve a view of their own buffer
-// using start/count and copy from `table`.
+// Writes the gate's output table into the caller's buffer; returns the slice [start, start+count).
 func (g *Gate) garbleInto(wires []ot.Wire, enc cipher.Block, r ot.Label,
 	idp *uint32, data *ot.LabelData, table *[4]ot.Label) (start, count int, err error) {
 

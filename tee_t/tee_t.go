@@ -137,9 +137,7 @@ func NewTEETWithLogger(port int, logger *shared.Logger) *TEET {
 		oprfKeyShare:      oprfKeyShare,
 	}
 
-	// See tee_k.go's matching wiring: the expiry-ticker callback and the
-	// normal-close path now share one idempotent cleanupSession.
-	sessionManager.SetOnSessionExpired(teet.cleanupSession)
+	sessionManager.SetOnSessionExpired(teet.cleanupSessionWithSession)
 
 	return teet
 }
@@ -233,33 +231,28 @@ func (t *TEET) ControlHealthy() bool         { return t.controlHealthy.Load() }
 func (t *TEET) OTReady() bool                { return t.otReady.Load() }
 func (t *TEET) ActiveSessions() int          { return int(t.activeSessions.Load()) }
 
-// cleanupSession performs complete cleanup of session resources.
-//
-// See tee_k.go's matching cleanupSession for the idempotency contract.
-// Mirror shape: close the per-session WS to TEE_K (so TEE_K stops
-// waiting on messages from a dead session), then close the session in
-// the manager, decrement the counter, run sessionTerminator cleanup.
-// All gated behind a per-session CAS so the multi-path concurrent
-// cleanup is idempotent.
+// CAS-guarded; mirrors TEE_K's cleanupSession.
 func (t *TEET) cleanupSession(sessionID string) {
-	state, err := t.sessionManager.GetTEETSessionState(sessionID)
+	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		t.logger.WithSession(sessionID).Debug("Session state missing, cleanup already ran")
+		t.logger.WithSession(sessionID).Debug("Session missing, cleanup already ran")
 		return
 	}
-	if !state.CleanedUp.CompareAndSwap(false, true) {
-		t.logger.WithSession(sessionID).Debug("Session cleanup already claimed by another caller")
-		return
-	}
+	t.cleanupSessionWithSession(session)
+}
 
-	// We own the cleanup.
-	if t.connManager != nil {
-		t.connManager.CloseSessionConnection(sessionID)
+func (t *TEET) cleanupSessionWithSession(session *shared.Session) {
+	if !session.CleanedUp.CompareAndSwap(false, true) {
+		t.logger.WithSession(session.ID).Debug("Session cleanup already claimed by another caller")
+		return
 	}
-	_ = t.sessionManager.CloseSession(sessionID)
+	if t.connManager != nil {
+		t.connManager.CloseSessionConnection(session.ID)
+	}
+	_ = t.sessionManager.CloseSession(session.ID)
 	t.activeSessions.Add(-1)
-	t.sessionTerminator.CleanupSession(sessionID)
-	t.logger.WithSession(sessionID).Info("Session terminated and cleaned up")
+	t.sessionTerminator.CleanupSession(session.ID)
+	t.logger.WithSession(session.ID).Info("Session terminated and cleaned up")
 }
 
 // terminateSessionWithError terminates a session due to a critical error

@@ -172,13 +172,7 @@ func NewTEEK(port int) *TEEK {
 		oprfKeyShare:      oprfKeyShare,
 	}
 
-	// Wire the SessionManager expiry callback through cleanupSession so the
-	// normal-close path and the expiry path share the same idempotent
-	// cleanup logic. Without this hook the 30-min inactivity ticker
-	// removes sessions from the SessionManager map but skips activeSessions
-	// decrement, TEEKSessionState removal, and per-session WS close — all
-	// of which cleanupSession now owns under its CAS guard.
-	sessionManager.SetOnSessionExpired(teek.cleanupSession)
+	sessionManager.SetOnSessionExpired(teek.cleanupSessionWithSession)
 
 	return teek
 }
@@ -246,49 +240,29 @@ func (t *TEEK) getSessionResponseState(sessionID string) (*shared.ResponseSessio
 	return session.ResponseState, nil
 }
 
-// cleanupSession performs complete cleanup of session resources.
-//
-// Idempotency contract: this function is safe to call multiple times for
-// the same session, and EXACTLY ONE call per session creation will run
-// the side-effect work (counter decrement, connection close, session
-// terminator cleanup) — even when several legitimate cleanup paths fire
-// concurrently (websocket exit, per-session WS handler exit,
-// terminate-on-error, the expiry-ticker callback).
-//
-// Ownership is decided by a per-session atomic flag on TEEKSessionState
-// (CleanedUp). The first caller to flip it false→true owns the cleanup.
-// Subsequent callers no-op.
-//
-// Pre-guard era: this function bailed early when sessionManager.CloseSession
-// reported "already gone", which meant the activeSessions decrement was
-// gated on being FIRST. Multiple cleanup paths racing left the counter
-// inflated by however-many-times-they-raced, causing drain checks on
-// pair retire to see hundreds of phantom sessions.
+// CAS-guarded; exactly one caller per session runs the cleanup side-effects.
 func (t *TEEK) cleanupSession(sessionID string) {
-	state, err := t.sessionManager.GetTEEKSessionState(sessionID)
+	session, err := t.sessionManager.GetSession(sessionID)
 	if err != nil {
-		// State already removed — the canonical cleanup must have already
-		// run via another path. Nothing to do.
-		t.logger.WithSession(sessionID).Debug("Session state missing, cleanup already ran")
+		t.logger.WithSession(sessionID).Debug("Session missing, cleanup already ran")
 		return
 	}
-	if !state.CleanedUp.CompareAndSwap(false, true) {
-		t.logger.WithSession(sessionID).Debug("Session cleanup already claimed by another caller")
-		return
-	}
+	t.cleanupSessionWithSession(session)
+}
 
-	// We own the cleanup.
-	if t.connManager != nil {
-		t.connManager.CloseSessionConnection(sessionID, "session_cleanup")
+// Variant used by the expiry callback, which already holds *Session.
+func (t *TEEK) cleanupSessionWithSession(session *shared.Session) {
+	if !session.CleanedUp.CompareAndSwap(false, true) {
+		t.logger.WithSession(session.ID).Debug("Session cleanup already claimed by another caller")
+		return
 	}
-	// CloseSession may return "session not found" if the expiry ticker already
-	// removed the base SessionManager entry — that's fine, we still need to
-	// remove the TEEKSessionState entry (which TEEKSessionManager.CloseSession
-	// does unconditionally) and decrement the counter.
-	_ = t.sessionManager.CloseSession(sessionID)
+	if t.connManager != nil {
+		t.connManager.CloseSessionConnection(session.ID, "session_cleanup")
+	}
+	_ = t.sessionManager.CloseSession(session.ID)
 	t.activeSessions.Add(-1)
-	t.sessionTerminator.CleanupSession(sessionID)
-	t.logger.WithSession(sessionID).Info("Session terminated and cleaned up")
+	t.sessionTerminator.CleanupSession(session.ID)
+	t.logger.WithSession(session.ID).Info("Session terminated and cleaned up")
 }
 
 // terminateSessionWithError terminates a session due to a critical error

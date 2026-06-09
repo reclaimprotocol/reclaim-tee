@@ -82,11 +82,6 @@ func (t *TEET) handleRedactionStreams(sessionID string, msg *shared.Message) err
 		return err
 	}
 
-	// Both halves of the request (redaction streams + encrypted request)
-	// converge here. Signal arrival and let processIfBothPartsArrived
-	// decide whether this is the second arrival (in which case it
-	// processes) or the first (in which case it waits for TEE_K's
-	// BatchedEncryptedRequest to arrive).
 	if procErr := t.processIfBothPartsArrived(sessionID); procErr != nil {
 		return procErr
 	}
@@ -97,17 +92,7 @@ func (t *TEET) handleRedactionStreams(sessionID string, msg *shared.Message) err
 	return nil
 }
 
-// processIfBothPartsArrived implements the join between the redaction-streams
-// path (handleRedactionStreams) and the encrypted-request path
-// (handleBatchedEncryptedRequest). Each calls this exactly once after
-// storing its half. The counter goes 0 → 1 → 2; the call that bumps it
-// to 2 owns the processing. Calls when count != 2 are no-ops.
-//
-// This replaces an older "if the other half is already stored, process
-// now" pattern in each handler, which was racy: when both messages
-// arrived in the same WS read tick, both handlers saw the other half as
-// present and both processed, dispatching the same TLS record to the
-// client twice → bad_record_mac from the server on the duplicate.
+// Counter-at-join: caller that bumps RequestPartsArrived to 2 dispatches.
 func (t *TEET) processIfBothPartsArrived(sessionID string) error {
 	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
 	if err != nil {
@@ -141,9 +126,7 @@ func (t *TEET) processIfBothPartsArrived(sessionID string) error {
 		return nil
 	}
 
-	// Counter hit 2 but neither side actually stored its data — programmer
-	// error (someone called us without storing). Better to log loudly than
-	// silently drop.
+	// Counter hit 2 but no data — programmer error.
 	err = fmt.Errorf("both parts marked arrived but no encrypted request data present")
 	t.logger.Error("processIfBothPartsArrived: invariant violated",
 		zap.String("session_id", sessionID))
@@ -420,11 +403,6 @@ func (t *TEET) handleBatchedEncryptedRequest(msg *shared.Message) error {
 		zap.String("session_id", sessionID),
 		zap.Int("total_fragments", len(batchedReq.Fragments)))
 
-	// Signal that the encrypted-request half has arrived. If the redaction
-	// streams are already in, processIfBothPartsArrived will dispatch; if
-	// not, it returns a no-op and the streams-handler call will dispatch
-	// once they arrive. The counter ensures the dispatch happens exactly
-	// once.
 	return t.processIfBothPartsArrived(sessionID)
 }
 

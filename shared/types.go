@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
@@ -285,6 +286,10 @@ type Session struct {
 	IsClosed bool
 	Context  context.Context
 	Cancel   context.CancelFunc
+
+	// CAS guard: only the cleanupSession caller that flips this owns the
+	// activeSessions decrement. Lives here, not on per-TEE state structs.
+	CleanedUp atomic.Bool
 }
 
 // RedactionSessionState holds redaction-specific state for each session

@@ -7,17 +7,7 @@ import (
 	"github.com/reclaimprotocol/reclaim-tee/shared"
 )
 
-// TestCleanupSession_ConcurrentIsIdempotent locks in the fix from
-// 2026-06-09: cleanupSession can be called many times for the same
-// session, but the activeSessions counter must drop by exactly 1.
-//
-// Before the fix, the function bailed when sessionManager.CloseSession
-// returned "session already gone", which meant the decrement was gated
-// on being the FIRST caller. Two cleanup paths legitimately fire in
-// the normal flow (websocket exit + per-session WS handler exit), so
-// every session left one increment uncounted. Under load this surfaced
-// as 600+ phantom sessions in /pairs.active_sessions long after the
-// SessionManager map had drained.
+// N concurrent cleanupSession calls -> exactly one activeSessions decrement.
 func TestCleanupSession_ConcurrentIsIdempotent(t *testing.T) {
 	logger := shared.NewNopLogger()
 	teek := &TEEK{
@@ -26,12 +16,11 @@ func TestCleanupSession_ConcurrentIsIdempotent(t *testing.T) {
 		logger:            logger,
 	}
 
-	// Create one session.
+	// No SetTEEKSessionState: exercises the cleanup-before-state-set case.
 	sid, err := teek.sessionManager.CreateSession(nil)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	teek.sessionManager.SetTEEKSessionState(sid, &TEEKSessionState{})
 	teek.activeSessions.Add(1)
 
 	// Fire many concurrent cleanupSession calls for that one session.
@@ -69,7 +58,6 @@ func TestCleanupSession_DifferentSessions_NoCrossEffect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateSession: %v", err)
 		}
-		teek.sessionManager.SetTEEKSessionState(sid, &TEEKSessionState{})
 		teek.activeSessions.Add(1)
 		sids[i] = sid
 	}
@@ -90,5 +78,40 @@ func TestCleanupSession_DifferentSessions_NoCrossEffect(t *testing.T) {
 
 	if got := teek.activeSessions.Load(); got != 0 {
 		t.Fatalf("activeSessions = %d, want 0 after cleaning %d sessions", got, N)
+	}
+}
+
+// Cleanup must decrement whether or not TEEKSessionState was ever set.
+func TestCleanupSession_BeforeAndAfterStateSet(t *testing.T) {
+	logger := shared.NewNopLogger()
+	teek := &TEEK{
+		sessionManager:    NewTEEKSessionManager(),
+		sessionTerminator: shared.NewSessionTerminator(logger),
+		logger:            logger,
+	}
+
+	// Case 1: cleanup runs BEFORE any SetTEEKSessionState — must still
+	// decrement (the original audit finding).
+	sid1, err := teek.sessionManager.CreateSession(nil)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	teek.activeSessions.Add(1)
+	teek.cleanupSession(sid1)
+	if got := teek.activeSessions.Load(); got != 0 {
+		t.Fatalf("case 1 (before state set): activeSessions = %d, want 0", got)
+	}
+
+	// Case 2: state set then replaced (simulating performTLSHandshakeAndHTTP).
+	sid2, err := teek.sessionManager.CreateSession(nil)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	teek.activeSessions.Add(1)
+	teek.sessionManager.SetTEEKSessionState(sid2, &TEEKSessionState{HandshakeComplete: false})
+	teek.sessionManager.SetTEEKSessionState(sid2, &TEEKSessionState{HandshakeComplete: true})
+	teek.cleanupSession(sid2)
+	if got := teek.activeSessions.Load(); got != 0 {
+		t.Fatalf("case 2 (after state replaced): activeSessions = %d, want 0", got)
 	}
 }

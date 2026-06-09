@@ -23,27 +23,16 @@ func main() {
 	logger := shared.GetTEEKLogger()
 	defer logger.Sync()
 
-	// Diagnostic safety net: dump goroutines + sync logger before exiting
-	// on SIGTERM/SIGINT, log runtime stats every minute, and catch any
-	// panic in the main goroutine. RecoverAndCrash re-panics after
-	// logging — observability, not error suppression.
+	// Diagnostic safety net.
 	defer shared.RecoverAndCrash(logger, "tee_k.main")
 	shared.InstallSignalCrashHandler(logger)
 	go shared.RunRuntimeStatsLogger(context.Background(), logger)
-	// Deadlock watchdog: if the runtime-stats logger stops ticking for
-	// 2 minutes, dump every goroutine to stderr and exit(137). Catches
-	// the wedge case where every goroutine is blocked on a lock and
-	// even the SIGTERM handler can't run.
 	go shared.RunDeadlockWatchdog(context.Background(), logger)
 
-	// Start background root CA updater (fetches fresh certs from curl.se daily)
 	StartRootCAUpdater(logger)
 
 	config := LoadTEEKConfig()
 
-	// Router mode is the production path (multi-pair, RA-TLS, router-mediated).
-	// Standalone mode remains for local dev only — no TLS, no attestation,
-	// static OPRF key.
 	if config.RouterMode() {
 		startRouterMode(context.Background(), config, logger)
 		return

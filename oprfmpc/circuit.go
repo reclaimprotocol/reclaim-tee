@@ -121,20 +121,12 @@ type CMACOnlinePayload struct {
 	DualMasks     []DualMask   // M0||M1 pairs for derandomized OT
 	OTStartIndex  int          // Starting index in precomputed OT pool
 
-	// garbled holds the *circuit.Garbled this payload was carved from
-	// (set only when produced by CMACGarblerOnline). When non-nil,
-	// GarbledTables and the other slice fields above point into pooled
-	// scratch buffers — caller MUST invoke Release after serializing
-	// the payload to the wire so the scratch returns to the pool.
+	// Set only by CMACGarblerOnline; slices above point into pooled scratch.
+	// Caller MUST invoke Release after serializing to the wire.
 	garbled *circuit.Garbled
 }
 
-// Release returns the pooled garble scratch backing this payload's
-// GarbledTables / etc to the circuit's scratch pool. Safe to call on
-// payloads built from DeserializeOnlinePayload (no-op) and on a payload
-// that has already been released (no-op). After Release the payload's
-// GarbledTables slices MUST NOT be touched — the next garble may reuse
-// the same memory.
+// Returns pooled garble scratch to the circuit pool. Idempotent.
 func (p *CMACOnlinePayload) Release() {
 	if p == nil || p.garbled == nil {
 		return
@@ -161,17 +153,7 @@ var (
 	errCMACNilRandom = errors.New("aes_cmac_oprf: randomness source must not be nil")
 )
 
-// CMACGarblerOnline creates the online phase payload using precomputed OT
-// Parameters:
-//   - rng: randomness source
-//   - garblerInput: 80-byte input (64 bytes data + 16 bytes key share)
-//   - otEntries: precomputed OT entries from the pool (640 entries for 640 input bits)
-//   - otStartIndex: starting index in the OT pool (for tracking)
-//
-// Returns:
-//   - payload: the message to send to evaluator
-//   - session: state for verifying evaluator's output
-//   - err: any error
+// Builds the online-phase payload using precomputed OT (640 entries / OPRF).
 func CMACGarblerOnline(rng io.Reader, curve elliptic.Curve, garblerInput [80]byte, otEntries []*OTPoolEntry, otStartIndex int) (*CMACOnlinePayload, *CMACGarblerOnlineSession, error) {
 	if rng == nil {
 		return nil, nil, errCMACNilRandom
@@ -219,36 +201,20 @@ func CMACGarblerOnline(rng io.Reader, curve elliptic.Curve, garblerInput [80]byt
 	// Extract evaluator's wire labels (wires 640-1279)
 	evaluatorWires := garbled.Wires[gBits : gBits+cmacInputBitCount]
 
-	// Compute dual masks for derandomized OT
-	// For each evaluator input bit i:
-	//   - We have precomputed random labels (R0, R1) where garbler knows both
-	//   - We have actual wire labels (L0, L1) for the circuit
-	//   - Compute M0 = L0 XOR R0, M1 = L1 XOR R1
-	//   - Evaluator can recover: Lb = Rb XOR Mb (where b is their choice bit)
-	//
-	// All 640 iterations share one nistecScratch — the per-iteration ECDH
-	// operations mutate it in place, so there are no per-iter heap allocs
-	// from the curve math. See nistecScratch / deriveRandomLabelsFromSetup.
+	// Derandomized OT dual masks: M0=L0^R0, M1=L1^R1, Delta=R0^R1.
+	// One scratch shared across 640 iterations, mutated in place.
 	dualMasks := make([]DualMask, cmacInputBitCount)
 	scratch := newNistecScratch()
 	for i := 0; i < cmacInputBitCount; i++ {
 		entry := otEntries[i]
 		wire := evaluatorWires[i]
-
-		// The precomputed OT gives us random label pair (R0, R1)
-		// Derive using ECDH: R0 = H(B^a), R1 = H((B-A)^a)
-		// where B is receiver's point, a is sender's scalar, A is sender's public point
 		r0, r1, err := deriveRandomLabelsFromSetup(entry.SenderSetup, entry.ReceiverPoint, i, scratch)
 		if err != nil {
 			return nil, nil, fmt.Errorf("dual-mask derivation at i=%d: %w", i, err)
 		}
-
-		// Compute masks: M0 = L0 XOR R0, M1 = L1 XOR R1
-		// Also compute delta = R0 XOR R1 for derandomization correction
 		m0 := xorLabels(wire.L0, r0)
 		m1 := xorLabels(wire.L1, r1)
 		delta := xorLabels(r0, r1)
-
 		dualMasks[i] = DualMask{M0: m0, M1: m1, Delta: delta}
 	}
 
@@ -277,15 +243,7 @@ func CMACGarblerOnline(rng io.Reader, curve elliptic.Curve, garblerInput [80]byt
 	return payload, session, nil
 }
 
-// CMACEvaluatorOnline evaluates the garbled circuit using precomputed OT
-// Parameters:
-//   - payload: the online payload from garbler
-//   - evaluatorInput: 80-byte input (64 bytes data + 16 bytes key share)
-//   - receiverEntries: precomputed OT receiver entries from the pool
-//
-// Returns:
-//   - result: CMAC output and output labels
-//   - err: any error
+// Evaluates the garbled circuit using precomputed OT.
 func CMACEvaluatorOnline(curve elliptic.Curve, payload *CMACOnlinePayload, evaluatorInput [80]byte, receiverEntries []*OTReceiverEntry) (*CMACOnlineResult, error) {
 	if payload == nil {
 		return nil, errors.New("nil payload")
@@ -457,19 +415,13 @@ func xorLabels(a, b ot.Label) ot.Label {
 	}
 }
 
-// nistecScratch holds reusable P256 points + fixed-size buffers that the
-// per-iteration ECDH derivations reuse across the 640-iteration dual-mask
-// loop. Allocated once at the top of the loop, mutated in place by every
-// SetBytes/ScalarMult/Add call. This is what turns the original ~9k
-// math/big allocations per OPRF into ~0.
+// Reusable scratch for the 640-iter ECDH dual-mask loop. Mutated in place.
 type nistecScratch struct {
 	bPt, aPt, aAInvPt *nistec.P256Point
 	r0Pt, r1Pt        *nistec.P256Point
-	// pointEnc and altEnc are 65-byte uncompressed encodings (0x04 || x32 || y32)
-	// — populated from *big.Int via FillBytes (no allocation).
-	pointEnc [65]byte
-	altEnc   [65]byte
-	scalar   [32]byte
+	pointEnc          [65]byte // 0x04 || x32 || y32
+	altEnc            [65]byte
+	scalar            [32]byte
 }
 
 func newNistecScratch() *nistecScratch {
@@ -482,9 +434,7 @@ func newNistecScratch() *nistecScratch {
 	}
 }
 
-// encodeUncompressedInto writes x and y into the 65-byte uncompressed
-// SEC 1 point encoding (0x04 || x32 || y32) without allocating. big.Int's
-// FillBytes pads with leading zeros to fit the destination's length.
+// Writes (0x04 || x32 || y32) SEC 1 uncompressed encoding via FillBytes (no alloc).
 func encodeUncompressedInto(out *[65]byte, x, y *big.Int) {
 	out[0] = 0x04
 	x.FillBytes(out[1:33])
@@ -496,20 +446,9 @@ func scalarToFixed32(out *[32]byte, s *big.Int) {
 	s.FillBytes(out[:])
 }
 
-// labelFromNistecPoint hashes the point's uncompressed coordinates plus
-// (index, selector) into an ot.Label. Note the hash input is FIXED 32-byte
-// x and y (no leading-zero stripping like the previous big.Int.Bytes path)
-// — both garbler and evaluator now use this function, so they agree.
-// OT entries generated under the old big.Int.Bytes hashing are not
-// compatible with this code; since the OT pool is per-process state
-// rebuilt on TEE start, that's a deploy-time concern only.
+// SHA256(x32 || y32 || index8 || selector1) -> ot.Label. K and T must agree.
 func labelFromNistecPoint(p *nistec.P256Point, index int, selector byte) ot.Label {
-	// Point.Bytes() returns 65 bytes; underlying array is stack-allocated
-	// inside Bytes(). Escape analysis keeps it off-heap as long as the
-	// slice doesn't escape this function — which it doesn't.
 	pb := p.Bytes()
-	// Pack (x32 || y32 || index8 || selector1) = 73 bytes into a stack
-	// buffer and call sha256.Sum256 directly. No hash.Hash allocation.
 	var buf [32 + 32 + 8 + 1]byte
 	copy(buf[0:32], pb[1:33])
 	copy(buf[32:64], pb[33:65])
@@ -522,16 +461,7 @@ func labelFromNistecPoint(p *nistec.P256Point, index int, selector byte) ot.Labe
 	}
 }
 
-// deriveRandomLabelsFromSetup derives random labels using ECDH from OT protocol
-// This implements the Correlated OT sender-side derivation:
-//   - R0 = H(B^a) where B is receiver's point, a is sender's scalar
-//   - R1 = H((B - A)^a)
-//
-// Identity used to skip the second ScalarMult: a*(B - A) = a*B - a*A.
-// COSenderSetup stores -aA (AaInvX/Y) precomputed at OT setup time, so
-// R1 = R0 + (-aA) is one Add — no second ScalarMult, no point subtraction,
-// no big.Int negation. Per call: 1 ScalarMult + 1 Add + 2 SetBytes, all
-// in-place on the caller-supplied nistecScratch.
+// CO OT sender: R0 = H(aB), R1 = H(R0 + (-aA)). Identity: a(B-A) = aB - aA.
 func deriveRandomLabelsFromSetup(setup ot.COSenderSetup, receiverPoint ot.ECPoint, index int, s *nistecScratch) (r0, r1 ot.Label, err error) {
 	encodeUncompressedInto(&s.pointEnc, receiverPoint.X, receiverPoint.Y)
 	encodeUncompressedInto(&s.altEnc, setup.AaInvX, setup.AaInvY)
@@ -553,15 +483,7 @@ func deriveRandomLabelsFromSetup(setup ot.COSenderSetup, receiverPoint ot.ECPoin
 	return r0, r1, nil
 }
 
-// deriveReceivedLabelFromEntry derives the received random label for the evaluator
-// This implements the Correlated OT receiver-side derivation:
-//   - R = H(A^b) where A is sender's public point, b is receiver's scalar
-//
-// The derivation matches the sender's R0 or R1 based on the choice bit:
-//   - If choice=0: B = g^b, sender computed R0 = H(B^a) = H(g^{ab}) = H(A^b)
-//   - If choice=1: B = A*g^b, sender computed R1 = H((B-A)^a) = H(g^{ab}) = H(A^b)
-//
-// Per call: 1 ScalarMult + 1 SetBytes, in place on the caller's scratch.
+// CO OT receiver: R = H(A^b). Matches sender's R0 (choice=0) or R1 (choice=1).
 func deriveReceivedLabelFromEntry(entry *OTReceiverEntry, index int, s *nistecScratch) (ot.Label, error) {
 	bundle := entry.ReceiverBundle
 	choiceBit := bundle.Bits[0]
@@ -603,16 +525,8 @@ func deserializeLabel(data []byte) ot.Label {
 	}
 }
 
-// SerializeOnlinePayload encodes the CMACOnlinePayload into a single
-// pre-sized byte buffer. Every length is known up front, so we make
-// one allocation and write via direct indexing — no append-chain, no
-// intermediate per-gate / per-label slices. Wire format is unchanged.
-//
-// Before this rewrite this function was the top allocator on TEE_K
-// (~58% of total alloc traffic under load), churning 34 small
-// allocations per call as the byte buffer grew. Now: exactly 1.
+// One allocation; size known up front. Wire format identical to the old append-chain.
 func SerializeOnlinePayload(p *CMACOnlinePayload) []byte {
-	// Pass 1: sum the per-gate label counts so we can pre-size the buffer.
 	totalGateLabels := 0
 	for _, gate := range p.GarbledTables {
 		totalGateLabels += len(gate)

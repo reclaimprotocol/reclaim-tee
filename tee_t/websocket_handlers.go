@@ -121,7 +121,12 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Create a message to go through session validation first
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgOPRFRanges, Data: p.OprfRangesSubmission}
 		default:
+			// `continue` so a nil msg never reaches msg.Type below.
+			t.logger.Warn("Unknown envelope payload from client; ignoring",
+				zap.String("session_id", env.GetSessionId()),
+				zap.String("payload_type", fmt.Sprintf("%T", env.Payload)))
 			t.sendErrorToClient(sessionID, "Unknown message type")
+			continue
 		}
 
 		t.logger.Debug("Received client message", zap.String("type", string(msg.Type)))
@@ -195,16 +200,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sessionID != "" {
-		// Route through cleanupSession so every exit path shares one
-		// idempotent cleanup. The old open-coded sequence here did
-		// CloseSession + sessionTerminator + per-session WS close
-		// MANUALLY — but skipped activeSessions.Add(-1), and worse,
-		// the manual CloseSession removed the session from the map
-		// before any cleanupSession caller could see it, so the
-		// CAS-guarded decrement on the canonical path never fired
-		// either. Net result: every session exiting through this WS
-		// handler leaked one increment on the router's
-		// /pairs.active_sessions counter.
 		t.logger.Info("Session finished", zap.String("sid", shared.TruncateSessionID(sessionID)))
 		t.cleanupSession(sessionID)
 	}

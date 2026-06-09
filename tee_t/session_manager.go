@@ -22,34 +22,10 @@ type TEETSessionState struct {
 	RequestProofStreams            [][]byte                                // Store R_SP streams for cryptographic signing
 	ConsolidatedResponseCiphertext []byte                                  // Response ciphertext consolidation
 
-	// RequestPartsArrived counts how many of the two request "halves" have
-	// arrived at TEE_T: the redaction streams (delivered by the client over
-	// its own WS) and the encrypted request fragments (delivered by TEE_K
-	// over the per-session WS). After each handler stores its half it
-	// increments this counter; the handler that bumps it to 2 is the one
-	// that triggers processing.
-	//
-	// Earlier this convergence was implemented as two independent "if the
-	// OTHER half is already present, process" checks — one in each handler.
-	// When both messages arrived in the same WS read tick both handlers
-	// won the check and both dispatched the encrypted request to the
-	// client, which then sent the same TLS record to the server twice with
-	// the same seq_num. The server rejected the second copy as
-	// bad_record_mac. The counter expresses the actual invariant ("process
-	// when BOTH halves have arrived") instead of approximating it.
+	// Counter-at-join: each handler increments once; whichever bumps it
+	// to 2 dispatches. Replaces a racy "if other half present" pattern.
 	RequestPartsArrived atomic.Int32
 
-	// CleanedUp is the CAS guard that makes cleanupSession idempotent
-	// w.r.t. the activeSessions atomic decrement. Multiple cleanup paths
-	// legitimately fire for the same session (websocket exit, per-session
-	// WS handler exit, terminate-on-error, expiry-ticker callback); only
-	// the caller that swaps this false→true owns the decrement and the
-	// rest of the side-effect cleanup. Before this guard existed, every
-	// cleanup-path race left one increment uncounted, and after a 2000/50
-	// load test the router's `/pairs.active_sessions` would persistently
-	// show hundreds of phantom sessions long after the session map went
-	// to zero.
-	CleanedUp atomic.Bool
 
 	// MPC OPRF state (2-round protocol - no session tracking needed)
 	OPRFKeyShare         []byte                     // 16-byte key share for MPC OPRF

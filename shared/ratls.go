@@ -22,12 +22,8 @@ import (
 	"time"
 )
 
-// AttestationOID is the X.509 extension OID under which a GCP Confidential
-// Space attestation JWT is embedded in an RA-TLS certificate.
-//
-// 1.3.6.1.4.1.65998.1 — Reclaim Protocol's IANA-issued Private Enterprise
-// Number (65998) under the IANA private enterprises arc, with .1 reserved
-// for the attestation JWT extension.
+// X.509 extension OID for the embedded GCP Confidential Space attestation JWT.
+// Reclaim PEN = 65998; .1 reserved for the attestation extension.
 var AttestationOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 65998, 1}
 
 // launcherSocketPath is where the Confidential Space launcher exposes its
