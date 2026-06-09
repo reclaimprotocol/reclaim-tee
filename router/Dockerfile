@@ -15,7 +15,10 @@ ENV CGO_ENABLED=0
 WORKDIR /src
 
 # Pre-fetch modules in a separate layer so source edits don't bust the cache.
+# third_party/mpc is the target of a local `replace` directive in go.mod and
+# must exist on disk for `go mod download` to resolve the module graph.
 COPY --chown=0:0 go.mod go.sum ./
+COPY --chown=0:0 third_party/ ./third_party/
 RUN go mod download
 
 COPY --chown=0:0 . .

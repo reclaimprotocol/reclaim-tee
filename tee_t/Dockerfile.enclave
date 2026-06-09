@@ -10,6 +10,10 @@ COPY --chown=0:0 minitls/ /app/minitls/
 COPY --chown=0:0 oprfmpc/ /app/oprfmpc/
 COPY --chown=0:0 proto/*.go /app/proto/
 
+# Local fork of github.com/markkurossi/mpc — go.mod has a `replace` directive
+# pointing at ./third_party/mpc, so this directory must exist before `go build`.
+COPY --chown=0:0 third_party/ /app/third_party/
+
 # Copy TEE_T source files
 COPY --chown=0:0 tee_t/*.go /app/tee_t/
 COPY --chown=0:0 go.mod /app/go.mod
@@ -20,8 +24,10 @@ WORKDIR /app/tee_t
 # Build TEE_T enclave binary
 RUN go build -trimpath --ldflags '-s -w -buildid= -extldflags=-static' -tags 'enclave osusergo netgo static_build' -o tee_t_enclave .
 
-# Copy MPC pkg directory for runtime circuit compilation
-RUN mkdir -p /mpcl && cp -r $(go env GOMODCACHE)/github.com/markkurossi/mpc@*/pkg /mpcl/
+# Copy MPC pkg directory for runtime circuit compilation. Source is the
+# local fork (the upstream module no longer lands in GOMODCACHE once the
+# replace directive points at a local path).
+RUN mkdir -p /mpcl && cp -r /app/third_party/mpc/pkg /mpcl/
 
 FROM scratch
 
