@@ -134,6 +134,21 @@ func RegisterWithRetry(ctx context.Context, register func(context.Context) error
 // of view (no window where the cert is new but the cached attestation
 // still references the old hash). Pass nil if not needed.
 func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func() error, logger *Logger) {
+	// Run postRefresh once immediately so the per-session attestation
+	// cache is populated before the server starts accepting traffic.
+	// Without this, the cache sits empty for the first RATLSRefreshInterval
+	// (4 minutes) after every TEE boot — and any request arriving in that
+	// window triggers a lazy fallback to GenerateGCPAttestation. Under
+	// concurrent load that's N simultaneous calls to the launcher socket,
+	// which can't keep up and starts timing out. NewRATLSManager already
+	// generated the initial cert; we just need to prime the cached
+	// per-session attestation here.
+	if postRefresh != nil {
+		if err := postRefresh(); err != nil {
+			logger.Error("RA-TLS initial post-refresh failed", zap.Error(err))
+		}
+	}
+
 	ticker := time.NewTicker(RATLSRefreshInterval)
 	defer ticker.Stop()
 	for {

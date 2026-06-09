@@ -59,6 +59,10 @@ func (t *TEET) refreshAttestation() error {
 	return nil
 }
 
+// getCachedAttestation returns the cached attestation if valid, otherwise
+// generates a new one. Concurrent cache-miss callers are coalesced via
+// singleflight so only ONE launcher-socket call fires; all waiters share
+// the result.
 func (t *TEET) getCachedAttestation(sessionID string) (*teeproto.AttestationReport, error) {
 	if t.ratls == nil {
 		return nil, nil
@@ -73,15 +77,31 @@ func (t *TEET) getCachedAttestation(sessionID string) (*teeproto.AttestationRepo
 			zap.String("type", cached.Type))
 		return cached, nil
 	}
-	t.logger.WarnIf("Cached attestation expired or missing, generating new one",
+
+	t.logger.WarnIf("Cached attestation expired or missing, coalescing refresh",
 		zap.String("session_id", sessionID))
-	if err := t.refreshAttestation(); err != nil {
-		return nil, fmt.Errorf("failed to generate fallback attestation: %v", err)
+	val, err, _ := t.attestationSF.Do("refresh", func() (any, error) {
+		// Re-check inside the singleflight in case another caller just
+		// finished refreshing while we were waiting at the door.
+		t.attestationMutex.RLock()
+		cached := t.cachedAttestation
+		expiry := t.attestationExpiry
+		t.attestationMutex.RUnlock()
+		if cached != nil && time.Now().Before(expiry) {
+			return cached, nil
+		}
+		if err := t.refreshAttestation(); err != nil {
+			return nil, fmt.Errorf("failed to generate fallback attestation: %v", err)
+		}
+		t.attestationMutex.RLock()
+		result := t.cachedAttestation
+		t.attestationMutex.RUnlock()
+		return result, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	t.attestationMutex.RLock()
-	result := t.cachedAttestation
-	t.attestationMutex.RUnlock()
-	return result, nil
+	return val.(*teeproto.AttestationReport), nil
 }
 
 func (t *TEET) generateAttestationReport(sessionID string) (*teeproto.AttestationReport, error) {

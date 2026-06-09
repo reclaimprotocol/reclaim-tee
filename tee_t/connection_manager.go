@@ -228,7 +228,30 @@ func (cm *TEEKConnectionManager) HandleControlConnection(conn *websocket.Conn) e
 
 	cm.mu.Lock()
 	cm.controlConn = nil
+	// Snapshot + reset sessionConns under the lock, then close them
+	// outside the lock. Orphaned per-session WSes from before the control
+	// disconnect would otherwise hold MaxConcurrentSessions slots until
+	// their 60s read deadline fires, surfacing as "Max concurrent
+	// sessions reached" rejections during recovery.
+	orphans := make([]*SessionTEEKConnection, 0, len(cm.sessionConns))
+	for _, c := range cm.sessionConns {
+		orphans = append(orphans, c)
+	}
+	cm.sessionConns = make(map[string]*SessionTEEKConnection)
 	cm.mu.Unlock()
+
+	if len(orphans) > 0 {
+		cm.logger.Info("Purging orphaned per-session connections after control disconnect",
+			zap.Int("count", len(orphans)))
+	}
+	for _, c := range orphans {
+		c.mu.Lock()
+		if !c.closed {
+			c.closed = true
+			c.conn.Close()
+		}
+		c.mu.Unlock()
+	}
 
 	cm.teet.setTEEKConnected(false)
 	cm.teet.controlHealthy.Store(false)
@@ -470,6 +493,21 @@ func (cm *TEEKConnectionManager) HandleSessionConnection(conn *websocket.Conn) e
 	cm.mu.Lock()
 	cm.sessionConns[sessionID] = sessionConn
 	cm.mu.Unlock()
+	// Defer the cleanup so it runs even if the handler below panics or
+	// any future change adds an early return between here and the
+	// existing teardown path. Without this, a goroutine death between
+	// map-insert and map-delete would leak the slot forever.
+	defer func() {
+		cm.mu.Lock()
+		delete(cm.sessionConns, sessionID)
+		cm.mu.Unlock()
+		sessionConn.mu.Lock()
+		if !sessionConn.closed {
+			sessionConn.closed = true
+			sessionConn.conn.Close()
+		}
+		sessionConn.mu.Unlock()
+	}()
 
 	// Associate connection with session for routing (use mutex to prevent race)
 	session, _ := cm.teet.sessionManager.GetSession(sessionID)
@@ -484,22 +522,9 @@ func (cm *TEEKConnectionManager) HandleSessionConnection(conn *websocket.Conn) e
 
 	cm.logger.WithSession(sessionID).Debug("Per-session connection established")
 
-	// Handle session messages in a loop
+	// Handle session messages in a loop. Cleanup runs via the defer
+	// above when this returns (or panics).
 	cm.handleSessionMessages(sessionID, sessionConn)
-
-	// Cleanup on disconnect - ZERO TOLERANCE for resource leaks
-	cm.mu.Lock()
-	delete(cm.sessionConns, sessionID)
-	cm.mu.Unlock()
-
-	// Explicitly close connection to ensure no leak
-	sessionConn.mu.Lock()
-	if !sessionConn.closed {
-		sessionConn.closed = true
-		sessionConn.conn.Close()
-	}
-	sessionConn.mu.Unlock()
-
 	return nil
 }
 

@@ -119,7 +119,20 @@ for n in "${NEW_NS[@]}"; do
     "${SCRIPT_DIR}/new-pair.sh" --n "${n}" --skip-digest-update &
     NEW_PIDS+=($!)
 done
+# Emit a "." every 5s while any child is still running so the terminal
+# shows liveness — without this, a slower child looks like a hang
+# (the parent is just blocked in wait, child is running silently after
+# its own "Done" line).
+heartbeat_until_done() {
+    local pid=$1
+    while kill -0 "${pid}" 2>/dev/null; do
+        printf '.'
+        sleep 5
+    done
+    printf '\n'
+}
 for pid in "${NEW_PIDS[@]}"; do
+    heartbeat_until_done "${pid}"
     wait "${pid}"
 done
 
@@ -156,6 +169,7 @@ else
         RETIRE_PIDS+=($!)
     done
     for pid in "${RETIRE_PIDS[@]}"; do
+        heartbeat_until_done "${pid}"
         wait "${pid}"
     done
 fi

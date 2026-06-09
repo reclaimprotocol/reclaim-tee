@@ -13,6 +13,7 @@ import (
 	"github.com/reclaimprotocol/reclaim-tee/shared"
 
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 )
 
 // RedactionOperation represents a redaction to be applied to a specific sequence
@@ -52,6 +53,11 @@ type TEEK struct {
 	cachedAttestation *teeproto.AttestationReport
 	attestationMutex  sync.RWMutex
 	attestationExpiry time.Time
+	// attestationSF coalesces concurrent cache-miss refreshes into a single
+	// launcher-socket call. Without it, N concurrent sessions all hitting
+	// an empty cache spawn N simultaneous GenerateGCPAttestation calls,
+	// which saturate the launcher socket and time out.
+	attestationSF singleflight.Group
 
 	// Mutual attestation (managed by connection manager)
 	teetAttestationVerified bool

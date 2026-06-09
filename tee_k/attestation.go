@@ -73,7 +73,10 @@ func (t *TEEK) refreshAttestation() error {
 	return nil
 }
 
-// getCachedAttestation returns the cached attestation if valid, otherwise generates a new one
+// getCachedAttestation returns the cached attestation if valid, otherwise
+// generates a new one. Concurrent cache-miss callers are coalesced via
+// singleflight so only ONE launcher-socket call fires per miss; all
+// waiters share that one result.
 func (t *TEEK) getCachedAttestation(sessionID string) (*teeproto.AttestationReport, error) {
 	// Skip in standalone mode
 	if t.ratls == nil {
@@ -85,25 +88,39 @@ func (t *TEEK) getCachedAttestation(sessionID string) (*teeproto.AttestationRepo
 	expiry := t.attestationExpiry
 	t.attestationMutex.RUnlock()
 
-	// Use cached attestation if valid
+	// Fast path — cache hit.
 	if cached != nil && time.Now().Before(expiry) {
 		t.logger.WithSession(sessionID).Debug("Using cached attestation",
 			zap.String("type", cached.Type))
 		return cached, nil
 	}
 
-	// Fallback: generate new attestation if cache is invalid
-	t.logger.WithSession(sessionID).Warn("Cached attestation expired or missing, generating new one")
-
-	if err := t.refreshAttestation(); err != nil {
-		return nil, fmt.Errorf("failed to generate fallback attestation: %v", err)
+	// Cache miss. Use singleflight so N concurrent miss-callers fire only
+	// one refresh. The "refresh" key is constant — there's only one global
+	// per-TEE attestation cache.
+	t.logger.WithSession(sessionID).Warn("Cached attestation expired or missing, coalescing refresh")
+	val, err, _ := t.attestationSF.Do("refresh", func() (any, error) {
+		// Re-check inside the singleflight — another caller may have just
+		// completed the refresh while we were waiting at the door.
+		t.attestationMutex.RLock()
+		cached := t.cachedAttestation
+		expiry := t.attestationExpiry
+		t.attestationMutex.RUnlock()
+		if cached != nil && time.Now().Before(expiry) {
+			return cached, nil
+		}
+		if err := t.refreshAttestation(); err != nil {
+			return nil, fmt.Errorf("failed to generate fallback attestation: %v", err)
+		}
+		t.attestationMutex.RLock()
+		result := t.cachedAttestation
+		t.attestationMutex.RUnlock()
+		return result, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	t.attestationMutex.RLock()
-	result := t.cachedAttestation
-	t.attestationMutex.RUnlock()
-
-	return result, nil
+	return val.(*teeproto.AttestationReport), nil
 }
 
 // generateAttestationReport generates an AttestationReport for enclave mode (uses cache for performance)

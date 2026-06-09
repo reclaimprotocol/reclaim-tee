@@ -210,6 +210,12 @@ func (cm *TEETConnectionManager) connectAndServe(onReady func()) error {
 // tearDownControl resets the connection-scoped state shared with TEEK:
 // controlHealthy, OT pool, and cm.controlConn. Called from connectAndServe
 // on any exit path (OT failure, normal disconnect).
+//
+// Also purges all per-session WS connections — they're orphaned without
+// a live control link and would otherwise occupy MaxConcurrentSessions
+// slots until their 60s read deadline fires. New sessions queue up
+// during reconnect and get rejected with "max concurrent sessions
+// reached" even though no real work is happening.
 func (cm *TEETConnectionManager) tearDownControl() {
 	cm.attestationMutex.Lock()
 	cm.attestationVerified = false
@@ -225,7 +231,27 @@ func (cm *TEETConnectionManager) tearDownControl() {
 
 	cm.mu.Lock()
 	cm.controlConn = nil
+	// Snapshot + reset sessionConns under the lock, then close them
+	// outside the lock (close can block briefly on socket teardown).
+	orphans := make([]*SessionTEETConnection, 0, len(cm.sessionConns))
+	for _, c := range cm.sessionConns {
+		orphans = append(orphans, c)
+	}
+	cm.sessionConns = make(map[string]*SessionTEETConnection)
 	cm.mu.Unlock()
+
+	if len(orphans) > 0 {
+		cm.logger.Info("Purging orphaned per-session connections after control disconnect",
+			zap.Int("count", len(orphans)))
+	}
+	for _, c := range orphans {
+		c.mu.Lock()
+		if !c.closed {
+			c.closed = true
+			c.conn.Close()
+		}
+		c.mu.Unlock()
+	}
 }
 
 // dialer returns the WebSocket dialer to use for the given URL.

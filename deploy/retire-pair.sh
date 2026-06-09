@@ -94,9 +94,34 @@ else
             log "Pair drained."
         fi
 
+        # Mark pair dead — deletes the Firestore record so /pairs and the
+        # selector stop seeing it. Retries on transient failures so a
+        # network blip doesn't leave a stale row that lingers for ever.
+        # 404 is treated as success (the doc was already gone).
         log "Marking pair dead..."
-        curl -sf -X POST -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" \
-            "${ROUTER_URL}/pairs/${PAIR_ID}/dead" >/dev/null || true
+        for attempt in 1 2 3 4 5; do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" \
+                "${ROUTER_URL}/pairs/${PAIR_ID}/dead")
+            case "${CODE}" in
+                204|404)
+                    log "Marked dead (HTTP ${CODE})."
+                    break
+                    ;;
+                5*|000)
+                    log "Transient /dead failure (HTTP ${CODE}); retry ${attempt}/5"
+                    sleep $((attempt * 2))
+                    ;;
+                *)
+                    log "FATAL: /dead returned non-retryable HTTP ${CODE} for pair ${PAIR_ID}"
+                    exit 1
+                    ;;
+            esac
+            if [[ ${attempt} -eq 5 ]]; then
+                log "FATAL: /dead never succeeded for pair ${PAIR_ID} — Firestore will have a stale row; clean manually."
+                exit 1
+            fi
+        done
     fi
 fi
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 )
 
 // MaxWebSocketMessageSize is the maximum allowed WebSocket message size (30 MB)
@@ -48,6 +49,9 @@ type TEET struct {
 	cachedAttestation *teeproto.AttestationReport
 	attestationMutex  sync.RWMutex
 	attestationExpiry time.Time
+	// attestationSF coalesces concurrent cache-miss refreshes — see
+	// tee_k/tee_k.go for the full rationale.
+	attestationSF singleflight.Group
 
 	// Persistent OPRF key share (loaded from cloud storage)
 	oprfKeyShare []byte
