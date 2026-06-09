@@ -22,6 +22,23 @@ type TEETSessionState struct {
 	RequestProofStreams            [][]byte                                // Store R_SP streams for cryptographic signing
 	ConsolidatedResponseCiphertext []byte                                  // Response ciphertext consolidation
 
+	// RequestPartsArrived counts how many of the two request "halves" have
+	// arrived at TEE_T: the redaction streams (delivered by the client over
+	// its own WS) and the encrypted request fragments (delivered by TEE_K
+	// over the per-session WS). After each handler stores its half it
+	// increments this counter; the handler that bumps it to 2 is the one
+	// that triggers processing.
+	//
+	// Earlier this convergence was implemented as two independent "if the
+	// OTHER half is already present, process" checks — one in each handler.
+	// When both messages arrived in the same WS read tick both handlers
+	// won the check and both dispatched the encrypted request to the
+	// client, which then sent the same TLS record to the server twice with
+	// the same seq_num. The server rejected the second copy as
+	// bad_record_mac. The counter expresses the actual invariant ("process
+	// when BOTH halves have arrived") instead of approximating it.
+	RequestPartsArrived atomic.Int32
+
 	// MPC OPRF state (2-round protocol - no session tracking needed)
 	OPRFKeyShare         []byte                     // 16-byte key share for MPC OPRF
 	ClientOPRFRanges     []*teeproto.OPRFRangeSpec  // Client-provided OPRF ranges

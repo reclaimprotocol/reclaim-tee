@@ -82,28 +82,73 @@ func (t *TEET) handleRedactionStreams(sessionID string, msg *shared.Message) err
 		return err
 	}
 
-	teetState2, err := t.getTEETSessionState(sessionID)
-	if err == nil && (teetState2.PendingEncryptedRequest != nil || len(teetState2.PendingEncryptedFragments) > 0) {
-		t.logger.Debug("Processing pending encrypted request(s) with newly received streams", zap.String("session_id", sessionID))
-
-		// Process fragments if available, otherwise process single request
-		if len(teetState2.PendingEncryptedFragments) > 0 {
-			if procErr := t.processEncryptedFragmentsWithStreams(sessionID); procErr != nil {
-				return procErr
-			}
-			teetState2.PendingEncryptedFragments = make(map[uint64]*shared.EncryptedRequestData)
-		} else if teetState2.PendingEncryptedRequest != nil {
-			if procErr := t.processEncryptedRequestWithStreams(sessionID, teetState2.PendingEncryptedRequest); procErr != nil {
-				return procErr
-			}
-			teetState2.PendingEncryptedRequest = nil
-		}
+	// Both halves of the request (redaction streams + encrypted request)
+	// converge here. Signal arrival and let processIfBothPartsArrived
+	// decide whether this is the second arrival (in which case it
+	// processes) or the first (in which case it waits for TEE_K's
+	// BatchedEncryptedRequest to arrive).
+	if procErr := t.processIfBothPartsArrived(sessionID); procErr != nil {
+		return procErr
 	}
 
 	t.logger.Debug("handleRedactionStreams completed for session",
 		zap.String("session_id", sessionID))
 
 	return nil
+}
+
+// processIfBothPartsArrived implements the join between the redaction-streams
+// path (handleRedactionStreams) and the encrypted-request path
+// (handleBatchedEncryptedRequest). Each calls this exactly once after
+// storing its half. The counter goes 0 → 1 → 2; the call that bumps it
+// to 2 owns the processing. Calls when count != 2 are no-ops.
+//
+// This replaces an older "if the other half is already stored, process
+// now" pattern in each handler, which was racy: when both messages
+// arrived in the same WS read tick, both handlers saw the other half as
+// present and both processed, dispatching the same TLS record to the
+// client twice → bad_record_mac from the server on the duplicate.
+func (t *TEET) processIfBothPartsArrived(sessionID string) error {
+	teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
+	if err != nil {
+		// Session might already be gone (e.g., terminated). Don't escalate.
+		t.logger.Debug("processIfBothPartsArrived: session state missing", zap.String("session_id", sessionID))
+		return nil
+	}
+	count := teetState.RequestPartsArrived.Add(1)
+	if count != 2 {
+		t.logger.Debug("Request parts arrival incomplete, waiting",
+			zap.String("session_id", sessionID),
+			zap.Int32("arrived", count))
+		return nil
+	}
+
+	t.logger.Debug("Both request parts arrived, processing", zap.String("session_id", sessionID))
+
+	// Prefer fragments path; fall back to legacy single-request path.
+	if len(teetState.PendingEncryptedFragments) > 0 {
+		if procErr := t.processEncryptedFragmentsWithStreams(sessionID); procErr != nil {
+			return procErr
+		}
+		teetState.PendingEncryptedFragments = make(map[uint64]*shared.EncryptedRequestData)
+		return nil
+	}
+	if teetState.PendingEncryptedRequest != nil {
+		if procErr := t.processEncryptedRequestWithStreams(sessionID, teetState.PendingEncryptedRequest); procErr != nil {
+			return procErr
+		}
+		teetState.PendingEncryptedRequest = nil
+		return nil
+	}
+
+	// Counter hit 2 but neither side actually stored its data — programmer
+	// error (someone called us without storing). Better to log loudly than
+	// silently drop.
+	err = fmt.Errorf("both parts marked arrived but no encrypted request data present")
+	t.logger.Error("processIfBothPartsArrived: invariant violated",
+		zap.String("session_id", sessionID))
+	t.terminateSessionWithError(sessionID, shared.ReasonSessionStateCorrupted, err, "Counter-join invariant violated")
+	return err
 }
 
 // handleBatchedEncryptedResponses handles batched encrypted responses from client
@@ -375,14 +420,12 @@ func (t *TEET) handleBatchedEncryptedRequest(msg *shared.Message) error {
 		zap.String("session_id", sessionID),
 		zap.Int("total_fragments", len(batchedReq.Fragments)))
 
-	// If redaction streams are available, process immediately
-	if len(session.RedactionState.RedactionStreams) > 0 {
-		return t.processEncryptedFragmentsWithStreams(sessionID)
-	}
-
-	t.logger.Debug("Waiting for redaction streams to process batched fragments",
-		zap.String("session_id", sessionID))
-	return nil
+	// Signal that the encrypted-request half has arrived. If the redaction
+	// streams are already in, processIfBothPartsArrived will dispatch; if
+	// not, it returns a no-op and the streams-handler call will dispatch
+	// once they arrive. The counter ensures the dispatch happens exactly
+	// once.
+	return t.processIfBothPartsArrived(sessionID)
 }
 
 // handleBatchedTagSecrets handles batched tag secrets from TEE_K
