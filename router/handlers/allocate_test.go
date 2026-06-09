@@ -128,16 +128,17 @@ func TestAllocateRateLimitedAfterBurst(t *testing.T) {
 	s, _ := newTestServerWithSigner(t)
 	bothSidesReady(t, s)
 
-	// burst=3 — first three should pass, fourth from the same IP should 429.
-	// httptest.NewRequest assigns the same RemoteAddr to every call, so all
-	// four hit the same bucket.
-	for i := range 3 {
+	// First `allocateBurst` calls should pass; the one after must 429.
+	// httptest.NewRequest assigns the same RemoteAddr to every call so
+	// they all hit the same bucket. Reading the constant rather than
+	// hardcoding keeps the test honest under any tuning.
+	for i := range allocateBurst {
 		w := doAllocate(t, s, fmt.Sprintf("nonce-%d", i))
 		if w.Code != http.StatusOK {
 			t.Fatalf("burst call %d: expected 200, got %d body=%s", i, w.Code, w.Body.String())
 		}
 	}
-	w := doAllocate(t, s, "nonce-4")
+	w := doAllocate(t, s, "post-burst")
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("post-burst call: expected 429, got %d body=%s", w.Code, w.Body.String())
 	}
