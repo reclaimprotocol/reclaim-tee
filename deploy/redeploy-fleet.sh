@@ -85,6 +85,11 @@ OLD_NS=$(gcloud_retry gcloud compute instances list \
     --project="${PROJECT}" --zones="${ZONE}" \
     --filter="name~^${TEE_K_VM_PREFIX}-" \
     --format="value(name)" 2>/dev/null | sed "s/.*${TEE_K_VM_PREFIX}-//" | sort -n)
+# Defensive: keep only integer lines. If anything garbage ever slips in
+# (gcloud warning bleeding through stderr, format change, etc.) we don't
+# want it word-split into the retire-pair loop. Each remaining line is
+# a numeric pair index.
+OLD_NS=$(echo "${OLD_NS}" | grep -E '^[0-9]+$' || true)
 log "Old pairs: ${OLD_NS:-<none>}"
 
 NEW_NS=()

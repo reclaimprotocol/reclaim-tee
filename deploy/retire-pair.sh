@@ -38,6 +38,10 @@ DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-60}        # seconds, hard ceiling
 DRAIN_POLL_MS=${DRAIN_POLL_MS:-250}       # poll interval, milliseconds
 
 N="${1:?usage: retire-pair.sh <n>}"
+if ! [[ "${N}" =~ ^[0-9]+$ ]]; then
+    echo "retire-pair.sh: pair number must be a positive integer, got: ${N}" >&2
+    exit 1
+fi
 K_NAME="${TEE_K_VM_PREFIX}-${N}"
 T_NAME="${TEE_T_VM_PREFIX}-${N}"
 
