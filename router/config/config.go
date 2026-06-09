@@ -12,7 +12,9 @@ import (
 
 // Config is the env-driven router configuration, resolved once at startup.
 //
-// Required env: APPROVED_IMAGE_DIGESTS, SA_TOKEN_AUDIENCE.
+// Required env: SA_TOKEN_AUDIENCE, APPROVED_SA_PATTERN.
+// Optional: APPROVED_IMAGE_DIGESTS (first-boot seed only; Firestore is the
+// source of truth thereafter).
 // Everything else has a sensible default.
 type Config struct {
 	Port              string
@@ -60,14 +62,19 @@ type Config struct {
 func Load() (*Config, error) {
 	standalone := os.Getenv("ROUTER_STANDALONE") == "true"
 
+	// APPROVED_IMAGE_DIGESTS is the FIRST-BOOT SEED for the allowlist, no
+	// longer the source of truth. When Firestore's approved_digests
+	// collection is empty AND this var is set, NewAllowlist writes the
+	// listed digests into Firestore. After that, mutations flow through
+	// the admin API (POST/DELETE /allowlist) and Firestore persists. So
+	// empty is fine on a router that's been deployed against a populated
+	// Firestore — the seed step is just skipped.
 	var digests []string
 	if digestsRaw := os.Getenv("APPROVED_IMAGE_DIGESTS"); digestsRaw != "" {
 		digests = strings.Split(digestsRaw, ",")
 		for i, d := range digests {
 			digests[i] = strings.TrimSpace(d)
 		}
-	} else if !standalone {
-		return nil, fmt.Errorf("APPROVED_IMAGE_DIGESTS is required")
 	}
 
 	// APPROVED_SA_PATTERN must be set explicitly in production. There is no

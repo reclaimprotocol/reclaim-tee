@@ -102,8 +102,8 @@ log "Current revision: ${PREV_REV}"
 SUFFIX="${COMMIT}-$(date +%s)"
 log "Deploying as revision suffix ${SUFFIX}..."
 # --update-env-vars sets/updates KMS_KEY_NAME and FIRESTORE_PROJECT_ID
-# without touching other env vars (APPROVED_IMAGE_DIGESTS /
-# SA_TOKEN_AUDIENCE / ADMIN_TOKEN / JWT_ISSUER stay as configured).
+# without touching other env vars (SA_TOKEN_AUDIENCE / APPROVED_SA_PATTERN
+# / ADMIN_TOKEN / JWT_ISSUER stay as configured).
 #
 # FIRESTORE_PROJECT_ID is critical: without it the router silently falls
 # back to an in-memory Store, so pairs + allowlist are wiped on every
