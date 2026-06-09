@@ -101,15 +101,21 @@ log "Current revision: ${PREV_REV}"
 # predictable for the verify step.
 SUFFIX="${COMMIT}-$(date +%s)"
 log "Deploying as revision suffix ${SUFFIX}..."
-# --update-env-vars sets/updates KMS_KEY_NAME without touching other env
-# vars (APPROVED_IMAGE_DIGESTS / SA_TOKEN_AUDIENCE / ADMIN_TOKEN /
-# JWT_ISSUER stay as configured on the service).
+# --update-env-vars sets/updates KMS_KEY_NAME and FIRESTORE_PROJECT_ID
+# without touching other env vars (APPROVED_IMAGE_DIGESTS /
+# SA_TOKEN_AUDIENCE / ADMIN_TOKEN / JWT_ISSUER stay as configured).
+#
+# FIRESTORE_PROJECT_ID is critical: without it the router silently falls
+# back to an in-memory Store, so pairs + allowlist are wiped on every
+# revision swap. Pinning it here means future deploys can't accidentally
+# drop persistence. The `^|^` delimiter lets us pass values containing
+# commas (the KMS key path) safely.
 gcloud run deploy "${SERVICE}" \
     --project="${PROJECT}" \
     --region="${REGION}" \
     --image="${IMAGE}" \
     --revision-suffix="${SUFFIX}" \
-    --update-env-vars="KMS_KEY_NAME=${KMS_KEY_NAME}" \
+    --update-env-vars="^|^KMS_KEY_NAME=${KMS_KEY_NAME}|FIRESTORE_PROJECT_ID=${PROJECT}" \
     --quiet
 
 NEW_REV=$(gcloud run services describe "${SERVICE}" \
