@@ -525,7 +525,8 @@ func deserializeLabel(data []byte) ot.Label {
 	}
 }
 
-// One allocation; size known up front. Wire format identical to the old append-chain.
+// One allocation; size known up front. DualMasks are NOT in this payload —
+// they travel in a separate proto field that the evaluator reads directly.
 func SerializeOnlinePayload(p *CMACOnlinePayload) []byte {
 	totalGateLabels := 0
 	for _, gate := range p.GarbledTables {
@@ -535,13 +536,11 @@ func SerializeOnlinePayload(p *CMACOnlinePayload) []byte {
 	size := 8 + 32 + 4 + // sessionID + key + OTStartIndex
 		4 + len(p.GarbledTables)*4 + totalGateLabels*16 + // gates: numGates + per-gate (numLabels + labels)
 		4 + len(p.GarblerInputs)*16 + // garbler inputs
-		4 + len(p.OutputHints)*32 + // output hints (each Wire = 2 labels = 32 B)
-		4 + len(p.DualMasks)*48 // dual masks (each = 3 labels = 48 B)
+		4 + len(p.OutputHints)*32 // output hints (each Wire = 2 labels = 32 B)
 
 	buf := make([]byte, size)
 	off := 0
 
-	// Header.
 	binary.BigEndian.PutUint64(buf[off:off+8], p.SessionID)
 	off += 8
 	copy(buf[off:off+32], p.Key[:])
@@ -549,7 +548,6 @@ func SerializeOnlinePayload(p *CMACOnlinePayload) []byte {
 	binary.BigEndian.PutUint32(buf[off:off+4], uint32(p.OTStartIndex))
 	off += 4
 
-	// Garbled Tables: numGates u32, then per gate (numLabels u32, labels).
 	binary.BigEndian.PutUint32(buf[off:off+4], uint32(len(p.GarbledTables)))
 	off += 4
 	for _, gate := range p.GarbledTables {
@@ -562,7 +560,6 @@ func SerializeOnlinePayload(p *CMACOnlinePayload) []byte {
 		}
 	}
 
-	// Garbler Inputs.
 	binary.BigEndian.PutUint32(buf[off:off+4], uint32(len(p.GarblerInputs)))
 	off += 4
 	for _, label := range p.GarblerInputs {
@@ -571,7 +568,6 @@ func SerializeOnlinePayload(p *CMACOnlinePayload) []byte {
 		off += 16
 	}
 
-	// Output Hints (each Wire = L0 then L1).
 	binary.BigEndian.PutUint32(buf[off:off+4], uint32(len(p.OutputHints)))
 	off += 4
 	for _, wire := range p.OutputHints {
@@ -580,19 +576,6 @@ func SerializeOnlinePayload(p *CMACOnlinePayload) []byte {
 		binary.BigEndian.PutUint64(buf[off+16:off+24], wire.L1.D0)
 		binary.BigEndian.PutUint64(buf[off+24:off+32], wire.L1.D1)
 		off += 32
-	}
-
-	// Dual Masks (M0, M1, Delta — three labels per mask).
-	binary.BigEndian.PutUint32(buf[off:off+4], uint32(len(p.DualMasks)))
-	off += 4
-	for _, mask := range p.DualMasks {
-		binary.BigEndian.PutUint64(buf[off:off+8], mask.M0.D0)
-		binary.BigEndian.PutUint64(buf[off+8:off+16], mask.M0.D1)
-		binary.BigEndian.PutUint64(buf[off+16:off+24], mask.M1.D0)
-		binary.BigEndian.PutUint64(buf[off+24:off+32], mask.M1.D1)
-		binary.BigEndian.PutUint64(buf[off+32:off+40], mask.Delta.D0)
-		binary.BigEndian.PutUint64(buf[off+40:off+48], mask.Delta.D1)
-		off += 48
 	}
 
 	return buf
@@ -674,10 +657,8 @@ func DeserializeOnlinePayload(data []byte) (*CMACOnlinePayload, error) {
 		offset += 32
 	}
 
-	// Dual Masks
-	dualMasks, err := DeserializeDualMasks(data[offset:])
-	if err != nil {
-		return nil, fmt.Errorf("failed to deserialize dual masks: %w", err)
+	if offset != len(data) {
+		return nil, fmt.Errorf("trailing bytes after output hints (%d)", len(data)-offset)
 	}
 
 	return &CMACOnlinePayload{
@@ -686,7 +667,6 @@ func DeserializeOnlinePayload(data []byte) (*CMACOnlinePayload, error) {
 		GarbledTables: gates,
 		GarblerInputs: garblerInputs,
 		OutputHints:   outputHints,
-		DualMasks:     dualMasks,
 		OTStartIndex:  int(otStartIndex),
 	}, nil
 }

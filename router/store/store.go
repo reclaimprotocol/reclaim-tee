@@ -18,6 +18,18 @@ type Store interface {
 	ListPairs(ctx context.Context) ([]*Pair, error)
 	DeletePair(ctx context.Context, id string) error
 
+	// Atomic read-modify-write. fn receives a non-nil *Pair (zero with ID
+	// set when !exists) and is called inside a serialized critical section
+	// or Firestore transaction. fn mutates p in place; return nil to commit,
+	// non-nil to abort without writing. Returns the committed pair (or the
+	// abort error).
+	MutatePair(ctx context.Context, id string, fn func(p *Pair, exists bool) error) (*Pair, error)
+
+	// Atomic conditional delete. fn inspects the current pair; return nil
+	// to commit the delete, non-nil to abort (that error is returned).
+	// Returns ErrNotFound if the pair is absent before fn runs.
+	DeletePairIf(ctx context.Context, id string, fn func(*Pair) error) error
+
 	// Approved-image-digest allowlist. Source of truth lives in the store
 	// so that admin-API mutations survive router restarts (the env-var
 	// seed in config is only consulted on first boot when the store is

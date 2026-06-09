@@ -58,21 +58,9 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := s.Store.GetPair(ctx, req.PairID)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "pair not found")
-		return
-	}
-
-	registeredAddr := p.TEEKAddr
 	expectedSAEmail := s.Config.TEEKSAEmail
 	if store.Role(req.Role) == store.RoleT {
-		registeredAddr = p.TEETAddr
 		expectedSAEmail = s.Config.TEETSAEmail
-	}
-	if registeredAddr == "" {
-		writeErr(w, http.StatusNotFound, "role has not registered for this pair")
-		return
 	}
 	if !s.Config.Standalone && expectedSAEmail != "" && expectedSAEmail != saEmail {
 		log.Warn("heartbeat: SA email not approved for role",
@@ -84,29 +72,44 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	prevStatus := p.EffectiveStatus(now,
-		s.Config.HeartbeatStaleness, s.Config.ControlUnhealthy, s.Config.OTNotReady)
-
-	switch store.Role(req.Role) {
-	case store.RoleK:
-		p.LastHeartbeatK = now
-		applyControlObservation(&p.ControlHealthyK, &p.ControlUnhealthySinceK, req.ControlHealthy, now)
-		applyOTObservation(&p.OTReadyK, &p.OTUnreadySinceK, req.OTReady, now)
-	case store.RoleT:
-		p.LastHeartbeatT = now
-		applyControlObservation(&p.ControlHealthyT, &p.ControlUnhealthySinceT, req.ControlHealthy, now)
-		applyOTObservation(&p.OTReadyT, &p.OTUnreadySinceT, req.OTReady, now)
-	}
-	p.ActiveSessions = req.ActiveSessions
-
-	newStatus := p.EffectiveStatus(now,
-		s.Config.HeartbeatStaleness, s.Config.ControlUnhealthy, s.Config.OTNotReady)
-	if newStatus == store.StatusReady && p.ReadyAt.IsZero() {
-		p.ReadyAt = now
-	}
-
-	if err := s.Store.UpsertPair(ctx, p); err != nil {
-		log.Error("heartbeat: store upsert failed", zap.Error(err))
+	var prevStatus, newStatus store.Status
+	p, err := s.Store.MutatePair(ctx, req.PairID, func(p *store.Pair, exists bool) error {
+		if !exists {
+			return store.ErrNotFound
+		}
+		registeredAddr := p.TEEKAddr
+		if store.Role(req.Role) == store.RoleT {
+			registeredAddr = p.TEETAddr
+		}
+		if registeredAddr == "" {
+			return store.ErrNotFound
+		}
+		prevStatus = p.EffectiveStatus(now,
+			s.Config.HeartbeatStaleness, s.Config.ControlUnhealthy, s.Config.OTNotReady)
+		switch store.Role(req.Role) {
+		case store.RoleK:
+			p.LastHeartbeatK = now
+			applyControlObservation(&p.ControlHealthyK, &p.ControlUnhealthySinceK, req.ControlHealthy, now)
+			applyOTObservation(&p.OTReadyK, &p.OTUnreadySinceK, req.OTReady, now)
+		case store.RoleT:
+			p.LastHeartbeatT = now
+			applyControlObservation(&p.ControlHealthyT, &p.ControlUnhealthySinceT, req.ControlHealthy, now)
+			applyOTObservation(&p.OTReadyT, &p.OTUnreadySinceT, req.OTReady, now)
+		}
+		p.ActiveSessions = req.ActiveSessions
+		newStatus = p.EffectiveStatus(now,
+			s.Config.HeartbeatStaleness, s.Config.ControlUnhealthy, s.Config.OTNotReady)
+		if newStatus == store.StatusReady && p.ReadyAt.IsZero() {
+			p.ReadyAt = now
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "pair or role not registered")
+		return
+	case err != nil:
+		log.Error("heartbeat: store mutate failed", zap.Error(err))
 		writeErr(w, http.StatusInternalServerError, "store error")
 		return
 	}

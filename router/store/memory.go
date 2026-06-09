@@ -61,6 +61,39 @@ func (s *MemoryStore) DeletePair(_ context.Context, id string) error {
 	return nil
 }
 
+func (s *MemoryStore) MutatePair(_ context.Context, id string, fn func(p *Pair, exists bool) error) (*Pair, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.pairs[id]
+	var p Pair
+	if ok {
+		p = *cur
+	} else {
+		p.ID = id
+	}
+	if err := fn(&p, ok); err != nil {
+		return nil, err
+	}
+	s.pairs[id] = &p
+	cp := p
+	return &cp, nil
+}
+
+func (s *MemoryStore) DeletePairIf(_ context.Context, id string, fn func(*Pair) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.pairs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	cp := *cur
+	if err := fn(&cp); err != nil {
+		return err
+	}
+	delete(s.pairs, id)
+	return nil
+}
+
 func (s *MemoryStore) ListDigests(_ context.Context) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

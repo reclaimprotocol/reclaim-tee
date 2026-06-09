@@ -88,33 +88,6 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		digest = validated
 	}
 
-	// Lookup or create pair record, populate this role, enforce cross-consistency
-	// against any already-registered peer side.
-	p, err := s.Store.GetPair(ctx, req.PairID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		p = &store.Pair{
-			ID:           req.PairID,
-			RegisteredAt: time.Now(),
-		}
-	case err != nil:
-		log.Error("register: store get failed", zap.Error(err))
-		writeErr(w, http.StatusInternalServerError, "store error")
-		return
-	}
-
-	now := time.Now()
-	// On first registration of a side, the side has not yet reported healthy
-	// observations — seed the "unhealthy since" timestamps so threshold-based
-	// degradation has a starting point.
-	// peer_addr_claim cross-consistency was a V1 defense-in-depth check that
-	// assumed each side claimed the same form of the peer's address. In V2
-	// the addresses serve different purposes — SelfAddr is the external IP
-	// the router hands to clients via /allocate, while PeerAddrClaim is
-	// the GCE-internal DNS name the TEEs use to dial each other. They
-	// don't match by design. pair_id is the authoritative identifier;
-	// SA token + attestation + image_digest already authenticate the
-	// caller. The peer-addr claim is now informational only.
 	// Per-role SA binding: each role has one expected SA email (config-pinned).
 	if !s.Config.Standalone {
 		expected := s.Config.TEEKSAEmail
@@ -131,23 +104,30 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	switch store.Role(req.Role) {
-	case store.RoleK:
-		p.TEEKAddr = req.SelfAddr
-		p.TEEKImageDigest = digest
-		p.LastHeartbeatK = now
-		p.ControlUnhealthySinceK = now
-		p.OTUnreadySinceK = now
-	case store.RoleT:
-		p.TEETAddr = req.SelfAddr
-		p.TEETImageDigest = digest
-		p.LastHeartbeatT = now
-		p.ControlUnhealthySinceT = now
-		p.OTUnreadySinceT = now
-	}
-
-	if err := s.Store.UpsertPair(ctx, p); err != nil {
-		log.Error("register: store upsert failed", zap.Error(err))
+	// Transactional read-modify-write: create-if-absent, then populate this role.
+	now := time.Now()
+	p, err := s.Store.MutatePair(ctx, req.PairID, func(p *store.Pair, exists bool) error {
+		if !exists {
+			p.RegisteredAt = now
+		}
+		switch store.Role(req.Role) {
+		case store.RoleK:
+			p.TEEKAddr = req.SelfAddr
+			p.TEEKImageDigest = digest
+			p.LastHeartbeatK = now
+			p.ControlUnhealthySinceK = now
+			p.OTUnreadySinceK = now
+		case store.RoleT:
+			p.TEETAddr = req.SelfAddr
+			p.TEETImageDigest = digest
+			p.LastHeartbeatT = now
+			p.ControlUnhealthySinceT = now
+			p.OTUnreadySinceT = now
+		}
+		return nil
+	})
+	if err != nil {
+		log.Error("register: store mutate failed", zap.Error(err))
 		writeErr(w, http.StatusInternalServerError, "store error")
 		return
 	}

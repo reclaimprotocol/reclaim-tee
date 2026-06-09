@@ -75,30 +75,29 @@ func (s *Server) HandleDrainPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := s.Store.GetPair(r.Context(), id)
+	p, err := s.Store.MutatePair(r.Context(), id, func(p *store.Pair, exists bool) error {
+		if !exists {
+			return store.ErrNotFound
+		}
+		p.Draining = true
+		return nil
+	})
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "pair not found")
 		return
 	case err != nil:
-		s.Logger.Error("admin: drain get failed", zap.Error(err))
-		writeErr(w, http.StatusInternalServerError, "store error")
-		return
-	}
-	if p.Draining {
-		// Idempotent — already draining.
-		writeJSON(w, http.StatusOK, s.viewOf(p, time.Now()))
-		return
-	}
-	p.Draining = true
-	if err := s.Store.UpsertPair(r.Context(), p); err != nil {
-		s.Logger.Error("admin: drain upsert failed", zap.Error(err))
+		s.Logger.Error("admin: drain mutate failed", zap.Error(err))
 		writeErr(w, http.StatusInternalServerError, "store error")
 		return
 	}
 	s.Logger.Info("admin: pair drained", zap.String("pair_id", id))
 	writeJSON(w, http.StatusOK, s.viewOf(p, time.Now()))
 }
+
+// errKillNotSafe is the abort signal from /dead's predicate when the pair
+// has live sessions and isn't draining / stale.
+var errKillNotSafe = errors.New("pair has active sessions and is not draining")
 
 // HandleKillPair removes a pair from the registry. The underlying VMs may
 // still be running; the operator is responsible for shutting them down.
@@ -113,10 +112,27 @@ func (s *Server) HandleKillPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.Store.DeletePair(r.Context(), id)
+	// Atomic precondition: only delete if pair is Draining (operator already
+	// drained it) AND ActiveSessions==0 — OR both sides' heartbeats are stale
+	// (the pair is gone regardless of the Draining flag).
+	now := time.Now()
+	err := s.Store.DeletePairIf(r.Context(), id, func(p *store.Pair) error {
+		stale := now.Sub(p.LastHeartbeatK) > s.Config.HeartbeatStaleness &&
+			now.Sub(p.LastHeartbeatT) > s.Config.HeartbeatStaleness
+		if stale {
+			return nil
+		}
+		if p.Draining && p.ActiveSessions == 0 {
+			return nil
+		}
+		return errKillNotSafe
+	})
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "pair not found")
+		return
+	case errors.Is(err, errKillNotSafe):
+		writeErr(w, http.StatusConflict, "pair has active sessions and is not draining; /drain first")
 		return
 	case err != nil:
 		s.Logger.Error("admin: delete failed", zap.Error(err))

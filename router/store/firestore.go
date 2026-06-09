@@ -66,6 +66,66 @@ func (s *FirestoreStore) UpsertPair(ctx context.Context, p *Pair) error {
 	return nil
 }
 
+func (s *FirestoreStore) MutatePair(ctx context.Context, id string, fn func(p *Pair, exists bool) error) (*Pair, error) {
+	ref := s.client.Collection(FirestoreCollection).Doc(id)
+	var result *Pair
+	err := s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(ref)
+		var p Pair
+		exists := true
+		switch {
+		case status.Code(err) == codes.NotFound:
+			exists = false
+			p.ID = id
+		case err != nil:
+			return fmt.Errorf("firestore tx get: %w", err)
+		default:
+			var doc pairDoc
+			if err := snap.DataTo(&doc); err != nil {
+				return fmt.Errorf("decode pair doc: %w", err)
+			}
+			p = *doc.toPair(id)
+		}
+		if err := fn(&p, exists); err != nil {
+			return err
+		}
+		if err := tx.Set(ref, fromPair(&p)); err != nil {
+			return fmt.Errorf("firestore tx set: %w", err)
+		}
+		result = &p
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *FirestoreStore) DeletePairIf(ctx context.Context, id string, fn func(*Pair) error) error {
+	ref := s.client.Collection(FirestoreCollection).Doc(id)
+	return s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(ref)
+		if status.Code(err) == codes.NotFound {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("firestore tx get: %w", err)
+		}
+		var doc pairDoc
+		if err := snap.DataTo(&doc); err != nil {
+			return fmt.Errorf("decode pair doc: %w", err)
+		}
+		p := doc.toPair(id)
+		if err := fn(p); err != nil {
+			return err
+		}
+		if err := tx.Delete(ref); err != nil {
+			return fmt.Errorf("firestore tx delete: %w", err)
+		}
+		return nil
+	})
+}
+
 func (s *FirestoreStore) ListPairs(ctx context.Context) ([]*Pair, error) {
 	it := s.client.Collection(FirestoreCollection).Documents(ctx)
 	defer it.Stop()

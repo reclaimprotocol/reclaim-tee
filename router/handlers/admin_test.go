@@ -165,17 +165,41 @@ func TestAdmin_Kill_Happy(t *testing.T) {
 	s := adminServer(t)
 	seedRegisteredPair(t, s)
 
-	w := adminPost(t, s, "/pairs/"+pairID+"/dead", "Bearer "+adminToken)
+	// /dead now requires the pair to be drained (ActiveSessions==0 + Draining)
+	// OR have stale heartbeats. Drain first.
+	w := adminPost(t, s, "/pairs/"+pairID+"/drain", "Bearer "+adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("drain: expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	w = adminPost(t, s, "/pairs/"+pairID+"/dead", "Bearer "+adminToken)
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d body=%s", w.Code, w.Body.String())
 	}
 
-	// Pair should be gone.
 	w = adminGet(t, s, "/pairs", "Bearer "+adminToken)
 	var listResp listPairsResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &listResp)
 	if len(listResp.Pairs) != 0 {
 		t.Fatalf("expected 0 pairs after kill, got %d", len(listResp.Pairs))
+	}
+}
+
+// /dead must refuse a fresh pair that hasn't been drained.
+func TestAdmin_Kill_RejectsUnDrained(t *testing.T) {
+	s := adminServer(t)
+	seedRegisteredPair(t, s)
+
+	w := adminPost(t, s, "/pairs/"+pairID+"/dead", "Bearer "+adminToken)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("kill on un-drained pair: expected 409, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	w = adminGet(t, s, "/pairs", "Bearer "+adminToken)
+	var listResp listPairsResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &listResp)
+	if len(listResp.Pairs) != 1 {
+		t.Fatalf("expected pair to still be present after rejected kill, got %d", len(listResp.Pairs))
 	}
 }
 

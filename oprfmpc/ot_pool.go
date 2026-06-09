@@ -280,39 +280,39 @@ func (p *OTReceiverPool) Clear() {
 
 // Serialization helpers for bulk OT data
 
-// SerializeBulkCOSenderSetup serializes multiple COSenderSetup structures
-// Format per entry: curveNameLen(2) + curveName + scalar(32) + Ax(32) + Ay(32) + AaInvX(32) + AaInvY(32) = ~162 bytes
+// SenderPublicSetup is what crosses the K→T wire — public point A only.
+// The sender's secret scalar `a` and the derived -aA stay on TEE_K, never
+// in a struct that gets serialized.
+type SenderPublicSetup struct {
+	CurveName string
+	Ax, Ay    *big.Int
+}
+
+// Wire format: curveNameLen(2) + curveName + Ax(32) + Ay(32) = 66 B/entry.
 func SerializeBulkCOSenderSetup(setups []ot.COSenderSetup) []byte {
 	if len(setups) == 0 {
 		return nil
 	}
 
-	// Estimate size: 4 bytes count + ~162 bytes per entry
-	buf := make([]byte, 4, 4+len(setups)*170)
+	buf := make([]byte, 4, 4+len(setups)*70)
 	binary.BigEndian.PutUint32(buf[0:4], uint32(len(setups)))
 
 	for _, setup := range setups {
 		curveNameBytes := []byte(setup.CurveName)
 
-		// Curve name length and name
 		lenBuf := make([]byte, 2)
 		binary.BigEndian.PutUint16(lenBuf, uint16(len(curveNameBytes)))
 		buf = append(buf, lenBuf...)
 		buf = append(buf, curveNameBytes...)
 
-		// Fixed-size big.Int fields (32 bytes each, zero-padded)
-		buf = append(buf, bigIntTo32Bytes(setup.Scalar)...)
 		buf = append(buf, bigIntTo32Bytes(setup.Ax)...)
 		buf = append(buf, bigIntTo32Bytes(setup.Ay)...)
-		buf = append(buf, bigIntTo32Bytes(setup.AaInvX)...)
-		buf = append(buf, bigIntTo32Bytes(setup.AaInvY)...)
 	}
 
 	return buf
 }
 
-// DeserializeBulkCOSenderSetup deserializes multiple COSenderSetup structures
-func DeserializeBulkCOSenderSetup(data []byte) ([]ot.COSenderSetup, error) {
+func DeserializeBulkCOSenderSetup(data []byte) ([]SenderPublicSetup, error) {
 	if len(data) < 4 {
 		return nil, errors.New("data too short for count")
 	}
@@ -320,15 +320,14 @@ func DeserializeBulkCOSenderSetup(data []byte) ([]ot.COSenderSetup, error) {
 	count := binary.BigEndian.Uint32(data[0:4])
 	offset := 4
 
-	// Bounds check: each entry is at least 162 bytes (2 + 0 + 160)
-	// Validate count is reasonable before allocating
-	minBytesPerEntry := 162
+	// Min per entry: 2 (curveNameLen) + 0 (curveName) + 64 (Ax+Ay).
+	minBytesPerEntry := 66
 	maxPossibleEntries := (len(data) - 4) / minBytesPerEntry
 	if int(count) > maxPossibleEntries {
 		return nil, fmt.Errorf("invalid count %d: data can hold at most %d entries", count, maxPossibleEntries)
 	}
 
-	setups := make([]ot.COSenderSetup, count)
+	setups := make([]SenderPublicSetup, count)
 
 	for i := uint32(0); i < count; i++ {
 		if offset+2 > len(data) {
@@ -337,22 +336,19 @@ func DeserializeBulkCOSenderSetup(data []byte) ([]ot.COSenderSetup, error) {
 		curveNameLen := binary.BigEndian.Uint16(data[offset : offset+2])
 		offset += 2
 
-		if offset+int(curveNameLen)+160 > len(data) {
+		if offset+int(curveNameLen)+64 > len(data) {
 			return nil, fmt.Errorf("data too short for entry %d", i)
 		}
 
 		curveName := string(data[offset : offset+int(curveNameLen)])
 		offset += int(curveNameLen)
 
-		setups[i] = ot.COSenderSetup{
+		setups[i] = SenderPublicSetup{
 			CurveName: curveName,
-			Scalar:    new(big.Int).SetBytes(data[offset : offset+32]),
-			Ax:        new(big.Int).SetBytes(data[offset+32 : offset+64]),
-			Ay:        new(big.Int).SetBytes(data[offset+64 : offset+96]),
-			AaInvX:    new(big.Int).SetBytes(data[offset+96 : offset+128]),
-			AaInvY:    new(big.Int).SetBytes(data[offset+128 : offset+160]),
+			Ax:        new(big.Int).SetBytes(data[offset : offset+32]),
+			Ay:        new(big.Int).SetBytes(data[offset+32 : offset+64]),
 		}
-		offset += 160
+		offset += 64
 	}
 
 	return setups, nil
