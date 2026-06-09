@@ -277,7 +277,7 @@ func main() {
 			{
 				XPath: "/html/body/div/p[2]/a",
 				Regex: "href=\"https://(?<addr>iana.org)/.*?\"",
-				//Hash:  providers.HASH_TYPE_OPRF_MPC, // Use MPC OPRF instead of client-side TOPRF
+				Hash:  providers.HASH_TYPE_OPRF_MPC, // Use MPC OPRF instead of client-side TOPRF
 			},
 		},
 		ParamValues: map[string]string{

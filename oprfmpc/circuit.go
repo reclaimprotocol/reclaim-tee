@@ -24,6 +24,7 @@ import (
 	"io"
 	"math/big"
 
+	"filippo.io/nistec"
 	"github.com/markkurossi/mpc/circuit"
 	"github.com/markkurossi/mpc/compiler"
 	"github.com/markkurossi/mpc/compiler/utils"
@@ -224,7 +225,12 @@ func CMACGarblerOnline(rng io.Reader, curve elliptic.Curve, garblerInput [80]byt
 	//   - We have actual wire labels (L0, L1) for the circuit
 	//   - Compute M0 = L0 XOR R0, M1 = L1 XOR R1
 	//   - Evaluator can recover: Lb = Rb XOR Mb (where b is their choice bit)
+	//
+	// All 640 iterations share one nistecScratch — the per-iteration ECDH
+	// operations mutate it in place, so there are no per-iter heap allocs
+	// from the curve math. See nistecScratch / deriveRandomLabelsFromSetup.
 	dualMasks := make([]DualMask, cmacInputBitCount)
+	scratch := newNistecScratch()
 	for i := 0; i < cmacInputBitCount; i++ {
 		entry := otEntries[i]
 		wire := evaluatorWires[i]
@@ -232,7 +238,10 @@ func CMACGarblerOnline(rng io.Reader, curve elliptic.Curve, garblerInput [80]byt
 		// The precomputed OT gives us random label pair (R0, R1)
 		// Derive using ECDH: R0 = H(B^a), R1 = H((B-A)^a)
 		// where B is receiver's point, a is sender's scalar, A is sender's public point
-		r0, r1 := deriveRandomLabelsFromSetup(curve, entry.SenderSetup, entry.ReceiverPoint, i)
+		r0, r1, err := deriveRandomLabelsFromSetup(entry.SenderSetup, entry.ReceiverPoint, i, scratch)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dual-mask derivation at i=%d: %w", i, err)
+		}
 
 		// Compute masks: M0 = L0 XOR R0, M1 = L1 XOR R1
 		// Also compute delta = R0 XOR R1 for derandomization correction
@@ -302,7 +311,11 @@ func CMACEvaluatorOnline(curve elliptic.Curve, payload *CMACOnlinePayload, evalu
 	//   - We receive M0, M1, Delta from dual masks
 	//   - If actual == d: L_actual = R_d XOR M_actual
 	//   - If actual != d: First compute R_actual = R_d XOR Delta, then L_actual = R_actual XOR M_actual
+	//
+	// One nistecScratch shared by all 640 iterations — see CMACGarblerOnline
+	// for the rationale.
 	evaluatorLabels := make([]ot.Label, cmacInputBitCount)
+	scratch := newNistecScratch()
 	for i := 0; i < cmacInputBitCount; i++ {
 		entry := receiverEntries[i]
 		mask := payload.DualMasks[i]
@@ -310,7 +323,10 @@ func CMACEvaluatorOnline(curve elliptic.Curve, payload *CMACOnlinePayload, evalu
 		// Get the precomputed choice bit and the derived random label R_d
 		precomputedChoice := entry.ReceiverBundle.Bits[0]
 		actualChoice := bits[i]
-		receivedR := deriveReceivedLabelFromEntry(curve, entry, i)
+		receivedR, err := deriveReceivedLabelFromEntry(entry, i, scratch)
+		if err != nil {
+			return nil, fmt.Errorf("evaluator label derivation at i=%d: %w", i, err)
+		}
 
 		// If precomputed choice differs from actual, correct using delta
 		// R_actual = R_d XOR Delta (Delta = R0 XOR R1)
@@ -441,52 +457,100 @@ func xorLabels(a, b ot.Label) ot.Label {
 	}
 }
 
-// deriveRandomLabelsFromSetup derives random labels using ECDH from OT protocol
-// This implements the Correlated OT sender-side derivation:
-//   - R0 = H(B^a) where B is receiver's point, a is sender's scalar
-//   - R1 = H((B * A^{-1})^a) where A = g^a is sender's public point
-//
-// When receiver chose 0: B = g^b, so R0 = H(g^{ab}) matches receiver's derivation
-// When receiver chose 1: B = A*g^b, so R1 = H(g^{ab}) matches receiver's derivation
-func deriveRandomLabelsFromSetup(curve elliptic.Curve, setup ot.COSenderSetup, receiverPoint ot.ECPoint, index int) (r0, r1 ot.Label) {
-	// R0 = H(B^a) - scalar multiply receiver's point B by sender's scalar a
-	r0x, r0y := curve.ScalarMult(receiverPoint.X, receiverPoint.Y, setup.Scalar.Bytes())
-	r0 = deriveLabelFromPoint(r0x, r0y, index, 0)
-
-	// R1 = H((B * A^{-1})^a)
-	// First compute B - A (point subtraction = B + (-A))
-	// -A has same x but negated y: -A = (Ax, -Ay mod p)
-	negAy := new(big.Int).Neg(setup.Ay)
-	negAy.Mod(negAy, curve.Params().P)
-
-	// B - A = B + (-A)
-	bMinusAx, bMinusAy := curve.Add(receiverPoint.X, receiverPoint.Y, setup.Ax, negAy)
-
-	// (B - A)^a
-	r1x, r1y := curve.ScalarMult(bMinusAx, bMinusAy, setup.Scalar.Bytes())
-	r1 = deriveLabelFromPoint(r1x, r1y, index, 1)
-
-	return r0, r1
+// nistecScratch holds reusable P256 points + fixed-size buffers that the
+// per-iteration ECDH derivations reuse across the 640-iteration dual-mask
+// loop. Allocated once at the top of the loop, mutated in place by every
+// SetBytes/ScalarMult/Add call. This is what turns the original ~9k
+// math/big allocations per OPRF into ~0.
+type nistecScratch struct {
+	bPt, aPt, aAInvPt *nistec.P256Point
+	r0Pt, r1Pt        *nistec.P256Point
+	// pointEnc and altEnc are 65-byte uncompressed encodings (0x04 || x32 || y32)
+	// — populated from *big.Int via FillBytes (no allocation).
+	pointEnc [65]byte
+	altEnc   [65]byte
+	scalar   [32]byte
 }
 
-// deriveLabelFromPoint derives a label from an EC point using SHA-256
-// The index and selector ensure unique labels for each OT and each bit value
-func deriveLabelFromPoint(x, y *big.Int, index int, selector byte) ot.Label {
-	h := sha256.New()
-	h.Write(x.Bytes())
-	h.Write(y.Bytes())
+func newNistecScratch() *nistecScratch {
+	return &nistecScratch{
+		bPt:     nistec.NewP256Point(),
+		aPt:     nistec.NewP256Point(),
+		aAInvPt: nistec.NewP256Point(),
+		r0Pt:    nistec.NewP256Point(),
+		r1Pt:    nistec.NewP256Point(),
+	}
+}
 
-	indexBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(indexBytes, uint64(index))
-	h.Write(indexBytes)
-	h.Write([]byte{selector})
+// encodeUncompressedInto writes x and y into the 65-byte uncompressed
+// SEC 1 point encoding (0x04 || x32 || y32) without allocating. big.Int's
+// FillBytes pads with leading zeros to fit the destination's length.
+func encodeUncompressedInto(out *[65]byte, x, y *big.Int) {
+	out[0] = 0x04
+	x.FillBytes(out[1:33])
+	y.FillBytes(out[33:65])
+}
 
-	hash := h.Sum(nil) // 32 bytes
+// scalarToFixed32 writes the 32-byte big-endian encoding of s into out.
+func scalarToFixed32(out *[32]byte, s *big.Int) {
+	s.FillBytes(out[:])
+}
 
+// labelFromNistecPoint hashes the point's uncompressed coordinates plus
+// (index, selector) into an ot.Label. Note the hash input is FIXED 32-byte
+// x and y (no leading-zero stripping like the previous big.Int.Bytes path)
+// — both garbler and evaluator now use this function, so they agree.
+// OT entries generated under the old big.Int.Bytes hashing are not
+// compatible with this code; since the OT pool is per-process state
+// rebuilt on TEE start, that's a deploy-time concern only.
+func labelFromNistecPoint(p *nistec.P256Point, index int, selector byte) ot.Label {
+	// Point.Bytes() returns 65 bytes; underlying array is stack-allocated
+	// inside Bytes(). Escape analysis keeps it off-heap as long as the
+	// slice doesn't escape this function — which it doesn't.
+	pb := p.Bytes()
+	// Pack (x32 || y32 || index8 || selector1) = 73 bytes into a stack
+	// buffer and call sha256.Sum256 directly. No hash.Hash allocation.
+	var buf [32 + 32 + 8 + 1]byte
+	copy(buf[0:32], pb[1:33])
+	copy(buf[32:64], pb[33:65])
+	binary.BigEndian.PutUint64(buf[64:72], uint64(index))
+	buf[72] = selector
+	hash := sha256.Sum256(buf[:])
 	return ot.Label{
 		D0: binary.BigEndian.Uint64(hash[0:8]),
 		D1: binary.BigEndian.Uint64(hash[8:16]),
 	}
+}
+
+// deriveRandomLabelsFromSetup derives random labels using ECDH from OT protocol
+// This implements the Correlated OT sender-side derivation:
+//   - R0 = H(B^a) where B is receiver's point, a is sender's scalar
+//   - R1 = H((B - A)^a)
+//
+// Identity used to skip the second ScalarMult: a*(B - A) = a*B - a*A.
+// COSenderSetup stores -aA (AaInvX/Y) precomputed at OT setup time, so
+// R1 = R0 + (-aA) is one Add — no second ScalarMult, no point subtraction,
+// no big.Int negation. Per call: 1 ScalarMult + 1 Add + 2 SetBytes, all
+// in-place on the caller-supplied nistecScratch.
+func deriveRandomLabelsFromSetup(setup ot.COSenderSetup, receiverPoint ot.ECPoint, index int, s *nistecScratch) (r0, r1 ot.Label, err error) {
+	encodeUncompressedInto(&s.pointEnc, receiverPoint.X, receiverPoint.Y)
+	encodeUncompressedInto(&s.altEnc, setup.AaInvX, setup.AaInvY)
+	scalarToFixed32(&s.scalar, setup.Scalar)
+
+	if _, err = s.bPt.SetBytes(s.pointEnc[:]); err != nil {
+		return r0, r1, fmt.Errorf("decode receiver point: %w", err)
+	}
+	if _, err = s.aAInvPt.SetBytes(s.altEnc[:]); err != nil {
+		return r0, r1, fmt.Errorf("decode AaInv point: %w", err)
+	}
+	if _, err = s.r0Pt.ScalarMult(s.bPt, s.scalar[:]); err != nil {
+		return r0, r1, fmt.Errorf("scalar mult B^a: %w", err)
+	}
+	s.r1Pt.Add(s.r0Pt, s.aAInvPt)
+
+	r0 = labelFromNistecPoint(s.r0Pt, index, 0)
+	r1 = labelFromNistecPoint(s.r1Pt, index, 1)
+	return r0, r1, nil
 }
 
 // deriveReceivedLabelFromEntry derives the received random label for the evaluator
@@ -497,20 +561,20 @@ func deriveLabelFromPoint(x, y *big.Int, index int, selector byte) ot.Label {
 //   - If choice=0: B = g^b, sender computed R0 = H(B^a) = H(g^{ab}) = H(A^b)
 //   - If choice=1: B = A*g^b, sender computed R1 = H((B-A)^a) = H(g^{ab}) = H(A^b)
 //
-// Note: Each OTReceiverEntry contains a bundle with exactly 1 choice bit (at index 0),
-// but the 'index' parameter indicates the position in the overall input (0-639)
-// and is used in key derivation to match the garbler's derivation.
-func deriveReceivedLabelFromEntry(curve elliptic.Curve, entry *OTReceiverEntry, index int) ot.Label {
+// Per call: 1 ScalarMult + 1 SetBytes, in place on the caller's scratch.
+func deriveReceivedLabelFromEntry(entry *OTReceiverEntry, index int, s *nistecScratch) (ot.Label, error) {
 	bundle := entry.ReceiverBundle
 	choiceBit := bundle.Bits[0]
 
-	// Compute A^b = sender's public point raised to receiver's scalar
-	// This equals g^{ab} which matches what the sender computes
-	ax, ay := entry.SenderPublicPoint.X, entry.SenderPublicPoint.Y
-	b := bundle.Scalars[0]
+	encodeUncompressedInto(&s.pointEnc, entry.SenderPublicPoint.X, entry.SenderPublicPoint.Y)
+	scalarToFixed32(&s.scalar, bundle.Scalars[0])
 
-	// A^b
-	sharedX, sharedY := curve.ScalarMult(ax, ay, b.Bytes())
+	if _, err := s.aPt.SetBytes(s.pointEnc[:]); err != nil {
+		return ot.Label{}, fmt.Errorf("decode A point: %w", err)
+	}
+	if _, err := s.r0Pt.ScalarMult(s.aPt, s.scalar[:]); err != nil {
+		return ot.Label{}, fmt.Errorf("scalar mult A^b: %w", err)
+	}
 
 	// Selector matches sender's derivation: 0 for R0, 1 for R1
 	selector := byte(0)
@@ -518,7 +582,7 @@ func deriveReceivedLabelFromEntry(curve elliptic.Curve, entry *OTReceiverEntry, 
 		selector = 1
 	}
 
-	return deriveLabelFromPoint(sharedX, sharedY, index, selector)
+	return labelFromNistecPoint(s.r0Pt, index, selector), nil
 }
 
 // Serialization helpers for wire protocol

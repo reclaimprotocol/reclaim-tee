@@ -224,7 +224,7 @@ func main() {
 				{
 					"xPath": "/html/body/div/p[2]/a",
 					"regex": "href=\"https://(?<addr>iana.org)/.*?\"",
-					//"hash":  "oprf-mpc",
+					"hash":  "oprf-mpc",
 				},
 			},
 			"paramValues": map[string]string{
