@@ -123,13 +123,12 @@ func (c *Client) tcpToWebsocket() {
 
 	buffer := make([]byte, TCPBufferSize)
 	var pending []byte // Buffer for incomplete TLS packets
-	// Idle-after-data: when the target server doesn't FIN within the client's
-	// 1m protocol timeout despite our Connection: close request, fall back to
-	// "post-response idle" detection — N consecutive read timeouts with no
-	// pending mid-record bytes after we've already captured ≥1 record.
-	const idleFlushAfter = 2 // 2× DefaultTCPReadTimeout (= 2s)
-	var sawAnyRecord bool
+	// Idle-after-request-sent: 5 consecutive 1s read timeouts after we've
+	// forwarded the HTTP request, with no pending mid-record bytes. See
+	// [[tcp-idle-flush-2026-06-10]].
+	const idleFlushAfter = 5
 	idleStreak := 0
+	var requestSentObserved bool
 
 	for {
 		if c.isClosing {
@@ -138,6 +137,12 @@ func (c *Client) tcpToWebsocket() {
 
 		if c.tcpConn != nil {
 			c.tcpConn.SetReadDeadline(time.Now().Add(DefaultTCPReadTimeout))
+		}
+
+		// Reset idle clock first time we observe request-sent.
+		if !requestSentObserved && c.httpRequestSent {
+			requestSentObserved = true
+			idleStreak = 0
 		}
 
 		n, err := c.tcpConn.Read(buffer)
@@ -156,7 +161,7 @@ func (c *Client) tcpToWebsocket() {
 					// handshake, and have captured ≥1 record. Multi-second
 					// gap is the safe threshold — sub-second inter-record
 					// gaps shouldn't trigger this.
-					if sawAnyRecord && c.handshakeComplete && pending == nil {
+					if c.httpRequestSent && pending == nil {
 						idleStreak++
 						if idleStreak >= idleFlushAfter {
 							c.logger.Info("Server idle after response — flushing to TEE_T",
@@ -210,7 +215,6 @@ func (c *Client) tcpToWebsocket() {
 				packet := make([]byte, fullLength)
 				copy(packet, data[offset:offset+fullLength])
 				c.capturedTraffic = append(c.capturedTraffic, packet)
-				sawAnyRecord = true
 
 				c.logger.Info("Captured incoming raw TCP chunk", zap.Int("bytes", len(packet)))
 
@@ -236,7 +240,7 @@ func (c *Client) tcpToWebsocket() {
 					zap.String("record_type_name", recordTypeStr),
 					zap.Uint16("tls_version", recordVersion))
 
-				if !c.handshakeComplete {
+				if !c.handshakeComplete.Load() {
 					// During handshake: Forward to TEE_K
 					env := &teeproto.Envelope{
 						TimestampMs: time.Now().UnixMilli(),

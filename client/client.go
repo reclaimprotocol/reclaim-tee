@@ -138,8 +138,8 @@ type Client struct {
 	targetHost        string
 	targetPort        int
 	isClosing         bool
-	capturedTraffic   [][]byte // Store all captured traffic for verification
-	handshakeComplete bool     // Track if TLS handshake is complete
+	capturedTraffic   [][]byte    // Store all captured traffic for verification
+	handshakeComplete atomic.Bool // Routing boundary for captured records; Store after responseSeqNum write.
 
 	// Attestor client (created lazily when needed)
 	attestorClient *AttestorClient

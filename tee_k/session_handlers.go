@@ -85,7 +85,10 @@ func (t *TEEK) handleTCPData(sessionID string, msg *shared.Message) error {
 	}
 
 	if tlsState.WSConn2TLS != nil {
-		// Forward data to TLS client for processing
+		// Count App records so TLS-1.3 response tag-gen can derive the right offset.
+		if len(tcpData.Data) >= 1 && tcpData.Data[0] == 0x17 {
+			tlsState.AppRecordsViaTCPData.Add(1)
+		}
 		tlsState.WSConn2TLS.pendingData <- tcpData.Data
 	} else {
 		err := fmt.Errorf("no WebSocket-to-TLS adapter available")
