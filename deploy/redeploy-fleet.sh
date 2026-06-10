@@ -169,14 +169,30 @@ if [[ -z "${OLD_NS}" ]]; then
 else
     log "Retiring old pairs in parallel: ${OLD_NS}"
     RETIRE_PIDS=()
+    RETIRE_NS=()
     for n in ${OLD_NS}; do
         "${SCRIPT_DIR}/retire-pair.sh" "${n}" &
         RETIRE_PIDS+=($!)
+        RETIRE_NS+=("${n}")
     done
-    for pid in "${RETIRE_PIDS[@]}"; do
+    # Run every retire to completion and only fail at the end. With `set -e`
+    # plus `wait $pid`, an earlier failing pid would abort the parent loop
+    # and leave later pids' results unobserved — masking the partial state.
+    RETIRE_FAILED=()
+    for i in "${!RETIRE_PIDS[@]}"; do
+        pid="${RETIRE_PIDS[$i]}"
+        n="${RETIRE_NS[$i]}"
         heartbeat_until_done "${pid}"
-        wait "${pid}"
+        if ! wait "${pid}"; then
+            RETIRE_FAILED+=("${n}")
+            log "ERROR: retire-pair.sh ${n} failed (pid ${pid}, exit non-zero)"
+        fi
     done
+    if [[ ${#RETIRE_FAILED[@]} -gt 0 ]]; then
+        log "FATAL: ${#RETIRE_FAILED[@]} pair(s) failed to retire: ${RETIRE_FAILED[*]}"
+        log "Re-run ./deploy/retire-pair.sh <n> for each, then trim the allowlist by hand."
+        exit 1
+    fi
 fi
 
 # 6. Trim old digests from the allowlist via admin API. List → keep only

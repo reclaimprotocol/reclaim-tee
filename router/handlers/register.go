@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -138,11 +139,71 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		zap.String("sa_email", saEmail),
 		zap.String("image_digest", digest))
 
+	// Orphan-row sweep: a TEE registering as role R with self_addr A means
+	// it's the live owner of A. Any OTHER pair_id whose same-role address
+	// is also A is by definition stale (one VM per address). Delete those
+	// — otherwise a TEE restart leaves the previous row in Firestore
+	// forever, and retire-pair.sh trips over multiple pair_ids on one IP.
+	s.sweepOrphansForAddr(ctx, req.PairID, store.Role(req.Role), req.SelfAddr)
+
 	writeJSON(w, http.StatusOK, registerResponse{
 		PairID: p.ID,
 		Status: p.EffectiveStatus(now, s.Config.HeartbeatStaleness,
 			s.Config.ControlUnhealthy, s.Config.OTNotReady),
 	})
+}
+
+// errOrphanPreconditionMissed is returned by the DeletePairIf precondition
+// when the orphan row's address changed between list and delete — another
+// /register raced us. Safe to skip; the winning register already swept.
+var errOrphanPreconditionMissed = errors.New("orphan precondition no longer holds")
+
+// sweepOrphansForAddr deletes any pair_id (other than keepID) whose same-role
+// address equals addr. Best-effort: a failure here doesn't break the live
+// register that just succeeded; we log and move on.
+func (s *Server) sweepOrphansForAddr(ctx context.Context, keepID string, role store.Role, addr string) {
+	pairs, err := s.Store.ListPairs(ctx)
+	if err != nil {
+		s.Logger.Warn("orphan sweep: list pairs failed", zap.Error(err))
+		return
+	}
+	for _, other := range pairs {
+		if other.ID == keepID {
+			continue
+		}
+		otherAddr := other.TEEKAddr
+		if role == store.RoleT {
+			otherAddr = other.TEETAddr
+		}
+		if otherAddr != addr {
+			continue
+		}
+		err := s.Store.DeletePairIf(ctx, other.ID, func(p *store.Pair) error {
+			cur := p.TEEKAddr
+			if role == store.RoleT {
+				cur = p.TEETAddr
+			}
+			if cur == addr {
+				return nil
+			}
+			return errOrphanPreconditionMissed
+		})
+		if err != nil && !errors.Is(err, errOrphanPreconditionMissed) {
+			s.Logger.Warn("orphan sweep: delete failed",
+				zap.String("orphan_pair_id", other.ID),
+				zap.String("role", string(role)),
+				zap.String("self_addr", addr),
+				zap.Error(err))
+			continue
+		}
+		if err == nil {
+			s.Logger.Info("orphan sweep: deleted stale row",
+				zap.String("orphan_pair_id", other.ID),
+				zap.String("kept_pair_id", keepID),
+				zap.String("role", string(role)),
+				zap.String("self_addr", addr))
+		}
+	}
 }
 
 func (req registerRequest) validate() error {

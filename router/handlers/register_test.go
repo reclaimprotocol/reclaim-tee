@@ -248,6 +248,87 @@ func TestRegisterRejectsCrossRoleSA(t *testing.T) {
 	}
 }
 
+// When a second pair_id registers with the same self_addr as an existing
+// row, the existing row is by definition orphaned (one VM per address)
+// and must be deleted so retire/heartbeat tooling sees just one row.
+func TestRegister_OrphanSweep_DeletesPreviousAtSameAddr(t *testing.T) {
+	s := newTestServer(t)
+
+	// First TEE_K registers with addr A.
+	oldID := "11111111-1111-1111-1111-111111111111"
+	body := validBody("K", teekIP+":443", teetIP+":443")
+	body.PairID = oldID
+	w := doRegister(t, s, body, teekIP+":12345", "Bearer fake-sa-token")
+	if w.Code != http.StatusOK {
+		t.Fatalf("first register: got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// Same VM restarts (same addr A) with a new pair_id — what uuid.NewString
+	// produces on every boot today.
+	newID := "22222222-2222-2222-2222-222222222222"
+	body.PairID = newID
+	w = doRegister(t, s, body, teekIP+":12345", "Bearer fake-sa-token")
+	if w.Code != http.StatusOK {
+		t.Fatalf("second register: got %d body=%s", w.Code, w.Body.String())
+	}
+
+	if _, err := s.Store.GetPair(t.Context(), oldID); err == nil {
+		t.Fatalf("orphan row %s was not deleted", oldID)
+	}
+	if _, err := s.Store.GetPair(t.Context(), newID); err != nil {
+		t.Fatalf("new row %s missing: %v", newID, err)
+	}
+}
+
+// Sweep must compare addresses by role: a K-role register at addr A must
+// NOT delete a row whose teet_addr happens to equal A (different field).
+func TestRegister_OrphanSweep_RoleScoped(t *testing.T) {
+	s := newTestServer(t)
+
+	// Seed: pair X has T side at addr A.
+	xID := "11111111-1111-1111-1111-111111111111"
+	body := validBody("T", teekIP+":443", teekIP+":443")
+	body.PairID = xID
+	body.SelfAddr = teetIP + ":443"
+	w := doRegister(t, s, body, teetIP+":54321", "Bearer fake-sa-token")
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed T register: got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// New pair Y registers K side at the SAME addr as X's T side. Different
+	// field → must not delete X.
+	yID := "22222222-2222-2222-2222-222222222222"
+	body = validBody("K", teetIP+":443", teekIP+":443")
+	body.PairID = yID
+	w = doRegister(t, s, body, teetIP+":12345", "Bearer fake-sa-token")
+	if w.Code != http.StatusOK {
+		t.Fatalf("Y K register: got %d body=%s", w.Code, w.Body.String())
+	}
+
+	if _, err := s.Store.GetPair(t.Context(), xID); err != nil {
+		t.Fatalf("X should still exist (role-scoped sweep): %v", err)
+	}
+	if _, err := s.Store.GetPair(t.Context(), yID); err != nil {
+		t.Fatalf("Y not stored: %v", err)
+	}
+}
+
+// A pair_id re-registering itself (idempotent boot retry) must not delete
+// its own row.
+func TestRegister_OrphanSweep_SamePairIDNoOp(t *testing.T) {
+	s := newTestServer(t)
+	body := validBody("K", teekIP+":443", teetIP+":443")
+	for range 3 {
+		w := doRegister(t, s, body, teekIP+":12345", "Bearer fake-sa-token")
+		if w.Code != http.StatusOK {
+			t.Fatalf("re-register: got %d body=%s", w.Code, w.Body.String())
+		}
+	}
+	if _, err := s.Store.GetPair(t.Context(), pairID); err != nil {
+		t.Fatalf("self-row deleted by sweep: %v", err)
+	}
+}
+
 func TestRegisterRejectsBadRole(t *testing.T) {
 	s := newTestServer(t)
 	body := validBody("X", teekIP+":443", teetIP+":443")

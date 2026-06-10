@@ -59,72 +59,82 @@ if [[ -z "${K_IP}" || -z "${T_IP}" ]]; then
 else
     log "Pair ${N}: ${K_NAME}=${K_IP}, ${T_NAME}=${T_IP}"
 
-    # Match pair by teek_addr — port doesn't matter, IP uniquely identifies the pair.
-    PAIR_ID=$(curl -sf -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" "${ROUTER_URL}/pairs" \
+    # Match pair(s) by teek_addr — port doesn't matter, IP uniquely
+    # identifies the VM. Multiple rows can land on the same IP if a prior
+    # /dead never reached Firestore (stale orphan). All of them route
+    # traffic to this VM, so all must be drained + dead'd.
+    mapfile -t PAIR_IDS < <(curl -sf -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" "${ROUTER_URL}/pairs" \
         | jq -r --arg ip "${K_IP}" '.pairs[] | select(.teek_addr | startswith($ip + ":")) | .id' \
         2>/dev/null || true)
 
-    if [[ -z "${PAIR_ID}" ]]; then
+    if [[ ${#PAIR_IDS[@]} -eq 0 ]]; then
         log "No matching pair in router for ${K_IP} — already retired? Skipping drain."
     else
-        log "Draining pair_id ${PAIR_ID}..."
-        curl -sf -X POST -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" \
-            "${ROUTER_URL}/pairs/${PAIR_ID}/drain" >/dev/null
-
-        # Poll every DRAIN_POLL_MS until active_sessions==0 or DRAIN_TIMEOUT.
-        # First check runs IMMEDIATELY after drain — if there are no live
-        # sessions the loop exits on iteration 0 with no sleep. Only log a
-        # "still waiting" notice if it actually takes >1s.
-        START=$(date +%s)
-        LOGGED_WAIT=0
-        ACTIVE=999
-        MAX_ITERS=$(( DRAIN_TIMEOUT * 1000 / DRAIN_POLL_MS ))
-        for i in $(seq 0 "${MAX_ITERS}"); do
-            ACTIVE=$(curl -sf -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" "${ROUTER_URL}/pairs" \
-                | jq -r --arg id "${PAIR_ID}" '.pairs[] | select(.id == $id) | .active_sessions' \
-                2>/dev/null || echo 999)
-            if [[ "${ACTIVE}" == "0" ]]; then
-                break
-            fi
-            if [[ ${LOGGED_WAIT} -eq 0 && $(( $(date +%s) - START )) -ge 1 ]]; then
-                log "Still draining (${ACTIVE} active sessions); will keep checking up to ${DRAIN_TIMEOUT}s..."
-                LOGGED_WAIT=1
-            fi
-            sleep "$(printf '%d.%03d' "$((DRAIN_POLL_MS/1000))" "$((DRAIN_POLL_MS%1000))")"
-        done
-        if [[ "${ACTIVE}" != "0" ]]; then
-            log "WARN: pair still has ${ACTIVE} active sessions after ${DRAIN_TIMEOUT}s — forcing delete anyway."
-        else
-            log "Pair drained."
+        if [[ ${#PAIR_IDS[@]} -gt 1 ]]; then
+            log "Found ${#PAIR_IDS[@]} pair_ids on ${K_IP} (stale orphans?); retiring all: ${PAIR_IDS[*]}"
         fi
+        for PAIR_ID in "${PAIR_IDS[@]}"; do
+            log "Draining pair_id ${PAIR_ID}..."
+            curl -sf -X POST -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" \
+                "${ROUTER_URL}/pairs/${PAIR_ID}/drain" >/dev/null || {
+                log "WARN: drain returned non-zero for ${PAIR_ID} — continuing to /dead anyway"
+            }
 
-        # Mark pair dead — deletes the Firestore record so /pairs and the
-        # selector stop seeing it. Retries on transient failures so a
-        # network blip doesn't leave a stale row that lingers for ever.
-        # 404 is treated as success (the doc was already gone).
-        log "Marking pair dead..."
-        for attempt in 1 2 3 4 5; do
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-                -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" \
-                "${ROUTER_URL}/pairs/${PAIR_ID}/dead")
-            case "${CODE}" in
-                204|404)
-                    log "Marked dead (HTTP ${CODE})."
+            # Poll every DRAIN_POLL_MS until active_sessions==0 or DRAIN_TIMEOUT.
+            # First check runs IMMEDIATELY after drain — if there are no live
+            # sessions the loop exits on iteration 0 with no sleep. Only log a
+            # "still waiting" notice if it actually takes >1s.
+            START=$(date +%s)
+            LOGGED_WAIT=0
+            ACTIVE=999
+            MAX_ITERS=$(( DRAIN_TIMEOUT * 1000 / DRAIN_POLL_MS ))
+            for i in $(seq 0 "${MAX_ITERS}"); do
+                ACTIVE=$(curl -sf -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" "${ROUTER_URL}/pairs" \
+                    | jq -r --arg id "${PAIR_ID}" '.pairs[] | select(.id == $id) | .active_sessions' \
+                    2>/dev/null || echo 999)
+                if [[ "${ACTIVE}" == "0" ]]; then
                     break
-                    ;;
-                5*|000)
-                    log "Transient /dead failure (HTTP ${CODE}); retry ${attempt}/5"
-                    sleep $((attempt * 2))
-                    ;;
-                *)
-                    log "FATAL: /dead returned non-retryable HTTP ${CODE} for pair ${PAIR_ID}"
-                    exit 1
-                    ;;
-            esac
-            if [[ ${attempt} -eq 5 ]]; then
-                log "FATAL: /dead never succeeded for pair ${PAIR_ID} — Firestore will have a stale row; clean manually."
-                exit 1
+                fi
+                if [[ ${LOGGED_WAIT} -eq 0 && $(( $(date +%s) - START )) -ge 1 ]]; then
+                    log "Still draining (${ACTIVE} active sessions); will keep checking up to ${DRAIN_TIMEOUT}s..."
+                    LOGGED_WAIT=1
+                fi
+                sleep "$(printf '%d.%03d' "$((DRAIN_POLL_MS/1000))" "$((DRAIN_POLL_MS%1000))")"
+            done
+            if [[ "${ACTIVE}" != "0" ]]; then
+                log "WARN: pair still has ${ACTIVE} active sessions after ${DRAIN_TIMEOUT}s — forcing delete anyway."
+            else
+                log "Pair drained."
             fi
+
+            # Mark pair dead — deletes the Firestore record so /pairs and the
+            # selector stop seeing it. Retries on transient failures so a
+            # network blip doesn't leave a stale row that lingers for ever.
+            # 404 is treated as success (the doc was already gone).
+            log "Marking pair dead..."
+            for attempt in 1 2 3 4 5; do
+                CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                    -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" \
+                    "${ROUTER_URL}/pairs/${PAIR_ID}/dead")
+                case "${CODE}" in
+                    204|404)
+                        log "Marked dead (HTTP ${CODE})."
+                        break
+                        ;;
+                    5*|000)
+                        log "Transient /dead failure (HTTP ${CODE}); retry ${attempt}/5"
+                        sleep $((attempt * 2))
+                        ;;
+                    *)
+                        log "FATAL: /dead returned non-retryable HTTP ${CODE} for pair ${PAIR_ID}"
+                        exit 1
+                        ;;
+                esac
+                if [[ ${attempt} -eq 5 ]]; then
+                    log "FATAL: /dead never succeeded for pair ${PAIR_ID} — Firestore will have a stale row; clean manually."
+                    exit 1
+                fi
+            done
         done
     fi
 fi
