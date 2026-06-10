@@ -139,6 +139,9 @@ func (s *Server) HandleKillPair(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "store error")
 		return
 	}
+	// Tombstone so a re-register from the same TEE (heartbeat 404 → retry)
+	// doesn't resurrect the row before the VM is actually shut down.
+	s.getTombstones().add(id, now)
 	s.Logger.Info("admin: pair killed", zap.String("pair_id", id))
 	w.WriteHeader(http.StatusNoContent)
 }

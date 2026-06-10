@@ -31,6 +31,10 @@ type Server struct {
 	// literals don't need to wire it.
 	allocateLimiterOnce sync.Once
 	allocateLimiter     *ipRateLimiter
+
+	// Tombstones prevent /dead'd pairs from resurrecting via re-register.
+	tombstonesOnce sync.Once
+	tombstones     *tombstones
 }
 
 func (s *Server) getAllocateLimiter() *ipRateLimiter {
@@ -38,6 +42,11 @@ func (s *Server) getAllocateLimiter() *ipRateLimiter {
 		s.allocateLimiter = newIPRateLimiter(allocateRPS, allocateBurst, rateLimiterTTL, rateLimiterMaxLen)
 	})
 	return s.allocateLimiter
+}
+
+func (s *Server) getTombstones() *tombstones {
+	s.tombstonesOnce.Do(func() { s.tombstones = newTombstones() })
+	return s.tombstones
 }
 
 // Routes returns the router's HTTP mux. New endpoints are wired here.

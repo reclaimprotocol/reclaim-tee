@@ -89,6 +89,12 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		digest = validated
 	}
 
+	// Refuse resurrection of a pair_id that was just /dead'd.
+	if s.getTombstones().contains(req.PairID, time.Now()) {
+		writeErr(w, http.StatusGone, "pair_id was retired; generate a fresh one")
+		return
+	}
+
 	// Per-role SA binding: each role has one expected SA email (config-pinned).
 	if !s.Config.Standalone {
 		expected := s.Config.TEEKSAEmail

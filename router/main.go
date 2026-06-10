@@ -81,6 +81,7 @@ func main() {
 			logger.Fatal("server failed", zap.Error(err))
 		}
 	}()
+	go srv.RunStaleRowGC(ctx)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
