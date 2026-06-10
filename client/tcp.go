@@ -266,9 +266,17 @@ func (c *Client) tcpToWebsocket() {
 
 		// After processing any final data, break if EOF was received
 		if eofReceived {
+			// Fast-fail: empty batch means the target sent zero response
+			// records (idle-flush fired on no data). Downstream protocol
+			// has nothing to verify; aborting early beats waiting 55s for
+			// the 60s wall.
+			if len(c.batchedResponses) == 0 {
+				err := fmt.Errorf("target server returned no response data")
+				c.logger.Error("No response captured before idle/EOF — aborting session", zap.Error(err))
+				c.terminateConnectionWithError("Target server returned no response data", err)
+				return
+			}
 			c.logger.Info("Sending responses to TEE_T")
-
-			// Send batched responses if any were collected
 			if err := c.sendBatchedResponses(); err != nil {
 				c.logger.Error("Failed to send batched responses on EOF", zap.Error(err))
 			}
