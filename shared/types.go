@@ -500,11 +500,13 @@ type RedactedRequestData struct {
 	RedactionRanges []RequestRedactionRange `json:"redaction_ranges"` // Position metadata
 }
 
-// RedactionStreamsData contains the XOR streams and commitment keys for revelation
+// RedactionStreamsData contains the XOR streams and commitment keys for
+// revelation. Ranges are NOT carried here — TEE_T uses the authoritative
+// ranges TEE_K validated in BatchedEncryptedRequest, not whatever the
+// client claims separately.
 type RedactionStreamsData struct {
-	Streams        [][]byte                `json:"streams"`         // [Str_S, Str_SP]
-	CommitmentKeys [][]byte                `json:"commitment_keys"` // [K_S, K_SP]
-	Ranges         []RequestRedactionRange `json:"ranges"`          // Redaction ranges to identify R_S vs R_SP
+	Streams        [][]byte `json:"streams"`         // [Str_S, Str_SP]
+	CommitmentKeys [][]byte `json:"commitment_keys"` // [K_S, K_SP]
 }
 
 // DecryptedResponseData contains decrypted response data

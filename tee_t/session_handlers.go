@@ -50,32 +50,6 @@ func (t *TEET) handleRedactionStreams(sessionID string, msg *shared.Message) err
 
 	t.logger.Debug("Redaction streams stored for session", zap.String("session_id", sessionID))
 
-	// Capture R_SP (sensitive_proof) streams for cryptographic signing by TEE_T
-	teetState, teetErr := t.getTEETSessionState(sessionID)
-	if teetErr != nil {
-		t.terminateSessionWithError(sessionID, shared.ReasonSessionStateCorrupted, teetErr, "Failed to get TEE_T session state for R_SP capture")
-		return teetErr
-	}
-
-	teetState.RequestProofStreams = [][]byte{} // Reset proof streams
-
-	// Extract R_SP streams based on redaction ranges (if available)
-	if len(streamsData.Ranges) > 0 {
-		for i, r := range streamsData.Ranges {
-			if r.Type == "sensitive_proof" && i < len(streamsData.Streams) {
-				teetState.RequestProofStreams = append(teetState.RequestProofStreams, streamsData.Streams[i])
-				t.logger.Debug("Captured R_SP stream for TEE_T signing",
-					zap.String("session_id", sessionID),
-					zap.Int("stream_index", i),
-					zap.Int("stream_length", len(streamsData.Streams[i])))
-			}
-		}
-	}
-
-	t.logger.Debug("R_SP stream capture completed",
-		zap.String("session_id", sessionID),
-		zap.Int("proof_streams_count", len(teetState.RequestProofStreams)))
-
 	if err := t.verifyCommitmentsIfReady(sessionID); err != nil {
 		t.terminateSessionWithError(sessionID, shared.ReasonCryptoCommitmentFailed, err, "Commitment verification failed")
 		return err
@@ -108,6 +82,30 @@ func (t *TEET) processIfBothPartsArrived(sessionID string) error {
 	}
 
 	t.logger.Debug("Both request parts arrived, processing", zap.String("session_id", sessionID))
+
+	// R_SP capture (signed in TEE_T's transcript). Both halves are now
+	// present, so ranges (from TEE_K) and streams (from client) are
+	// visible via the counter-at-join happens-before edge. We pull
+	// ranges from session.RedactionState — the authoritative copy
+	// TEE_K validated — rather than re-trusting the client.
+	session, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		t.terminateSessionWithError(sessionID, shared.ReasonSessionNotFound, err, "Failed to get session for R_SP capture")
+		return err
+	}
+	if session.RedactionState != nil {
+		teetState.RequestProofStreams = teetState.RequestProofStreams[:0]
+		ranges := session.RedactionState.Ranges
+		streams := session.RedactionState.RedactionStreams
+		for i, r := range ranges {
+			if r.Type == shared.RedactionTypeSensitiveProof && i < len(streams) {
+				teetState.RequestProofStreams = append(teetState.RequestProofStreams, streams[i])
+			}
+		}
+		t.logger.Debug("R_SP stream capture completed",
+			zap.String("session_id", sessionID),
+			zap.Int("proof_streams_count", len(teetState.RequestProofStreams)))
+	}
 
 	// Prefer fragments path; fall back to legacy single-request path.
 	if len(teetState.PendingEncryptedFragments) > 0 {
