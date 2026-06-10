@@ -310,13 +310,15 @@ message OPRFOnlineFull {
   bytes dual_masks = 11;         // M0||M1 pairs for all 640 input bits
 }
 
-// OPRF result with MANDATORY output labels for garbler verification
+// OPRF result with MANDATORY output labels for garbler verification.
+// CMAC and HashOutput are intentionally NOT on the wire — TEE_K derives both
+// from the verified output labels so a compromised TEE_T can't substitute them.
 message OPRFMPCResult {
   string session_id = 1;
   uint64 oprf_session_id = 2;
   int32 range_index = 3;
-  bytes cmac_output = 4;         // 16 bytes
-  bytes hash_output = 5;         // 32 bytes (SHA-256 of CMAC)
+  reserved 4, 5;
+  reserved "cmac_output", "hash_output";
   bytes output_labels = 6;       // MANDATORY: actual output wire labels for garbler verification
 }
 

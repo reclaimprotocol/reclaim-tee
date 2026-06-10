@@ -2907,14 +2907,14 @@ func (x *OPRFOnlineFull) GetDualMasks() []byte {
 	return nil
 }
 
-// OPRF result with MANDATORY output labels for garbler verification
+// OPRF result with MANDATORY output labels for garbler verification.
+// CMAC and HashOutput are intentionally NOT on the wire — TEE_K derives both
+// from the verified output labels so a compromised TEE_T can't substitute them.
 type OPRFMPCResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	OprfSessionId uint64                 `protobuf:"varint,2,opt,name=oprf_session_id,json=oprfSessionId,proto3" json:"oprf_session_id,omitempty"`
 	RangeIndex    int32                  `protobuf:"varint,3,opt,name=range_index,json=rangeIndex,proto3" json:"range_index,omitempty"`
-	CmacOutput    []byte                 `protobuf:"bytes,4,opt,name=cmac_output,json=cmacOutput,proto3" json:"cmac_output,omitempty"`       // 16 bytes
-	HashOutput    []byte                 `protobuf:"bytes,5,opt,name=hash_output,json=hashOutput,proto3" json:"hash_output,omitempty"`       // 32 bytes (SHA-256 of CMAC)
 	OutputLabels  []byte                 `protobuf:"bytes,6,opt,name=output_labels,json=outputLabels,proto3" json:"output_labels,omitempty"` // MANDATORY: actual output wire labels for garbler verification
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2969,20 +2969,6 @@ func (x *OPRFMPCResult) GetRangeIndex() int32 {
 		return x.RangeIndex
 	}
 	return 0
-}
-
-func (x *OPRFMPCResult) GetCmacOutput() []byte {
-	if x != nil {
-		return x.CmacOutput
-	}
-	return nil
-}
-
-func (x *OPRFMPCResult) GetHashOutput() []byte {
-	if x != nil {
-		return x.HashOutput
-	}
-	return nil
 }
 
 func (x *OPRFMPCResult) GetOutputLabels() []byte {
@@ -3657,18 +3643,14 @@ const file_transport_proto_rawDesc = "" +
 	"\x0eot_start_index\x18\n" +
 	" \x01(\rR\fotStartIndex\x12\x1d\n" +
 	"\n" +
-	"dual_masks\x18\v \x01(\fR\tdualMasks\"\xde\x01\n" +
+	"dual_masks\x18\v \x01(\fR\tdualMasks\"\xc2\x01\n" +
 	"\rOPRFMPCResult\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12&\n" +
 	"\x0foprf_session_id\x18\x02 \x01(\x04R\roprfSessionId\x12\x1f\n" +
 	"\vrange_index\x18\x03 \x01(\x05R\n" +
-	"rangeIndex\x12\x1f\n" +
-	"\vcmac_output\x18\x04 \x01(\fR\n" +
-	"cmacOutput\x12\x1f\n" +
-	"\vhash_output\x18\x05 \x01(\fR\n" +
-	"hashOutput\x12#\n" +
-	"\routput_labels\x18\x06 \x01(\fR\foutputLabels\"6\n" +
+	"rangeIndex\x12#\n" +
+	"\routput_labels\x18\x06 \x01(\fR\foutputLabelsJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\vcmac_outputR\vhash_output\"6\n" +
 	"\x15SessionConnectionInit\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"t\n" +

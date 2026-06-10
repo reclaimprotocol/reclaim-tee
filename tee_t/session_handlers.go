@@ -46,8 +46,7 @@ func (t *TEET) handleRedactionStreams(sessionID string, msg *shared.Message) err
 		session.RedactionState = &shared.RedactionSessionState{}
 	}
 
-	session.RedactionState.RedactionStreams = streamsData.Streams
-	session.RedactionState.CommitmentKeys = streamsData.CommitmentKeys
+	session.RedactionState.SetStreamsAndKeys(streamsData.Streams, streamsData.CommitmentKeys)
 
 	t.logger.Debug("Redaction streams stored for session", zap.String("session_id", sessionID))
 
@@ -360,8 +359,10 @@ func (t *TEET) handleBatchedEncryptedRequest(msg *shared.Message) error {
 
 	// Store commitments and redaction ranges from the first fragment
 	if len(batchedReq.Fragments) > 0 {
-		session.RedactionState.Ranges = batchedReq.Fragments[0].RedactionRanges
-		session.RedactionState.ExpectedCommitments = batchedReq.Commitments
+		session.RedactionState.SetRangesAndCommitments(
+			batchedReq.Fragments[0].RedactionRanges,
+			batchedReq.Commitments,
+		)
 
 		t.logger.Debug("Stored expected commitments from batched request",
 			zap.String("session_id", sessionID),

@@ -30,19 +30,19 @@ func (t *TEEK) handleOPRFRangesFromClient(sessionID string, msg *teeproto.OPRFRa
 		return t.checkAndSendSignatureIfReady(sessionID)
 	}
 
-	// Initialize OPRF state
-	teekState.OPRFRanges = msg.GetRanges()
-	teekState.ClientRangesReceived = true
-	teekState.OPRFState.Store(int32(shared.OPRFStateInProgress))
-	teekState.OPRFExpectedCount = len(msg.GetRanges())
-	teekState.GarblerOnlineSessions = make(map[int]*oprfmpc.CMACGarblerOnlineSession)
-	teekState.OPRFResults = make(map[int]*shared.OPRFResult)
-
 	// Use persistent OPRF key share from TEEK instance
 	if len(t.oprfKeyShare) == 0 {
 		return fmt.Errorf("OPRF key share not initialized")
 	}
+
+	// Initialize OPRF state. All non-atomic writes precede the publish.
+	teekState.OPRFRanges = msg.GetRanges()
+	teekState.OPRFState.Store(int32(shared.OPRFStateInProgress))
+	teekState.OPRFExpectedCount = len(msg.GetRanges())
+	teekState.GarblerOnlineSessions = make(map[int]*oprfmpc.CMACGarblerOnlineSession)
+	teekState.OPRFResults = make(map[int]*shared.OPRFResult)
 	teekState.OPRFKeyShare = t.oprfKeyShare
+	teekState.ClientRangesReceived.Store(true)
 
 	// If keystream not yet available, processing will happen later
 	// when processQueuedOPRFRanges is called after keystream is set
@@ -57,7 +57,7 @@ func (t *TEEK) handleOPRFRangesFromClient(sessionID string, msg *teeproto.OPRFRa
 
 // processQueuedOPRFRanges processes OPRF ranges that were waiting for keystream
 func (t *TEEK) processQueuedOPRFRanges(sessionID string, teekState *TEEKSessionState) error {
-	if !teekState.ClientRangesReceived || len(teekState.OPRFRanges) == 0 {
+	if !teekState.ClientRangesReceived.Load() || len(teekState.OPRFRanges) == 0 {
 		return nil // No ranges to process
 	}
 	if shared.OPRFSessionState(teekState.OPRFState.Load()) != shared.OPRFStateInProgress {
@@ -179,21 +179,20 @@ func (t *TEEK) handleOPRFResult(sessionID string, msg *teeproto.OPRFMPCResult) e
 		return fmt.Errorf("failed to deserialize output labels: %w", err)
 	}
 
-	// Verify output labels - ZERO TOLERANCE: fail session if verification fails
-	if err := oprfmpc.CMACGarblerVerifyOutput(garblerSession, outputLabels); err != nil {
+	// Verify output labels AND derive CMAC bytes from them. We deliberately
+	// ignore msg.CmacOutput/msg.HashOutput — a compromised TEE_T could send
+	// any bytes there. The labels are the only thing we cryptographically
+	// verified, so they're the only thing we trust.
+	cmacOutput, err := oprfmpc.CMACGarblerVerifyOutput(garblerSession, outputLabels)
+	if err != nil {
 		return fmt.Errorf("CRITICAL: output label verification failed - possible attack: %w", err)
 	}
+	hashOutput := sha256.Sum256(cmacOutput[:])
 
 	r := teekState.OPRFRanges[rangeIndex]
 
 	t.logger.WithSession(sessionID).Debug("Received OPRF result (verified)",
 		zap.Int("range", rangeIndex))
-
-	// Store the result (thread-safe)
-	var cmacOutput [16]byte
-	var hashOutput [32]byte
-	copy(cmacOutput[:], msg.CmacOutput)
-	copy(hashOutput[:], msg.HashOutput)
 
 	teekState.SetOPRFResult(rangeIndex, &shared.OPRFResult{
 		RangeIndex: rangeIndex,

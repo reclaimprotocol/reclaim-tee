@@ -123,6 +123,13 @@ func (c *Client) tcpToWebsocket() {
 
 	buffer := make([]byte, TCPBufferSize)
 	var pending []byte // Buffer for incomplete TLS packets
+	// Idle-after-data: when the target server doesn't FIN within the client's
+	// 1m protocol timeout despite our Connection: close request, fall back to
+	// "post-response idle" detection — N consecutive read timeouts with no
+	// pending mid-record bytes after we've already captured ≥1 record.
+	const idleFlushAfter = 2 // 2× DefaultTCPReadTimeout (= 2s)
+	var sawAnyRecord bool
+	idleStreak := 0
 
 	for {
 		if c.isClosing {
@@ -144,7 +151,23 @@ func (c *Client) tcpToWebsocket() {
 			} else {
 				var netErr net.Error
 				if errors.As(err, &netErr) && netErr.Timeout() {
-					continue
+					// Only treat idle as "done" when we're cleanly between
+					// records (no incomplete bytes pending), past the
+					// handshake, and have captured ≥1 record. Multi-second
+					// gap is the safe threshold — sub-second inter-record
+					// gaps shouldn't trigger this.
+					if sawAnyRecord && c.handshakeComplete && pending == nil {
+						idleStreak++
+						if idleStreak >= idleFlushAfter {
+							c.logger.Info("Server idle after response — flushing to TEE_T",
+								zap.Duration("idle_for", time.Duration(idleStreak)*DefaultTCPReadTimeout))
+							eofReceived = true
+						} else {
+							continue
+						}
+					} else {
+						continue
+					}
 				} else if !isClientNetworkShutdownError(err) {
 					c.logger.Error("TCP read error", zap.Error(err))
 
@@ -153,6 +176,9 @@ func (c *Client) tcpToWebsocket() {
 					break
 				}
 			}
+		} else if n > 0 {
+			// Any byte from the server resets the idle clock.
+			idleStreak = 0
 		}
 
 		// If we got data (n > 0), process it even if EOF was also received
@@ -184,6 +210,7 @@ func (c *Client) tcpToWebsocket() {
 				packet := make([]byte, fullLength)
 				copy(packet, data[offset:offset+fullLength])
 				c.capturedTraffic = append(c.capturedTraffic, packet)
+				sawAnyRecord = true
 
 				c.logger.Info("Captured incoming raw TCP chunk", zap.Int("bytes", len(packet)))
 

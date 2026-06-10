@@ -39,7 +39,7 @@ type TEEKSessionState struct {
 	OPRFResults           map[int]*shared.OPRFResult                // Completed OPRF results by range index
 	OPRFState             atomic.Int32                              // Current OPRF processing state (shared.OPRFSessionState values)
 	OPRFExpectedCount     int                                       // Number of OPRF results expected
-	ClientRangesReceived  bool                                      // Whether client has sent ranges
+	ClientRangesReceived  atomic.Bool                               // publishes OPRFRanges/OPRFKeyShare/GarblerOnlineSessions/OPRFResults
 
 	// Per-session mutex for thread-safe access to OPRF state
 	// Must be held when accessing GarblerOnlineSessions, OPRFResults, or OPRFRanges

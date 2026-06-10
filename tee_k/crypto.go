@@ -583,7 +583,7 @@ func (t *TEEK) generateAndSendRedactedDecryptionStream(sessionID string, spec sh
 		teekState.ConsolidatedKeystream = consolidatedOriginalKeystream // Use ORIGINAL for OPRF
 		teekState.UnlockOPRF()
 		// Process any queued OPRF ranges now that keystream is available
-		if teekState.ClientRangesReceived && len(teekState.OPRFRanges) > 0 {
+		if teekState.ClientRangesReceived.Load() && len(teekState.OPRFRanges) > 0 {
 			if err := t.processQueuedOPRFRanges(sessionID, teekState); err != nil {
 				return fmt.Errorf("failed to process queued OPRF ranges: %w", err)
 			}

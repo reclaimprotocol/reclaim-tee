@@ -27,10 +27,16 @@ type TEETSessionState struct {
 	RequestPartsArrived atomic.Int32
 
 
-	// MPC OPRF state (2-round protocol - no session tracking needed)
+	// MPC OPRF state (2-round protocol - no session tracking needed).
+	//
+	// Publication boundary: handleOPRFRangesFromClient writes OPRFKeyShare,
+	// ClientOPRFRanges, OPRFResults, OPRFExpectedCount, then calls
+	// ClientRangesReceived.Store(true). handleOPRFOnlineFull reads the
+	// atomic FIRST; if true, the non-atomic writes above are visible via
+	// the synchronizes-before edge.
 	OPRFKeyShare         []byte                     // 16-byte key share for MPC OPRF
 	ClientOPRFRanges     []*teeproto.OPRFRangeSpec  // Client-provided OPRF ranges
-	ClientRangesReceived bool                       // Whether client has sent ranges
+	ClientRangesReceived atomic.Bool                // publishes the other OPRF fields
 	OPRFResults          map[int]*shared.OPRFResult // Completed OPRF results by range index
 	OPRFState            atomic.Int32               // Current OPRF processing state (shared.OPRFSessionState values)
 	OPRFExpectedCount    int                        // Number of OPRF results expected

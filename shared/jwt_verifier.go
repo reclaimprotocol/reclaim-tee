@@ -90,10 +90,13 @@ func VerifyAllocationJWT(token string, pubKey *ecdsa.PublicKey, expectedIssuer, 
 // allocation JWT. Returns the validated claims on success; on any
 // failure the caller should close the connection.
 //
+// jtiTracker (optional, may be nil) provides replay protection: when
+// non-nil, the JWT's jti is rejected if it was already consumed.
+//
 // The connection's read deadline is set and cleared by this function
 // (5s, controlled by ClientAuthReadTimeout). Subsequent reads have no
 // deadline unless the caller reinstates one.
-func ReadAndVerifyClientAuth(conn *websocket.Conn, pubKey *ecdsa.PublicKey, expectedIssuer, expectedPairID string) (*AllocationJWTClaims, error) {
+func ReadAndVerifyClientAuth(conn *websocket.Conn, pubKey *ecdsa.PublicKey, expectedIssuer, expectedPairID string, jtiTracker *JTITracker) (*AllocationJWTClaims, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(ClientAuthReadTimeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
@@ -113,5 +116,17 @@ func ReadAndVerifyClientAuth(conn *websocket.Conn, pubKey *ecdsa.PublicKey, expe
 	if !ok {
 		return nil, fmt.Errorf("expected ClientAuth as first envelope, got %T", env.Payload)
 	}
-	return VerifyAllocationJWT(auth.ClientAuth.GetJwt(), pubKey, expectedIssuer, expectedPairID)
+	claims, err := VerifyAllocationJWT(auth.ClientAuth.GetJwt(), pubKey, expectedIssuer, expectedPairID)
+	if err != nil {
+		return nil, err
+	}
+	if jtiTracker != nil {
+		if claims.ExpiresAt == nil {
+			return nil, errors.New("jwt: missing exp claim (cannot bound jti tracking)")
+		}
+		if err := jtiTracker.Use(claims.ID, claims.ExpiresAt.Time, time.Now()); err != nil {
+			return nil, fmt.Errorf("jwt replay check: %w", err)
+		}
+	}
+	return claims, nil
 }

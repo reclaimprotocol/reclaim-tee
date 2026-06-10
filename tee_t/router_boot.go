@@ -87,6 +87,7 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		}
 		teet.jwtPubKey = pubKey
 		teet.expectedJWTIssuer = config.ExpectedJWTIssuer
+		teet.jtiTracker = shared.NewJTITracker(0)
 	}
 	teet.sessionManager.StartCleanupRoutine()
 

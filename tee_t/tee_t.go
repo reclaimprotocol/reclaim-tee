@@ -84,8 +84,9 @@ type TEET struct {
 	ratls                   *shared.RATLSManager
 	router                  *shared.RouterClient
 	pairID                  atomic.Pointer[string]
-	jwtPubKey               *ecdsa.PublicKey // verifies client allocation JWTs (nil = no JWT check, local dev)
-	expectedJWTIssuer       string           // expected iss claim on client allocation JWTs
+	jwtPubKey               *ecdsa.PublicKey   // verifies client allocation JWTs (nil = no JWT check, local dev)
+	expectedJWTIssuer       string             // expected iss claim on client allocation JWTs
+	jtiTracker              *shared.JTITracker // replay guard for allocation-JWT jti (nil in standalone)
 	expectedPeerImageDigest string           // sha256:... of TEE_K container image, for RA-TLS peer verification
 
 	// Heartbeat observation state — same shape as TEEK's. Written by the

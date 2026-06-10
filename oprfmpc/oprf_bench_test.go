@@ -104,7 +104,7 @@ func BenchmarkOPRF_EndToEnd(b *testing.B) {
 			b.Fatalf("evaluator: %v", err)
 		}
 		payload.Release()
-		if err := CMACGarblerVerifyOutput(session, result.OutputLabels); err != nil {
+		if _, err := CMACGarblerVerifyOutput(session, result.OutputLabels); err != nil {
 			b.Fatalf("verify: %v", err)
 		}
 	}

@@ -292,8 +292,17 @@ type Session struct {
 	CleanedUp atomic.Bool
 }
 
-// RedactionSessionState holds redaction-specific state for each session
+// RedactionSessionState holds redaction-specific state for each session.
+//
+// Streams + commitment-keys arrive from the client; ranges + expected
+// commitments arrive from TEE_K. Those two paths run on different
+// goroutines and may write concurrently before the counter-at-join
+// barrier (RequestPartsArrived hitting 2). Reads that happen AFTER the
+// join are race-free via the counter's happens-before edge, but
+// verifyCommitmentsIfReady runs on BOTH paths BEFORE the join — those
+// reads MUST go through the mutex via SnapshotForCommitmentCheck.
 type RedactionSessionState struct {
+	mu                    sync.Mutex
 	Ranges                []RequestRedactionRange
 	CommitmentOpenings    [][]byte
 	ExpectedCommitments   [][]byte // [comm_s, comm_sp] received from TEE_K
@@ -301,6 +310,35 @@ type RedactionSessionState struct {
 	EncryptedResponseData []EncryptedResponseData
 	RedactionStreams      [][]byte
 	CommitmentKeys        [][]byte
+}
+
+// SetStreamsAndKeys stores client-supplied redaction streams + their
+// commitment keys atomically. Called by handleRedactionStreams before
+// the counter-at-join barrier.
+func (r *RedactionSessionState) SetStreamsAndKeys(streams, keys [][]byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.RedactionStreams = streams
+	r.CommitmentKeys = keys
+}
+
+// SetRangesAndCommitments stores TEE_K-supplied ranges + expected
+// commitments atomically. Called by handleBatchedEncryptedRequest before
+// the counter-at-join barrier.
+func (r *RedactionSessionState) SetRangesAndCommitments(ranges []RequestRedactionRange, commitments [][]byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Ranges = ranges
+	r.ExpectedCommitments = commitments
+}
+
+// SnapshotForCommitmentCheck returns the three slices needed by
+// verifyCommitmentsIfReady under one lock acquisition. Slice headers
+// are copied; the underlying byte arrays are immutable once published.
+func (r *RedactionSessionState) SnapshotForCommitmentCheck() (streams, keys, expected [][]byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.RedactionStreams, r.CommitmentKeys, r.ExpectedCommitments
 }
 
 // ResponseSessionState holds response handling state for each session

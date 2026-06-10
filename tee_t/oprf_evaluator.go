@@ -45,18 +45,19 @@ func (t *TEET) handleOPRFRangesFromClient(sessionID string, msg *teeproto.OPRFRa
 		}
 	}
 
-	// Initialize OPRF state
-	teetState.ClientOPRFRanges = msg.GetRanges()
-	teetState.ClientRangesReceived = true
-	teetState.OPRFState.Store(int32(shared.OPRFStateInProgress))
-	teetState.OPRFExpectedCount = len(msg.GetRanges())
-	teetState.OPRFResults = make(map[int]*shared.OPRFResult)
-
 	// Use persistent OPRF key share from TEET instance
 	if len(t.oprfKeyShare) == 0 {
 		return fmt.Errorf("OPRF key share not initialized")
 	}
+
+	// Initialize OPRF state. Set every field BEFORE the atomic publishes
+	// readiness; handleOPRFOnlineFull observes them via the atomic edge.
+	teetState.ClientOPRFRanges = msg.GetRanges()
+	teetState.OPRFState.Store(int32(shared.OPRFStateInProgress))
+	teetState.OPRFExpectedCount = len(msg.GetRanges())
+	teetState.OPRFResults = make(map[int]*shared.OPRFResult)
 	teetState.OPRFKeyShare = t.oprfKeyShare
+	teetState.ClientRangesReceived.Store(true)
 
 	// In 2-round protocol, we just wait for OPRFOnlineFull messages from TEE_K
 	// No queueing needed - online messages contain everything needed for evaluation
@@ -87,8 +88,10 @@ func (t *TEET) handleOPRFOnlineFull(sessionID string, msg *teeproto.OPRFOnlineFu
 		}
 	}
 
-	// Wait for client ranges if not yet received
-	if !teetState.ClientRangesReceived {
+	// Wait for client ranges if not yet received. The atomic Load
+	// synchronizes-with the Store in handleOPRFRangesFromClient — once
+	// true, all other OPRF fields written before that Store are visible.
+	if !teetState.ClientRangesReceived.Load() {
 		// In 2-round protocol, TEE_K should wait for keystream before sending online messages
 		// If we get here before client ranges, something is wrong with the protocol order
 		return fmt.Errorf("received OPRFOnlineFull before client ranges - protocol order violation")
@@ -193,14 +196,12 @@ func (t *TEET) handleOPRFOnlineFull(sessionID string, msg *teeproto.OPRFOnlineFu
 	// Serialize output labels for garbler verification (MANDATORY)
 	outputLabelsBytes := oprfmpc.SerializeOutputLabels(result.OutputLabels)
 
-	// Send result back to TEE_K with output labels (MANDATORY for verification)
+	// Send only the labels — TEE_K derives CMAC and HashOutput from them.
 	if err := t.sendOPRFMPCResultToTEEK(sessionID, &teeproto.OPRFMPCResult{
 		SessionId:     sessionID,
 		OprfSessionId: msg.OprfSessionId,
 		RangeIndex:    int32(rangeIndex),
-		CmacOutput:    result.CMACOutput[:],
-		HashOutput:    hashOutput[:],
-		OutputLabels:  outputLabelsBytes, // MANDATORY: for garbler verification
+		OutputLabels:  outputLabelsBytes,
 	}); err != nil {
 		return err
 	}

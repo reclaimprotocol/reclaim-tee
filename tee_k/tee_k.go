@@ -78,6 +78,7 @@ type TEEK struct {
 	expectedPeerImageDigest string             // sha256:... of TEE_T container image, for RA-TLS peer verification
 	jwtPubKey               *ecdsa.PublicKey   // verifies client allocation JWTs (nil = no JWT check, local dev)
 	expectedJWTIssuer       string             // expected iss claim on client allocation JWTs
+	jtiTracker              *shared.JTITracker // replay guard for allocation-JWT jti (nil in standalone)
 
 	// Heartbeat observation state — written by the connection manager
 	// (controlHealthy on peer connect/disconnect), OT precompute code
@@ -123,6 +124,7 @@ func NewTEEKForRouter(
 		}
 		teek.jwtPubKey = pubKey
 		teek.expectedJWTIssuer = config.ExpectedJWTIssuer
+		teek.jtiTracker = shared.NewJTITracker(0)
 	}
 	// In router mode the peer URL is derived from PEER_ADDR rather than
 	// the legacy TEET_URL env var. /ws is the base path; the connection

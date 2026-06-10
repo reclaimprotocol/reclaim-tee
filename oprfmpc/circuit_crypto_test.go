@@ -559,10 +559,13 @@ func TestGarbledCircuit_EndToEnd(t *testing.T) {
 		t.Fatalf("CMACEvaluatorOnline failed: %v", err)
 	}
 
-	// Garbler verifies output labels
-	err = CMACGarblerVerifyOutput(session, result.OutputLabels)
+	// Garbler verifies output labels AND derives CMAC from them
+	derivedCmac, err := CMACGarblerVerifyOutput(session, result.OutputLabels)
 	if err != nil {
 		t.Fatalf("Output label verification failed: %v", err)
+	}
+	if derivedCmac != result.CMACOutput {
+		t.Fatalf("garbler-derived CMAC %x != evaluator CMAC %x", derivedCmac, result.CMACOutput)
 	}
 
 	// Verify the CMAC output is correct
@@ -692,7 +695,7 @@ func TestOutputLabelVerification_ValidLabels(t *testing.T) {
 	result, _ := CMACEvaluatorOnline(curve, payload, evaluatorInput, receiverEntries)
 
 	// Valid labels should pass
-	err := CMACGarblerVerifyOutput(session, result.OutputLabels)
+	_, err := CMACGarblerVerifyOutput(session, result.OutputLabels)
 	if err != nil {
 		t.Errorf("valid output labels rejected: %v", err)
 	}
@@ -725,7 +728,7 @@ func TestOutputLabelVerification_InvalidLabels(t *testing.T) {
 	}
 
 	// Fabricated labels should be rejected
-	err := CMACGarblerVerifyOutput(session, fakeLabels)
+	_, err := CMACGarblerVerifyOutput(session, fakeLabels)
 	if err == nil {
 		t.Error("fabricated output labels accepted (security violation)")
 	}
@@ -765,7 +768,7 @@ func TestOutputLabelVerification_ModifiedLabels(t *testing.T) {
 	result.OutputLabels[0].D0 ^= 0x1
 
 	// Modified labels should be rejected
-	err := CMACGarblerVerifyOutput(session, result.OutputLabels)
+	_, err := CMACGarblerVerifyOutput(session, result.OutputLabels)
 	if err == nil {
 		t.Error("modified output labels accepted (security violation)")
 	}

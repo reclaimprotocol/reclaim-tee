@@ -350,26 +350,41 @@ func CMACEvaluatorOnline(curve elliptic.Curve, payload *CMACOnlinePayload, evalu
 	}, nil
 }
 
-// CMACGarblerVerifyOutput verifies that the evaluator returned correct output labels
-// This is MANDATORY for security - prevents malicious evaluator from fabricating outputs
-func CMACGarblerVerifyOutput(session *CMACGarblerOnlineSession, outputLabels []ot.Label) error {
+// CMACGarblerVerifyOutput verifies the evaluator's output labels and derives
+// the CMAC bytes from them. Each label MUST equal L0 or L1; the bit is then
+// 0 or 1. TEE_K trusts these derived bytes — not whatever CMAC bytes TEE_T
+// also sends on the wire — so a malicious evaluator can't substitute the
+// output without first forging a label collision.
+func CMACGarblerVerifyOutput(session *CMACGarblerOnlineSession, outputLabels []ot.Label) ([16]byte, error) {
+	var zero [16]byte
 	if session == nil {
-		return errors.New("nil session")
+		return zero, errors.New("nil session")
 	}
 	if len(outputLabels) != len(session.ExpectedOutputHints) {
-		return fmt.Errorf("output label count mismatch: got %d, expected %d",
+		return zero, fmt.Errorf("output label count mismatch: got %d, expected %d",
 			len(outputLabels), len(session.ExpectedOutputHints))
 	}
+	if len(outputLabels) != 128 {
+		return zero, fmt.Errorf("expected 128 output labels for 16-byte CMAC, got %d", len(outputLabels))
+	}
 
-	// Verify each output label matches one of the expected labels (L0 or L1)
+	bits := make([]bool, len(outputLabels))
 	for i, label := range outputLabels {
 		hint := session.ExpectedOutputHints[i]
-		if !label.Equal(hint.L0) && !label.Equal(hint.L1) {
-			return fmt.Errorf("output label %d verification failed: label does not match either L0 or L1", i)
+		switch {
+		case label.Equal(hint.L0):
+			bits[i] = false
+		case label.Equal(hint.L1):
+			bits[i] = true
+		default:
+			return zero, fmt.Errorf("output label %d verification failed: label does not match either L0 or L1", i)
 		}
 	}
 
-	return nil
+	outBytes := cmacBitsToBytes(bits)
+	var out [16]byte
+	copy(out[:], outBytes)
+	return out, nil
 }
 
 // Helper functions
@@ -605,6 +620,11 @@ func DeserializeOnlinePayload(data []byte) (*CMACOnlinePayload, error) {
 	}
 	numGates := binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
+	// Bound the allocation against attacker-controlled count. Min per gate
+	// = 4 (numLabels u32) + 0 labels.
+	if maxGates := (len(data) - offset) / 4; int(numGates) > maxGates {
+		return nil, fmt.Errorf("invalid gate count %d: data can hold at most %d gates", numGates, maxGates)
+	}
 	gates := make([][]ot.Label, numGates)
 	for i := range gates {
 		if offset+4 > len(data) {
