@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // ErrNotFound is returned when a Pair lookup or delete targets an unknown ID.
@@ -37,4 +38,11 @@ type Store interface {
 	ListDigests(ctx context.Context) ([]string, error)
 	AddDigest(ctx context.Context, digest string) error
 	RemoveDigest(ctx context.Context, digest string) error
+
+	// Tombstones record recently-retired pair_ids so a still-running TEE
+	// can't re-register one after /dead. Shared via the store so the guard
+	// holds across router replicas. Tombstone records pairID with an expiry;
+	// IsTombstoned reports whether it's present and not yet expired.
+	Tombstone(ctx context.Context, pairID string, until time.Time) error
+	IsTombstoned(ctx context.Context, pairID string, now time.Time) (bool, error)
 }

@@ -68,6 +68,15 @@ type Config struct {
 func Load() (*Config, error) {
 	standalone := os.Getenv("ROUTER_STANDALONE") == "true"
 
+	// Standalone disables SA auth, attestation, and the allowlist — local dev
+	// only. Refuse it on Cloud Run (K_SERVICE is always set there) so a misset
+	// env var can't silently bring up an unauthenticated router in production.
+	if standalone {
+		if ks := os.Getenv("K_SERVICE"); ks != "" {
+			return nil, fmt.Errorf("ROUTER_STANDALONE=true refused: running on Cloud Run (K_SERVICE=%q); standalone disables all auth", ks)
+		}
+	}
+
 	// APPROVED_IMAGE_DIGESTS is the FIRST-BOOT SEED for the allowlist, no
 	// longer the source of truth. When Firestore's approved_digests
 	// collection is empty AND this var is set, NewAllowlist writes the

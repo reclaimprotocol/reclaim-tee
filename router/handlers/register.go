@@ -109,7 +109,13 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Refuse resurrection of a pair_id that was just /dead'd.
-	if s.getTombstones().contains(req.PairID, time.Now()) {
+	tombstoned, err := s.Store.IsTombstoned(ctx, req.PairID, time.Now())
+	if err != nil {
+		log.Error("register: tombstone check failed", zap.String("pair_id", req.PairID), zap.Error(err))
+		writeErr(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	if tombstoned {
 		writeErr(w, http.StatusGone, "pair_id was retired; generate a fresh one")
 		return
 	}

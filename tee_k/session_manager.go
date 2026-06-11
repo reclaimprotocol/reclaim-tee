@@ -36,7 +36,7 @@ type TEEKSessionState struct {
 
 	// TEE_K-owned server-app-seq for response tag-secret generation. See
 	// [[tcpdata-ack-protocol-2026-06-10]] — Option 3 / final design.
-	responseTagSeq     uint64
+	responseTagSeq     atomic.Uint64
 	responseTagSeqInit sync.Once
 
 	// MPC OPRF state (2-round protocol with OT precomputation)
@@ -106,12 +106,10 @@ func (s *TEEKSessionState) NextResponseTagSeq() uint64 {
 		}
 		arrived := s.AppRecordsViaTCPData.Load()
 		if arrived > consumed {
-			s.responseTagSeq = uint64(arrived - consumed)
+			s.responseTagSeq.Store(uint64(arrived - consumed))
 		}
 	})
-	seq := s.responseTagSeq
-	s.responseTagSeq++
-	return seq
+	return s.responseTagSeq.Add(1) - 1
 }
 
 // LockOPRF acquires the per-session OPRF mutex

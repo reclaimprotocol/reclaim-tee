@@ -3,22 +3,46 @@ package store
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // MemoryStore is an in-process implementation of Store, used for local
 // development and tests. The production deployment uses a Firestore-backed
 // Store that is added later.
 type MemoryStore struct {
-	mu      sync.RWMutex
-	pairs   map[string]*Pair
-	digests map[string]struct{}
+	mu         sync.RWMutex
+	pairs      map[string]*Pair
+	digests    map[string]struct{}
+	tombstones map[string]time.Time // pair_id -> expiry
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		pairs:   make(map[string]*Pair),
-		digests: make(map[string]struct{}),
+		pairs:      make(map[string]*Pair),
+		digests:    make(map[string]struct{}),
+		tombstones: make(map[string]time.Time),
 	}
+}
+
+func (s *MemoryStore) Tombstone(_ context.Context, pairID string, until time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tombstones[pairID] = until
+	return nil
+}
+
+func (s *MemoryStore) IsTombstoned(_ context.Context, pairID string, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exp, ok := s.tombstones[pairID]
+	if !ok {
+		return false, nil
+	}
+	if !now.Before(exp) {
+		delete(s.tombstones, pairID)
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *MemoryStore) GetPair(_ context.Context, id string) (*Pair, error) {

@@ -106,7 +106,10 @@ func (s *Server) evictPairsByDigest(ctx context.Context, digest string) {
 				zap.String("pair_id", p.ID), zap.String("digest", digest), zap.Error(err))
 			continue
 		}
-		s.getTombstones().add(p.ID, now)
+		if err := s.Store.Tombstone(ctx, p.ID, now.Add(tombstoneTTL)); err != nil {
+			s.Logger.Warn("evict-by-digest: tombstone write failed",
+				zap.String("pair_id", p.ID), zap.Error(err))
+		}
 		s.Logger.Info("evict-by-digest: pair removed",
 			zap.String("pair_id", p.ID), zap.String("digest", digest))
 	}

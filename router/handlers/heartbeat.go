@@ -125,7 +125,9 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			log.Warn("heartbeat: image digest no longer allowlisted; evicting pair",
 				zap.String("pair_id", p.ID), zap.String("role", req.Role), zap.String("digest", roleDigest))
 			_ = s.Store.DeletePair(ctx, p.ID)
-			s.getTombstones().add(p.ID, time.Now())
+			if err := s.Store.Tombstone(ctx, p.ID, time.Now().Add(tombstoneTTL)); err != nil {
+				log.Warn("heartbeat: tombstone write failed", zap.String("pair_id", p.ID), zap.Error(err))
+			}
 			writeErr(w, http.StatusGone, "image digest revoked")
 			return
 		}

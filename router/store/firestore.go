@@ -20,6 +20,14 @@ const FirestoreCollection = "pairs"
 // The doc body is empty placeholder; existence is the only signal.
 const firestoreDigestCollection = "approved_digests"
 
+// firestoreTombstoneCollection holds recently-retired pair_ids. Doc ID =
+// pair_id; body carries the expiry. Read on /register, written on /dead.
+const firestoreTombstoneCollection = "tombstones"
+
+type tombstoneDoc struct {
+	Expiry time.Time `firestore:"expiry"`
+}
+
 // FirestoreStore implements Store against Firestore Native mode.
 //
 // Documents are keyed by pair_id. Field names are tagged explicitly so a Go
@@ -279,3 +287,31 @@ func (d pairDoc) toPair(id string) *Pair {
 	}
 }
 
+
+func (s *FirestoreStore) Tombstone(ctx context.Context, pairID string, until time.Time) error {
+	_, err := s.client.Collection(firestoreTombstoneCollection).Doc(pairID).Set(ctx, tombstoneDoc{Expiry: until})
+	if err != nil {
+		return fmt.Errorf("firestore tombstone: %w", err)
+	}
+	return nil
+}
+
+func (s *FirestoreStore) IsTombstoned(ctx context.Context, pairID string, now time.Time) (bool, error) {
+	ref := s.client.Collection(firestoreTombstoneCollection).Doc(pairID)
+	snap, err := ref.Get(ctx)
+	if status.Code(err) == codes.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("firestore is-tombstoned: %w", err)
+	}
+	var doc tombstoneDoc
+	if err := snap.DataTo(&doc); err != nil {
+		return false, fmt.Errorf("decode tombstone doc: %w", err)
+	}
+	if !now.Before(doc.Expiry) {
+		_, _ = ref.Delete(ctx) // best-effort lazy cleanup of an expired tombstone
+		return false, nil
+	}
+	return true, nil
+}
