@@ -7,6 +7,7 @@ require (
 	cloud.google.com/go/kms v1.29.0
 	cloud.google.com/go/logging v1.16.0
 	cloud.google.com/go/secretmanager v1.19.0
+	filippo.io/nistec v0.0.4
 	github.com/KGKallasmaa/countries v0.2.0
 	github.com/consensys/gnark v0.14.0
 	github.com/coreos/go-json v0.0.0-20231102161613-e49c8866685a
@@ -38,7 +39,6 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.9.0 // indirect
 	cloud.google.com/go/longrunning v0.11.0 // indirect
-	filippo.io/nistec v0.0.4 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -82,6 +82,6 @@ require (
 
 replace (
 	github.com/consensys/gnark-crypto v0.20.1 => github.com/consensys/gnark-crypto v0.19.2
-	github.com/markkurossi/mpc => ./third_party/mpc
+	github.com/markkurossi/mpc => github.com/Scratch-net/mpc v0.0.0-20260611121342-f5e7e6d349b3
 	github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260407154851-d134fefd8eff => github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20251205140100-6fd752973b8f
 )
