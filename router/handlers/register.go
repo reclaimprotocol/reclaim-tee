@@ -2,13 +2,19 @@ package handlers
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"time"
 
 	"github.com/reclaimprotocol/reclaim-tee/router/store"
+	"github.com/reclaimprotocol/reclaim-tee/shared"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -21,6 +27,8 @@ type registerRequest struct {
 	PeerAddrClaim  string `json:"peer_addr_claim"`
 	ImageDigest    string `json:"image_digest"`
 	AttestationJWT string `json:"attestation_jwt"`
+	SPKIDer        []byte `json:"spki_der,omitempty"`
+	BodySignature  []byte `json:"body_signature,omitempty"`
 }
 
 type registerResponse struct {
@@ -87,6 +95,17 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		digest = validated
+
+		// Bind the request body to the attestation. The SPKI committed in
+		// the attestation's eat_nonce must hash the key that signed this
+		// body. Without this, anyone holding a valid allowlisted attestation
+		// could register an arbitrary pair_id/self_addr (registry takeover).
+		if err := verifyRegistrationBinding(req, digest); err != nil {
+			log.Warn("register: attestation binding failed",
+				zap.String("pair_id", req.PairID), zap.Error(err))
+			writeErr(w, http.StatusForbidden, "registration not bound to attestation")
+			return
+		}
 	}
 
 	// Refuse resurrection of a pair_id that was just /dead'd.
@@ -214,6 +233,43 @@ func (s *Server) sweepOrphansForAddr(ctx context.Context, keepID string, role st
 				zap.String("self_addr", addr))
 		}
 	}
+}
+
+// verifyRegistrationBinding confirms the register body was signed by the
+// enclave whose attestation this is. The attestation's eat_nonce commits to
+// sha256(SPKI) of the TEE's RA-TLS key; we recover the key from req.SPKIDer,
+// confirm its hash matches the nonce, then verify req.BodySignature over the
+// canonical body. The RA-TLS private key never leaves the enclave, so a
+// stolen attestation JWT alone can't produce a valid signature.
+func verifyRegistrationBinding(req registerRequest, imageDigest string) error {
+	if len(req.SPKIDer) == 0 || len(req.BodySignature) == 0 {
+		return errors.New("missing spki_der or body_signature")
+	}
+	nonceRole := "tee_k"
+	if store.Role(req.Role) == store.RoleT {
+		nonceRole = "tee_t"
+	}
+	expectedHex, err := shared.FindNonceValue([]byte(req.AttestationJWT), shared.SPKINoncePrefix(nonceRole))
+	if err != nil {
+		return fmt.Errorf("find SPKI nonce: %w", err)
+	}
+	gotHash := sha256.Sum256(req.SPKIDer)
+	if hex.EncodeToString(gotHash[:]) != expectedHex {
+		return errors.New("SPKI does not match attestation nonce")
+	}
+	pub, err := x509.ParsePKIXPublicKey(req.SPKIDer)
+	if err != nil {
+		return fmt.Errorf("parse SPKI: %w", err)
+	}
+	ecPub, ok := pub.(*ecdsa.PublicKey)
+	if !ok {
+		return errors.New("SPKI is not an ECDSA key")
+	}
+	digest := shared.RegistrationSigningDigest(req.PairID, req.Role, req.SelfAddr, req.PeerAddrClaim, imageDigest)
+	if !ecdsa.VerifyASN1(ecPub, digest[:], req.BodySignature) {
+		return errors.New("body signature invalid")
+	}
+	return nil
 }
 
 func (req registerRequest) validate() error {

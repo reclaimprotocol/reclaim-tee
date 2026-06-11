@@ -107,14 +107,29 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		} else {
 			imageDigest = "local-dev"
 		}
-		resp, err := teet.router.Register(ctx, shared.RegisterRequest{
+		regReq := shared.RegisterRequest{
 			PairID:         pid,
 			Role:           "T",
 			SelfAddr:       config.SelfAddr,
 			PeerAddrClaim:  config.PeerAddr,
 			ImageDigest:    imageDigest,
 			AttestationJWT: string(attestationJWT),
-		})
+		}
+		// Bind the body to the attestation by signing it with the RA-TLS key.
+		if teet.ratls != nil {
+			spki, err := teet.ratls.PublicKeyDER()
+			if err != nil {
+				return fmt.Errorf("marshal SPKI: %w", err)
+			}
+			digest := shared.RegistrationSigningDigest(regReq.PairID, regReq.Role, regReq.SelfAddr, regReq.PeerAddrClaim, regReq.ImageDigest)
+			sig, err := teet.ratls.SignRegistration(digest)
+			if err != nil {
+				return fmt.Errorf("sign registration: %w", err)
+			}
+			regReq.SPKIDer = spki
+			regReq.BodySignature = sig
+		}
+		resp, err := teet.router.Register(ctx, regReq)
 		if err != nil {
 			return err
 		}

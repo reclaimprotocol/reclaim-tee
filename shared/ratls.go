@@ -196,6 +196,19 @@ func (m *RATLSManager) SPKIHash() [32]byte {
 	return m.spkiHash
 }
 
+// PublicKeyDER returns the PKIX-marshaled RA-TLS public key. Its sha256 is
+// what the attestation's SPKI nonce commits to, so a verifier can recover
+// and trust the registration-signing key from the attestation alone.
+func (m *RATLSManager) PublicKeyDER() ([]byte, error) {
+	return x509.MarshalPKIXPublicKey(&m.priv.PublicKey)
+}
+
+// SignRegistration signs a registration digest with the RA-TLS private key
+// (ECDSA P-256, ASN.1 form). The key never leaves the enclave.
+func (m *RATLSManager) SignRegistration(digest [32]byte) ([]byte, error) {
+	return ecdsa.SignASN1(rand.Reader, m.priv, digest[:])
+}
+
 // GetCertificate is intended for tls.Config.GetCertificate. Always returns
 // the current cert, so handshakes that arrive after a Refresh() see the
 // fresh attestation.

@@ -5,6 +5,7 @@ package shared
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,7 +43,10 @@ func NewRouterClient(baseURL string, tokens TokenSource) *RouterClient {
 	}
 }
 
-// RegisterRequest is the body of POST /register.
+// RegisterRequest is the body of POST /register. SPKIDer + BodySignature
+// bind the body to the attestation: the TEE signs RegistrationSigningDigest
+// with the RA-TLS private key whose public half's hash is committed in the
+// attestation's eat_nonce. Empty in standalone (no-attestation) mode.
 type RegisterRequest struct {
 	PairID         string `json:"pair_id"`
 	Role           string `json:"role"`
@@ -50,6 +54,24 @@ type RegisterRequest struct {
 	PeerAddrClaim  string `json:"peer_addr_claim"`
 	ImageDigest    string `json:"image_digest"`
 	AttestationJWT string `json:"attestation_jwt"`
+	SPKIDer        []byte `json:"spki_der,omitempty"`
+	BodySignature  []byte `json:"body_signature,omitempty"`
+}
+
+// RegistrationSigningDigest is the message a TEE signs with its RA-TLS
+// private key to prove a /register body came from the enclave whose
+// attestation commits to that keypair. Domain-separated so the signature
+// can't be replayed as any other kind of ECDSA signature by that key.
+func RegistrationSigningDigest(pairID, role, selfAddr, peerAddrClaim, imageDigest string) [32]byte {
+	h := sha256.New()
+	h.Write([]byte("reclaim-register-binding-v1"))
+	for _, f := range []string{pairID, role, selfAddr, peerAddrClaim, imageDigest} {
+		h.Write([]byte{0})
+		h.Write([]byte(f))
+	}
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
 }
 
 // RegisterResponse is the body returned by /register.

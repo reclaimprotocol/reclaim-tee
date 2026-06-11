@@ -96,14 +96,29 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 			// Local-dev: router-standalone trusts the body image_digest.
 			imageDigest = "local-dev"
 		}
-		resp, err := teek.router.Register(ctx, shared.RegisterRequest{
+		regReq := shared.RegisterRequest{
 			PairID:         teek.pairID,
 			Role:           "K",
 			SelfAddr:       config.SelfAddr,
 			PeerAddrClaim:  config.PeerAddr,
 			ImageDigest:    imageDigest,
 			AttestationJWT: string(attestationJWT),
-		})
+		}
+		// Bind the body to the attestation by signing it with the RA-TLS key.
+		if teek.ratls != nil {
+			spki, err := teek.ratls.PublicKeyDER()
+			if err != nil {
+				return fmt.Errorf("marshal SPKI: %w", err)
+			}
+			digest := shared.RegistrationSigningDigest(regReq.PairID, regReq.Role, regReq.SelfAddr, regReq.PeerAddrClaim, regReq.ImageDigest)
+			sig, err := teek.ratls.SignRegistration(digest)
+			if err != nil {
+				return fmt.Errorf("sign registration: %w", err)
+			}
+			regReq.SPKIDer = spki
+			regReq.BodySignature = sig
+		}
+		resp, err := teek.router.Register(ctx, regReq)
 		if err != nil {
 			return err
 		}

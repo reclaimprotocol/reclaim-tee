@@ -3,6 +3,13 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,10 +20,52 @@ import (
 	"github.com/reclaimprotocol/reclaim-tee/router/auth"
 	"github.com/reclaimprotocol/reclaim-tee/router/config"
 	"github.com/reclaimprotocol/reclaim-tee/router/store"
+	"github.com/reclaimprotocol/reclaim-tee/shared"
 
 	"github.com/golang-jwt/jwt/v5"
 	"go.uber.org/zap"
 )
+
+// testRegKey is the RA-TLS key the test "TEE" signs register bodies with.
+var testRegKey = func() *ecdsa.PrivateKey {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return k
+}()
+
+// fakeJWTWithNonce builds a structurally-valid (unsigned) JWT whose
+// eat_nonce carries the given value. FindNonceValue only base64-decodes
+// the payload; it does not verify the signature.
+func fakeJWTWithNonce(nonce string) string {
+	hdr := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
+	pb, _ := json.Marshal(map[string]any{"eat_nonce": []string{nonce}})
+	return hdr + "." + base64.RawURLEncoding.EncodeToString(pb) + ".sig"
+}
+
+// signRegisterBody fills AttestationJWT (nonce-carrying), SPKIDer, and
+// BodySignature for the body's CURRENT field values using testRegKey.
+// Call it again after mutating any signed field.
+func signRegisterBody(b *registerRequest) {
+	spki, err := x509.MarshalPKIXPublicKey(&testRegKey.PublicKey)
+	if err != nil {
+		panic(err)
+	}
+	hash := sha256.Sum256(spki)
+	nonceRole := "tee_k"
+	if store.Role(b.Role) == store.RoleT {
+		nonceRole = "tee_t"
+	}
+	b.AttestationJWT = fakeJWTWithNonce(shared.SPKINoncePrefix(nonceRole) + hex.EncodeToString(hash[:]))
+	b.SPKIDer = spki
+	digest := shared.RegistrationSigningDigest(b.PairID, b.Role, b.SelfAddr, b.PeerAddrClaim, b.ImageDigest)
+	sig, err := ecdsa.SignASN1(rand.Reader, testRegKey, digest[:])
+	if err != nil {
+		panic(err)
+	}
+	b.BodySignature = sig
+}
 
 type fakeSAValidator struct {
 	claims *auth.SAClaims
@@ -98,14 +147,15 @@ func doRegister(t *testing.T, s *Server, body registerRequest, remoteAddr, authH
 }
 
 func validBody(role, selfAddr, peerAddr string) registerRequest {
-	return registerRequest{
-		PairID:         pairID,
-		Role:           role,
-		SelfAddr:       selfAddr,
-		PeerAddrClaim:  peerAddr,
-		ImageDigest:    approvedDigest,
-		AttestationJWT: "fake-attestation-jwt",
+	b := registerRequest{
+		PairID:        pairID,
+		Role:          role,
+		SelfAddr:      selfAddr,
+		PeerAddrClaim: peerAddr,
+		ImageDigest:   approvedDigest,
 	}
+	signRegisterBody(&b)
+	return b
 }
 
 func TestRegisterHappyPathK(t *testing.T) {
@@ -258,6 +308,7 @@ func TestRegister_OrphanSweep_DeletesPreviousAtSameAddr(t *testing.T) {
 	oldID := "11111111-1111-1111-1111-111111111111"
 	body := validBody("K", teekIP+":443", teetIP+":443")
 	body.PairID = oldID
+	signRegisterBody(&body)
 	w := doRegister(t, s, body, teekIP+":12345", "Bearer fake-sa-token")
 	if w.Code != http.StatusOK {
 		t.Fatalf("first register: got %d body=%s", w.Code, w.Body.String())
@@ -267,6 +318,7 @@ func TestRegister_OrphanSweep_DeletesPreviousAtSameAddr(t *testing.T) {
 	// produces on every boot today.
 	newID := "22222222-2222-2222-2222-222222222222"
 	body.PairID = newID
+	signRegisterBody(&body)
 	w = doRegister(t, s, body, teekIP+":12345", "Bearer fake-sa-token")
 	if w.Code != http.StatusOK {
 		t.Fatalf("second register: got %d body=%s", w.Code, w.Body.String())
@@ -290,6 +342,7 @@ func TestRegister_OrphanSweep_RoleScoped(t *testing.T) {
 	body := validBody("T", teekIP+":443", teekIP+":443")
 	body.PairID = xID
 	body.SelfAddr = teetIP + ":443"
+	signRegisterBody(&body)
 	w := doRegister(t, s, body, teetIP+":54321", "Bearer fake-sa-token")
 	if w.Code != http.StatusOK {
 		t.Fatalf("seed T register: got %d body=%s", w.Code, w.Body.String())
@@ -300,6 +353,7 @@ func TestRegister_OrphanSweep_RoleScoped(t *testing.T) {
 	yID := "22222222-2222-2222-2222-222222222222"
 	body = validBody("K", teetIP+":443", teekIP+":443")
 	body.PairID = yID
+	signRegisterBody(&body)
 	w = doRegister(t, s, body, teetIP+":12345", "Bearer fake-sa-token")
 	if w.Code != http.StatusOK {
 		t.Fatalf("Y K register: got %d body=%s", w.Code, w.Body.String())
@@ -326,6 +380,48 @@ func TestRegister_OrphanSweep_SamePairIDNoOp(t *testing.T) {
 	}
 	if _, err := s.Store.GetPair(t.Context(), pairID); err != nil {
 		t.Fatalf("self-row deleted by sweep: %v", err)
+	}
+}
+
+// Registry-takeover regression: a caller with a valid allowlisted
+// attestation but WITHOUT the RA-TLS private key the attestation commits
+// to cannot register. The body signature can't be forged.
+func TestRegisterRejectsBodyNotBoundToAttestation(t *testing.T) {
+	s := newTestServer(t)
+
+	// Wrong-key signature: SPKIDer + nonce are the genuine TEE's, but the
+	// body is signed by a key the attacker holds instead.
+	body := validBody("K", teekIP+":443", teetIP+":443")
+	attackerKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen attacker key: %v", err)
+	}
+	digest := shared.RegistrationSigningDigest(body.PairID, body.Role, body.SelfAddr, body.PeerAddrClaim, body.ImageDigest)
+	sig, err := ecdsa.SignASN1(rand.Reader, attackerKey, digest[:])
+	if err != nil {
+		t.Fatalf("attacker sign: %v", err)
+	}
+	body.BodySignature = sig
+	w := doRegister(t, s, body, teekIP+":12345", "Bearer fake-sa-token")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("wrong-key body: got %d body=%s, want 403", w.Code, w.Body.String())
+	}
+
+	// Missing signature entirely.
+	body2 := validBody("K", teekIP+":443", teetIP+":443")
+	body2.BodySignature = nil
+	w = doRegister(t, s, body2, teekIP+":12345", "Bearer fake-sa-token")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("missing sig: got %d, want 403", w.Code)
+	}
+
+	// Tampered field after signing: attacker keeps a valid signature but
+	// swaps self_addr to redirect clients.
+	body3 := validBody("K", teekIP+":443", teetIP+":443")
+	body3.SelfAddr = "6.6.6.6:443"
+	w = doRegister(t, s, body3, teekIP+":12345", "Bearer fake-sa-token")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("tampered self_addr: got %d, want 403", w.Code)
 	}
 }
 

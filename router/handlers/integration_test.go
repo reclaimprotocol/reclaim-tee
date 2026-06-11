@@ -173,13 +173,13 @@ func TestIntegration_FullLifecycle(t *testing.T) {
 
 	// 3. Register K
 	regK := registerRequest{
-		PairID:         intPairID,
-		Role:           "K",
-		SelfAddr:       addr,
-		PeerAddrClaim:  addr,
-		ImageDigest:    approvedDigest,
-		AttestationJWT: "fake-attestation",
+		PairID:        intPairID,
+		Role:          "K",
+		SelfAddr:      addr,
+		PeerAddrClaim: addr,
+		ImageDigest:   approvedDigest,
 	}
+	signRegisterBody(&regK)
 	code, body = i.post(t, "/register", regK, saAuth)
 	if code != http.StatusOK {
 		t.Fatalf("register K: code=%d body=%s", code, body)
@@ -193,6 +193,7 @@ func TestIntegration_FullLifecycle(t *testing.T) {
 	// 4. Register T
 	regT := regK
 	regT.Role = "T"
+	signRegisterBody(&regT)
 	code, body = i.post(t, "/register", regT, saAuth)
 	if code != http.StatusOK {
 		t.Fatalf("register T: code=%d body=%s", code, body)
