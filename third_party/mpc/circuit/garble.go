@@ -156,8 +156,9 @@ func makeLabels(rand io.Reader, r ot.Label) (ot.Wire, error) {
 	}, nil
 }
 
-// Garbled circuit. Wires/Gates may point into a per-circuit sync.Pool
-// when produced by Circuit.Garble; call Release() when done.
+// Garbled holds garbled circuit information. When produced by Circuit.Garble,
+// Wires and Gates point into reusable scratch; call Release once the garbled
+// tables have been consumed (e.g. serialized) to return it for reuse.
 type Garbled struct {
 	R     ot.Label
 	Wires []ot.Wire
@@ -167,7 +168,9 @@ type Garbled struct {
 	pool    *sync.Pool
 }
 
-// Returns scratch buffers to the pool. Idempotent; *Garbled unusable after.
+// Release returns the scratch buffers to the circuit's pool. It is optional:
+// skipping it just forgoes reuse. Idempotent; the Garbled must not be used
+// afterwards.
 func (g *Garbled) Release() {
 	if g == nil || g.pool == nil {
 		return
@@ -179,19 +182,19 @@ func (g *Garbled) Release() {
 	g.Gates = nil
 }
 
-// Heap buffers reused per circuit. Slab sized for AND(2)+OR(3)+INV(1) labels.
+// garbledScratch holds the heap buffers reused across Garble calls. slab is
+// the backing array the per-gate table slices are carved from.
 type garbledScratch struct {
 	wires []ot.Wire
 	slab  []ot.Label
 	gates [][]ot.Label
 }
 
-// One sync.Pool per *Circuit; keyed by pointer identity.
-var scratchPools sync.Map // map[*Circuit]*sync.Pool
-
-func (c *Circuit) scratchPool() *sync.Pool {
-	if v, ok := scratchPools.Load(c); ok {
-		return v.(*sync.Pool)
+// garbleScratchPool returns this circuit's scratch pool, building it on first
+// use. The pool is stored on the circuit so it lives and dies with it.
+func (c *Circuit) garbleScratchPool() *sync.Pool {
+	if p := c.garblePool.Load(); p != nil {
+		return p
 	}
 	var slabSize int
 	for i := range c.Gates {
@@ -202,6 +205,8 @@ func (c *Circuit) scratchPool() *sync.Pool {
 			slabSize += 3
 		case INV:
 			slabSize += 1
+		case XOR, XNOR:
+			// Free XOR: no garbled rows.
 		}
 	}
 	p := &sync.Pool{
@@ -213,8 +218,10 @@ func (c *Circuit) scratchPool() *sync.Pool {
 			}
 		},
 	}
-	actual, _ := scratchPools.LoadOrStore(c, p)
-	return actual.(*sync.Pool)
+	if c.garblePool.CompareAndSwap(nil, p) {
+		return p
+	}
+	return c.garblePool.Load()
 }
 
 // Lambda returns the lambda value of the wire.
@@ -236,9 +243,10 @@ func (g *Garbled) SetLambda(wire Wire, val uint) {
 	g.Wires[wire] = w
 }
 
-// Garble. Returned *Garbled backed by pooled scratch; caller should Release.
+// Garble garbles the circuit. The returned Garbled is backed by reusable
+// scratch; call Release once its tables are consumed to return it for reuse.
 func (c *Circuit) Garble(rand io.Reader, key []byte) (*Garbled, error) {
-	pool := c.scratchPool()
+	pool := c.garbleScratchPool()
 	scratch := pool.Get().(*garbledScratch)
 
 	// Create R.
