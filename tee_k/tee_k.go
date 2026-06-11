@@ -258,6 +258,11 @@ func (t *TEEK) cleanupSessionWithSession(session *shared.Session) {
 		t.logger.WithSession(session.ID).Debug("Session cleanup already claimed by another caller")
 		return
 	}
+	// Unblock any TCPData sender that's waiting on a full pendingData
+	// buffer because minitls has stopped draining.
+	if tlsState, err := t.getSessionTLSState(session.ID); err == nil && tlsState.WSConn2TLS != nil {
+		tlsState.WSConn2TLS.Shutdown()
+	}
 	if t.connManager != nil {
 		t.connManager.CloseSessionConnection(session.ID, "session_cleanup")
 	}

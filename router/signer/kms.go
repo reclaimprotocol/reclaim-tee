@@ -2,6 +2,7 @@ package signer
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/asn1"
 	"errors"
@@ -13,12 +14,19 @@ import (
 	"cloud.google.com/go/kms/apiv1/kmspb"
 
 	"github.com/golang-jwt/jwt/v5"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-// kmsSignTimeout caps how long a single Sign call may block in the KMS API.
-// KMS asymmetric sign typically returns in ~50ms; the timeout exists to keep
-// /allocate p99 bounded under KMS hiccups.
+// kmsSignTimeout caps the TOTAL time (across all retries) of a single Sign
+// call. KMS asymmetric sign typically returns in ~50ms; the budget is large
+// enough to absorb 2 retries with backoff on transient 5xx, small enough to
+// keep /allocate p99 bounded under KMS hiccups.
 const kmsSignTimeout = 5 * time.Second
+
+// kmsSignMaxAttempts is the total number of attempts (initial + retries) on
+// transient KMS errors before giving up.
+const kmsSignMaxAttempts = 3
 
 // KMSSigner signs allocation JWTs using a GCP KMS asymmetric ES256 key.
 // The private key never leaves KMS; this binary only holds the public key
@@ -87,16 +95,51 @@ func (m *kmsSigningMethod) Sign(signingString string, _ any) ([]byte, error) {
 	defer cancel()
 
 	digest := sha256.Sum256([]byte(signingString))
-	resp, err := m.signer.client.AsymmetricSign(ctx, &kmspb.AsymmetricSignRequest{
-		Name: m.signer.keyName,
-		Digest: &kmspb.Digest{
-			Digest: &kmspb.Digest_Sha256{Sha256: digest[:]},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("kms asymmetric sign: %w", err)
+	req := &kmspb.AsymmetricSignRequest{
+		Name:   m.signer.keyName,
+		Digest: &kmspb.Digest{Digest: &kmspb.Digest_Sha256{Sha256: digest[:]}},
 	}
-	return asn1ToJWS(resp.Signature)
+
+	var lastErr error
+	for attempt := 1; attempt <= kmsSignMaxAttempts; attempt++ {
+		resp, err := m.signer.client.AsymmetricSign(ctx, req)
+		if err == nil {
+			return asn1ToJWS(resp.Signature)
+		}
+		lastErr = err
+		if !isRetryableKMSError(err) {
+			break
+		}
+		if attempt == kmsSignMaxAttempts || ctx.Err() != nil {
+			break
+		}
+		// Jittered backoff: 50ms / 100ms / 200ms base with ±25% jitter.
+		base := time.Duration(50*(1<<(attempt-1))) * time.Millisecond
+		jitterByte := [1]byte{}
+		_, _ = rand.Read(jitterByte[:])
+		jitter := time.Duration(int(jitterByte[0])-128) * base / 512
+		select {
+		case <-time.After(base + jitter):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("kms asymmetric sign: %w", ctx.Err())
+		}
+	}
+	return nil, fmt.Errorf("kms asymmetric sign (after %d attempts): %w", kmsSignMaxAttempts, lastErr)
+}
+
+// isRetryableKMSError reports whether a KMS error is a transient 5xx-ish
+// condition where a retry is likely to succeed. Permission, auth, and
+// invalid-arg failures are NOT retried (the next attempt would fail too).
+func isRetryableKMSError(err error) bool {
+	s, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	switch s.Code() {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.Aborted, codes.Internal:
+		return true
+	}
+	return false
 }
 
 // Verify is never called in the router flow (the router only mints; TEEs

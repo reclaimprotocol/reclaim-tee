@@ -1,11 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/reclaimprotocol/reclaim-tee/router/store"
 
 	"go.uber.org/zap"
 )
@@ -76,7 +81,35 @@ func (s *Server) HandleRemoveDigest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Logger.Info("allowlist: digest removed", zap.String("digest", digest))
+	s.evictPairsByDigest(r.Context(), digest)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// evictPairsByDigest deletes every pair whose K or T side runs the revoked
+// digest, and tombstones each so a hot re-register can't resurrect them
+// before the heartbeat-side check catches up. Best-effort; failures are
+// logged but don't surface as 5xx — the operator already saw the 204 on
+// /allowlist Remove and shouldn't see a retry.
+func (s *Server) evictPairsByDigest(ctx context.Context, digest string) {
+	pairs, err := s.Store.ListPairs(ctx)
+	if err != nil {
+		s.Logger.Warn("evict-by-digest: list failed", zap.Error(err))
+		return
+	}
+	now := time.Now()
+	for _, p := range pairs {
+		if p.TEEKImageDigest != digest && p.TEETImageDigest != digest {
+			continue
+		}
+		if err := s.Store.DeletePair(ctx, p.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			s.Logger.Warn("evict-by-digest: delete failed",
+				zap.String("pair_id", p.ID), zap.String("digest", digest), zap.Error(err))
+			continue
+		}
+		s.getTombstones().add(p.ID, now)
+		s.Logger.Info("evict-by-digest: pair removed",
+			zap.String("pair_id", p.ID), zap.String("digest", digest))
+	}
 }
 
 // validateDigestFormat enforces the sha256:<64-hex-char> shape so a

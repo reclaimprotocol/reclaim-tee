@@ -180,7 +180,7 @@ func (cm *TEEKConnectionManager) HandleControlConnection(conn *websocket.Conn) e
 		return fmt.Errorf("failed to marshal attestation response: %v", err)
 	}
 
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	if err := shared.WriteWSBinary(conn, data); err != nil {
 		return fmt.Errorf("failed to send attestation response: %v", err)
 	}
 
@@ -692,7 +692,7 @@ func (cm *TEEKConnectionManager) sendSessionConnectionAck(conn *websocket.Conn, 
 		return
 	}
 
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	if err := shared.WriteWSBinary(conn, data); err != nil {
 		cm.logger.Error("Failed to send SessionConnectionAck", zap.Error(err))
 	}
 }

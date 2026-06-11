@@ -116,6 +116,10 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	p, err := s.Store.MutatePair(ctx, req.PairID, func(p *store.Pair, exists bool) error {
 		if !exists {
 			p.RegisteredAt = now
+			// Seed both heartbeats so stale-row GC's bothHeartbeatsStale
+			// never sees a zero-time field while one side races to register.
+			p.LastHeartbeatK = now
+			p.LastHeartbeatT = now
 		}
 		switch store.Role(req.Role) {
 		case store.RoleK:

@@ -302,7 +302,7 @@ func (cm *TEETConnectionManager) sendPairAssignment(conn *websocket.Conn) error 
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	return conn.WriteMessage(websocket.BinaryMessage, data)
+	return shared.WriteWSBinary(conn, data)
 }
 
 // attemptControlConnection performs a single connection attempt with attestation
@@ -353,7 +353,7 @@ func (cm *TEETConnectionManager) attemptControlConnection() (*websocket.Conn, er
 		zap.String("type", "TeekAttestation"),
 		zap.Int("bytes", len(data)))
 
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	if err := shared.WriteWSBinary(conn, data); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to send attestation: %v", err)
 	}
@@ -553,7 +553,7 @@ func (cm *TEETConnectionManager) EstablishSessionConnection(sessionID string) er
 		return fmt.Errorf("failed to marshal SessionConnectionInit: %v", err)
 	}
 
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	if err := shared.WriteWSBinary(conn, data); err != nil {
 		conn.Close()
 		return fmt.Errorf("failed to send SessionConnectionInit: %v", err)
 	}

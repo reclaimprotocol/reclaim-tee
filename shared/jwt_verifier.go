@@ -68,11 +68,8 @@ func VerifyAllocationJWT(token string, pubKey *ecdsa.PublicKey, expectedIssuer, 
 
 	claims := &AllocationJWTClaims{}
 	_, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (any, error) {
-		if t.Method.Alg() != jwt.SigningMethodES256.Alg() {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Method.Alg())
-		}
 		return pubKey, nil
-	}, jwt.WithExpirationRequired(), jwt.WithIssuer(expectedIssuer))
+	}, jwt.WithExpirationRequired(), jwt.WithIssuer(expectedIssuer), jwt.WithValidMethods([]string{"ES256"}))
 	if err != nil {
 		return nil, fmt.Errorf("jwt: parse/verify: %w", err)
 	}

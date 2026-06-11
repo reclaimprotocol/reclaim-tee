@@ -620,10 +620,10 @@ func DeserializeOnlinePayload(data []byte) (*CMACOnlinePayload, error) {
 	}
 	numGates := binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
-	// Bound the allocation against attacker-controlled count. Min per gate
-	// = 4 (numLabels u32) + 0 labels.
-	if maxGates := (len(data) - offset) / 4; int(numGates) > maxGates {
-		return nil, fmt.Errorf("invalid gate count %d: data can hold at most %d gates", numGates, maxGates)
+	// Must equal the compiled circuit's gate count — circ.Eval would
+	// index garbled[i] for i in 0..circ.NumGates without bounds-checking.
+	if int(numGates) != aesCMACCircuit.NumGates {
+		return nil, fmt.Errorf("gate count mismatch: payload has %d, circuit has %d", numGates, aesCMACCircuit.NumGates)
 	}
 	gates := make([][]ot.Label, numGates)
 	for i := range gates {
@@ -667,6 +667,9 @@ func DeserializeOnlinePayload(data []byte) (*CMACOnlinePayload, error) {
 	numOH := binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
 
+	if int(numOH) != aesCMACCircuit.Outputs.Size() {
+		return nil, fmt.Errorf("output hint count mismatch: payload has %d, circuit has %d", numOH, aesCMACCircuit.Outputs.Size())
+	}
 	if offset+int(numOH)*32 > len(data) {
 		return nil, fmt.Errorf("data too short for %d output hints", numOH)
 	}

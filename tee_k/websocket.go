@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
@@ -33,8 +34,20 @@ type WebSocketConn struct {
 	readBuffer  []byte
 	readOffset  int
 	pendingData chan []byte
-	teek        *TEEK  // Reference to TEEK for transcript collection
-	sessionID   string // Session ID for per-session transcript collection
+	// done is closed exactly once on session cleanup. Senders to pendingData
+	// must select on both channels so a wedged minitls (or one that returned
+	// early without draining) doesn't pin the sender goroutine forever when
+	// the buffer fills up.
+	done     chan struct{}
+	doneOnce sync.Once
+
+	teek      *TEEK  // Reference to TEEK for transcript collection
+	sessionID string // Session ID for per-session transcript collection
+}
+
+// Shutdown signals senders to abandon pendingData. Idempotent.
+func (w *WebSocketConn) Shutdown() {
+	w.doneOnce.Do(func() { close(w.done) })
 }
 
 // createTLSWebSocketDialer creates a WebSocket dialer with TLS config for secure connections
@@ -214,7 +227,7 @@ func (t *TEEK) attemptTEETConnection(sessionID string, attempt int) (*websocket.
 		zap.String("type", "TeekAttestation"),
 		zap.Int("bytes", len(data)))
 
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	if err := shared.WriteWSBinary(conn, data); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to send attestation: %v", err)
 	}

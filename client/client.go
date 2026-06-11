@@ -137,8 +137,9 @@ type Client struct {
 	proxyURL          string // HTTPS proxy URL template from env var
 	targetHost        string
 	targetPort        int
-	isClosing         bool
-	capturedTraffic   [][]byte    // Store all captured traffic for verification
+	isClosing         atomic.Bool
+	capturedTraffic   [][]byte     // Append guarded by capturedTrafficMu (three writer goroutines).
+	capturedTrafficMu sync.Mutex
 	handshakeComplete atomic.Bool // Routing boundary for captured records; Store after responseSeqNum write.
 
 	// Attestor client (created lazily when needed)
@@ -165,7 +166,7 @@ type Client struct {
 	protocolStateMutex     sync.RWMutex  // Protect simple state
 
 	// Track HTTP request/response lifecycle
-	httpRequestSent       bool                        // Track if HTTP request has been sent
+	httpRequestSent       atomic.Bool                 // Set after final fragment written to TCP; read by TCP reader goroutine.
 	httpResponseExpected  bool                        // Track if we should expect HTTP response
 	parsedResponseBySeq   map[uint64]*TLSResponseData // Store parsed TLS response data by sequence
 	responseContentMutex  sync.Mutex                  // For all response maps
@@ -250,7 +251,6 @@ func NewClient(teekURL string) *Client {
 		teeKTranscriptReceived: false,
 		teeTTranscriptReceived: false,
 		protocolStateMutex:     sync.RWMutex{},
-		httpRequestSent:        false,
 		httpResponseExpected:   false,
 		responseContentMutex:   sync.Mutex{},
 		parsedResponseBySeq:    make(map[uint64]*TLSResponseData),

@@ -90,7 +90,7 @@ func sendClientAuth(conn *websocket.Conn, jwt string) error {
 	if err != nil {
 		return fmt.Errorf("marshal ClientAuth: %w", err)
 	}
-	return conn.WriteMessage(websocket.BinaryMessage, data)
+	return shared.WriteWSBinary(conn, data)
 }
 
 // ConnectToTEET establishes WebSocket connection to TEE_T
@@ -156,7 +156,7 @@ func (c *Client) ConnectToTEET() error {
 func (c *Client) handleMessages() {
 	for {
 		conn := c.wsConn
-		closing := c.isClosing
+		closing := c.isClosing.Load()
 
 		if conn == nil {
 			break
@@ -241,7 +241,7 @@ func (c *Client) handleMessages() {
 func (c *Client) handleTEETMessages() {
 	for {
 		conn := c.teetConn
-		closing := c.isClosing
+		closing := c.isClosing.Load()
 
 		if conn == nil {
 			break
@@ -370,7 +370,7 @@ func (c *Client) sendMessage(msg *shared.Message) error {
 	if err != nil {
 		return err
 	}
-	return conn.WriteMessage(websocket.BinaryMessage, data)
+	return shared.WriteWSBinary(conn, data)
 }
 
 // sendEnvelope sends a protobuf envelope directly to TEE_K
@@ -396,7 +396,7 @@ func (c *Client) sendEnvelope(env *teeproto.Envelope) error {
 	if err != nil {
 		return err
 	}
-	return conn.WriteMessage(websocket.BinaryMessage, data)
+	return shared.WriteWSBinary(conn, data)
 }
 
 // isEnclaveMode checks if the client is running in enclave mode
@@ -427,7 +427,7 @@ func (c *Client) sendEnvelopeToTEET(env *teeproto.Envelope) error {
 	if err != nil {
 		return err
 	}
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	if err := shared.WriteWSBinary(conn, data); err != nil {
 		return err
 	}
 	return nil
@@ -519,7 +519,9 @@ func (c *Client) handleBatchedEncryptedRequest(sessionID string, batchData *teep
 			zap.Uint64("seq_num", seqNum),
 			zap.Int("bytes", len(tlsRecord)))
 
+		c.capturedTrafficMu.Lock()
 		c.capturedTraffic = append(c.capturedTraffic, tlsRecord)
+		c.capturedTrafficMu.Unlock()
 
 		if c.tcpConn != nil {
 			n, err := c.tcpConn.Write(tlsRecord)
@@ -537,7 +539,7 @@ func (c *Client) handleBatchedEncryptedRequest(sessionID string, batchData *teep
 	}
 
 	// Mark request as sent after all fragments are sent
-	c.httpRequestSent = true
+	c.httpRequestSent.Store(true)
 	c.httpResponseExpected = true
 	c.logger.Info("HTTP request sent (all fragments)", zap.Int("total_fragments", len(fragments)))
 }
@@ -546,12 +548,12 @@ func (c *Client) handleBatchedEncryptedRequest(sessionID string, batchData *teep
 
 // Close closes all WebSocket connections
 func (c *Client) Close() {
-	c.isClosing = true
+	c.isClosing.Store(true)
 
-	// This mimics standard HTTP client behavior - close the underlying connection first
+	// Close the underlying TCP conn; let the closed-conn error propagate
+	// to the TCP-reader. Don't nil the pointer — readers may be mid-deref.
 	if c.tcpConn != nil {
 		c.tcpConn.Close()
-		c.tcpConn = nil
 	}
 
 	// Close TEE_K connection (with mutex protection)
@@ -622,7 +624,7 @@ func (c *Client) sendOPRFRangesToBothTEEs(ranges []*teeproto.OPRFRangeSpec) erro
 
 	// Send to TEE_K via wsConn
 	c.wsWriteMutex.Lock()
-	err = c.wsConn.WriteMessage(websocket.BinaryMessage, data)
+	err = shared.WriteWSBinary(c.wsConn, data)
 	c.wsWriteMutex.Unlock()
 	if err != nil {
 		return fmt.Errorf("send to TEE_K: %w", err)
@@ -632,7 +634,7 @@ func (c *Client) sendOPRFRangesToBothTEEs(ranges []*teeproto.OPRFRangeSpec) erro
 	// NOTE: If this fails, TEE_K has already received the ranges. The session should
 	// be terminated as the TEEs will be in inconsistent state. The caller handles this.
 	c.teetWriteMutex.Lock()
-	err = c.teetConn.WriteMessage(websocket.BinaryMessage, data)
+	err = shared.WriteWSBinary(c.teetConn, data)
 	c.teetWriteMutex.Unlock()
 	if err != nil {
 		return fmt.Errorf("send to TEE_T failed (TEE_K already received, session must be terminated): %w", err)

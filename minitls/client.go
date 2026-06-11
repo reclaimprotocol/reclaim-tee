@@ -1069,6 +1069,10 @@ func (c *Client) extractServerRandomTLS12(serverHello []byte) error {
 
 				c.logger.Debug("Found extension", zap.Uint16("type", extType), zap.Uint16("type_hex", extType), zap.Int("length", extLen))
 
+				if extOffset+extLen > len(extensionsData) {
+					return fmt.Errorf("extension %d length %d exceeds buffer", extType, extLen)
+				}
+
 				if extType == extensionExtendedMasterSecret {
 					c.extendedMasterSecret = true
 					c.logger.Debug("Server supports Extended Master Secret (RFC 7627)")

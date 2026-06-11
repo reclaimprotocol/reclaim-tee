@@ -92,9 +92,12 @@ func (c *Client) handleSendTCPData(msg *shared.Message) {
 	// Don't parse into individual TLS records - capture the raw TCP chunk
 	rawTCPData := make([]byte, len(tcpData.Data))
 	copy(rawTCPData, tcpData.Data)
+	c.capturedTrafficMu.Lock()
 	c.capturedTraffic = append(c.capturedTraffic, rawTCPData)
+	count := len(c.capturedTraffic)
+	c.capturedTrafficMu.Unlock()
 	c.logger.Info("Captured outgoing raw TCP chunk", zap.Int("bytes", len(rawTCPData)))
-	c.logger.Info("Total captured chunks now", zap.Int("count", len(c.capturedTraffic)))
+	c.logger.Info("Total captured chunks now", zap.Int("count", count))
 
 	// Forward TLS data from TEE_K to website via our TCP connection
 	conn := c.tcpConn
@@ -115,9 +118,8 @@ func (c *Client) handleSendTCPData(msg *shared.Message) {
 // tcpToWebsocket reads from TCP connection and processes data
 func (c *Client) tcpToWebsocket() {
 	defer func() {
-		if c.isClosing && c.tcpConn != nil {
+		if c.isClosing.Load() && c.tcpConn != nil {
 			c.tcpConn.Close()
-			c.tcpConn = nil
 		}
 	}()
 
@@ -131,7 +133,7 @@ func (c *Client) tcpToWebsocket() {
 	var requestSentObserved bool
 
 	for {
-		if c.isClosing {
+		if c.isClosing.Load() {
 			break
 		}
 
@@ -140,7 +142,7 @@ func (c *Client) tcpToWebsocket() {
 		}
 
 		// Reset idle clock first time we observe request-sent.
-		if !requestSentObserved && c.httpRequestSent {
+		if !requestSentObserved && c.httpRequestSent.Load() {
 			requestSentObserved = true
 			idleStreak = 0
 		}
@@ -161,7 +163,7 @@ func (c *Client) tcpToWebsocket() {
 					// handshake, and have captured ≥1 record. Multi-second
 					// gap is the safe threshold — sub-second inter-record
 					// gaps shouldn't trigger this.
-					if c.httpRequestSent && pending == nil {
+					if c.httpRequestSent.Load() && pending == nil {
 						idleStreak++
 						if idleStreak >= idleFlushAfter {
 							c.logger.Info("Server idle after response — flushing to TEE_T",
@@ -214,7 +216,9 @@ func (c *Client) tcpToWebsocket() {
 				// Extract the complete TLS packet
 				packet := make([]byte, fullLength)
 				copy(packet, data[offset:offset+fullLength])
+				c.capturedTrafficMu.Lock()
 				c.capturedTraffic = append(c.capturedTraffic, packet)
+				c.capturedTrafficMu.Unlock()
 
 				c.logger.Info("Captured incoming raw TCP chunk", zap.Int("bytes", len(packet)))
 
@@ -278,7 +282,8 @@ func (c *Client) tcpToWebsocket() {
 			}
 			c.logger.Info("Sending responses to TEE_T")
 			if err := c.sendBatchedResponses(); err != nil {
-				c.logger.Error("Failed to send batched responses on EOF", zap.Error(err))
+				c.terminateConnectionWithError("Failed to send batched responses", err)
+				return
 			}
 			break
 		}

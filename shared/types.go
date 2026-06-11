@@ -54,10 +54,31 @@ func (w *WSConnection) GetWebSocketConn() *websocket.Conn {
 	return w.conn
 }
 
+// WSWriteDeadline bounds how long a single WriteMessage may block before
+// returning. Sized for mobile networks (radio handoff can pause writes
+// for seconds) — anything beyond this is a wedged consumer, not a slow link.
+const WSWriteDeadline = 30 * time.Second
+
+// WriteWSBinary calls conn.WriteMessage with WSWriteDeadline applied.
+// Callers MUST still hold their own write mutex for concurrent-write safety
+// (gorilla/websocket panics on concurrent writes). The helper only bundles
+// the deadline so we can't forget it at a call site.
+func WriteWSBinary(conn *websocket.Conn, data []byte) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(WSWriteDeadline)); err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, data)
+}
+
 // WriteMessage writes a message to the WebSocket connection with thread safety
+// and a write deadline that prevents a slow/dead peer from blocking the writer
+// goroutine forever (which would hold session locks indefinitely).
 func (w *WSConnection) WriteMessage(messageType int, data []byte) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
+	if err := w.conn.SetWriteDeadline(time.Now().Add(WSWriteDeadline)); err != nil {
+		return err
+	}
 	return w.conn.WriteMessage(messageType, data)
 }
 

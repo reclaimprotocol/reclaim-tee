@@ -146,18 +146,16 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 						},
 					}
 					if data, marshalErr := proto.Marshal(errEnv); marshalErr == nil {
-						conn.WriteMessage(websocket.BinaryMessage, data)
+						shared.WriteWSBinary(conn, data)
 					}
 					break
 				}
 
-				teetState, err := t.sessionManager.GetTEETSessionState(sessionID)
-				if err != nil {
+				if _, err := t.sessionManager.GetTEETSessionState(sessionID); err != nil {
 					t.logger.WithSession(sessionID).Error("TEETSessionState not found - session not registered via control connection", zap.Error(err))
 					t.terminateSessionWithError(sessionID, shared.ReasonSessionNotFound, err, "Session state not initialized")
 					break
 				}
-				teetState.TEETClientConn = conn
 				t.logger.Info("Session activated", zap.String("sid", shared.TruncateSessionID(sessionID)))
 			} else if msg.SessionID != sessionID {
 				err := fmt.Errorf("expected %s, got %s", sessionID, msg.SessionID)
@@ -259,7 +257,7 @@ func (t *TEET) sendErrorAndClose(conn *websocket.Conn, sessionID string, errMsg 
 	}
 
 	if data, err := proto.Marshal(env); err == nil {
-		conn.WriteMessage(websocket.BinaryMessage, data)
+		shared.WriteWSBinary(conn, data)
 	}
 
 	time.Sleep(100 * time.Millisecond)

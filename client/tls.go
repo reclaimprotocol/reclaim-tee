@@ -171,7 +171,7 @@ func (c *Client) processTLSRecord(record []byte) {
 	if len(encryptedPayload) < 16 {
 		c.logger.Error("CRITICAL: Invalid TLS record - payload too short", zap.Int("payload_length", len(encryptedPayload)))
 		// This is a protocol violation - should terminate the session
-		c.isClosing = true
+		c.isClosing.Store(true)
 		return
 	}
 
@@ -191,7 +191,7 @@ func (c *Client) processTLSRecord(record []byte) {
 		if len(encryptedPayload) < 8+tagSize {
 			c.logger.Error("CRITICAL: Invalid TLS 1.2 AES-GCM record - payload too short for explicit IV", zap.Int("payload_length", len(encryptedPayload)))
 			// This is a protocol violation - should terminate the session
-			c.isClosing = true
+			c.isClosing.Store(true)
 			return
 		}
 
@@ -209,7 +209,7 @@ func (c *Client) processTLSRecord(record []byte) {
 		// 	len(encryptedData), len(tag))
 	}
 
-	if c.isClosing {
+	if c.isClosing.Load() {
 		c.logger.Info("System is shutting down")
 		return
 	}

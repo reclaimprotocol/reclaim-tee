@@ -250,7 +250,7 @@ func (t *TEET) handleSessionCreation(msg *shared.Message) error {
 		return err
 	}
 	t.activeSessions.Add(1)
-	teetState := &TEETSessionState{TEETClientConn: nil}
+	teetState := &TEETSessionState{}
 	t.sessionManager.SetTEETSessionState(sessionID, teetState)
 	t.logger.Info("Session registered", zap.String("sid", shared.TruncateSessionID(sessionID)))
 	return nil

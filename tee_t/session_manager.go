@@ -8,12 +8,9 @@ import (
 
 	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 	"github.com/reclaimprotocol/reclaim-tee/shared"
-
-	"github.com/gorilla/websocket"
 )
 
 type TEETSessionState struct {
-	TEETClientConn                 *websocket.Conn
 	KeyShare                       []byte
 	CipherSuite                    uint16
 	PendingEncryptedRequest        *shared.EncryptedRequestData            // Legacy: single request

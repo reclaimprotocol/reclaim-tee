@@ -114,6 +114,23 @@ func (s *Server) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Re-check allowlist: if operator removed this digest between /register
+	// and now, the pair must stop. Delete the row + refuse the heartbeat.
+	if !s.Config.Standalone {
+		roleDigest := p.TEEKImageDigest
+		if store.Role(req.Role) == store.RoleT {
+			roleDigest = p.TEETImageDigest
+		}
+		if roleDigest != "" && !s.Allowlist.Contains(roleDigest) {
+			log.Warn("heartbeat: image digest no longer allowlisted; evicting pair",
+				zap.String("pair_id", p.ID), zap.String("role", req.Role), zap.String("digest", roleDigest))
+			_ = s.Store.DeletePair(ctx, p.ID)
+			s.getTombstones().add(p.ID, time.Now())
+			writeErr(w, http.StatusGone, "image digest revoked")
+			return
+		}
+	}
+
 	if newStatus != prevStatus {
 		log.Info("pair status changed",
 			zap.String("pair_id", p.ID),

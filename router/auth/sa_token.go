@@ -68,6 +68,7 @@ func (v *GoogleSAValidator) Validate(ctx context.Context, tokenStr string) (*SAC
 	},
 		jwt.WithAudience(v.audience),
 		jwt.WithExpirationRequired(),
+		jwt.WithValidMethods([]string{"RS256"}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("parse SA token: %w", err)

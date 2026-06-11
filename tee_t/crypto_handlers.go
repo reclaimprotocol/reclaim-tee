@@ -80,6 +80,9 @@ func (t *TEET) verifyTagForResponse(sessionID string, encryptedResp *shared.Encr
 	// Consolidate response ciphertext immediately after successful verification
 	if success {
 		if cipherInfo != nil && cipherInfo.IsTLS13 {
+			if len(encryptedResp.EncryptedData) < 1 {
+				return shared.ResponseTagVerificationData{Success: false, SeqNum: tagSecretsData.SeqNum, Message: "TLS 1.3 EncryptedData empty"}
+			}
 			teetState.AppendResponseCiphertext(encryptedResp.EncryptedData[:len(encryptedResp.EncryptedData)-1]) // strip content type byte
 		} else {
 			teetState.AppendResponseCiphertext(encryptedResp.EncryptedData)

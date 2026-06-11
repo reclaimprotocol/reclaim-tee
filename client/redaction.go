@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
@@ -448,7 +447,7 @@ func (c *Client) sendRedactionSpec() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal redaction spec envelope: %v", err)
 	}
-	if err := c.wsConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+	if err := shared.WriteWSBinary(c.wsConn, data); err != nil {
 		return fmt.Errorf("failed to send redaction spec: %v", err)
 	}
 
