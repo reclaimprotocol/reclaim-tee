@@ -423,13 +423,13 @@ func (c *Client) sendRedactionSpec() error {
 	// preventing premature signature sending
 	mpcRanges := c.buildOPRFMPCRanges()
 	if len(mpcRanges) > 0 {
-		if err := c.sendOPRFRangesToBothTEEs(mpcRanges); err != nil {
+		if err := c.sendOPRFRangesToTEEK(mpcRanges); err != nil {
 			return fmt.Errorf("send MPC OPRF ranges: %w", err)
 		}
-		c.logger.Info("Sent MPC OPRF ranges to both TEEs", zap.Int("count", len(mpcRanges)))
+		c.logger.Info("Sent MPC OPRF ranges to TEE_K", zap.Int("count", len(mpcRanges)))
 	} else {
-		// Send empty submission so TEEs know to skip OPRF
-		if err := c.sendOPRFRangesToBothTEEs(nil); err != nil {
+		// Send empty submission so TEE_K knows to skip OPRF
+		if err := c.sendOPRFRangesToTEEK(nil); err != nil {
 			return fmt.Errorf("send empty MPC OPRF ranges: %w", err)
 		}
 	}

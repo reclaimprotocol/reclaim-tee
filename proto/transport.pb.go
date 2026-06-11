@@ -2796,6 +2796,7 @@ type OPRFOnlineFull struct {
 	// Derandomized OT data
 	OtStartIndex  uint32 `protobuf:"varint,10,opt,name=ot_start_index,json=otStartIndex,proto3" json:"ot_start_index,omitempty"` // Starting index in precomputed OT pool
 	DualMasks     []byte `protobuf:"bytes,11,opt,name=dual_masks,json=dualMasks,proto3" json:"dual_masks,omitempty"`             // M0||M1 pairs for all 640 input bits
+	TotalRanges   int32  `protobuf:"varint,12,opt,name=total_ranges,json=totalRanges,proto3" json:"total_ranges,omitempty"`      // Total OPRF ranges this session; TEE_T's authoritative expected count
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2905,6 +2906,13 @@ func (x *OPRFOnlineFull) GetDualMasks() []byte {
 		return x.DualMasks
 	}
 	return nil
+}
+
+func (x *OPRFOnlineFull) GetTotalRanges() int32 {
+	if x != nil {
+		return x.TotalRanges
+	}
+	return 0
 }
 
 // OPRF result with MANDATORY output labels for garbler verification.
@@ -3626,7 +3634,7 @@ const file_transport_proto_rawDesc = "" +
 	"\x05count\x18\x01 \x01(\rR\x05count\x12(\n" +
 	"\x10ot_receiver_data\x18\x02 \x01(\fR\x0eotReceiverData\"3\n" +
 	"\x14OTPrecomputeComplete\x12\x1b\n" +
-	"\tpool_size\x18\x01 \x01(\rR\bpoolSize\"\x94\x03\n" +
+	"\tpool_size\x18\x01 \x01(\rR\bpoolSize\"\xb7\x03\n" +
 	"\x0eOPRFOnlineFull\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12&\n" +
@@ -3643,7 +3651,8 @@ const file_transport_proto_rawDesc = "" +
 	"\x0eot_start_index\x18\n" +
 	" \x01(\rR\fotStartIndex\x12\x1d\n" +
 	"\n" +
-	"dual_masks\x18\v \x01(\fR\tdualMasks\"\xc2\x01\n" +
+	"dual_masks\x18\v \x01(\fR\tdualMasks\x12!\n" +
+	"\ftotal_ranges\x18\f \x01(\x05R\vtotalRanges\"\xc2\x01\n" +
 	"\rOPRFMPCResult\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12&\n" +

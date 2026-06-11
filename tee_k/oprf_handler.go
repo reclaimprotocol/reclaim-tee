@@ -151,6 +151,7 @@ func (t *TEEK) initiateOPRFForRange(sessionID string, teekState *TEEKSessionStat
 		OutputHints:    nil,               // Included in serialized payload
 		OtStartIndex:   uint32(startIdx),
 		DualMasks:      serializedDualMasks,
+		TotalRanges:    int32(len(teekState.OPRFRanges)),
 	})
 }
 

@@ -190,6 +190,8 @@ K_EXTERNAL_IP=$(gcloud_retry gcloud compute instances describe "${K_NAME}" \
     --project="${PROJECT}" --zone="${ZONE}" \
     --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
 log "Waiting for pair to reach Ready (teek_addr=${K_EXTERNAL_IP}:${PORT})..."
+ready_start=$(date +%s)
+READY=""
 for i in {1..60}; do
     READY=$(curl -sf -H "Authorization: Bearer ${ROUTER_ADMIN_TOKEN}" "${ROUTER_URL}/pairs" \
         | jq -r --arg addr "${K_EXTERNAL_IP}:${PORT}" '
@@ -198,10 +200,18 @@ for i in {1..60}; do
             | select(.ready_at != null and .ready_at != "")
             | .id' 2>/dev/null || true)
     if [[ -n "${READY}" ]]; then
-        log "Pair ${N} ready (pair_id=${READY})."
+        log "[pair=${N}] ready (pair_id=${READY}, $(( $(date +%s) - ready_start ))s)."
         break
+    fi
+    # Surface progress every ~16s so the wait doesn't read as a hang.
+    if (( i % 8 == 0 )); then
+        log "[pair=${N}] still waiting for Ready ($(( $(date +%s) - ready_start ))s, booting + OT precompute)..."
     fi
     sleep 2
 done
+
+if [[ -z "${READY}" ]]; then
+    log "[pair=${N}] WARNING: pair did not reach Ready within $(( $(date +%s) - ready_start ))s; VMs are up but not serving."
+fi
 
 log "Done. Pair ${N}: ${K_NAME}, ${T_NAME}"

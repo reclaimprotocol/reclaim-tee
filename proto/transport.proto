@@ -308,6 +308,8 @@ message OPRFOnlineFull {
   // Derandomized OT data
   uint32 ot_start_index = 10;    // Starting index in precomputed OT pool
   bytes dual_masks = 11;         // M0||M1 pairs for all 640 input bits
+
+  int32 total_ranges = 12;       // Total OPRF ranges this session; TEE_T's authoritative expected count
 }
 
 // OPRF result with MANDATORY output labels for garbler verification.

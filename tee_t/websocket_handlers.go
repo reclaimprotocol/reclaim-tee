@@ -117,9 +117,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 				arr = append(arr, shared.EncryptedResponseData{EncryptedData: r.GetEncryptedData(), Tag: r.GetTag(), RecordHeader: r.GetRecordHeader(), SeqNum: r.GetSeqNum(), ExplicitIV: r.GetExplicitIv()})
 			}
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgBatchedEncryptedResponses, Data: shared.BatchedEncryptedResponseData{Responses: arr, SessionID: p.BatchedEncryptedResponses.GetSessionId(), TotalCount: int(p.BatchedEncryptedResponses.GetTotalCount())}}
-		case *teeproto.Envelope_OprfRangesSubmission:
-			// Create a message to go through session validation first
-			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgOPRFRanges, Data: p.OprfRangesSubmission}
 		default:
 			// `continue` so a nil msg never reaches msg.Type below.
 			t.logger.Warn("Unknown envelope payload from client; ignoring",
@@ -175,16 +172,6 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		case shared.MsgBatchedEncryptedResponses:
 			t.logger.WithSession(sessionID).Debug("Handling batched encrypted responses")
 			handlerErr = t.handleBatchedEncryptedResponses(sessionID, msg)
-		case shared.MsgOPRFRanges:
-			// Handle OPRF ranges from client (after session validation)
-			// ZERO ERROR POLICY: Any error terminates the session immediately
-			t.logger.WithSession(sessionID).Debug("Handling OPRF ranges")
-			oprfRanges, ok := msg.Data.(*teeproto.OPRFRangesSubmission)
-			if !ok {
-				handlerErr = fmt.Errorf("invalid OPRF ranges data type")
-			} else {
-				handlerErr = t.handleOPRFRangesFromClient(sessionID, oprfRanges)
-			}
 		default:
 			err := fmt.Errorf("unknown message type: %s", string(msg.Type))
 			t.terminateSessionWithError(sessionID, shared.ReasonUnknownMessageType, err, "Unknown message type")

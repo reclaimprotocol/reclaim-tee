@@ -144,14 +144,24 @@ fi
 delete_vm() {
     local vm=$1
     if gcloud_retry gcloud compute instances describe "${vm}" --project="${PROJECT}" --zone="${ZONE}" >/dev/null 2>&1; then
-        log "Deleting ${vm}..."
+        log "Deleting ${vm} (gcloud delete takes ~2 min)..."
         gcloud_retry gcloud compute instances delete "${vm}" --project="${PROJECT}" --zone="${ZONE}" --quiet
+        log "Deleted ${vm}."
     fi
 }
 delete_vm "${K_NAME}" &
 PID_K=$!
 delete_vm "${T_NAME}" &
 PID_T=$!
+
+# gcloud instances delete blocks ~2 min with no output. Tick elapsed time
+# every 15s while either child runs so the wait doesn't read as a hang.
+del_start=$(date +%s)
+while kill -0 "${PID_K}" 2>/dev/null || kill -0 "${PID_T}" 2>/dev/null; do
+    sleep 15
+    kill -0 "${PID_K}" 2>/dev/null || kill -0 "${PID_T}" 2>/dev/null || break
+    log "  ...deleting VMs for pair ${N} ($(( $(date +%s) - del_start ))s elapsed)"
+done
 wait "${PID_K}"
 wait "${PID_T}"
 

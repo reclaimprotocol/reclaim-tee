@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 	"github.com/reclaimprotocol/reclaim-tee/shared"
 )
 
@@ -24,23 +23,17 @@ type TEETSessionState struct {
 	RequestPartsArrived atomic.Int32
 
 
-	// MPC OPRF state (2-round protocol - no session tracking needed).
-	//
-	// Publication boundary: handleOPRFRangesFromClient writes OPRFKeyShare,
-	// ClientOPRFRanges, OPRFResults, OPRFExpectedCount, then calls
-	// ClientRangesReceived.Store(true). handleOPRFOnlineFull reads the
-	// atomic FIRST; if true, the non-atomic writes above are visible via
-	// the synchronizes-before edge.
-	OPRFKeyShare         []byte                     // 16-byte key share for MPC OPRF
-	ClientOPRFRanges     []*teeproto.OPRFRangeSpec  // Client-provided OPRF ranges
-	ClientRangesReceived atomic.Bool                // publishes the other OPRF fields
-	OPRFResults          map[int]*shared.OPRFResult // Completed OPRF results by range index
-	OPRFState            atomic.Int32               // Current OPRF processing state (shared.OPRFSessionState values)
-	OPRFExpectedCount    int                        // Number of OPRF results expected
-	TLSSessionHash       []byte                     // Cached TLS session hash for replay protection
+	// MPC OPRF state. TEE_K is the authoritative source of ranges: it relays
+	// the client's ranges via OPRFOnlineFull (with TotalRanges), so TEE_T
+	// derives everything from that single TCP-ordered stream. handleOPRFOnlineFull
+	// initializes these on the first message (OPRFResults == nil guards init).
+	OPRFKeyShare      []byte                     // 16-byte key share for MPC OPRF
+	OPRFResults       map[int]*shared.OPRFResult // Completed OPRF results by range index
+	OPRFState         atomic.Int32               // Current OPRF processing state (shared.OPRFSessionState values)
+	OPRFExpectedCount int                        // Number of OPRF results expected
+	TLSSessionHash    []byte                     // Cached TLS session hash for replay protection
 
-	// Per-session mutex for thread-safe access to OPRF state
-	// Must be held when accessing OPRFResults or ClientOPRFRanges
+	// Per-session mutex for thread-safe access to OPRFResults.
 	oprfMu sync.Mutex
 }
 

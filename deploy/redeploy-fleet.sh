@@ -128,16 +128,22 @@ done
 # shows liveness — without this, a slower child looks like a hang
 # (the parent is just blocked in wait, child is running silently after
 # its own "Done" line).
+# Emit an elapsed-time line every ~15s while a backgrounded child runs, so a
+# long-but-working phase (VM boot, OT precompute, gcloud delete) reads as
+# progress rather than a hang. The child's own log lines interleave.
 heartbeat_until_done() {
     local pid=$1
+    local label="${2:-task}"
+    local start
+    start=$(date +%s)
     while kill -0 "${pid}" 2>/dev/null; do
-        printf '.'
-        sleep 5
+        sleep 15
+        kill -0 "${pid}" 2>/dev/null || break
+        log "  ...${label} still running ($(( $(date +%s) - start ))s elapsed)"
     done
-    printf '\n'
 }
 for pid in "${NEW_PIDS[@]}"; do
-    heartbeat_until_done "${pid}"
+    heartbeat_until_done "${pid}" "new pair bringup"
     wait "${pid}"
 done
 
@@ -182,7 +188,7 @@ else
     for i in "${!RETIRE_PIDS[@]}"; do
         pid="${RETIRE_PIDS[$i]}"
         n="${RETIRE_NS[$i]}"
-        heartbeat_until_done "${pid}"
+        heartbeat_until_done "${pid}" "retiring pair ${n}"
         if ! wait "${pid}"; then
             RETIRE_FAILED+=("${n}")
             log "ERROR: retire-pair.sh ${n} failed (pid ${pid}, exit non-zero)"

@@ -595,15 +595,13 @@ func (c *Client) terminateConnectionWithError(reason string, err error) {
 	})
 }
 
-// sendOPRFRangesToBothTEEs sends MPC OPRF ranges to both TEE_K and TEE_T
-// IMPORTANT: Both connections must be valid before sending to ensure atomicity
-func (c *Client) sendOPRFRangesToBothTEEs(ranges []*teeproto.OPRFRangeSpec) error {
-	// Preflight: verify both connections are available before sending
+// sendOPRFRangesToTEEK sends MPC OPRF ranges to TEE_K only. TEE_K relays them
+// to TEE_T (with TotalRanges) over the mutually-attested inter-TEE connection,
+// so TEE_T learns ranges from a single ordered source rather than racing a
+// separate client message.
+func (c *Client) sendOPRFRangesToTEEK(ranges []*teeproto.OPRFRangeSpec) error {
 	if c.wsConn == nil {
 		return fmt.Errorf("TEE_K connection not available")
-	}
-	if c.teetConn == nil {
-		return fmt.Errorf("TEE_T connection not available")
 	}
 
 	env := &teeproto.Envelope{
@@ -622,22 +620,11 @@ func (c *Client) sendOPRFRangesToBothTEEs(ranges []*teeproto.OPRFRangeSpec) erro
 		return fmt.Errorf("failed to marshal OPRF ranges envelope: %w", err)
 	}
 
-	// Send to TEE_K via wsConn
 	c.wsWriteMutex.Lock()
 	err = shared.WriteWSBinary(c.wsConn, data)
 	c.wsWriteMutex.Unlock()
 	if err != nil {
 		return fmt.Errorf("send to TEE_K: %w", err)
-	}
-
-	// Send to TEE_T via teetConn
-	// NOTE: If this fails, TEE_K has already received the ranges. The session should
-	// be terminated as the TEEs will be in inconsistent state. The caller handles this.
-	c.teetWriteMutex.Lock()
-	err = shared.WriteWSBinary(c.teetConn, data)
-	c.teetWriteMutex.Unlock()
-	if err != nil {
-		return fmt.Errorf("send to TEE_T failed (TEE_K already received, session must be terminated): %w", err)
 	}
 
 	c.oprfMpcRangesSent = true
