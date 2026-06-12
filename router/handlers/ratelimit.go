@@ -15,14 +15,10 @@ import (
 // and triggers a TEE session — without a cap a single spammer can drive
 // KMS cost and tie up TEE resources. The router runs as a single Cloud Run
 // instance at a time, so an in-memory map is sufficient.
-//
-// TEMPORARY: bumped to 50/100 for the 100-proof load test on 2026-06-09.
-// REVERT to 1/3 before merging the load-test work — the production limit
-// must stay tight against /allocate spam.
 const (
-	allocateRPS       = rate.Limit(50) // tokens per second per IP
-	allocateBurst     = 100            // burst tolerance
-	rateLimiterMaxLen = 4096           // hard cap on the limiter map size; oldest entries evicted
+	allocateRPS       = rate.Limit(1) // tokens per second per IP
+	allocateBurst     = 3             // burst tolerance
+	rateLimiterMaxLen = 4096          // hard cap on the limiter map size; oldest entries evicted
 	rateLimiterTTL    = 10 * time.Minute
 )
 
