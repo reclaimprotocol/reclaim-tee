@@ -16,11 +16,9 @@ import (
 // KMS cost and tie up TEE resources. The router runs as a single Cloud Run
 // instance at a time, so an in-memory map is sufficient.
 const (
-	// TEMPORARY: bumped to 50/100 for local load testing. Production value is
-	// 1 rps / 3 burst (committed in 949bb64); restore before merging.
-	allocateRPS       = rate.Limit(50) // tokens per second per IP
-	allocateBurst     = 100            // burst tolerance
-	rateLimiterMaxLen = 4096           // hard cap on the limiter map size; oldest entries evicted
+	allocateRPS       = rate.Limit(1) // tokens per second per IP
+	allocateBurst     = 3             // burst tolerance
+	rateLimiterMaxLen = 4096          // hard cap on the limiter map size; oldest entries evicted
 	rateLimiterTTL    = 10 * time.Minute
 )
 
