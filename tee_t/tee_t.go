@@ -67,14 +67,6 @@ type TEET struct {
 	// Per-session connection manager (control + per-session connections)
 	connManager *TEEKConnectionManager
 
-	// Rate-limits the ERROR-level log emitted when client connections are
-	// rejected because the OT receiver pool isn't ready while TEE_K is
-	// connected. Without this, a sustained wedge floods Cloud Logging at the
-	// rejection rate; with it, we get one ERROR per OTReadyRejectLogInterval
-	// so alerting fires without log spam.
-	lastOTRejectLog   time.Time
-	lastOTRejectLogMu sync.Mutex
-
 	// V2 router-mode wiring. Nil/zero in standalone mode; filled by
 	// NewTEETForRouter when ROUTER_URL is set.
 	//
@@ -101,11 +93,6 @@ type TEET struct {
 	// goroutine using the pair_id TEE_K just told us about.
 	onPairAssigned func(pairID string)
 }
-
-// OTReadyRejectLogInterval is the minimum gap between ERROR-level "pool not
-// ready" rejection logs. Lower values increase paging fidelity; higher values
-// reduce log volume during a sustained wedge.
-const OTReadyRejectLogInterval = 30 * time.Second
 
 // NewTEETWithLogger creates a baseline TEET with a specific logger.
 // Higher-level constructors (NewTEETForRouter) layer mode-specific wiring

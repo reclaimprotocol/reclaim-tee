@@ -17,29 +17,14 @@ import (
 // handleClientWebSocket handles WebSocket connections from clients
 func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer shared.RecoverAndCrash(t.logger, "tee_t.handleClientWebSocket")
-	// Reject connections if system not ready (prevents wasted client work)
+	// The control link is required for every session (it's the inter-TEE
+	// channel). The OT pool is NOT gated here: only OPRF proofs use it, so we
+	// admit optimistically and let handleOPRFOnlineFull fail the rare proof
+	// that needs a cold pool. The OT-ready watchdog still detects a wedged pool
+	// directly (isOTReceiverPoolReady), so lifting this gate doesn't blind paging.
 	if !t.isTEEKConnected() {
 		t.logger.Warn("Rejecting client connection - TEE_K not connected")
 		http.Error(w, "Service temporarily unavailable - TEE connection not established", http.StatusServiceUnavailable)
-		return
-	}
-	if !t.isOTReceiverPoolReady() {
-		// TEE_K connected + pool not ready is the wedged-state signature.
-		// Escalate to ERROR (rate-limited) so paging fires; this is what
-		// was missed during the 2026-06-05 outage when the rejection was a
-		// plain WARNING and no alerts triggered.
-		t.lastOTRejectLogMu.Lock()
-		shouldErrLog := time.Since(t.lastOTRejectLog) >= OTReadyRejectLogInterval
-		if shouldErrLog {
-			t.lastOTRejectLog = time.Now()
-		}
-		t.lastOTRejectLogMu.Unlock()
-		if shouldErrLog {
-			t.logger.Error("Rejecting client connection - OT receiver pool not ready (control conn appears healthy)")
-		} else {
-			t.logger.Warn("Rejecting client connection - OT receiver pool not ready")
-		}
-		http.Error(w, "Service temporarily unavailable - OT pool not ready", http.StatusServiceUnavailable)
 		return
 	}
 

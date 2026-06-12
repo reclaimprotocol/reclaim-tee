@@ -151,6 +151,14 @@ func (p *OTPool) TotalCount() int {
 	return p.totalCount
 }
 
+// NextIndex returns the next unreserved entry index. Sent to TEE_T on resume
+// so it can confirm its retained pool still covers what TEE_K will reserve.
+func (p *OTPool) NextIndex() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.nextIndex
+}
+
 // Clear resets the pool, clearing all entries
 // Called on disconnect to prevent replay attacks
 func (p *OTPool) Clear() {

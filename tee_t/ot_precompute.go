@@ -23,6 +23,7 @@ type OTReceiverState struct {
 	pool  *oprfmpc.OTReceiverPool
 	ready bool
 	curve elliptic.Curve
+	epoch string // Pool identity from TEE_K; matched on resume to confirm same pool
 }
 
 // NewOTReceiverState creates a new OT receiver state
@@ -58,6 +59,7 @@ func (t *TEET) handleOTPrecomputeRequest(conn *shared.WSConnection, msg *teeprot
 	// For initial setup, create new state
 	if msg.IsInitial {
 		receiverState = NewOTReceiverState()
+		receiverState.epoch = msg.GetEpoch()
 		t.otReceiverStateMu.Lock()
 		t.otReceiverState = receiverState
 		t.otReceiverStateMu.Unlock()
@@ -220,4 +222,67 @@ func (t *TEET) clearOTReceiverPool() {
 	}
 	t.otReady.Store(false)
 	t.logger.Info("Cleared OT receiver pool")
+}
+
+// suspendOTReceiverPoolForReconnect is called on control disconnect. A ready
+// pool is RETAINED so TEE_K can resume it on reconnect; the per-entry Used
+// flags carry the replay defense across the gap. A not-ready pool is cleared.
+func (t *TEET) suspendOTReceiverPoolForReconnect() {
+	t.otReceiverStateMu.Lock()
+	ready := t.otReceiverState != nil && t.otReceiverState.ready
+	epoch := ""
+	if t.otReceiverState != nil {
+		epoch = t.otReceiverState.epoch
+	}
+	t.otReceiverStateMu.Unlock()
+
+	if ready {
+		t.logger.Info("Retained OT receiver pool across disconnect for resume", zap.String("epoch", epoch))
+		return
+	}
+	t.clearOTReceiverPool()
+}
+
+// canResumeOTPool reports whether TEE_T still holds a pool TEE_K may resume:
+// ready, same non-empty epoch, and long enough to cover TEE_K's next reserve
+// index. A false result means TEE_K must run a fresh initial precompute.
+func (t *TEET) canResumeOTPool(epoch string, nextIndex uint32) bool {
+	t.otReceiverStateMu.Lock()
+	defer t.otReceiverStateMu.Unlock()
+	return t.otReceiverState != nil &&
+		t.otReceiverState.ready &&
+		t.otReceiverState.epoch != "" &&
+		t.otReceiverState.epoch == epoch &&
+		int(nextIndex) <= t.otReceiverState.pool.TotalCount()
+}
+
+// handleOTResumeRequest decides whether TEE_T can keep using its retained pool.
+// Accept iff it still holds a ready pool with the same epoch that covers TEE_K's
+// next reserve index; otherwise deny so TEE_K runs a fresh initial precompute.
+func (t *TEET) handleOTResumeRequest(conn *shared.WSConnection, msg *teeproto.OTResumeRequest) error {
+	accepted := t.canResumeOTPool(msg.GetEpoch(), msg.GetNextIndex())
+	if accepted {
+		t.otReady.Store(true)
+	}
+
+	t.logger.Info("OT resume request",
+		zap.String("epoch", msg.GetEpoch()),
+		zap.Uint32("next_index", msg.GetNextIndex()),
+		zap.Bool("accepted", accepted))
+
+	env := &teeproto.Envelope{
+		SessionId:   "ot_precompute",
+		TimestampMs: time.Now().UnixMilli(),
+		Payload: &teeproto.Envelope_OtResumeResponse{
+			OtResumeResponse: &teeproto.OTResumeResponse{Accepted: accepted},
+		},
+	}
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal OT resume response: %w", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return fmt.Errorf("send OT resume response: %w", err)
+	}
+	return nil
 }

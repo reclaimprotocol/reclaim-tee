@@ -187,11 +187,29 @@ func (cm *TEETConnectionManager) connectAndServe(onReady func()) error {
 		close(handlerDone)
 	}()
 
-	if err := cm.teek.performOTPrecomputation(oprfmpc.OTPoolInitialSize, true); err != nil {
-		wsConn.Close()
-		<-handlerDone
-		cm.tearDownControl()
-		return fmt.Errorf("OT precompute: %w", err)
+	// If we retained a ready pool across a transient disconnect, try to resume
+	// it (epoch handshake) instead of paying a full re-precompute. TEE_T denies
+	// if it restarted / lost its half, in which case we fall through to a fresh
+	// initial precompute. First connect has no pool, so hasResumablePool is false.
+	resumed := false
+	if cm.teek.hasResumablePool() {
+		accepted, err := cm.teek.tryResumeOTPool()
+		if err != nil {
+			cm.logger.Warn("OT resume attempt failed; will re-precompute", zap.Error(err))
+		} else if accepted {
+			resumed = true
+			cm.logger.Info("Resumed retained OT pool across reconnect (no precompute)")
+		} else {
+			cm.logger.Info("TEE_T declined OT resume; re-precomputing")
+		}
+	}
+	if !resumed {
+		if err := cm.teek.performOTPrecomputation(oprfmpc.OTPoolInitialSize, true); err != nil {
+			wsConn.Close()
+			<-handlerDone
+			cm.tearDownControl()
+			return fmt.Errorf("OT precompute: %w", err)
+		}
 	}
 
 	// Flip both flags together — Audit #7. The router selector treats
@@ -228,8 +246,9 @@ func (cm *TEETConnectionManager) tearDownControl() {
 	cm.teek.teetAttestationMutex.Unlock()
 
 	cm.teek.controlHealthy.Store(false)
-	// clearOTPool also clears the otReady atomic.
-	cm.teek.clearOTPool()
+	// Retain a ready pool so the next connection can resume it; clears only if
+	// it was mid-precompute (nothing to resume).
+	cm.teek.suspendOTPoolForReconnect()
 
 	cm.mu.Lock()
 	cm.controlConn = nil
@@ -440,6 +459,11 @@ func (cm *TEETConnectionManager) handleControlMessage(msgBytes []byte) {
 	case *teeproto.Envelope_OtPrecomputeResponse:
 		if err := cm.teek.handleOTPrecomputeResponse(p.OtPrecomputeResponse); err != nil {
 			cm.logger.Error("OT precompute response failed", zap.Error(err))
+		}
+
+	case *teeproto.Envelope_OtResumeResponse:
+		if err := cm.teek.handleOTResumeResponse(p.OtResumeResponse); err != nil {
+			cm.logger.Error("OT resume response failed", zap.Error(err))
 		}
 
 	case *teeproto.Envelope_SessionCreatedAck:
@@ -828,6 +852,8 @@ func isControlMessage(env *teeproto.Envelope) bool {
 		*teeproto.Envelope_OtPrecomputeRequest,
 		*teeproto.Envelope_OtPrecomputeResponse,
 		*teeproto.Envelope_OtPrecomputeComplete,
+		*teeproto.Envelope_OtResumeRequest,
+		*teeproto.Envelope_OtResumeResponse,
 		*teeproto.Envelope_SessionCreated,
 		*teeproto.Envelope_SessionClosed,
 		*teeproto.Envelope_Error: // Errors go on control - session may be dead

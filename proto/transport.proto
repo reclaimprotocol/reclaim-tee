@@ -75,6 +75,12 @@ message Envelope {
     OTPrecomputeComplete ot_precompute_complete = 66;   // TEE_K -> TEE_T (after initial setup only)
     OPRFOnlineFull oprf_online_full = 67;               // TEE_K -> TEE_T (2-round online phase)
 
+    // OT pool resume across a transient control reconnect (both enclaves
+    // retained their pool halves). TEE_K sends epoch+counter instead of a
+    // full re-precompute; TEE_T accepts iff it still holds that pool.
+    OTResumeRequest ot_resume_request = 68;             // TEE_K -> TEE_T
+    OTResumeResponse ot_resume_response = 69;           // TEE_T -> TEE_K
+
     // Per-session connection management (TEE_K <-> TEE_T)
     SessionConnectionInit session_connection_init = 80;   // TEE_K -> TEE_T (on per-session WS)
     SessionConnectionAck session_connection_ack = 81;     // TEE_T -> TEE_K (on per-session WS)
@@ -280,6 +286,18 @@ message OTPrecomputeRequest {
   uint32 count = 1;           // Number of OTs to precompute
   bytes ot_sender_setup = 2;  // Serialized bulk COSenderSetup for all OTs
   bool is_initial = 3;        // True for initial setup, false for extension
+  string epoch = 4;           // Pool identity (UUID); set on initial setup so TEE_T can later resume it
+}
+
+// OT pool resume: TEE_K still holds a ready pool after a transient control
+// reconnect and asks TEE_T to keep using it instead of re-precomputing.
+message OTResumeRequest {
+  string epoch = 1;           // Pool identity TEE_K is resuming
+  uint32 next_index = 2;      // TEE_K's next unreserved pool index (consistency check)
+}
+
+message OTResumeResponse {
+  bool accepted = 1;          // True if TEE_T still holds the matching pool; false -> TEE_K full re-precompute
 }
 
 message OTPrecomputeResponse {

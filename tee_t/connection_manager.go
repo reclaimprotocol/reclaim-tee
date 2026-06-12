@@ -256,8 +256,9 @@ func (cm *TEEKConnectionManager) HandleControlConnection(conn *websocket.Conn) e
 	cm.teet.setTEEKConnected(false)
 	cm.teet.controlHealthy.Store(false)
 
-	// clearOTReceiverPool clears the ready flag (and otReady atomic).
-	cm.teet.clearOTReceiverPool()
+	// Retain a ready pool so TEE_K can resume it on reconnect; clears only if
+	// it was mid-precompute (nothing to resume).
+	cm.teet.suspendOTReceiverPoolForReconnect()
 
 	return nil
 }
@@ -397,6 +398,12 @@ func (cm *TEEKConnectionManager) handleControlMessages(conn *shared.WSConnection
 			// OT precomputation complete acknowledgment
 			if err := cm.teet.handleOTPrecomputeComplete(p.OtPrecomputeComplete); err != nil {
 				cm.logger.Error("Failed to handle OT precompute complete", zap.Error(err))
+			}
+
+		case *teeproto.Envelope_OtResumeRequest:
+			// TEE_K asks to resume the retained pool instead of re-precomputing.
+			if err := cm.teet.handleOTResumeRequest(conn, p.OtResumeRequest); err != nil {
+				cm.logger.Error("Failed to handle OT resume request", zap.Error(err))
 			}
 
 		case *teeproto.Envelope_Error:
