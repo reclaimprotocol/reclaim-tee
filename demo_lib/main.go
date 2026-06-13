@@ -243,7 +243,7 @@ func main() {
 	// routerUrl is required — the library hits /allocate to resolve the
 	// TEE pair and JWT. attestorUrl is optional.
 	configData := map[string]interface{}{
-		"routerUrl":   "https://tee.reclaimprotocol.org",
+		//"routerUrl":   "https://tee.reclaimprotocol.org",
 		"attestorUrl": "ws://localhost:8001/ws",
 	}
 

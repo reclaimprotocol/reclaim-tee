@@ -35,14 +35,15 @@ type ReclaimClient struct {
 	logger *shared.Logger
 }
 
-// NewReclaimClient creates a new ReclaimClient. RouterURL is required —
-// the constructor hits /allocate to resolve the TEE pair and JWT. There
-// is no direct-URL path; V2 clients always go through the router.
+// NewReclaimClient creates a new ReclaimClient. The constructor hits
+// /allocate to resolve the TEE pair and JWT. There is no direct-URL path;
+// V2 clients always go through the router. RouterURL defaults to
+// DefaultRouterURL when unset.
 //
-// Returns an error if RouterURL is empty or /allocate fails.
+// Returns an error if /allocate fails.
 func NewReclaimClient(config ClientConfig) (*ReclaimClient, error) {
 	if config.RouterURL == "" {
-		return nil, fmt.Errorf("RouterURL is required")
+		config.RouterURL = DefaultRouterURL
 	}
 
 	// Apply defaults if not specified
@@ -101,8 +102,8 @@ func NewReclaimClient(config ClientConfig) (*ReclaimClient, error) {
 }
 
 // ConfigJSON is the JSON shape accepted by NewReclaimClientFromJSON.
-// RouterURL is required — the library always resolves the TEE pair via
-// /allocate. No direct TEE URLs.
+// routerUrl defaults to DefaultRouterURL when omitted — the library always
+// resolves the TEE pair via /allocate. No direct TEE URLs.
 type ConfigJSON struct {
 	RouterURL   string `json:"routerUrl"`
 	AttestorURL string `json:"attestorUrl,omitempty"`
@@ -111,7 +112,8 @@ type ConfigJSON struct {
 
 // Default URLs for TEE services
 const (
-	DefaultAttestorURL = "wss://eu.attestor.reclaimprotocol.org:444/ws"
+	DefaultAttestorURL = "wss://attestor.reclaimprotocol.org:444/ws"
+	DefaultRouterURL   = "https://tee.reclaimprotocol.org"
 )
 
 // NewReclaimClientFromJSON creates a new ReclaimClient with JSON-encoded provider params and optional config
@@ -161,9 +163,10 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 		}
 	}
 
-	// Parse config — RouterURL is required.
+	// Parse config — routerUrl defaults to DefaultRouterURL when unset.
 	attestorURL := DefaultAttestorURL
-	var requestID, routerURL string
+	routerURL := DefaultRouterURL
+	var requestID string
 
 	if configJSON != "" {
 		var cfg ConfigJSON
@@ -172,12 +175,10 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 				attestorURL = cfg.AttestorURL
 			}
 			requestID = cfg.RequestID
-			routerURL = cfg.RouterURL
+			if cfg.RouterURL != "" {
+				routerURL = cfg.RouterURL
+			}
 		}
-	}
-
-	if routerURL == "" {
-		return nil, fmt.Errorf("routerUrl is required in config")
 	}
 
 	// Initialize logger

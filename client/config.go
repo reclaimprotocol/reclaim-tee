@@ -11,7 +11,7 @@ import (
 // through the router. Set RouterURL and the constructor will resolve
 // the pair via /allocate.
 type ClientConfig struct {
-	RouterURL            string                              // Required: router base URL, e.g. https://tee.reclaimprotocol.org
+	RouterURL            string                              // Router base URL; defaults to DefaultRouterURL (https://tee.reclaimprotocol.org) when empty
 	AttestorURL          string                              // Attestor WebSocket URL
 	Timeout              time.Duration                       // Connection timeout
 	Mode                 ClientMode                          // Client operational mode
