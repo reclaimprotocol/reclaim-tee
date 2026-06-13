@@ -132,6 +132,13 @@ func (c *Client) tcpToWebsocket() {
 	idleStreak := 0
 	var requestSentObserved bool
 
+	// Handshake-stall guard: before the HTTP request is sent we're still
+	// relaying the TLS handshake. A proxy tunnel can stay open but silent when
+	// the target is unreachable, so the loop would otherwise spin forever. Abort
+	// after this many consecutive 1s read timeouts with no handshake byte.
+	const handshakeStallAfter = 15
+	handshakeIdleStreak := 0
+
 	for {
 		if c.isClosing.Load() {
 			break
@@ -172,7 +179,19 @@ func (c *Client) tcpToWebsocket() {
 						} else {
 							continue
 						}
+					} else if !c.httpRequestSent.Load() {
+						// Handshake phase: bound the wait so a silent proxy tunnel
+						// (target unreachable) fails fast instead of hanging.
+						handshakeIdleStreak++
+						if handshakeIdleStreak >= handshakeStallAfter {
+							c.terminateConnectionWithError(
+								"target server unresponsive during TLS handshake",
+								fmt.Errorf("no handshake data after %ds (proxy tunnel idle)", handshakeStallAfter))
+							return
+						}
+						continue
 					} else {
+						// Request sent but mid-record: wait for the rest of the record.
 						continue
 					}
 				} else if !isClientNetworkShutdownError(err) {
@@ -184,8 +203,9 @@ func (c *Client) tcpToWebsocket() {
 				}
 			}
 		} else if n > 0 {
-			// Any byte from the server resets the idle clock.
+			// Any byte from the server resets the idle clocks.
 			idleStreak = 0
+			handshakeIdleStreak = 0
 		}
 
 		// If we got data (n > 0), process it even if EOF was also received
