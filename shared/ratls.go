@@ -26,6 +26,13 @@ import (
 // Reclaim PEN = 65998; .1 reserved for the attestation extension.
 var AttestationOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 65998, 1}
 
+// AttestationOIDSEVSNP carries a marshaled go-sev-guest Attestation (raw
+// SEV-SNP report + VCEK/ASK/ARK chain) for TEEs running on a plain SEV-SNP
+// Confidential VM. Separate OID from .1 so verifiers dispatch on which
+// extension is present and deployed Confidential Space certs (.1 only) keep
+// verifying unchanged.
+var AttestationOIDSEVSNP = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 65998, 2}
+
 // launcherSocketPath is where the Confidential Space launcher exposes its
 // attestation API. Its presence is how we tell "running in an enclave" apart
 // from "running locally for dev." Kept in sync with shared/gcp_attestation.go.
@@ -122,21 +129,9 @@ func NewRATLSManager(ctx context.Context, role string, extraNonces []string) (*R
 // reject such certs; standalone-mode TEE↔TEE comms must use a different
 // TLS verifier path.
 func (m *RATLSManager) Refresh(ctx context.Context) error {
-	spkiNonce := SPKINoncePrefix(m.role) + hex.EncodeToString(m.spkiHash[:])
-	nonces := append([]string{spkiNonce}, m.extraNonces...)
-
-	attestation, err := tryGenerateAttestation(ctx, nonces)
+	extraExts, err := m.acquireAttestationExts(ctx)
 	if err != nil {
 		return fmt.Errorf("ratls refresh: %w", err)
-	}
-
-	var extraExts []pkix.Extension
-	if len(attestation) > 0 {
-		extraExts = append(extraExts, pkix.Extension{
-			Id:       AttestationOID,
-			Critical: false,
-			Value:    attestation,
-		})
 	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
@@ -252,18 +247,43 @@ func IsEnclaveMode() bool {
 	return err == nil
 }
 
-// tryGenerateAttestation calls GenerateGCPAttestation only if the launcher
-// socket is present. In standalone mode it returns (nil, nil); in enclave
-// mode it propagates whatever GenerateGCPAttestation returns.
+// acquireAttestationExts builds the attestation cert extension(s) for the
+// current platform, dispatching on how this TEE is deployed:
 //
-// This separates two cases that previously looked identical:
-//   - launcher socket missing → standalone dev → OK to ship a cert without
-//     attestation
-//   - launcher socket present but call failed → real production bug → must
-//     surface as an error, not silently fall through
-func tryGenerateAttestation(ctx context.Context, nonces []string) ([]byte, error) {
-	if _, err := os.Stat(launcherSocketPath); errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+//   - Confidential Space (launcher socket present): emit a CS-JWT under
+//     AttestationOID. This is the deployed v2 path and takes priority.
+//   - Plain SEV-SNP CVM (/dev/sev-guest present): emit a marshaled SEV-SNP
+//     report under AttestationOIDSEVSNP, with report_data binding the SPKI
+//     hash and the self binary hash.
+//   - Standalone dev (neither present): no extension. Peers using
+//     VerifyRATLSPeer will reject such certs; standalone TEE↔TEE comms must
+//     use a different verifier path.
+//
+// A launcher-socket-present call that fails is a real production bug and is
+// surfaced as an error rather than silently degrading to standalone mode.
+func (m *RATLSManager) acquireAttestationExts(ctx context.Context) ([]pkix.Extension, error) {
+	if _, err := os.Stat(launcherSocketPath); !errors.Is(err, fs.ErrNotExist) {
+		spkiNonce := SPKINoncePrefix(m.role) + hex.EncodeToString(m.spkiHash[:])
+		nonces := append([]string{spkiNonce}, m.extraNonces...)
+		jwt, err := GenerateGCPAttestation(ctx, nonces...)
+		if err != nil {
+			return nil, err
+		}
+		return []pkix.Extension{{Id: AttestationOID, Critical: false, Value: jwt}}, nil
 	}
-	return GenerateGCPAttestation(ctx, nonces...)
+
+	if IsSEVSNPMode() {
+		binHash, err := SelfBinaryHash()
+		if err != nil {
+			return nil, fmt.Errorf("self binary hash: %w", err)
+		}
+		rd := BuildSEVSNPReportData(m.spkiHash, binHash)
+		report, err := GenerateSEVSNPAttestation(rd)
+		if err != nil {
+			return nil, err
+		}
+		return []pkix.Extension{{Id: AttestationOIDSEVSNP, Critical: false, Value: report}}, nil
+	}
+
+	return nil, nil
 }

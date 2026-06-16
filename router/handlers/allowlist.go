@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/reclaimprotocol/reclaim-tee/router/store"
+	"github.com/reclaimprotocol/reclaim-tee/shared"
 
 	"go.uber.org/zap"
 )
@@ -115,15 +116,24 @@ func (s *Server) evictPairsByDigest(ctx context.Context, digest string) {
 	}
 }
 
-// validateDigestFormat enforces the sha256:<64-hex-char> shape so a
-// typo can't pollute the allowlist with junk that no real attestation
-// would ever match anyway. Cheap, catches operator mistakes early.
+// validateDigestFormat enforces one of the supported allowlist identity
+// shapes so a typo can't pollute the allowlist with junk no real attestation
+// would ever match. Cheap, catches operator mistakes early.
+//
+//   - Confidential Space: sha256:<64-hex>          (container image digest)
+//   - SEV-SNP:            snp-measurement:<96-hex>  (48-byte launch measurement)
 func validateDigestFormat(d string) error {
-	rest, ok := strings.CutPrefix(d, "sha256:")
-	if !ok {
-		return errBadDigestPrefix
+	if rest, ok := strings.CutPrefix(d, "sha256:"); ok {
+		return validateHexLen(rest, 64)
 	}
-	if len(rest) != 64 {
+	if rest, ok := strings.CutPrefix(d, shared.SEVSNPIdentityPrefix); ok {
+		return validateHexLen(rest, 96)
+	}
+	return errBadDigestPrefix
+}
+
+func validateHexLen(rest string, want int) error {
+	if len(rest) != want {
 		return errBadDigestLength
 	}
 	for _, c := range rest {
@@ -138,8 +148,8 @@ func validateDigestFormat(d string) error {
 }
 
 var (
-	errBadDigestPrefix = &simpleErr{"digest must start with sha256:"}
-	errBadDigestLength = &simpleErr{"digest hex portion must be exactly 64 chars"}
+	errBadDigestPrefix = &simpleErr{"digest must start with sha256: or snp-measurement:"}
+	errBadDigestLength = &simpleErr{"digest hex portion has wrong length (sha256: 64, snp-measurement: 96)"}
 	errBadDigestHex    = &simpleErr{"digest hex portion must be lowercase [0-9a-f]"}
 )
 

@@ -3,8 +3,8 @@
 package shared
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -37,7 +37,7 @@ type RATLSVerifyOptions struct {
 //
 // Standalone certs (no attestation extension) are rejected. Local-dev
 // flows must avoid this verifier.
-func validateRATLSCertStructure(rawCerts [][]byte, peerRole string, logger *Logger) (imageDigest string, err error) {
+func validateRATLSCertStructure(rawCerts [][]byte, peerRole string, logger *Logger) (identity string, err error) {
 	if len(rawCerts) == 0 {
 		return "", errors.New("ratls: no peer certificate")
 	}
@@ -46,11 +46,24 @@ func validateRATLSCertStructure(rawCerts [][]byte, peerRole string, logger *Logg
 		return "", fmt.Errorf("ratls: parse peer cert: %w", err)
 	}
 
-	attestation, err := ExtractAttestationFromCert(leaf)
+	spkiDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
 	if err != nil {
-		return "", fmt.Errorf("ratls: %w", err)
+		return "", fmt.Errorf("ratls: marshal peer SPKI: %w", err)
 	}
+	actualHash := spkiSha256(spkiDER)
 
+	if snp := findExtension(leaf, AttestationOIDSEVSNP); snp != nil {
+		return validateSEVSNP(snp, actualHash)
+	}
+	if jwt := findExtension(leaf, AttestationOID); jwt != nil {
+		return validateGCPCS(jwt, peerRole, actualHash, logger)
+	}
+	return "", errors.New("ratls: attestation extension not present on certificate")
+}
+
+// validateGCPCS verifies a Confidential Space attestation JWT, binds the SPKI
+// nonce to the cert's actual key, and returns the container image_digest.
+func validateGCPCS(attestation []byte, peerRole string, actualHash [32]byte, logger *Logger) (string, error) {
 	attestor, err := NewGoogleAttestor()
 	if err != nil {
 		return "", fmt.Errorf("ratls: build attestor: %w", err)
@@ -59,18 +72,12 @@ func validateRATLSCertStructure(rawCerts [][]byte, peerRole string, logger *Logg
 		return "", fmt.Errorf("ratls: attestation invalid: %w", err)
 	}
 
-	imageDigest, err = ExtractImageDigestFromGCPAttestation(attestation, logger)
+	imageDigest, err := ExtractImageDigestFromGCPAttestation(attestation, logger)
 	if err != nil {
 		return "", fmt.Errorf("ratls: extract image digest: %w", err)
 	}
 
-	spkiDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
-	if err != nil {
-		return "", fmt.Errorf("ratls: marshal peer SPKI: %w", err)
-	}
-	actualHash := sha256.Sum256(spkiDER)
 	actualHex := hex.EncodeToString(actualHash[:])
-
 	expectedHex, err := FindNonceValue(attestation, SPKINoncePrefix(peerRole))
 	if err != nil {
 		return "", fmt.Errorf("ratls: %w", err)
@@ -80,6 +87,34 @@ func validateRATLSCertStructure(rawCerts [][]byte, peerRole string, logger *Logg
 			expectedHex, actualHex)
 	}
 	return imageDigest, nil
+}
+
+// validateSEVSNP verifies a SEV-SNP report's AMD signature chain, binds the
+// SPKI hash carried in report_data[0:32] to the cert's actual key, and returns
+// the launch measurement as an "snp-measurement:<hex>" identity for the caller
+// to pin or allowlist. Uses the report's embedded VCEK/ASK/ARK chain so no AMD
+// KDS round-trip is required at handshake time.
+func validateSEVSNP(report []byte, actualHash [32]byte) (string, error) {
+	measurement, rd, err := VerifySEVSNPAttestation(report, true)
+	if err != nil {
+		return "", fmt.Errorf("ratls: %w", err)
+	}
+	if rd.SPKIHash != actualHash {
+		return "", fmt.Errorf("ratls: SPKI hash mismatch: report_data says %x, cert is %x",
+			rd.SPKIHash, actualHash)
+	}
+	return SEVSNPIdentity(measurement), nil
+}
+
+// findExtension returns the value of the first cert extension matching oid, or
+// nil if absent.
+func findExtension(cert *x509.Certificate, oid asn1.ObjectIdentifier) []byte {
+	for _, ext := range cert.Extensions {
+		if ext.Id.Equal(oid) {
+			return ext.Value
+		}
+	}
+	return nil
 }
 
 // VerifyRATLSPeer returns a tls.Config.VerifyPeerCertificate callback for
