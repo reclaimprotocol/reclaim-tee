@@ -1,4 +1,8 @@
 *.raw
-mkosi.output/
-mkosi.cache/
+*.efi
+*.zst
+*.blob
+app-bundle.tar
 prober/
+loader/
+mkosi.extra/

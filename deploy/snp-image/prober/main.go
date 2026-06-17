@@ -1,8 +1,8 @@
-// prober runs inside the dm-verity image as a boot service. It reads vTPM
-// PCR 11 (where systemd-stub measures the UKI, which carries the verity
-// roothash on its cmdline) and the SEV-SNP report, and prints both to the
-// console so we can read them from the GCP serial port. A one-byte change to
-// this binary changes the verity roothash -> the UKI cmdline -> PCR 11.
+// prober is a test app for the two-tier SEV-SNP image. The loader measures it
+// into PCR 8 (the app digest) and execs it; it reads vTPM PCR 11 (the base UKI,
+// measured by systemd-stub) and PCR 8 (its own loader-measured digest) plus the
+// SEV-SNP report, and prints them to the console for reading off the serial
+// port. A change to this binary changes PCR 8.
 package main
 
 import (
@@ -19,11 +19,11 @@ import (
 	"github.com/google/go-tpm/tpm2/transport/linuxtpm"
 )
 
-const banner = "===== SNP-VERITY-PROBE ====="
+const banner = "===== SNP-PROBE ====="
 
 // buildTag is set via -ldflags "-X main.buildTag=..." so we can produce two
-// binaries that differ by a few bytes and confirm the verity roothash (and
-// thus PCR 11) changes between them.
+// binaries that differ by a few bytes and confirm PCR 8 (the app digest)
+// changes between them.
 var buildTag = "dev"
 
 func main() {

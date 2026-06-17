@@ -4,11 +4,13 @@ set -euo pipefail
 # Bypass the flaky local WSL proxy (127.0.0.1:10808) for the host-side steps.
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY ftp_proxy FTP_PROXY 2>/dev/null || true
 
-# Build the bootable dm-verity + UKI SEV-SNP image inside a self-contained
-# Docker container (full mkosi 26 toolchain; nothing installed on the host).
-# The prober binary compiles on the host with the existing Go (no new packages).
+# Build a two-tier SEV-SNP image (stable base UKI + app partition measured into
+# PCR 8) inside a self-contained Docker container (ukify + systemd-repart; no
+# host installs). The loader/app binaries compile on the host with the Go cache.
 #
-#   ./deploy/snp-build-image.sh build <TAG>   build image, print verity roothash
+#   ./deploy/snp-build-image.sh mini [TAG]    minimal no-rootfs UKI (prober in initrd)
+#   ./deploy/snp-build-image.sh tier [TAG]    base UKI + prober as the app
+#   ./deploy/snp-build-image.sh tee  [TAG]    base UKI + real tee_t as the app
 #   ./deploy/snp-build-image.sh clean         remove build outputs
 #
 # Set DOCKER="sudo docker" if your Docker needs root.
@@ -20,7 +22,7 @@ PROBER_SRC="${IMG_DIR}/prober"
 PROBER_DST="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-prober"
 TEET_DST="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-teet"
 DOCKER="${DOCKER:-docker}"
-BUILDER_IMG="snp-mkosi-builder"
+BUILDER_IMG="snp-img-builder"
 
 build_prober() {
     local tag=$1
@@ -78,21 +80,6 @@ run_in_container() {
 }
 
 case "${1:-}" in
-    build)
-        [[ -n "${2:-}" ]] || { echo "usage: $0 build <TAG>" >&2; exit 1; }
-        build_prober "$2"
-        echo "[build] building mkosi container (cached after first run)..."
-        ${DOCKER} build \
-            --build-arg http_proxy= --build-arg https_proxy= \
-            --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg no_proxy= \
-            -t "${BUILDER_IMG}" "${IMG_DIR}"
-        echo "[build] running mkosi in privileged container (tag=$2)..."
-        ${DOCKER} run --rm --privileged \
-            -e http_proxy= -e https_proxy= -e HTTP_PROXY= -e HTTPS_PROXY= \
-            -v /dev:/dev \
-            -v "${IMG_DIR}:/work" \
-            "${BUILDER_IMG}" bash /work/in-container.sh "$2"
-        ;;
     mini)
         build_prober "${2:-mini}"
         echo "[mini] building minimal no-rootfs UKI image..."
@@ -120,22 +107,11 @@ case "${1:-}" in
         echo "[tee] building two-tier image with the real tee_t as the app..."
         APP_BIN=/work/app-bundle.tar run_in_container tier-build.sh
         ;;
-    repro)
-        build_prober "${2:-v1}"
-        ${DOCKER} build \
-            --build-arg http_proxy= --build-arg https_proxy= \
-            --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg no_proxy= \
-            -t "${BUILDER_IMG}" "${IMG_DIR}"
-        ${DOCKER} run --rm --privileged \
-            -e http_proxy= -e https_proxy= -e HTTP_PROXY= -e HTTPS_PROXY= \
-            -v /dev:/dev -v "${IMG_DIR}:/work" \
-            "${BUILDER_IMG}" bash /work/repro-check.sh
-        ;;
     clean)
         echo "[clean] removing build outputs (may need sudo for root-owned files)..."
-        rm -rf "${IMG_DIR}"/*.raw "${IMG_DIR}/mkosi.output" "${IMG_DIR}/mkosi.cache" "${PROBER_DST}" 2>/dev/null || \
-            sudo rm -rf "${IMG_DIR}"/*.raw "${IMG_DIR}/mkosi.output" "${IMG_DIR}/mkosi.cache" "${PROBER_DST}"
+        rm -rf "${IMG_DIR}"/*.raw "${IMG_DIR}/app-bundle.tar" "${IMG_DIR}/mkosi.extra/usr/local/bin" 2>/dev/null || \
+            sudo rm -rf "${IMG_DIR}"/*.raw "${IMG_DIR}/app-bundle.tar" "${IMG_DIR}/mkosi.extra/usr/local/bin"
         echo "[clean] done"
         ;;
-    *) echo "usage: $0 {build <TAG>|clean}" >&2; exit 1 ;;
+    *) echo "usage: $0 {mini [TAG]|tier [TAG]|tee [TAG]|clean}" >&2; exit 1 ;;
 esac

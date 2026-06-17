@@ -4,7 +4,7 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY 2>/dev/n
 
 # Builds the MINIMAL no-rootfs image inside the container: a UKI whose initrd is
 # just the static prober (as /init) + CA certs, wrapped in an ESP-only GPT disk.
-# No dm-verity, no systemd userland, no distro rootfs. The binary is measured
+# No systemd userland, no distro rootfs. The binary is measured
 # directly into PCR 11 (it is part of the UKI's .initrd section). Reproducible:
 # fixed SOURCE_DATE_EPOCH + cpio --reproducible + fixed repart seed.
 
@@ -34,7 +34,7 @@ find /tmp/ir -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 ukify build --linux="${KERNEL}" --initrd=/work/initrd.zst \
     --cmdline="${CMDLINE}" --stub "${STUB}" --output /work/snp-mini.efi
 
-# 3) ESP-only bootable GPT disk (512M ESP => valid FAT32). No rootfs/verity.
+# 3) ESP-only bootable GPT disk (512M ESP => valid FAT32). No rootfs.
 rm -rf /tmp/sysroot; mkdir -p /tmp/sysroot/EFI/BOOT
 cp /work/snp-mini.efi /tmp/sysroot/EFI/BOOT/BOOTX64.EFI
 mkdir -p /tmp/defs

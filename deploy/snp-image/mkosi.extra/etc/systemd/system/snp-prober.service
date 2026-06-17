@@ -1,5 +1,5 @@
 [Unit]
-Description=SNP verity probe (reads PCR 11 + SEV-SNP report to console)
+Description=SNP probe (reads PCR 11 + PCR 8 + SEV-SNP report to console)
 After=basic.target systemd-udev-settle.service
 Wants=systemd-udev-settle.service
 

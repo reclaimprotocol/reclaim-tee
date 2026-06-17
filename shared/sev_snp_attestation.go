@@ -29,10 +29,11 @@ func SEVSNPIdentity(measurement []byte) string {
 // BuildSEVSNPReportData lays out the 64-byte user-controlled report_data field:
 //
 //	[ 0..32) sha256(SPKI)  — binds the TLS keypair, same role as the CS eat_nonce
-//	[32..64) binaryHash    — cross-cloud-stable binary identity (dm-verity era)
+//	[32..64) binaryHash    — the app/binary identity hash
 //
-// In minimal-hardening mode binaryHash is the TEE's self-reported binary hash
-// and is not yet anchored by the launch measurement; see Appendix C.
+// binaryHash is a convenience copy in the AMD-signed report; the authoritative,
+// non-forgeable app identity is the loader-measured PCR 8 (see the two-tier
+// image: stable base UKI -> PCR 11, app -> PCR 8).
 func BuildSEVSNPReportData(spkiHash [32]byte, binaryHash [32]byte) [64]byte {
 	var rd [64]byte
 	copy(rd[:32], spkiHash[:])
@@ -128,8 +129,8 @@ func marshalSEVSNPAttestation(att *spb.Attestation) ([]byte, error) {
 }
 
 // SelfBinaryHash returns sha256 of the currently-running executable. Used to
-// fill report_data[32:64] until dm-verity anchors binary identity in the launch
-// measurement.
+// fill report_data[32:64] as a convenience copy of the app identity (the
+// authoritative identity is the loader-measured PCR 8).
 func SelfBinaryHash() ([32]byte, error) {
 	var sum [32]byte
 	exe, err := os.Executable()
