@@ -4,6 +4,7 @@ package shared
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
@@ -175,20 +176,31 @@ func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func(
 // attestation JWT + container image digest out of it. The same JWT goes
 // into the router registration body; the digest is the router's
 // allowlist key.
-func ExtractIdentityFromRATLS(ratls *RATLSManager, logger *Logger) (imageDigest string, attestationJWT []byte, err error) {
+func ExtractIdentityFromRATLS(ratls *RATLSManager, logger *Logger) (imageDigest, attestationType string, attestation []byte, err error) {
 	cert := ratls.Certificate()
 	if cert == nil || cert.Leaf == nil {
-		return "", nil, errors.New("RA-TLS manager has no current cert")
+		return "", "", nil, errors.New("RA-TLS manager has no current cert")
 	}
-	attestationJWT, err = ExtractAttestationFromCert(cert.Leaf)
+	leaf := cert.Leaf
+	// SEV-SNP (OID .2) takes precedence when present. The report is binary, so
+	// it travels base64-encoded in the JSON register body; the router decodes it.
+	if report := findExtension(leaf, AttestationOIDSEVSNP); report != nil {
+		measurement, _, verr := VerifySEVSNPAttestation(report, true)
+		if verr != nil {
+			return "", "", nil, fmt.Errorf("verify SEV-SNP attestation: %w", verr)
+		}
+		enc := base64.StdEncoding.EncodeToString(report)
+		return SEVSNPIdentity(measurement), AttestationTypeSEVSNP, []byte(enc), nil
+	}
+	attestation, err = ExtractAttestationFromCert(leaf)
 	if err != nil {
-		return "", nil, fmt.Errorf("extract attestation: %w", err)
+		return "", "", nil, fmt.Errorf("extract attestation: %w", err)
 	}
-	imageDigest, err = ExtractImageDigestFromGCPAttestation(attestationJWT, logger)
+	imageDigest, err = ExtractImageDigestFromGCPAttestation(attestation, logger)
 	if err != nil {
-		return "", nil, fmt.Errorf("extract image digest: %w", err)
+		return "", "", nil, fmt.Errorf("extract image digest: %w", err)
 	}
-	return imageDigest, attestationJWT, nil
+	return imageDigest, AttestationTypeCS, attestation, nil
 }
 
 // LoadOPRFShare reads (or creates) this side's persistent MPC OPRF key

@@ -14,9 +14,10 @@ import (
 
 // Attestation types carried in the /register body's attestation_type field.
 // Empty defaults to CS so existing Confidential Space TEEs need no change.
+// Sourced from shared so the TEE and router agree on the wire value.
 const (
-	AttestationTypeCS     = "cs"
-	AttestationTypeSEVSNP = "sev-snp"
+	AttestationTypeCS     = shared.AttestationTypeCS
+	AttestationTypeSEVSNP = shared.AttestationTypeSEVSNP
 )
 
 // AttestationValidator validates a TEE attestation and returns the image

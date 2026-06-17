@@ -247,6 +247,13 @@ func IsEnclaveMode() bool {
 	return err == nil
 }
 
+// IsProductionTEE reports whether this TEE runs in a real attested environment
+// — Confidential Space (launcher socket) or SEV-SNP (/dev/sev-guest) — versus
+// local dev. Both take the RA-TLS + attested-registration path.
+func IsProductionTEE() bool {
+	return IsEnclaveMode() || IsSEVSNPMode()
+}
+
 // acquireAttestationExts builds the attestation cert extension(s) for the
 // current platform, dispatching on how this TEE is deployed:
 //

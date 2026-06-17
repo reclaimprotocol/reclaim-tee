@@ -31,7 +31,7 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	devMode := !shared.IsEnclaveMode()
+	devMode := !shared.IsProductionTEE()
 	logger.Info("=== TEE_T Router Mode ===",
 		zap.String("router_url", config.RouterURL),
 		zap.String("self_addr", config.SelfAddr),
@@ -96,11 +96,11 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		if pid == "" {
 			return errors.New("register: pair_id not yet known")
 		}
-		var imageDigest string
-		var attestationJWT []byte
+		var imageDigest, attestationType string
+		var attestation []byte
 		if teet.ratls != nil {
 			var err error
-			imageDigest, attestationJWT, err = shared.ExtractIdentityFromRATLS(teet.ratls, logger)
+			imageDigest, attestationType, attestation, err = shared.ExtractIdentityFromRATLS(teet.ratls, logger)
 			if err != nil {
 				return fmt.Errorf("extract identity: %w", err)
 			}
@@ -108,12 +108,13 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 			imageDigest = "local-dev"
 		}
 		regReq := shared.RegisterRequest{
-			PairID:         pid,
-			Role:           "T",
-			SelfAddr:       config.SelfAddr,
-			PeerAddrClaim:  config.PeerAddr,
-			ImageDigest:    imageDigest,
-			AttestationJWT: string(attestationJWT),
+			PairID:          pid,
+			Role:            "T",
+			SelfAddr:        config.SelfAddr,
+			PeerAddrClaim:   config.PeerAddr,
+			ImageDigest:     imageDigest,
+			AttestationType: attestationType,
+			AttestationJWT:  string(attestation),
 		}
 		// Bind the body to the attestation by signing it with the RA-TLS key.
 		if teet.ratls != nil {
@@ -263,7 +264,7 @@ func validateRouterConfig(c *TEETConfig) error {
 		{"JWT_PUBLIC_KEY", c.JWTPublicKey},
 		{"EXPECTED_JWT_ISSUER", c.ExpectedJWTIssuer},
 	}
-	if shared.IsEnclaveMode() {
+	if shared.IsProductionTEE() {
 		required = append(required,
 			struct{ name, value string }{"EXPECTED_PEER_IMAGE_DIGEST", c.ExpectedPeerImageDigest},
 			struct{ name, value string }{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey},
