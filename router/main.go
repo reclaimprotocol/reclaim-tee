@@ -60,7 +60,7 @@ func main() {
 			cfg.ApprovedSAPattern,
 			cfg.SATokenAudience,
 		)
-		srv.AttestValidator = auth.NewCSAttestationValidator(logger)
+		srv.AttestValidator = auth.NewDispatchingValidator(logger)
 		allowlist, err := auth.NewAllowlist(ctx, pairStore, cfg.ApprovedDigests, logger)
 		if err != nil {
 			logger.Fatal("allowlist init failed", zap.Error(err))
@@ -104,12 +104,17 @@ func buildStore(ctx context.Context, cfg *config.Config, logger *zap.Logger) (st
 			zap.String("hint", "set FIRESTORE_PROJECT_ID for production"))
 		return store.NewMemoryStore(), noopCloser{}, nil
 	}
-	fs, err := store.NewFirestoreStore(ctx, cfg.FirestoreProjectID)
+	fs, err := store.NewFirestoreStore(ctx, cfg.FirestoreProjectID, cfg.FirestoreDatabaseID)
 	if err != nil {
 		return nil, nil, err
 	}
+	db := cfg.FirestoreDatabaseID
+	if db == "" {
+		db = "(default)"
+	}
 	logger.Info("using Firestore pair store",
 		zap.String("project_id", cfg.FirestoreProjectID),
+		zap.String("database", db),
 		zap.String("collection", store.FirestoreCollection))
 	return fs, fs, nil
 }

@@ -36,10 +36,16 @@ type FirestoreStore struct {
 	client *firestore.Client
 }
 
-// NewFirestoreStore builds a FirestoreStore bound to the named GCP project's
-// default Firestore database.
-func NewFirestoreStore(ctx context.Context, projectID string) (*FirestoreStore, error) {
-	client, err := firestore.NewClient(ctx, projectID)
+// NewFirestoreStore builds a FirestoreStore bound to the named GCP project.
+// databaseID selects a named Firestore database; empty means "(default)".
+func NewFirestoreStore(ctx context.Context, projectID, databaseID string) (*FirestoreStore, error) {
+	var client *firestore.Client
+	var err error
+	if databaseID == "" {
+		client, err = firestore.NewClient(ctx, projectID)
+	} else {
+		client, err = firestore.NewClientWithDatabase(ctx, projectID, databaseID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("firestore client: %w", err)
 	}
@@ -286,7 +292,6 @@ func (d pairDoc) toPair(id string) *Pair {
 		ReadyAt:                d.ReadyAt,
 	}
 }
-
 
 func (s *FirestoreStore) Tombstone(ctx context.Context, pairID string, until time.Time) error {
 	_, err := s.client.Collection(firestoreTombstoneCollection).Doc(pairID).Set(ctx, tombstoneDoc{Expiry: until})
