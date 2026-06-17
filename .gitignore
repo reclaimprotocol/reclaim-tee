@@ -61,3 +61,4 @@ deploy/snp-image/mkosi.output/
 deploy/snp-image/mkosi.cache/
 deploy/snp-image/mkosi.extra/usr/local/bin/
 snp-poc/snp-poc
+deploy/snp-image/app-bundle.tar

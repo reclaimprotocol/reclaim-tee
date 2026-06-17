@@ -12,8 +12,9 @@ export SOURCE_DATE_EPOCH=1735689600
 cd /work
 
 LOADER=/work/mkosi.extra/usr/local/bin/snp-loader
-APP=/work/mkosi.extra/usr/local/bin/snp-prober
-[[ -f "${LOADER}" && -f "${APP}" ]] || { echo "loader/app binary missing" >&2; exit 1; }
+# APP defaults to the prober; the `tee` build sets APP_BIN to the real tee_t.
+APP="${APP_BIN:-/work/mkosi.extra/usr/local/bin/snp-prober}"
+[[ -f "${LOADER}" && -f "${APP}" ]] || { echo "loader/app binary missing: ${LOADER} / ${APP}" >&2; exit 1; }
 KERNEL="$(ls /boot/vmlinuz-*-gcp 2>/dev/null | sort | tail -1)"
 STUB=/usr/lib/systemd/boot/efi/linuxx64.efi.stub
 CMDLINE="console=ttyS0,115200"
@@ -22,6 +23,20 @@ SEED=b5f8a3c2-1d4e-4a6b-9c8d-7e0f1a2b3c4d
 # 1) STABLE base initrd: loader as /init (no app code -> base never changes per release).
 rm -rf /tmp/ir; mkdir -p /tmp/ir/proc /tmp/ir/sys /tmp/ir/dev /tmp/ir/run
 cp "${LOADER}" /tmp/ir/init; chmod 0755 /tmp/ir/init
+
+# Bundle the cloud NIC driver (gve on GCP — not builtin; the loader inserts it).
+# Decompressed here so the loader can use a plain finit_module.
+mkdir -p /tmp/ir/modules
+KVER="$(ls /usr/lib/modules | head -1)"
+GVE="$(find "/usr/lib/modules/${KVER}" -name 'gve.ko*' | head -1)"
+if [[ -n "${GVE}" ]]; then
+    case "${GVE}" in
+        *.zst) zstd -dqf -o /tmp/ir/modules/gve.ko "${GVE}" ;;
+        *)     cp "${GVE}" /tmp/ir/modules/gve.ko ;;
+    esac
+    echo "[tier] bundled NIC module: gve.ko ($(du -h /tmp/ir/modules/gve.ko | cut -f1))"
+fi
+
 # cpio --reproducible normalizes inode/device numbers but NOT mtimes, and the
 # freshly-built loader has a per-build mtime; clamp everything to the epoch.
 find /tmp/ir -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
@@ -38,7 +53,7 @@ rm -rf /tmp/sysroot; mkdir -p /tmp/sysroot/EFI/BOOT
 cp /work/snp-base.efi /tmp/sysroot/EFI/BOOT/BOOTX64.EFI
 
 # 3) App blob: 8-byte LE length + app binary, padded to the partition size.
-APPSZ=64
+APPSZ=96
 python3 -c 'import sys,struct
 d=open(sys.argv[1],"rb").read()
 b=struct.pack("<Q",len(d))+d

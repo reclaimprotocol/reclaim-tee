@@ -1,29 +1,45 @@
 // loader is the init of the STABLE base UKI. It never changes per app release,
 // so the base UKI's measurement (PCR 11) is constant and hardcodable. Its job:
-// read the app binary from a separate (unmeasured-by-UKI) partition, measure it
-// into a dedicated PCR (the cross-cloud-stable "image digest"), then exec it.
-// Trust: the loader itself is measured into PCR 11, so a verifier trusting the
-// known base knows the app PCR was extended honestly.
+// read the app BUNDLE (a tar of the app binary + its runtime files) from a
+// separate partition, measure the bundle into a dedicated PCR (the cross-cloud
+// "image digest"), extract it, and exec the app. Trust: the loader is itself
+// measured into PCR 11, so a verifier trusting the known base knows the app
+// PCR was extended honestly.
+//
+// Bundle layout (tar): ./app (entrypoint), optionally ./mpcl/pkg (MPC circuit
+// stdlib) and ./etc/ssl/certs/ca-certificates.crt — the loader points the app
+// at them via MPCLDIR / SSL_CERT_FILE.
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/google/go-tpm/tpm2"
 	"github.com/google/go-tpm/tpm2/transport/linuxtpm"
+	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 // appPCR is a non-resettable PCR left pristine (0) by our GRUB-less, IMA-off
 // UKI boot (PCR 9 is NOT usable: the Linux EFI stub measures the initrd into
-// it). After Extend, PCR 8 holds ONLY the app identity: sha256(0x00*32 ||
-// sha256(app)) — clean, predictable, cross-cloud-stable.
+// it). After Extend, PCR 8 holds ONLY the app-bundle identity:
+// sha256(0x00*32 || sha256(bundle)) — clean, predictable, cross-cloud-stable.
 const appPCR = 8
+
+const bundleDir = "/run/bundle"
 
 func main() {
 	mountPseudo()
@@ -36,41 +52,52 @@ func main() {
 }
 
 func run(out io.Writer) error {
-	bin, dev, err := readAppPartition()
+	blob, dev, err := readAppPartition()
 	if err != nil {
 		return err
 	}
-	sum := sha256.Sum256(bin)
+	sum := sha256.Sum256(blob)
 	fmt.Fprintf(out, "[loader] app_partition  = %s\n", dev)
 	fmt.Fprintf(out, "[loader] app_sha256     = %s\n", hex.EncodeToString(sum[:]))
 
-	// Show the target PCR is pristine before we extend, so the post value is
-	// provably sha256(0x00*32 || sha256(app)) and nothing else.
 	for _, p := range []uint32{8, 9} {
 		if v, err := readPCR(p); err == nil {
 			fmt.Fprintf(out, "[loader] PCR%d pre-extend = %s\n", p, hex.EncodeToString(v))
 		}
 	}
-
 	if err := extendPCR(appPCR, sum[:]); err != nil {
 		return fmt.Errorf("extend PCR %d: %w", appPCR, err)
 	}
 	fmt.Fprintf(out, "[loader] extended PCR %d with app_sha256\n", appPCR)
 
+	// Best-effort networking so a server app (e.g. tee_t) is reachable. The
+	// prober doesn't need it; failures are logged and ignored.
+	bringUpNetwork(out)
+
 	if err := syscall.Mount("tmpfs", "/run", "tmpfs", 0, ""); err != nil {
 		return fmt.Errorf("mount /run: %w", err)
 	}
-	const path = "/run/app"
-	if err := os.WriteFile(path, bin, 0o755); err != nil {
-		return fmt.Errorf("write app: %w", err)
+	if err := extractTar(blob, bundleDir); err != nil {
+		return fmt.Errorf("extract bundle: %w", err)
 	}
-	fmt.Fprintf(out, "[loader] exec %s\n", path)
-	return syscall.Exec(path, []string{path}, os.Environ())
+
+	entry := filepath.Join(bundleDir, "app")
+	env := os.Environ()
+	if exists(filepath.Join(bundleDir, "mpcl", "pkg")) {
+		env = append(env, "MPCLDIR="+filepath.Join(bundleDir, "mpcl"))
+		fmt.Fprintf(out, "[loader] MPCLDIR=%s\n", filepath.Join(bundleDir, "mpcl"))
+	}
+	if ca := filepath.Join(bundleDir, "etc/ssl/certs/ca-certificates.crt"); exists(ca) {
+		env = append(env, "SSL_CERT_FILE="+ca)
+		fmt.Fprintf(out, "[loader] SSL_CERT_FILE=%s\n", ca)
+	}
+	fmt.Fprintf(out, "[loader] exec %s\n", entry)
+	return syscall.Exec(entry, []string{entry}, env)
 }
 
-// readAppPartition reads the length-prefixed app binary from the second
+// readAppPartition reads the length-prefixed app bundle (tar) from the second
 // partition of the boot disk (raw, no filesystem so no fs driver is needed).
-// Layout: 8-byte little-endian length, then that many bytes.
+// Layout: 8-byte little-endian length, then that many bytes of tar.
 func readAppPartition() ([]byte, string, error) {
 	for _, dev := range []string{"/dev/nvme0n1p2", "/dev/sda2", "/dev/vda2"} {
 		f, err := os.Open(dev)
@@ -96,6 +123,142 @@ func readAppPartition() ([]byte, string, error) {
 		return buf, dev, nil
 	}
 	return nil, "", fmt.Errorf("no app partition with a valid length header found")
+}
+
+func extractTar(data []byte, dst string) error {
+	tr := tar.NewReader(bytes.NewReader(data))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, filepath.Clean("/"+hdr.Name))
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+		case tar.TypeSymlink:
+			_ = os.Symlink(hdr.Linkname, target)
+		}
+	}
+}
+
+func exists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// bringUpNetwork brings up lo + the primary ethernet link, runs DHCP, and
+// applies the lease (IP + gateway). A link-scope host route to the gateway is
+// added first so it works even when the cloud hands out a /32 (GCP does).
+// loadModules inserts any bundled kernel modules (e.g. the cloud NIC driver:
+// gve on GCP, ena on AWS — neither is builtin). Decompressed at build time so
+// a plain finit_module suffices.
+func loadModules(out io.Writer) {
+	entries, _ := os.ReadDir("/modules")
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".ko" {
+			continue
+		}
+		f, err := os.Open(filepath.Join("/modules", e.Name()))
+		if err != nil {
+			continue
+		}
+		err = unix.FinitModule(int(f.Fd()), "", 0)
+		f.Close()
+		if err != nil {
+			fmt.Fprintf(out, "[loader] load %s: %v\n", e.Name(), err)
+		} else {
+			fmt.Fprintf(out, "[loader] loaded module %s\n", e.Name())
+		}
+	}
+}
+
+func bringUpNetwork(out io.Writer) {
+	loadModules(out)
+	if lo, err := netlink.LinkByName("lo"); err == nil {
+		_ = netlink.LinkSetUp(lo)
+	}
+	// PCI/virtio probing is async; the NIC may not be enumerated yet at PID 1.
+	// Poll for a non-loopback link for a few seconds.
+	var eth netlink.Link
+	deadline := time.Now().Add(12 * time.Second)
+	for {
+		links, _ := netlink.LinkList()
+		if eth = primaryEth(links); eth != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintln(out, "[loader] net: no non-loopback link after 12s; links seen:")
+			for _, l := range links {
+				fmt.Fprintf(out, "[loader] link: %s type=%s encap=%s\n", l.Attrs().Name, l.Type(), l.Attrs().EncapType)
+			}
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	name := eth.Attrs().Name
+	if err := netlink.LinkSetUp(eth); err != nil {
+		fmt.Fprintf(out, "[loader] net: link up %s: %v\n", name, err)
+		return
+	}
+	cli, err := nclient4.New(name)
+	if err != nil {
+		fmt.Fprintf(out, "[loader] net: dhcp client on %s: %v\n", name, err)
+		return
+	}
+	defer cli.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	lease, err := cli.Request(ctx)
+	if err != nil {
+		fmt.Fprintf(out, "[loader] net: dhcp on %s: %v\n", name, err)
+		return
+	}
+	ack := lease.ACK
+	ip := ack.YourIPAddr
+	mask := ack.SubnetMask()
+	if mask == nil {
+		mask = net.CIDRMask(32, 32)
+	}
+	if err := netlink.AddrAdd(eth, &netlink.Addr{IPNet: &net.IPNet{IP: ip, Mask: mask}}); err != nil {
+		fmt.Fprintf(out, "[loader] net: addr add: %v\n", err)
+	}
+	var gw net.IP
+	if rs := ack.Router(); len(rs) > 0 {
+		gw = rs[0]
+	}
+	if gw != nil {
+		idx := eth.Attrs().Index
+		_ = netlink.RouteAdd(&netlink.Route{LinkIndex: idx, Dst: &net.IPNet{IP: gw, Mask: net.CIDRMask(32, 32)}, Scope: netlink.SCOPE_LINK})
+		_ = netlink.RouteReplace(&netlink.Route{Gw: gw})
+	}
+	fmt.Fprintf(out, "[loader] net up: %s ip=%s gw=%s\n", name, ip, gw)
+}
+
+func primaryEth(links []netlink.Link) netlink.Link {
+	for _, l := range links {
+		a := l.Attrs()
+		if a.Name == "lo" || a.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		return l
+	}
+	return nil
 }
 
 func readPCR(idx uint32) ([]byte, error) {

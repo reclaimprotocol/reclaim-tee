@@ -14,9 +14,11 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY ftp_prox
 # Set DOCKER="sudo docker" if your Docker needs root.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMG_DIR="${SCRIPT_DIR}/snp-image"
 PROBER_SRC="${IMG_DIR}/prober"
 PROBER_DST="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-prober"
+TEET_DST="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-teet"
 DOCKER="${DOCKER:-docker}"
 BUILDER_IMG="snp-mkosi-builder"
 
@@ -40,6 +42,29 @@ build_loader() {
     echo "[build] loader sha256: $(sha256sum "${dst}" | cut -d' ' -f1)"
 }
 
+build_teet() {
+    echo "[build] compiling the real tee_t (main module) as the app..."
+    mkdir -p "$(dirname "${TEET_DST}")"
+    # Match the prod enclave build tags (no-ops for file selection here, but
+    # faithful to Dockerfile.enclave). CGO off gives osusergo/netgo for free.
+    ( cd "${REPO_ROOT}" && GOFLAGS=-mod=mod GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+        go build -trimpath -tags 'enclave osusergo netgo static_build' \
+        -ldflags "-s -w -buildid= -extldflags=-static" -o "${TEET_DST}" ./tee_t )
+    chmod 0755 "${TEET_DST}"
+    echo "[build] tee_t sha256: $(sha256sum "${TEET_DST}" | cut -d' ' -f1) ($(du -h "${TEET_DST}" | cut -f1))"
+}
+
+# make_bundle tars a staging dir into a deterministic app bundle. The loader
+# measures the whole bundle into PCR 8 and extracts it, so the app identity
+# covers the binary AND its runtime files (mpcl/, certs).
+BUNDLE_HOST="${IMG_DIR}/app-bundle.tar"
+make_bundle() {
+    local stage="$1"
+    tar --sort=name --format=gnu --mtime="@1735689600" \
+        --owner=0 --group=0 --numeric-owner -C "${stage}" -cf "${BUNDLE_HOST}" .
+    echo "[build] app bundle: $(du -h "${BUNDLE_HOST}" | cut -f1)  sha256: $(sha256sum "${BUNDLE_HOST}" | cut -d' ' -f1)"
+}
+
 run_in_container() {
     ${DOCKER} build \
         --build-arg http_proxy= --build-arg https_proxy= \
@@ -47,6 +72,7 @@ run_in_container() {
         -t "${BUILDER_IMG}" "${IMG_DIR}"
     ${DOCKER} run --rm --privileged \
         -e http_proxy= -e https_proxy= -e HTTP_PROXY= -e HTTPS_PROXY= \
+        -e APP_BIN="${APP_BIN:-}" \
         -v /dev:/dev -v "${IMG_DIR}:/work" \
         "${BUILDER_IMG}" bash "/work/$1"
 }
@@ -75,8 +101,24 @@ case "${1:-}" in
     tier)
         build_loader
         build_prober "${2:-tier}"
-        echo "[tier] building two-tier (stable base UKI + app partition) image..."
-        run_in_container tier-build.sh
+        stage="$(mktemp -d)"; cp "${PROBER_DST}" "${stage}/app"
+        make_bundle "${stage}"; rm -rf "${stage}"
+        echo "[tier] building two-tier image (prober as the app bundle)..."
+        APP_BIN=/work/app-bundle.tar run_in_container tier-build.sh
+        ;;
+    tee)
+        build_loader
+        build_teet
+        echo "[tee] assembling app bundle (tee_t + mpcl circuits + CA certs)..."
+        stage="$(mktemp -d)"
+        cp "${TEET_DST}" "${stage}/app"
+        mpcdir="$(cd "${REPO_ROOT}" && GOFLAGS=-mod=mod go list -m -f '{{.Dir}}' github.com/markkurossi/mpc)"
+        mkdir -p "${stage}/mpcl"; cp -r "${mpcdir}/pkg" "${stage}/mpcl/pkg"
+        mkdir -p "${stage}/etc/ssl/certs"
+        cp /etc/ssl/certs/ca-certificates.crt "${stage}/etc/ssl/certs/" 2>/dev/null || echo "[tee] warn: no host CA bundle"
+        make_bundle "${stage}"; rm -rf "${stage}"
+        echo "[tee] building two-tier image with the real tee_t as the app..."
+        APP_BIN=/work/app-bundle.tar run_in_container tier-build.sh
         ;;
     repro)
         build_prober "${2:-v1}"
