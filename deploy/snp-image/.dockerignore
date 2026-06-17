@@ -1,0 +1,4 @@
+*.raw
+mkosi.output/
+mkosi.cache/
+prober/
