@@ -2,7 +2,10 @@ module reclaim-snp-poc
 
 go 1.25.0
 
-require github.com/google/go-sev-guest v0.15.0
+require (
+	github.com/google/go-sev-guest v0.15.0
+	google.golang.org/protobuf v1.33.0
+)
 
 require (
 	github.com/google/go-configfs-tsm v0.2.2 // indirect
@@ -11,5 +14,4 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.17.0 // indirect
 	golang.org/x/sys v0.15.0 // indirect
-	google.golang.org/protobuf v1.33.0 // indirect
 )

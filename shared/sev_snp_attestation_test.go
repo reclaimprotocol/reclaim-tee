@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"strings"
 	"testing"
 )
@@ -47,6 +48,28 @@ func TestVerifySEVSNPAttestation_Rejects(t *testing.T) {
 	}
 	if _, _, err := VerifySEVSNPAttestation([]byte("not-a-proto-\xff\xfe"), true); err == nil {
 		t.Error("expected error for malformed proto, got nil")
+	}
+}
+
+// TestVerifySEVSNPAttestation_AWS_VLEK verifies a real AWS SEV-SNP attestation
+// (captured by deploy/snp-aws-poc.sh). AWS signs with VLEK and ships only the
+// VLEK leaf, so this exercises the VLEK trusted-roots path offline (the ASVK
+// comes from go-sev-guest's embedded AMD bundle, not the report).
+func TestVerifySEVSNPAttestation_AWS_VLEK(t *testing.T) {
+	raw, err := os.ReadFile("testdata/aws_vlek_attestation.bin")
+	if err != nil {
+		t.Skip("no AWS VLEK fixture: " + err.Error())
+	}
+	measurement, rd, err := VerifySEVSNPAttestation(raw, true)
+	if err != nil {
+		t.Fatalf("verify AWS VLEK attestation: %v", err)
+	}
+	if len(measurement) != 48 {
+		t.Errorf("measurement = %d bytes, want 48", len(measurement))
+	}
+	// snp-poc put a fixed placeholder in report_data[0:32]; just confirm it parsed.
+	if rd.SPKIHash == ([32]byte{}) {
+		t.Error("report_data SPKI half is all zero")
 	}
 }
 

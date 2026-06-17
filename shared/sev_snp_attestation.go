@@ -11,6 +11,7 @@ import (
 
 	spb "github.com/google/go-sev-guest/proto/sevsnp"
 	"github.com/google/go-sev-guest/verify"
+	"github.com/google/go-sev-guest/verify/trust"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -67,6 +68,15 @@ func VerifySEVSNPAttestation(raw []byte, allowOffline bool) (measurement []byte,
 	if allowOffline {
 		opts.DisableCertFetching = true
 	}
+	// Trust both VCEK (per-chip, e.g. GCP) and VLEK (per-CSP, e.g. AWS) signing
+	// keys: GCP embeds the VCEK chain in the report, but AWS signs with VLEK and
+	// ships only the VLEK leaf, so the ASVK intermediate must come from our
+	// roots. go-sev-guest embeds both AMD bundles; merge them per product line.
+	roots, err := amdTrustedRoots()
+	if err != nil {
+		return nil, rd, fmt.Errorf("build AMD trusted roots: %w", err)
+	}
+	opts.TrustedRoots = roots
 	if err := verify.SnpAttestation(att, opts); err != nil {
 		return nil, rd, fmt.Errorf("SEV-SNP chain verification failed: %w", err)
 	}
@@ -79,6 +89,35 @@ func VerifySEVSNPAttestation(raw []byte, allowOffline bool) (measurement []byte,
 	copy(rd.SPKIHash[:], rdBytes[:32])
 	copy(rd.BinaryHash[:], rdBytes[32:])
 	return report.GetMeasurement(), rd, nil
+}
+
+// amdTrustedRoots builds per-product-line AMD roots that trust BOTH VCEK and
+// VLEK report signers, using go-sev-guest's embedded AMD CA bundles (no KDS
+// fetch). The VCEK bundle supplies Ask+Ark; the VLEK bundle supplies the Asvk
+// intermediate; merged into one ProductCerts whose X509Options picks Ask (VCEK)
+// or Asvk (VLEK) per the report's signer.
+func amdTrustedRoots() (map[string][]*trust.AMDRootCerts, error) {
+	bundles := map[string][2][]byte{
+		"Milan": {trust.AskArkMilanVcekBytes, trust.AskArkMilanVlekBytes},
+		"Genoa": {trust.AskArkGenoaVcekBytes, trust.AskArkGenoaVlekBytes},
+		"Turin": {trust.AskArkTurinVcekBytes, trust.AskArkTurinVlekBytes},
+	}
+	roots := make(map[string][]*trust.AMDRootCerts, len(bundles))
+	for line, b := range bundles {
+		pc := &trust.ProductCerts{}
+		vlek := &trust.ProductCerts{}
+		// Skip a product line whose embedded bundle won't parse (some upstream
+		// bundles have trailing bytes); the lines we run on (Milan) parse fine.
+		if pc.FromKDSCertBytes(b[0]) != nil || vlek.FromKDSCertBytes(b[1]) != nil {
+			continue
+		}
+		pc.Asvk = vlek.Asvk
+		roots[line] = []*trust.AMDRootCerts{{ProductLine: line, ProductCerts: pc}}
+	}
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("no AMD product roots could be built from embedded bundles")
+	}
+	return roots, nil
 }
 
 // marshalSEVSNPAttestation serializes an Attestation for embedding in the cert

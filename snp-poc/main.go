@@ -16,19 +16,21 @@ import (
 	"github.com/google/go-sev-guest/client"
 	pb "github.com/google/go-sev-guest/proto/sevsnp"
 	"github.com/google/go-sev-guest/verify"
+	"google.golang.org/protobuf/proto"
 )
 
 func main() {
 	skipVerify := flag.Bool("skip-verify", false, "skip AMD signature-chain verification (no KDS egress)")
+	dump := flag.String("dump", "", "write the marshaled go-sev-guest Attestation proto to this path (for test fixtures)")
 	flag.Parse()
 
-	if err := run(*skipVerify); err != nil {
+	if err := run(*skipVerify, *dump); err != nil {
 		fmt.Fprintln(os.Stderr, "FAIL:", err)
 		os.Exit(1)
 	}
 }
 
-func run(skipVerify bool) error {
+func run(skipVerify bool, dumpPath string) error {
 	reportData, binHash, err := buildReportData()
 	if err != nil {
 		return err
@@ -59,8 +61,19 @@ func run(skipVerify bool) error {
 	fmt.Printf("chip_id (64B)      = %s\n", hex.EncodeToString(report.GetChipId()))
 
 	certs := att.GetCertificateChain()
-	fmt.Printf("cert_chain present = vcek:%d ask:%d ark:%d\n",
-		len(certs.GetVcekCert()), len(certs.GetAskCert()), len(certs.GetArkCert()))
+	fmt.Printf("cert_chain present = vcek:%d vlek:%d ask:%d ark:%d\n",
+		len(certs.GetVcekCert()), len(certs.GetVlekCert()), len(certs.GetAskCert()), len(certs.GetArkCert()))
+
+	if dumpPath != "" {
+		b, err := proto.Marshal(att)
+		if err != nil {
+			return fmt.Errorf("marshal attestation: %w", err)
+		}
+		if err := os.WriteFile(dumpPath, b, 0o644); err != nil {
+			return fmt.Errorf("write dump: %w", err)
+		}
+		fmt.Printf("wrote attestation proto (%d bytes) to %s\n", len(b), dumpPath)
+	}
 
 	if !bytesEqual(report.GetReportData(), reportData[:]) {
 		return fmt.Errorf("report_data round-trip mismatch")
