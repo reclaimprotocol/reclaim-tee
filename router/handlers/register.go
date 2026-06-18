@@ -86,7 +86,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	digest := req.ImageDigest
 	if !s.Config.Standalone {
-		validated, spkiHash, err := s.AttestValidator.Validate(req.AttestationType, req.Role, []byte(req.AttestationJWT))
+		validated, spkiHash, err := s.AttestValidator.Validate(req.AttestationType, req.Role, []byte(req.AttestationJWT), req.SPKIDer)
 		if err != nil {
 			log.Warn("register: attestation invalid",
 				zap.String("pair_id", req.PairID), zap.Error(err))

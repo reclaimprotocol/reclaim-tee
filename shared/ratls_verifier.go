@@ -53,7 +53,7 @@ func validateRATLSCertStructure(rawCerts [][]byte, peerRole string, logger *Logg
 	actualHash := spkiSha256(spkiDER)
 
 	if snp := findExtension(leaf, AttestationOIDSEVSNP); snp != nil {
-		return validateSEVSNP(snp, actualHash)
+		return validateSEVSNP(snp, spkiDER)
 	}
 	if jwt := findExtension(leaf, AttestationOID); jwt != nil {
 		return validateGCPCS(jwt, peerRole, actualHash, logger)
@@ -89,21 +89,16 @@ func validateGCPCS(attestation []byte, peerRole string, actualHash [32]byte, log
 	return imageDigest, nil
 }
 
-// validateSEVSNP verifies a SEV-SNP report's AMD signature chain, binds the
-// SPKI hash carried in report_data[0:32] to the cert's actual key, and returns
-// the launch measurement as an "snp-measurement:<hex>" identity for the caller
-// to pin or allowlist. Uses the report's embedded VCEK/ASK/ARK chain so no AMD
-// KDS round-trip is required at handshake time.
-func validateSEVSNP(report []byte, actualHash [32]byte) (string, error) {
-	measurement, rd, err := VerifySEVSNPAttestation(report, true)
+// validateSEVSNP verifies a combined vTPM+SEV-SNP attestation: the AK cert chains
+// to the Google vTPM root, the SEV report to the AMD root, report_data binds the
+// AK to this cert's SPKI (anti-splice), and the AK-signed quote pins PCR 8 (app)
+// + PCR 11 (base). Returns the code identity "snp-pcr:<hex(sha256(PCR11||PCR8))>".
+func validateSEVSNP(attestation, spkiDER []byte) (string, error) {
+	id, err := VerifyCombinedGCPAttestation(attestation, spkiDER)
 	if err != nil {
 		return "", fmt.Errorf("ratls: %w", err)
 	}
-	if rd.SPKIHash != actualHash {
-		return "", fmt.Errorf("ratls: SPKI hash mismatch: report_data says %x, cert is %x",
-			rd.SPKIHash, actualHash)
-	}
-	return SEVSNPIdentity(measurement), nil
+	return id, nil
 }
 
 // findExtension returns the value of the first cert extension matching oid, or

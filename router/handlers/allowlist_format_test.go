@@ -7,7 +7,7 @@ import (
 
 func TestValidateDigestFormat(t *testing.T) {
 	sha := "sha256:" + strings.Repeat("a", 64)
-	snp := "snp-measurement:" + strings.Repeat("b", 96)
+	snp := "snp-pcr:" + strings.Repeat("b", 64)
 
 	cases := []struct {
 		name string
@@ -15,11 +15,11 @@ func TestValidateDigestFormat(t *testing.T) {
 		ok   bool
 	}{
 		{"valid sha256", sha, true},
-		{"valid snp measurement", snp, true},
+		{"valid snp pcr", snp, true},
 		{"sha256 wrong length", "sha256:" + strings.Repeat("a", 63), false},
-		{"snp wrong length (64 not 96)", "snp-measurement:" + strings.Repeat("b", 64), false},
-		{"snp uppercase hex", "snp-measurement:" + strings.Repeat("B", 96), false},
-		{"unknown prefix", "snp:" + strings.Repeat("a", 96), false},
+		{"snp wrong length (96 not 64)", "snp-pcr:" + strings.Repeat("b", 96), false},
+		{"snp uppercase hex", "snp-pcr:" + strings.Repeat("B", 64), false},
+		{"unknown prefix", "snp:" + strings.Repeat("a", 64), false},
 		{"no prefix", strings.Repeat("a", 64), false},
 		{"empty", "", false},
 	}

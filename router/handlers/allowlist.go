@@ -120,14 +120,14 @@ func (s *Server) evictPairsByDigest(ctx context.Context, digest string) {
 // shapes so a typo can't pollute the allowlist with junk no real attestation
 // would ever match. Cheap, catches operator mistakes early.
 //
-//   - Confidential Space: sha256:<64-hex>          (container image digest)
-//   - SEV-SNP:            snp-measurement:<96-hex>  (48-byte launch measurement)
+//   - Confidential Space: sha256:<64-hex>     (container image digest)
+//   - SEV-SNP:            snp-pcr:<64-hex>     (sha256(PCR11||PCR8): base+app)
 func validateDigestFormat(d string) error {
 	if rest, ok := strings.CutPrefix(d, "sha256:"); ok {
 		return validateHexLen(rest, 64)
 	}
-	if rest, ok := strings.CutPrefix(d, shared.SEVSNPIdentityPrefix); ok {
-		return validateHexLen(rest, 96)
+	if rest, ok := strings.CutPrefix(d, shared.SEVSNPPCRIdentityPrefix); ok {
+		return validateHexLen(rest, 64)
 	}
 	return errBadDigestPrefix
 }
@@ -148,8 +148,8 @@ func validateHexLen(rest string, want int) error {
 }
 
 var (
-	errBadDigestPrefix = &simpleErr{"digest must start with sha256: or snp-measurement:"}
-	errBadDigestLength = &simpleErr{"digest hex portion has wrong length (sha256: 64, snp-measurement: 96)"}
+	errBadDigestPrefix = &simpleErr{"digest must start with sha256: or snp-pcr:"}
+	errBadDigestLength = &simpleErr{"digest hex portion has wrong length (sha256: 64, snp-pcr: 64)"}
 	errBadDigestHex    = &simpleErr{"digest hex portion must be lowercase [0-9a-f]"}
 )
 

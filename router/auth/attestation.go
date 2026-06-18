@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -21,11 +22,12 @@ const (
 )
 
 // AttestationValidator validates a TEE attestation and returns the image
-// identity to pin (sha256:<digest> for Confidential Space, snp-measurement:<hex>
-// for SEV-SNP) plus the SPKI hash the attestation commits to (CS eat_nonce /
-// SEV-SNP report_data[0:32]). The caller binds that hash to the registering key.
+// identity to pin (sha256:<digest> for Confidential Space, snp-pcr:<hex> for
+// SEV-SNP) plus the SPKI hash the attestation commits to. spkiDER is the
+// registering key; the SEV-SNP path needs it to check report_data binds the
+// vTPM AK to this exact key. The caller binds the returned hash to the key.
 type AttestationValidator interface {
-	Validate(attType, role string, token []byte) (imageIdentity string, spkiHash [32]byte, err error)
+	Validate(attType, role string, token, spkiDER []byte) (imageIdentity string, spkiHash [32]byte, err error)
 }
 
 // DispatchingValidator routes by attestation type so Confidential Space and
@@ -38,10 +40,10 @@ func NewDispatchingValidator(logger *zap.Logger) *DispatchingValidator {
 	return &DispatchingValidator{logger: logger}
 }
 
-func (v *DispatchingValidator) Validate(attType, role string, token []byte) (string, [32]byte, error) {
+func (v *DispatchingValidator) Validate(attType, role string, token, spkiDER []byte) (string, [32]byte, error) {
 	switch attType {
 	case AttestationTypeSEVSNP:
-		return validateSEVSNP(token)
+		return validateSEVSNP(token, spkiDER)
 	case AttestationTypeCS, "":
 		return validateCS(token, role, v.logger)
 	default:
@@ -76,19 +78,21 @@ func validateCS(token []byte, role string, logger *zap.Logger) (string, [32]byte
 	return digest, spki, nil
 }
 
-// validateSEVSNP verifies a SEV-SNP attestation (VCEK/VLEK -> AMD root) and
-// returns the launch-measurement identity and the SPKI hash from report_data.
-// token is base64(std) of the marshaled go-sev-guest Attestation proto — it
-// must be base64 because the register body is JSON (UTF-8 strings only).
-func validateSEVSNP(token []byte) (string, [32]byte, error) {
+// validateSEVSNP verifies a combined vTPM+SEV-SNP attestation and returns the
+// PCR-based code identity (snp-pcr:<hex>). token is base64(std) of the marshaled
+// go-tpm-tools Attestation proto (base64 because the register body is JSON).
+// VerifyCombinedGCPAttestation enforces report_data == sha512(AkPub||spkiDER),
+// so the SPKI is bound by the attestation itself; we return sha256(spkiDER) as
+// the bind hash the register handler checks against req.SPKIDer + body sig.
+func validateSEVSNP(token, spkiDER []byte) (string, [32]byte, error) {
 	var spki [32]byte
 	raw, err := base64.StdEncoding.DecodeString(string(token))
 	if err != nil {
 		return "", spki, fmt.Errorf("decode SEV-SNP attestation base64: %w", err)
 	}
-	measurement, rd, err := shared.VerifySEVSNPAttestation(raw, true)
+	id, err := shared.VerifyCombinedGCPAttestation(raw, spkiDER)
 	if err != nil {
 		return "", spki, fmt.Errorf("validate SEV-SNP attestation: %w", err)
 	}
-	return shared.SEVSNPIdentity(measurement), rd.SPKIHash, nil
+	return id, sha256.Sum256(spkiDER), nil
 }

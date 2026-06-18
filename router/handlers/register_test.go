@@ -96,7 +96,7 @@ type fakeAttestValidator struct {
 	err      error
 }
 
-func (f *fakeAttestValidator) Validate(_, _ string, _ []byte) (string, [32]byte, error) {
+func (f *fakeAttestValidator) Validate(_, _ string, _, _ []byte) (string, [32]byte, error) {
 	if f.err != nil {
 		return "", [32]byte{}, f.err
 	}
@@ -294,7 +294,7 @@ func TestRegisterRejectsDigestNotInAllowlist(t *testing.T) {
 // attestation + allowlisted measurement + SPKI binding is the credential.
 func TestRegisterSEVSNPSkipsSAToken(t *testing.T) {
 	s := newTestServer(t)
-	snpID := "snp-measurement:" + strings.Repeat("ab", 48)
+	snpID := "snp-pcr:" + strings.Repeat("ab", 32)
 	if err := s.Allowlist.Add(t.Context(), snpID); err != nil {
 		t.Fatalf("seed allowlist: %v", err)
 	}
