@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/go-sev-guest/client"
@@ -75,6 +76,17 @@ const sevGuestDevice = "/dev/sev-guest"
 func IsSEVSNPMode() bool {
 	_, err := os.Stat(sevGuestDevice)
 	return err == nil
+}
+
+// IsAWSSEVSNP reports whether the SEV-SNP guest is on AWS (vs GCP), via the DMI
+// system vendor. Selects the AWS (NitroTPM) attestation producer over the GCP
+// (GCE vTPM) one.
+func IsAWSSEVSNP() bool {
+	v, err := os.ReadFile("/sys/class/dmi/id/sys_vendor")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(v), "Amazon")
 }
 
 // GenerateSEVSNPAttestation pulls an extended attestation report (report +

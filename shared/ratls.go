@@ -289,11 +289,19 @@ func (m *RATLSManager) acquireAttestationExts(ctx context.Context) ([]pkix.Exten
 		if err != nil {
 			return nil, fmt.Errorf("ra-tls SPKI: %w", err)
 		}
-		att, err := GenerateCombinedGCPAttestation(spkiDER)
+		var att []byte
+		tag := byte(snpAttestTagGCP)
+		if IsAWSSEVSNP() {
+			tag = snpAttestTagAWS
+			att, err = GenerateCombinedAWSAttestation(spkiDER)
+		} else {
+			att, err = GenerateCombinedGCPAttestation(spkiDER)
+		}
 		if err != nil {
 			return nil, err
 		}
-		return []pkix.Extension{{Id: AttestationOIDSEVSNP, Critical: false, Value: att}}, nil
+		// Tag the payload so the verifier dispatches to the right per-cloud path.
+		return []pkix.Extension{{Id: AttestationOIDSEVSNP, Critical: false, Value: append([]byte{tag}, att...)}}, nil
 	}
 
 	return nil, nil

@@ -94,7 +94,7 @@ func validateGCPCS(attestation []byte, peerRole string, actualHash [32]byte, log
 // AK to this cert's SPKI (anti-splice), and the AK-signed quote pins PCR 8 (app)
 // + PCR 11 (base). Returns the code identity "snp-pcr:<hex(sha256(PCR11||PCR8))>".
 func validateSEVSNP(attestation, spkiDER []byte) (string, error) {
-	id, err := VerifyCombinedGCPAttestation(attestation, spkiDER)
+	id, err := VerifyCombinedSEVSNPAttestation(attestation, spkiDER)
 	if err != nil {
 		return "", fmt.Errorf("ratls: %w", err)
 	}

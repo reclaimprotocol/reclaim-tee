@@ -32,6 +32,24 @@ const (
 	nsmMessageBufferSize    = 8192
 )
 
+// GenerateCombinedAWSAttestation pairs the NitroTPM attestation document
+// (Nitro-rooted code identity) with the AMD SEV-SNP report (AMD-rooted hardware
+// proof), both bound to the RA-TLS key via sha512(SPKI): it goes in the SEV
+// report_data AND the NitroTPM user_data. Returned as the CBOR envelope the
+// verifier expects.
+func GenerateCombinedAWSAttestation(spkiDER []byte) ([]byte, error) {
+	bind := sha512.Sum512(spkiDER)
+	doc, err := RequestNitroTPMDocument(bind[:], nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("nitrotpm document: %w", err)
+	}
+	report, err := GenerateSEVSNPAttestation(bind)
+	if err != nil {
+		return nil, fmt.Errorf("sev report: %w", err)
+	}
+	return cbor.Marshal(awsCombinedEnvelope{NitroTPM: doc, SEV: report})
+}
+
 // RequestNitroTPMDocument returns the signed NitroTPM attestation document
 // (COSE_Sign1/CBOR) carrying the given optional user_data/nonce/public_key.
 func RequestNitroTPMDocument(userData, nonce, publicKey []byte) ([]byte, error) {

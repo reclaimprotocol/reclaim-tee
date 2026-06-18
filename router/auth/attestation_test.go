@@ -21,7 +21,8 @@ func TestDispatchingValidator_SEVSNP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read spki: %v", err)
 	}
-	token := []byte(base64.StdEncoding.EncodeToString(raw))
+	// The dispatcher reads a 1-byte cloud tag prefix (0x01 = GCP).
+	token := []byte(base64.StdEncoding.EncodeToString(append([]byte{0x01}, raw...)))
 
 	v := NewDispatchingValidator(zap.NewNop())
 	id, bind, err := v.Validate(AttestationTypeSEVSNP, "T", token, spki)
@@ -45,7 +46,7 @@ func TestDispatchingValidator_SEVSNPRejectsWrongSPKI(t *testing.T) {
 	if err != nil {
 		t.Skipf("no combined fixture: %v", err)
 	}
-	token := []byte(base64.StdEncoding.EncodeToString(raw))
+	token := []byte(base64.StdEncoding.EncodeToString(append([]byte{0x01}, raw...)))
 	v := NewDispatchingValidator(zap.NewNop())
 	if _, _, err := v.Validate(AttestationTypeSEVSNP, "T", token, []byte("wrong spki")); err == nil {
 		t.Fatal("expected binding failure with wrong SPKI")

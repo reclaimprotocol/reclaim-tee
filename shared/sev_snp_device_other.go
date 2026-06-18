@@ -17,3 +17,11 @@ func GenerateSEVSNPAttestation(reportData [64]byte) ([]byte, error) {
 func GenerateCombinedGCPAttestation(spkiDER []byte) ([]byte, error) {
 	return nil, fmt.Errorf("combined GCP attestation generation is only supported on Linux")
 }
+
+// GenerateCombinedAWSAttestation is unavailable off Linux.
+func GenerateCombinedAWSAttestation(spkiDER []byte) ([]byte, error) {
+	return nil, fmt.Errorf("combined AWS attestation generation is only supported on Linux")
+}
+
+// IsAWSSEVSNP is always false off Linux.
+func IsAWSSEVSNP() bool { return false }

@@ -90,7 +90,7 @@ func validateSEVSNP(token, spkiDER []byte) (string, [32]byte, error) {
 	if err != nil {
 		return "", spki, fmt.Errorf("decode SEV-SNP attestation base64: %w", err)
 	}
-	id, err := shared.VerifyCombinedGCPAttestation(raw, spkiDER)
+	id, err := shared.VerifyCombinedSEVSNPAttestation(raw, spkiDER)
 	if err != nil {
 		return "", spki, fmt.Errorf("validate SEV-SNP attestation: %w", err)
 	}
