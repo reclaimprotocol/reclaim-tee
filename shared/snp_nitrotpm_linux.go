@@ -48,6 +48,11 @@ func generateCombinedAWS(bound, appHash []byte, nonces []string) ([]byte, error)
 	snpAttestMu.Lock()
 	defer snpAttestMu.Unlock()
 
+	cacheKey := snpAttestCacheKey("aws", bound, appHash, nonces)
+	if att, ok := snpAttestCacheGet(cacheKey); ok {
+		return att, nil
+	}
+
 	bind := sha512.Sum512(bound)
 	doc, err := RequestNitroTPMDocument(bind[:], nil, nil)
 	if err != nil {
@@ -57,7 +62,12 @@ func generateCombinedAWS(bound, appHash []byte, nonces []string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("sev report: %w", err)
 	}
-	return cbor.Marshal(combinedEnvelope{AppHash: appHash, NitroTPM: doc, SEV: report, Nonces: nonces})
+	envBytes, err := cbor.Marshal(combinedEnvelope{AppHash: appHash, NitroTPM: doc, SEV: report, Nonces: nonces})
+	if err != nil {
+		return nil, err
+	}
+	snpAttestCachePut(cacheKey, envBytes)
+	return envBytes, nil
 }
 
 // RequestNitroTPMDocument returns the signed NitroTPM attestation document

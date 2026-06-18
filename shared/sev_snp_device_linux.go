@@ -36,12 +36,57 @@ func GenerateCombinedGCPAttestation(spkiDER, appHash []byte) ([]byte, error) {
 // this serialization for free via the launcher socket.
 var snpAttestMu sync.Mutex
 
+// SEV-SNP attestations bind the stable RA-TLS SPKI / signing key (the keypair
+// never rotates for the life of the process), so regenerating one on every cert
+// refresh (~4 min) and per-claim cache miss just re-hammers the TPM — on AWS the
+// NitroTPM doc generation is CPU-heavy enough to hog the kernel's tpm workqueue.
+// Cache by the bound data and reuse; the doc has no freshness/challenge, and the
+// attestor verifies the key-binding, not recency. Guarded by snpAttestMu.
+const snpAttestCacheTTL = 50 * time.Minute
+
+type snpAttestCacheEntry struct {
+	att []byte
+	exp time.Time
+}
+
+var snpAttestCache = map[string]snpAttestCacheEntry{}
+
+func snpAttestCacheKey(cloud string, bound, appHash []byte, nonces []string) string {
+	h := sha256.New()
+	h.Write([]byte(cloud))
+	h.Write(bound)
+	h.Write(appHash)
+	for _, n := range nonces {
+		h.Write([]byte(n))
+		h.Write([]byte{0})
+	}
+	return string(h.Sum(nil))
+}
+
+// snpAttestCacheGet/Put must be called with snpAttestMu held.
+func snpAttestCacheGet(key string) ([]byte, bool) {
+	e, ok := snpAttestCache[key]
+	if !ok || time.Now().After(e.exp) {
+		return nil, false
+	}
+	return e.att, true
+}
+
+func snpAttestCachePut(key string, att []byte) {
+	snpAttestCache[key] = snpAttestCacheEntry{att: att, exp: time.Now().Add(snpAttestCacheTTL)}
+}
+
 // generateCombinedGCP binds the given blob (raw SPKI for the cert path, or the
 // nonce commitment for the claim path) into report_data + the quote nonce, and
 // carries the presentable nonces (if any) in the envelope.
 func generateCombinedGCP(bound, appHash []byte, nonces []string) ([]byte, error) {
 	snpAttestMu.Lock()
 	defer snpAttestMu.Unlock()
+
+	cacheKey := snpAttestCacheKey("gcp", bound, appHash, nonces)
+	if att, ok := snpAttestCacheGet(cacheKey); ok {
+		return att, nil
+	}
 
 	rwc, err := legacytpm.OpenTPM("/dev/tpmrm0")
 	if err != nil {
@@ -87,7 +132,12 @@ func generateCombinedGCP(bound, appHash []byte, nonces []string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("marshal attestation: %w", err)
 	}
-	return cbor.Marshal(combinedEnvelope{AppHash: appHash, TPM: tpmBytes, Nonces: nonces})
+	envBytes, err := cbor.Marshal(combinedEnvelope{AppHash: appHash, TPM: tpmBytes, Nonces: nonces})
+	if err != nil {
+		return nil, err
+	}
+	snpAttestCachePut(cacheKey, envBytes)
+	return envBytes, nil
 }
 
 // GenerateSEVSNPNonceAttestation produces the app-layer claim attestation: a
