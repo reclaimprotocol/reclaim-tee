@@ -4,6 +4,7 @@ package shared
 
 import (
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -14,6 +15,22 @@ import (
 	"github.com/google/go-sev-guest/verify/trust"
 	"google.golang.org/protobuf/proto"
 )
+
+// CombinedReportData is the 64-byte SEV-SNP report_data for the vTPM-bound GCP
+// attestation: sha512(akPub || spkiDER). It welds the AMD-signed report to this
+// exact vTPM AK, so a genuine report from one VM cannot be spliced with another
+// VM's vTPM quote (the cuckoo/relay defense). The producer fills report_data
+// with this; the verifier recomputes from the attested AkPub + cert SPKI and
+// compares. Distinct from BuildSEVSNPReportData (the older spki+binaryHash
+// layout used by the raw-report path).
+func CombinedReportData(akPub, spkiDER []byte) [64]byte {
+	h := sha512.New()
+	h.Write(akPub)
+	h.Write(spkiDER)
+	var rd [64]byte
+	copy(rd[:], h.Sum(nil))
+	return rd
+}
 
 // SEVSNPIdentityPrefix namespaces a SEV-SNP launch measurement in the router
 // allowlist and the EXPECTED_PEER_IMAGE_DIGEST pin, the way "sha256:" namespaces

@@ -5,29 +5,112 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/google/go-sev-guest/client"
 	pb "github.com/google/go-sev-guest/proto/sevsnp"
 	"github.com/google/go-sev-guest/verify"
+	tpmclient "github.com/google/go-tpm-tools/client"
+	legacytpm "github.com/google/go-tpm/legacy/tpm2"
 	"google.golang.org/protobuf/proto"
 )
 
 func main() {
 	skipVerify := flag.Bool("skip-verify", false, "skip AMD signature-chain verification (no KDS egress)")
 	dump := flag.String("dump", "", "write the marshaled go-sev-guest Attestation proto to this path (for test fixtures)")
+	combined := flag.String("combined", "", "generate the combined GCP vTPM+SEV attestation, write proto to this path and the SPKI DER to <path>.spki")
 	flag.Parse()
+
+	if *combined != "" {
+		if err := runCombined(*combined); err != nil {
+			fmt.Fprintln(os.Stderr, "FAIL:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := run(*skipVerify, *dump); err != nil {
 		fmt.Fprintln(os.Stderr, "FAIL:", err)
 		os.Exit(1)
 	}
+}
+
+// runCombined captures a combined vTPM+SEV-SNP attestation fixture: it binds a
+// fresh ephemeral SPKI (stand-in for the RA-TLS key), writes the marshaled
+// go-tpm-tools Attestation proto and the SPKI DER so the verifier can recompute
+// report_data = sha512(AkPub || SPKI).
+func runCombined(path string) error {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	spki, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return err
+	}
+	att, err := generateCombined(spki)
+	if err != nil {
+		return fmt.Errorf("generate combined attestation: %w", err)
+	}
+	if err := os.WriteFile(path, att, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path+".spki", spki, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("wrote combined attestation (%d bytes) to %s\n", len(att), path)
+	fmt.Printf("wrote spki (%d bytes) to %s.spki\n", len(spki), path)
+	fmt.Printf("spki_sha256 = %s\n", hex.EncodeToString(func() []byte { h := sha256.Sum256(spki); return h[:] }()))
+	return nil
+}
+
+// generateCombined mirrors shared.GenerateCombinedGCPAttestation (kept inline so
+// this standalone poc tool needs no cross-module dependency): GCE vTPM AK +
+// PCR quotes + SEV report, with report_data = sha512(AkPub || spkiDER).
+func generateCombined(spkiDER []byte) ([]byte, error) {
+	rwc, err := legacytpm.OpenTPM("/dev/tpmrm0")
+	if err != nil {
+		return nil, fmt.Errorf("open tpm: %w", err)
+	}
+	defer rwc.Close()
+	ak, err := tpmclient.GceAttestationKeyECC(rwc)
+	if err != nil {
+		return nil, fmt.Errorf("load GCE AK: %w", err)
+	}
+	defer ak.Close()
+	akPub, err := ak.PublicArea().Encode()
+	if err != nil {
+		return nil, fmt.Errorf("encode AK pub: %w", err)
+	}
+	h := sha512.New()
+	h.Write(akPub)
+	h.Write(spkiDER)
+	var rd [64]byte
+	copy(rd[:], h.Sum(nil))
+	nonce := sha256.Sum256(spkiDER)
+	sev, err := tpmclient.CreateSevSnpQuoteProvider()
+	if err != nil {
+		return nil, fmt.Errorf("sev provider: %w", err)
+	}
+	defer sev.Close()
+	att, err := ak.Attest(tpmclient.AttestOpts{Nonce: nonce[:], TEENonce: rd[:], TEEDevice: sev, TCGEventLog: []byte{}, CertChainFetcher: &http.Client{Timeout: 30 * time.Second}})
+	if err != nil {
+		return nil, fmt.Errorf("attest: %w", err)
+	}
+	return proto.Marshal(att)
 }
 
 func run(skipVerify bool, dumpPath string) error {

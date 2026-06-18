@@ -12,3 +12,8 @@ func IsSEVSNPMode() bool { return false }
 func GenerateSEVSNPAttestation(reportData [64]byte) ([]byte, error) {
 	return nil, fmt.Errorf("SEV-SNP attestation generation is only supported on Linux")
 }
+
+// GenerateCombinedGCPAttestation is unavailable off Linux.
+func GenerateCombinedGCPAttestation(spkiDER []byte) ([]byte, error) {
+	return nil, fmt.Errorf("combined GCP attestation generation is only supported on Linux")
+}

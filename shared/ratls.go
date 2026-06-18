@@ -280,16 +280,20 @@ func (m *RATLSManager) acquireAttestationExts(ctx context.Context) ([]pkix.Exten
 	}
 
 	if IsSEVSNPMode() {
-		binHash, err := SelfBinaryHash()
+		// Combined attestation: AMD SEV-SNP report + vTPM AK/PCR quotes, with the
+		// SEV report_data committing to the vTPM AK and this cert's SPKI. Code
+		// identity lives in PCR 8 (app) / PCR 11 (base); the SEV measurement is
+		// firmware-only, so the binding to the AK is what makes the PCR quote
+		// trustworthy without splicing.
+		spkiDER, err := m.PublicKeyDER()
 		if err != nil {
-			return nil, fmt.Errorf("self binary hash: %w", err)
+			return nil, fmt.Errorf("ra-tls SPKI: %w", err)
 		}
-		rd := BuildSEVSNPReportData(m.spkiHash, binHash)
-		report, err := GenerateSEVSNPAttestation(rd)
+		att, err := GenerateCombinedGCPAttestation(spkiDER)
 		if err != nil {
 			return nil, err
 		}
-		return []pkix.Extension{{Id: AttestationOIDSEVSNP, Critical: false, Value: report}}, nil
+		return []pkix.Extension{{Id: AttestationOIDSEVSNP, Critical: false, Value: att}}, nil
 	}
 
 	return nil, nil
