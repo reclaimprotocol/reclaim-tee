@@ -190,7 +190,11 @@ func fetchMetadataEnv(out io.Writer) []string {
 		if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
 			continue
 		}
-		env = append(env, line)
+		// A value may carry literal \n escapes so a multi-line secret (e.g. a
+		// PEM public key) fits on one KEY=VAL line; expand them to real
+		// newlines for the app.
+		k, v, _ := strings.Cut(line, "=")
+		env = append(env, k+"="+strings.ReplaceAll(v, `\n`, "\n"))
 	}
 	fmt.Fprintf(out, "[loader] loaded %d env var(s) from instance metadata\n", len(env))
 	return env
