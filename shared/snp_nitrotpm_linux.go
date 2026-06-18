@@ -121,22 +121,42 @@ func RequestNitroTPMDocument(userData, nonce, publicKey []byte) ([]byte, error) 
 		return nil, fmt.Errorf("NV write: %w", err)
 	}
 
+	// Re-read the NV public AFTER the write: the TPM sets TPMA_NV_WRITTEN on
+	// first write, which changes the index Name. The vendor command's cpHash
+	// binds the current Name, so use the post-write one (not our define-time struct).
+	rp, err := (tpm2.NVReadPublic{NVIndex: nvIndex}).Execute(rwc)
+	if err != nil {
+		return nil, fmt.Errorf("NV read public: %w", err)
+	}
+	writtenName := rp.NVName.Buffer
+
 	// 4. The vendor command: raw, with a hand-built salted HMAC auth area.
-	if err := sendNSMVendorCommand(rwc, ekHandle, ekRSA, nvIndex, nvName.Buffer, nvAuth); err != nil {
+	if err := sendNSMVendorCommand(rwc, ekHandle, ekRSA, nvIndex, writtenName, nvAuth); err != nil {
 		return nil, fmt.Errorf("NSM vendor command: %w", err)
 	}
 
-	// 5. Read the response from the buffer.
-	rsp, err := tpm2.NVRead{
-		AuthHandle: tpm2.AuthHandle{Handle: nvIndex, Name: nvName, Auth: tpm2.PasswordAuth(nvAuth)},
-		NVIndex:    tpm2.NamedHandle{Handle: nvIndex, Name: nvName},
-		Size:       nsmMessageBufferSize,
-		Offset:     0,
-	}.Execute(rwc)
-	if err != nil {
-		return nil, fmt.Errorf("NV read: %w", err)
+	// 5. Read the response in chunks (a single NVRead is capped at the TPM's
+	// max NV buffer, typically 1024 bytes).
+	wName := tpm2.TPM2BName{Buffer: writtenName}
+	const nvChunk = 1024
+	var buf []byte
+	for off := 0; off < nsmMessageBufferSize; off += nvChunk {
+		sz := nvChunk
+		if rem := nsmMessageBufferSize - off; rem < sz {
+			sz = rem
+		}
+		rr, err := (tpm2.NVRead{
+			AuthHandle: tpm2.AuthHandle{Handle: nvIndex, Name: wName, Auth: tpm2.PasswordAuth(nvAuth)},
+			NVIndex:    tpm2.NamedHandle{Handle: nvIndex, Name: wName},
+			Size:       uint16(sz),
+			Offset:     uint16(off),
+		}).Execute(rwc)
+		if err != nil {
+			return nil, fmt.Errorf("NV read @%d: %w", off, err)
+		}
+		buf = append(buf, rr.Data.Buffer...)
 	}
-	return decodeNSMAttestationResponse(rsp.Data.Buffer)
+	return decodeNSMAttestationResponse(buf)
 }
 
 // --- EK template + key extraction -----------------------------------------
@@ -210,8 +230,10 @@ func encodeNSMAttestationRequest(userData, nonce, publicKey []byte) ([]byte, err
 }
 
 func decodeNSMAttestationResponse(data []byte) ([]byte, error) {
+	// The NV buffer is padded past the CBOR response; decode the first value and
+	// ignore the trailing bytes (cbor.Unmarshal would reject trailing data).
 	var outer map[string]cbor.RawMessage
-	if err := cbor.Unmarshal(data, &outer); err != nil {
+	if err := cbor.NewDecoder(bytes.NewReader(data)).Decode(&outer); err != nil {
 		return nil, fmt.Errorf("decode NSM response: %w", err)
 	}
 	raw, ok := outer["Attestation"]
@@ -415,5 +437,3 @@ func concat(parts ...[]byte) []byte {
 	}
 	return out
 }
-
-var _ = bytes.Equal
