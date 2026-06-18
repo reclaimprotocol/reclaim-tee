@@ -306,7 +306,22 @@ func bringUpNetwork(out io.Writer) {
 		_ = netlink.RouteAdd(&netlink.Route{LinkIndex: idx, Dst: &net.IPNet{IP: gw, Mask: net.CIDRMask(32, 32)}, Scope: netlink.SCOPE_LINK})
 		_ = netlink.RouteReplace(&netlink.Route{Gw: gw})
 	}
-	fmt.Fprintf(out, "[loader] net up: %s ip=%s gw=%s\n", name, ip, gw)
+	// Write /etc/resolv.conf from the DHCP DNS option; without it Go's resolver
+	// defaults to ::1:53 (no resolver in the minimal image) and all name lookups
+	// fail — breaking the AK-cert-chain fetch and dialing the router by hostname.
+	dns := ack.DNS()
+	if len(dns) == 0 {
+		dns = []net.IP{net.IPv4(169, 254, 169, 254)} // GCE metadata DNS fallback
+	}
+	_ = os.MkdirAll("/etc", 0o755)
+	var rc strings.Builder
+	for _, d := range dns {
+		rc.WriteString("nameserver " + d.String() + "\n")
+	}
+	if err := os.WriteFile("/etc/resolv.conf", []byte(rc.String()), 0o644); err != nil {
+		fmt.Fprintf(out, "[loader] resolv.conf: %v\n", err)
+	}
+	fmt.Fprintf(out, "[loader] net up: %s ip=%s gw=%s dns=%v\n", name, ip, gw, dns)
 }
 
 func primaryEth(links []netlink.Link) netlink.Link {
