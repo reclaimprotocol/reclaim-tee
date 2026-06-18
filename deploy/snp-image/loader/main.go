@@ -172,36 +172,76 @@ func extractTar(data []byte, dst string) error {
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
-// fetchMetadataEnv pulls per-deployment config from the GCE metadata instance
-// attribute "tee-env" (newline-separated KEY=VALUE) and returns it as process
-// env entries. Best-effort: returns nil if metadata is unreachable or unset.
+// fetchMetadataEnv pulls per-deployment config (newline-separated KEY=VALUE) from
+// instance metadata and returns it as process env entries: the GCE metadata
+// attribute "tee-env" on GCP, or the EC2 IMDSv2 user-data on AWS. Best-effort.
 func fetchMetadataEnv(out io.Writer) []string {
-	req, err := http.NewRequest("GET", "http://169.254.169.254/computeMetadata/v1/instance/attributes/tee-env", nil)
-	if err != nil {
+	body := fetchGCETeeEnv()
+	if body == "" {
+		body = fetchAWSUserData()
+	}
+	if body == "" {
+		fmt.Fprintln(out, "[loader] no instance metadata env found")
 		return nil
 	}
-	req.Header.Set("Metadata-Flavor", "Google")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-	if err != nil {
-		fmt.Fprintf(out, "[loader] metadata tee-env: %v\n", err)
-		return nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(out, "[loader] metadata tee-env: HTTP %d\n", resp.StatusCode)
-		return nil
-	}
-	body, _ := io.ReadAll(resp.Body)
 	var env []string
-	for _, line := range strings.Split(string(body), "\n") {
+	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
 			continue
 		}
 		env = append(env, line)
 	}
-	fmt.Fprintf(out, "[loader] loaded %d env var(s) from metadata tee-env\n", len(env))
+	fmt.Fprintf(out, "[loader] loaded %d env var(s) from instance metadata\n", len(env))
 	return env
+}
+
+func fetchGCETeeEnv() string {
+	req, err := http.NewRequest("GET", "http://169.254.169.254/computeMetadata/v1/instance/attributes/tee-env", nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	b, _ := io.ReadAll(resp.Body)
+	return string(b)
+}
+
+func fetchAWSUserData() string {
+	cl := &http.Client{Timeout: 5 * time.Second}
+	tr, err := http.NewRequest("PUT", "http://169.254.169.254/latest/api/token", nil)
+	if err != nil {
+		return ""
+	}
+	tr.Header.Set("X-aws-ec2-metadata-token-ttl-seconds", "60")
+	tresp, err := cl.Do(tr)
+	if err != nil {
+		return ""
+	}
+	tok, _ := io.ReadAll(tresp.Body)
+	tresp.Body.Close()
+	ur, err := http.NewRequest("GET", "http://169.254.169.254/latest/user-data", nil)
+	if err != nil {
+		return ""
+	}
+	ur.Header.Set("X-aws-ec2-metadata-token", string(tok))
+	uresp, err := cl.Do(ur)
+	if err != nil {
+		return ""
+	}
+	defer uresp.Body.Close()
+	if uresp.StatusCode != http.StatusOK {
+		return ""
+	}
+	b, _ := io.ReadAll(uresp.Body)
+	return string(b)
 }
 
 // bringUpNetwork brings up lo + the primary ethernet link, runs DHCP, and
