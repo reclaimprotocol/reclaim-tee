@@ -35,7 +35,10 @@ const (
 // RequestNitroTPMDocument returns the signed NitroTPM attestation document
 // (COSE_Sign1/CBOR) carrying the given optional user_data/nonce/public_key.
 func RequestNitroTPMDocument(userData, nonce, publicKey []byte) ([]byte, error) {
-	rwc, err := linuxtpm.Open("/dev/tpmrm0")
+	// Raw device, NOT the resource manager: the AWS NSM vendor command goes
+	// straight to the TPM (the kernel RM mangles/rejects it). Matches the Rust
+	// tool's default TPM_DEVICE=/dev/tpm0.
+	rwc, err := linuxtpm.Open("/dev/tpm0")
 	if err != nil {
 		return nil, fmt.Errorf("open tpm: %w", err)
 	}
@@ -73,7 +76,7 @@ func RequestNitroTPMDocument(userData, nonce, publicKey []byte) ([]byte, error) 
 	if _, err := rand.Read(nvAuth); err != nil {
 		return nil, err
 	}
-	nvIndex := tpm2.TPMHandle(0x01C00000) // first NV index in the platform range we own
+	nvIndex := tpm2.TPMHandle(0x01800000) // owner-definable NV range (below the TCG-reserved 0x01C0xxxx)
 
 	nvPublic := tpm2.TPMSNVPublic{
 		NVIndex: nvIndex,
@@ -86,36 +89,32 @@ func RequestNitroTPMDocument(userData, nonce, publicKey []byte) ([]byte, error) 
 		DataSize: nsmMessageBufferSize,
 	}
 
-	ownerSess := tpm2.HMAC(tpm2.TPMAlgSHA512, 16,
-		tpm2.AESEncryption(128, tpm2.EncryptInOut),
-		tpm2.Salted(ekHandle, *ekPub))
+	// Owner-authorized define; NV index auth via password. No parameter
+	// encryption (it's bus confidentiality only and trips NVDefineSpace, which
+	// has no response parameters). The vendor command does its own salted HMAC.
 	if _, err := (tpm2.NVDefineSpace{
 		AuthHandle: tpm2.TPMRHOwner,
 		Auth:       tpm2.TPM2BAuth{Buffer: nvAuth},
 		PublicInfo: tpm2.New2B(nvPublic),
-	}).Execute(rwc, ownerSess); err != nil {
+	}).Execute(rwc); err != nil {
 		return nil, fmt.Errorf("NV define: %w", err)
 	}
-	// NV index Name (needed for the vendor command cpHash) + the index handle.
-	nvName, err := nvIndexName(nvPublic)
+	// NV index Name (needed for write/read auth + the vendor command cpHash).
+	nvNamePtr, err := tpm2.NVName(&nvPublic)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("NV name: %w", err)
 	}
+	nvName := *nvNamePtr
 	defer func() {
-		s := tpm2.HMAC(tpm2.TPMAlgSHA512, 16, tpm2.AESEncryption(128, tpm2.EncryptInOut), tpm2.Salted(ekHandle, *ekPub))
 		tpm2.NVUndefineSpace{
 			AuthHandle: tpm2.TPMRHOwner,
 			NVIndex:    tpm2.NamedHandle{Handle: nvIndex, Name: nvName},
-		}.Execute(rwc, s)
+		}.Execute(rwc)
 	}()
 
-	// Write the request into the buffer (auth = NV auth, salted+encrypted session).
-	writeSess := tpm2.HMAC(tpm2.TPMAlgSHA512, 16,
-		tpm2.Auth(nvAuth),
-		tpm2.AESEncryption(128, tpm2.EncryptInOut),
-		tpm2.Salted(ekHandle, *ekPub))
+	// Write the request into the buffer (NV index password auth).
 	if _, err := (tpm2.NVWrite{
-		AuthHandle: tpm2.AuthHandle{Handle: nvIndex, Name: nvName, Auth: writeSess},
+		AuthHandle: tpm2.AuthHandle{Handle: nvIndex, Name: nvName, Auth: tpm2.PasswordAuth(nvAuth)},
 		NVIndex:    tpm2.NamedHandle{Handle: nvIndex, Name: nvName},
 		Data:       tpm2.TPM2BMaxNVBuffer{Buffer: reqCBOR},
 	}).Execute(rwc); err != nil {
@@ -128,12 +127,8 @@ func RequestNitroTPMDocument(userData, nonce, publicKey []byte) ([]byte, error) 
 	}
 
 	// 5. Read the response from the buffer.
-	readSess := tpm2.HMAC(tpm2.TPMAlgSHA512, 16,
-		tpm2.Auth(nvAuth),
-		tpm2.AESEncryption(128, tpm2.EncryptInOut),
-		tpm2.Salted(ekHandle, *ekPub))
 	rsp, err := tpm2.NVRead{
-		AuthHandle: tpm2.AuthHandle{Handle: nvIndex, Name: nvName, Auth: readSess},
+		AuthHandle: tpm2.AuthHandle{Handle: nvIndex, Name: nvName, Auth: tpm2.PasswordAuth(nvAuth)},
 		NVIndex:    tpm2.NamedHandle{Handle: nvIndex, Name: nvName},
 		Size:       nsmMessageBufferSize,
 		Offset:     0,
@@ -196,32 +191,22 @@ func ekRSAPublicKey(pub *tpm2.TPMTPublic) (*rsa.PublicKey, error) {
 	return &rsa.PublicKey{N: mod, E: exp}, nil
 }
 
-func nvIndexName(nvPublic tpm2.TPMSNVPublic) (tpm2.TPM2BName, error) {
-	// Name = nameAlg || H_nameAlg(marshal(NVPublic)). nameAlg here is SHA512.
-	marshaled := tpm2.Marshal(nvPublic)
-	h := sha512.Sum512(marshaled)
-	name := make([]byte, 0, 2+len(h))
-	name = append(name, byte(tpm2.TPMAlgSHA512>>8), byte(tpm2.TPMAlgSHA512))
-	name = append(name, h[:]...)
-	return tpm2.TPM2BName{Buffer: name}, nil
-}
-
 // --- NSM CBOR (externally-tagged serde enum) -------------------------------
 
-func encodeNSMAttestationRequest(userData, nonce, publicKey []byte) ([]byte, error) {
-	inner := map[string]interface{}{
-		"user_data":  optBytes(userData),
-		"nonce":      optBytes(nonce),
-		"public_key": optBytes(publicKey),
-	}
-	return cbor.Marshal(map[string]interface{}{"Attestation": inner})
+// nsmAttestationRequest mirrors aws_nitro_enclaves_nsm_api Request::Attestation.
+// A struct (not a map) so CBOR field order matches serde/ciborium declaration
+// order (user_data, nonce, public_key); nil fields encode as CBOR null.
+type nsmAttestationRequest struct {
+	UserData  []byte `cbor:"user_data"`
+	Nonce     []byte `cbor:"nonce"`
+	PublicKey []byte `cbor:"public_key"`
 }
 
-func optBytes(b []byte) interface{} {
-	if b == nil {
-		return nil
-	}
-	return b
+func encodeNSMAttestationRequest(userData, nonce, publicKey []byte) ([]byte, error) {
+	// Externally-tagged enum: { "Attestation": { ...fields... } }.
+	return cbor.Marshal(map[string]nsmAttestationRequest{
+		"Attestation": {UserData: userData, Nonce: nonce, PublicKey: publicKey},
+	})
 }
 
 func decodeNSMAttestationResponse(data []byte) ([]byte, error) {
