@@ -26,7 +26,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "spki:", err)
 		os.Exit(1)
 	}
-	env, err := shared.GenerateCombinedAWSAttestation(spki)
+	env, err := shared.GenerateCombinedAWSAttestation(spki, make([]byte, 32))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "FAIL:", err)
 		os.Exit(1)

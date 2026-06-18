@@ -159,6 +159,19 @@ func ExtractAttestationFromCert(cert *x509.Certificate) ([]byte, error) {
 	return nil, errors.New("attestation extension not present on certificate")
 }
 
+// FindNonceInList returns the substring after the first nonce that starts with
+// prefix. It is the SEV-SNP analogue of FindNonceValue: the nonces come from a
+// VerifyCombinedSEVSNPNonceAttestation result (already hardware-attested), so no
+// JWT parsing is involved.
+func FindNonceInList(nonces []string, prefix string) (string, error) {
+	for _, n := range nonces {
+		if val, ok := strings.CutPrefix(n, prefix); ok {
+			return val, nil
+		}
+	}
+	return "", fmt.Errorf("nonce with prefix %q not found", prefix)
+}
+
 // FindNonceValue inspects the eat_nonce claim of an attestation JWT for a
 // nonce starting with the given prefix and returns the substring after the
 // prefix. Handles both string and []any forms of eat_nonce.

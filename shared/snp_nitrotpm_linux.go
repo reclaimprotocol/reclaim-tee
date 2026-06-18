@@ -38,7 +38,17 @@ const (
 // report_data AND the NitroTPM user_data. Returned as the CBOR envelope the
 // verifier expects.
 func GenerateCombinedAWSAttestation(spkiDER, appHash []byte) ([]byte, error) {
-	bind := sha512.Sum512(spkiDER)
+	return generateCombinedAWS(spkiDER, appHash, nil)
+}
+
+// generateCombinedAWS binds the given blob (raw SPKI for the cert path, or the
+// nonce commitment for the claim path) into both the NitroTPM user_data and the
+// SEV report_data, and carries the presentable nonces (if any) in the envelope.
+func generateCombinedAWS(bound, appHash []byte, nonces []string) ([]byte, error) {
+	snpAttestMu.Lock()
+	defer snpAttestMu.Unlock()
+
+	bind := sha512.Sum512(bound)
 	doc, err := RequestNitroTPMDocument(bind[:], nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("nitrotpm document: %w", err)
@@ -47,7 +57,7 @@ func GenerateCombinedAWSAttestation(spkiDER, appHash []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sev report: %w", err)
 	}
-	return cbor.Marshal(combinedEnvelope{AppHash: appHash, NitroTPM: doc, SEV: report})
+	return cbor.Marshal(combinedEnvelope{AppHash: appHash, NitroTPM: doc, SEV: report, Nonces: nonces})
 }
 
 // RequestNitroTPMDocument returns the signed NitroTPM attestation document

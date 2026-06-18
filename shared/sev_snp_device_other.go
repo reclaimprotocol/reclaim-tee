@@ -23,5 +23,10 @@ func GenerateCombinedAWSAttestation(spkiDER, appHash []byte) ([]byte, error) {
 	return nil, fmt.Errorf("combined AWS attestation generation is only supported on Linux")
 }
 
+// GenerateSEVSNPNonceAttestation is unavailable off Linux.
+func GenerateSEVSNPNonceAttestation(nonces []string) ([]byte, error) {
+	return nil, fmt.Errorf("SEV-SNP nonce attestation generation is only supported on Linux")
+}
+
 // IsAWSSEVSNP is always false off Linux.
 func IsAWSSEVSNP() bool { return false }

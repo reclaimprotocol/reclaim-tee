@@ -4,10 +4,12 @@ package shared
 
 import (
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
 	"crypto/x509"
 	_ "embed"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
@@ -43,6 +45,26 @@ type combinedEnvelope struct {
 	TPM      []byte `cbor:"tpm,omitempty"`
 	NitroTPM []byte `cbor:"nitrotpm,omitempty"`
 	SEV      []byte `cbor:"sev,omitempty"`
+	// Nonces, when present, are the presentable claims the attestation binds
+	// (e.g. the signing-key + SPKI nonces), the SEV-SNP analogue of a CS JWT
+	// eat_nonce. The hardware binding then commits snpNonceCommitment(Nonces)
+	// rather than a raw SPKI. Empty for the RA-TLS cert-extension attestation,
+	// which binds the SPKI directly.
+	Nonces []string `cbor:"nonces,omitempty"`
+}
+
+// snpNonceCommitment is the length-prefixed hash of the presentable nonce list.
+// Producer and verifier compute it identically; binding it in report_data (which
+// the AMD/vTPM key signs) is what makes the carried Nonces unforgeable.
+func snpNonceCommitment(nonces []string) []byte {
+	h := sha256.New()
+	var n8 [8]byte
+	for _, n := range nonces {
+		binary.BigEndian.PutUint64(n8[:], uint64(len(n)))
+		h.Write(n8[:])
+		h.Write([]byte(n))
+	}
+	return h.Sum(nil)
 }
 
 // Identity prefixes: the cross-cloud app/payload hash (surfaced in the signed
@@ -57,17 +79,80 @@ const (
 // per-cloud verifier and returns (app, base) code identities: app =
 // snp-app:<sha256(bundle)> (cross-cloud), base = snp-base:<PCR11> (per-cloud).
 func VerifyCombinedSEVSNPAttestation(att, spkiDER []byte) (app, base string, err error) {
+	env, app, base, err := verifyCombined(att, spkiDER)
+	if err != nil {
+		return "", "", err
+	}
+	// Domain separation: an SPKI-bound attestation (RA-TLS cert / register) must
+	// not carry a presentable nonce list — that is the app-layer claim variant.
+	if len(env.Nonces) != 0 {
+		return "", "", fmt.Errorf("SPKI-bound attestation unexpectedly carries nonces")
+	}
+	return app, base, nil
+}
+
+// VerifyCombinedSEVSNPNonceAttestation verifies the app-layer claim variant: the
+// hardware binds snpNonceCommitment(env.Nonces), so the returned nonces are
+// AMD/vTPM-attested and presentable (the SEV-SNP analogue of reading a CS JWT
+// eat_nonce). Returns the nonce list plus the (app, base) code identities.
+func VerifyCombinedSEVSNPNonceAttestation(att []byte) (nonces []string, app, base string, err error) {
 	if len(att) < 1 {
-		return "", "", fmt.Errorf("empty SEV-SNP attestation")
+		return nil, "", "", fmt.Errorf("empty SEV-SNP attestation")
+	}
+	var peek combinedEnvelope
+	if e := cbor.Unmarshal(att[1:], &peek); e != nil {
+		return nil, "", "", fmt.Errorf("decode SEV-SNP envelope: %w", e)
+	}
+	if len(peek.Nonces) == 0 {
+		return nil, "", "", fmt.Errorf("nonce attestation carries no nonces")
+	}
+	_, app, base, err = verifyCombined(att, snpNonceCommitment(peek.Nonces))
+	if err != nil {
+		return nil, "", "", err
+	}
+	return peek.Nonces, app, base, nil
+}
+
+// VerifyCombinedGCPAttestation and VerifyCombinedAWSAttestation verify a
+// tag-less per-cloud envelope bound to spkiDER. Thin wrappers retained for
+// hardware fixtures and the nitroprobe tool; production dispatches via
+// VerifyCombinedSEVSNPAttestation.
+func VerifyCombinedGCPAttestation(attBytes, spkiDER []byte) (app, base string, err error) {
+	var env combinedEnvelope
+	if e := cbor.Unmarshal(attBytes, &env); e != nil {
+		return "", "", fmt.Errorf("decode GCP envelope: %w", e)
+	}
+	return verifyCombinedGCP(env, spkiDER)
+}
+
+func VerifyCombinedAWSAttestation(attBytes, spkiDER []byte) (app, base string, err error) {
+	var env combinedEnvelope
+	if e := cbor.Unmarshal(attBytes, &env); e != nil {
+		return "", "", fmt.Errorf("decode AWS envelope: %w", e)
+	}
+	return verifyCombinedAWS(env, spkiDER)
+}
+
+// verifyCombined decodes the tagged envelope and runs the per-cloud verifier
+// against the given bound blob (raw SPKI for the cert path, the nonce
+// commitment for the claim path). It returns the decoded envelope so callers
+// can apply path-specific checks (e.g. Nonces presence).
+func verifyCombined(att, bound []byte) (env combinedEnvelope, app, base string, err error) {
+	if len(att) < 1 {
+		return env, "", "", fmt.Errorf("empty SEV-SNP attestation")
+	}
+	if e := cbor.Unmarshal(att[1:], &env); e != nil {
+		return env, "", "", fmt.Errorf("decode SEV-SNP envelope: %w", e)
 	}
 	switch att[0] {
 	case snpAttestTagGCP:
-		return VerifyCombinedGCPAttestation(att[1:], spkiDER)
+		app, base, err = verifyCombinedGCP(env, bound)
 	case snpAttestTagAWS:
-		return VerifyCombinedAWSAttestation(att[1:], spkiDER)
+		app, base, err = verifyCombinedAWS(env, bound)
 	default:
-		return "", "", fmt.Errorf("unknown SEV-SNP attestation tag 0x%02x", att[0])
+		err = fmt.Errorf("unknown SEV-SNP attestation tag 0x%02x", att[0])
 	}
+	return env, app, base, err
 }
 
 // expectedPCR8 is the PCR 8 value the loader produces for appHash in bank alg:
@@ -97,12 +182,8 @@ func appBaseIdentity(appHash, pcr11 []byte) (string, string) {
 // pins PCR 8 (app) + PCR 11 (base) from nitrotpm_pcrs. The shared sha512(SPKI)
 // in BOTH report_data and user_data welds the AMD hardware proof to the
 // Nitro-rooted code proof for one key.
-func VerifyCombinedAWSAttestation(att, spkiDER []byte) (app, base string, err error) {
-	var env combinedEnvelope
-	if err := cbor.Unmarshal(att, &env); err != nil {
-		return "", "", fmt.Errorf("decode AWS envelope: %w", err)
-	}
-	bind := sha512.Sum512(spkiDER)
+func verifyCombinedAWS(env combinedEnvelope, bound []byte) (app, base string, err error) {
+	bind := sha512.Sum512(bound)
 
 	// (1) SEV-SNP report -> AMD root (genuine SEV-SNP hardware), report_data binding.
 	sevAtt := &spb.Attestation{}

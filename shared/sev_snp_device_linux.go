@@ -4,10 +4,12 @@ package shared
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -24,6 +26,23 @@ import (
 // key (anti-splice), and quotes the PCRs (incl. PCR 8 = app, PCR 11 = base).
 // GCP-only: relies on the GCE AK. AWS (NitroTPM) needs its own producer.
 func GenerateCombinedGCPAttestation(spkiDER, appHash []byte) ([]byte, error) {
+	return generateCombinedGCP(spkiDER, appHash, nil)
+}
+
+// snpAttestMu serializes all SEV-SNP attestation generation. The vTPM (and, on
+// AWS, the single NV index used for the NitroTPM vendor command) is a shared,
+// stateful device with no internal queuing; the cert-refresh ticker and a
+// per-session attestation can otherwise hit it concurrently and collide. CS got
+// this serialization for free via the launcher socket.
+var snpAttestMu sync.Mutex
+
+// generateCombinedGCP binds the given blob (raw SPKI for the cert path, or the
+// nonce commitment for the claim path) into report_data + the quote nonce, and
+// carries the presentable nonces (if any) in the envelope.
+func generateCombinedGCP(bound, appHash []byte, nonces []string) ([]byte, error) {
+	snpAttestMu.Lock()
+	defer snpAttestMu.Unlock()
+
 	rwc, err := legacytpm.OpenTPM("/dev/tpmrm0")
 	if err != nil {
 		return nil, fmt.Errorf("open tpm: %w", err)
@@ -40,8 +59,8 @@ func GenerateCombinedGCPAttestation(spkiDER, appHash []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode AK public area: %w", err)
 	}
-	rd := CombinedReportData(akPub, spkiDER)
-	nonce := sha256.Sum256(spkiDER)
+	rd := CombinedReportData(akPub, bound)
+	nonce := sha256.Sum256(bound)
 
 	sev, err := tpmclient.CreateSevSnpQuoteProvider()
 	if err != nil {
@@ -68,7 +87,32 @@ func GenerateCombinedGCPAttestation(spkiDER, appHash []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal attestation: %w", err)
 	}
-	return cbor.Marshal(combinedEnvelope{AppHash: appHash, TPM: tpmBytes})
+	return cbor.Marshal(combinedEnvelope{AppHash: appHash, TPM: tpmBytes, Nonces: nonces})
+}
+
+// GenerateSEVSNPNonceAttestation produces the app-layer claim attestation: a
+// tagged combined attestation that binds snpNonceCommitment(nonces) in hardware
+// and carries the nonces presentably (the SEV-SNP analogue of a CS JWT with an
+// eat_nonce). appHash comes from SNP_APP_HASH (loader-exported). Dispatches to
+// the AWS (NitroTPM) or GCP (GCE vTPM) producer.
+func GenerateSEVSNPNonceAttestation(nonces []string) ([]byte, error) {
+	appHash, err := hex.DecodeString(os.Getenv("SNP_APP_HASH"))
+	if err != nil || len(appHash) == 0 {
+		return nil, fmt.Errorf("SNP_APP_HASH not set by loader")
+	}
+	commitment := snpNonceCommitment(nonces)
+	if IsAWSSEVSNP() {
+		att, err := generateCombinedAWS(commitment, appHash, nonces)
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte{snpAttestTagAWS}, att...), nil
+	}
+	att, err := generateCombinedGCP(commitment, appHash, nonces)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte{snpAttestTagGCP}, att...), nil
 }
 
 // sevGuestDevice is where the SEV-SNP guest driver exposes the report ioctl.

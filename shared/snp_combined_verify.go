@@ -10,7 +10,6 @@ import (
 	_ "embed"
 	"fmt"
 
-	"github.com/fxamacker/cbor/v2"
 	"github.com/google/go-sev-guest/verify"
 	tpmpb "github.com/google/go-tpm-tools/proto/attest"
 	tpmprotopb "github.com/google/go-tpm-tools/proto/tpm"
@@ -43,11 +42,7 @@ const (
 // root; (3) report_data == sha512(AkPub||SPKI) anti-splice binding; (4) the
 // AK-signed quote over the PCRs (nonce sha256(SPKI)); (5) PCR 8 (SHA-256 bank)
 // matches the claimed cross-cloud appHash. PCR 11 is the per-cloud base.
-func VerifyCombinedGCPAttestation(attBytes, spkiDER []byte) (app, base string, err error) {
-	var env combinedEnvelope
-	if err := cbor.Unmarshal(attBytes, &env); err != nil {
-		return "", "", fmt.Errorf("decode GCP envelope: %w", err)
-	}
+func verifyCombinedGCP(env combinedEnvelope, bound []byte) (app, base string, err error) {
 	att := &tpmpb.Attestation{}
 	if err := proto.Unmarshal(env.TPM, att); err != nil {
 		return "", "", fmt.Errorf("unmarshal go-tpm-tools attestation: %w", err)
@@ -91,14 +86,15 @@ func VerifyCombinedGCPAttestation(attBytes, spkiDER []byte) (app, base string, e
 		return "", "", fmt.Errorf("SEV-SNP chain verification failed: %w", err)
 	}
 
-	// (3) Binding: report_data == sha512(AkPub || SPKI).
-	bind := CombinedReportData(att.GetAkPub(), spkiDER)
+	// (3) Binding: report_data == sha512(AkPub || bound), where bound is the SPKI
+	// (cert path) or the nonce commitment (claim path).
+	bind := CombinedReportData(att.GetAkPub(), bound)
 	if subtle.ConstantTimeCompare(sevAtt.GetReport().GetReportData(), bind[:]) != 1 {
-		return "", "", fmt.Errorf("report_data does not bind AK+SPKI (splice attempt?)")
+		return "", "", fmt.Errorf("report_data does not bind AK+bound (splice attempt?)")
 	}
 
-	// (4) vTPM quote: signed by the AK over the PCRs, nonce = sha256(SPKI).
-	nonce := sha256.Sum256(spkiDER)
+	// (4) vTPM quote: signed by the AK over the PCRs, nonce = sha256(bound).
+	nonce := sha256.Sum256(bound)
 	pcr8, pcr11, err := verifiedPCRs(att, akCert.PublicKey, nonce[:])
 	if err != nil {
 		return "", "", err

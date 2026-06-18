@@ -25,7 +25,19 @@ func (t *TEET) getCurrentCertRaw() ([]byte, error) {
 // generateAttestationDoc produces a fresh GCP attestation token bound to
 // the supplied nonces, against the launcher socket on the host.
 func (t *TEET) generateAttestationDoc(ctx context.Context, nonces ...string) ([]byte, error) {
+	if shared.IsSEVSNPMode() {
+		return shared.GenerateSEVSNPNonceAttestation(nonces)
+	}
 	return shared.GenerateGCPAttestation(ctx, nonces...)
+}
+
+// attestationReportType labels the app-layer attestation by platform so the
+// peer verifier picks the right validation path.
+func attestationReportType() string {
+	if shared.IsSEVSNPMode() {
+		return "sev-snp"
+	}
+	return "gcp"
 }
 
 func (t *TEET) refreshAttestation() error {
@@ -47,8 +59,7 @@ func (t *TEET) refreshAttestation() error {
 		return fmt.Errorf("failed to generate attestation: %v", err)
 	}
 
-	// Attestation type is always GCP
-	attestationReport := &teeproto.AttestationReport{Type: "gcp", Report: raw}
+	attestationReport := &teeproto.AttestationReport{Type: attestationReportType(), Report: raw}
 	t.attestationMutex.Lock()
 	t.cachedAttestation = attestationReport
 	t.attestationExpiry = time.Now().Add(5 * time.Minute)
@@ -129,8 +140,7 @@ func (t *TEET) generateAttestationForTEEK() (*teeproto.AttestationReport, error)
 		return nil, fmt.Errorf("failed to generate attestation: %v", err)
 	}
 
-	// Attestation type is always GCP
-	attestationType := "gcp"
+	attestationType := attestationReportType()
 
 	t.logger.Debug("Generated attestation for TEE_K",
 		zap.String("type", attestationType))
@@ -175,6 +185,30 @@ func (t *TEET) verifyTEEKAttestation(req *teeproto.TEEKAttestationRequest, peerC
 		return fmt.Errorf("no peer TLS certificate available for SPKI binding")
 	}
 
+	expectedSPKI, err := shared.SPKIHashFromCertDER(peerCert)
+	if err != nil {
+		return fmt.Errorf("compute TEE_K SPKI hash: %w", err)
+	}
+	expectedSPKIHex := fmt.Sprintf("%x", expectedSPKI[:])
+
+	// SEV-SNP: the attestation binds a presentable nonce list; verify it against
+	// AMD+vTPM hardware, then confirm the tee_k SPKI nonce matches the mTLS peer.
+	if attestation.Type == "sev-snp" {
+		nonces, _, _, err := shared.VerifyCombinedSEVSNPNonceAttestation(attestation.Report)
+		if err != nil {
+			return fmt.Errorf("validate TEE_K SEV-SNP attestation: %w", err)
+		}
+		gotHex, err := shared.FindNonceInList(nonces, shared.SPKINoncePrefix("tee_k"))
+		if err != nil {
+			return fmt.Errorf("find tee_k_spki_hash nonce: %w", err)
+		}
+		if gotHex != expectedSPKIHex {
+			return fmt.Errorf("TEE_K SPKI mismatch: attestation says %q, peer cert SPKI hashes to %q", gotHex, expectedSPKIHex)
+		}
+		t.logger.Debug("TEE_K SEV-SNP attestation verified")
+		return nil
+	}
+
 	// RA-TLS already verified peer image_digest at the TLS handshake.
 	// Bind the attestation to TEE_K's TLS keypair via the SPKI nonce —
 	// stable across cert refreshes, unlike a full cert-DER hash.
@@ -186,17 +220,12 @@ func (t *TEET) verifyTEEKAttestation(req *teeproto.TEEKAttestationRequest, peerC
 		return fmt.Errorf("validate TEE_K attestation JWT: %w", err)
 	}
 
-	expectedSPKI, err := shared.SPKIHashFromCertDER(peerCert)
-	if err != nil {
-		return fmt.Errorf("compute TEE_K SPKI hash: %w", err)
-	}
-	expectedHex := fmt.Sprintf("%x", expectedSPKI[:])
 	gotHex, err := shared.FindNonceValue(attestation.Report, shared.SPKINoncePrefix("tee_k"))
 	if err != nil {
 		return fmt.Errorf("find tee_k_spki_hash nonce: %w", err)
 	}
-	if gotHex != expectedHex {
-		return fmt.Errorf("TEE_K SPKI mismatch: attestation says %q, peer cert SPKI hashes to %q", gotHex, expectedHex)
+	if gotHex != expectedSPKIHex {
+		return fmt.Errorf("TEE_K SPKI mismatch: attestation says %q, peer cert SPKI hashes to %q", gotHex, expectedSPKIHex)
 	}
 
 	t.logger.Debug("TEE_K SPKI hash verified")
