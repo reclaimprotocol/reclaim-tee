@@ -185,12 +185,16 @@ func ExtractIdentityFromRATLS(ratls *RATLSManager, logger *Logger) (imageDigest,
 	// SEV-SNP (OID .2) takes precedence when present. The report is binary, so
 	// it travels base64-encoded in the JSON register body; the router decodes it.
 	if report := findExtension(leaf, AttestationOIDSEVSNP); report != nil {
-		measurement, _, verr := VerifySEVSNPAttestation(report, true)
+		spki, serr := ratls.PublicKeyDER()
+		if serr != nil {
+			return "", "", nil, fmt.Errorf("marshal SPKI: %w", serr)
+		}
+		app, _, verr := VerifyCombinedSEVSNPAttestation(report, spki)
 		if verr != nil {
 			return "", "", nil, fmt.Errorf("verify SEV-SNP attestation: %w", verr)
 		}
 		enc := base64.StdEncoding.EncodeToString(report)
-		return SEVSNPIdentity(measurement), AttestationTypeSEVSNP, []byte(enc), nil
+		return app, AttestationTypeSEVSNP, []byte(enc), nil
 	}
 	attestation, err = ExtractAttestationFromCert(leaf)
 	if err != nil {
