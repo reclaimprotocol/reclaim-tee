@@ -71,9 +71,9 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	}
 
 	tokenSource := shared.MetadataServerTokenSource
-	if devMode {
-		// Local dev: router-standalone skips SA token validation, and the
-		// laptop has no metadata server to mint one anyway.
+	if devMode || shared.IsSEVSNPMode() {
+		// Local dev has no metadata server; SEV-SNP TEEs hold no GCP SA and
+		// the router skips the SA token for them. Either way, send no token.
 		tokenSource = shared.NoopTokenSource
 	}
 	router := shared.NewRouterClient(config.RouterURL, tokenSource)
