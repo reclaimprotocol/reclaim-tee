@@ -20,17 +20,14 @@ func TestVerifyCombinedGCPAttestation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read spki: %v", err)
 	}
-	id, err := VerifyCombinedGCPAttestation(att, spki)
+	app, base, err := VerifyCombinedGCPAttestation(att, spki)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if !strings.HasPrefix(id, SEVSNPPCRIdentityPrefix) {
-		t.Fatalf("identity %q lacks prefix", id)
+	if !strings.HasPrefix(app, SEVSNPAppPrefix) || !strings.HasPrefix(base, SEVSNPBasePrefix) {
+		t.Fatalf("bad identities app=%q base=%q", app, base)
 	}
-	if len(id) != len(SEVSNPPCRIdentityPrefix)+64 {
-		t.Fatalf("identity %q wrong length", id)
-	}
-	t.Logf("verified combined attestation, identity = %s", id)
+	t.Logf("verified: app=%s base=%s", app, base)
 }
 
 // TestVerifyCombinedGCPAttestation_RejectsWrongSPKI confirms the binding check:
@@ -40,7 +37,7 @@ func TestVerifyCombinedGCPAttestation_RejectsWrongSPKI(t *testing.T) {
 	if err != nil {
 		t.Skipf("no combined fixture: %v", err)
 	}
-	if _, err := VerifyCombinedGCPAttestation(att, []byte("not the bound spki")); err == nil {
+	if _, _, err := VerifyCombinedGCPAttestation(att, []byte("not the bound spki")); err == nil {
 		t.Fatal("expected binding failure with wrong SPKI")
 	}
 }

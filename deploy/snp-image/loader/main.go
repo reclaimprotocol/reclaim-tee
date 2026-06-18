@@ -16,13 +16,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -83,6 +87,12 @@ func run(out io.Writer) error {
 
 	entry := filepath.Join(bundleDir, "app")
 	env := os.Environ()
+	// Per-deployment config (ROUTER_URL, JWT_PUBLIC_KEY, KMS vars, ...) comes from
+	// VM metadata, not the measured bundle, so PCR 8 stays generic across deploys.
+	env = append(env, fetchMetadataEnv(out)...)
+	// Export the cross-cloud app identity (sha256 of the measured bundle) so the
+	// RA-TLS layer can carry it as the PCR-8-proven payload hash.
+	env = append(env, "SNP_APP_HASH="+hex.EncodeToString(sum[:]))
 	if exists(filepath.Join(bundleDir, "mpcl", "pkg")) {
 		env = append(env, "MPCLDIR="+filepath.Join(bundleDir, "mpcl"))
 		fmt.Fprintf(out, "[loader] MPCLDIR=%s\n", filepath.Join(bundleDir, "mpcl"))
@@ -162,6 +172,38 @@ func extractTar(data []byte, dst string) error {
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
+// fetchMetadataEnv pulls per-deployment config from the GCE metadata instance
+// attribute "tee-env" (newline-separated KEY=VALUE) and returns it as process
+// env entries. Best-effort: returns nil if metadata is unreachable or unset.
+func fetchMetadataEnv(out io.Writer) []string {
+	req, err := http.NewRequest("GET", "http://169.254.169.254/computeMetadata/v1/instance/attributes/tee-env", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		fmt.Fprintf(out, "[loader] metadata tee-env: %v\n", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(out, "[loader] metadata tee-env: HTTP %d\n", resp.StatusCode)
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var env []string
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+			continue
+		}
+		env = append(env, line)
+	}
+	fmt.Fprintf(out, "[loader] loaded %d env var(s) from metadata tee-env\n", len(env))
+	return env
+}
+
 // bringUpNetwork brings up lo + the primary ethernet link, runs DHCP, and
 // applies the lease (IP + gateway). A link-scope host route to the gateway is
 // added first so it works even when the cloud hands out a /32 (GCP does).
@@ -170,21 +212,38 @@ func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 // a plain finit_module suffices.
 func loadModules(out io.Writer) {
 	entries, _ := os.ReadDir("/modules")
+	var pending []string
 	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".ko" {
-			continue
+		if filepath.Ext(e.Name()) == ".ko" {
+			pending = append(pending, e.Name())
 		}
-		f, err := os.Open(filepath.Join("/modules", e.Name()))
-		if err != nil {
-			continue
+	}
+	// Retry in passes: a module may need another not yet loaded (sev-guest needs
+	// tsm_report), and ReadDir order is alphabetical. Loop while a pass makes progress.
+	for len(pending) > 0 {
+		var failed []string
+		progress := false
+		for _, name := range pending {
+			f, err := os.Open(filepath.Join("/modules", name))
+			if err != nil {
+				continue
+			}
+			err = unix.FinitModule(int(f.Fd()), "", 0)
+			f.Close()
+			if err == nil || err == unix.EEXIST {
+				fmt.Fprintf(out, "[loader] loaded module %s\n", name)
+				progress = true
+			} else {
+				failed = append(failed, name)
+			}
 		}
-		err = unix.FinitModule(int(f.Fd()), "", 0)
-		f.Close()
-		if err != nil {
-			fmt.Fprintf(out, "[loader] load %s: %v\n", e.Name(), err)
-		} else {
-			fmt.Fprintf(out, "[loader] loaded module %s\n", e.Name())
+		if !progress {
+			for _, name := range failed {
+				fmt.Fprintf(out, "[loader] load %s: unresolved deps\n", name)
+			}
+			return
 		}
+		pending = failed
 	}
 }
 
@@ -281,19 +340,38 @@ func readPCR(idx uint32) ([]byte, error) {
 	return resp.PCRValues.Digests[0].Buffer, nil
 }
 
-func extendPCR(idx uint32, digest []byte) error {
+// extendPCR extends PCR idx in each allocated bank B with B(appHash), so the
+// verifier can recompute the per-bank PCR from the single cross-cloud appHash
+// (GCP reads the SHA-256 bank, AWS's NitroTPM doc reads SHA-384). Banks that
+// aren't allocated just fail and are skipped.
+func extendPCR(idx uint32, appHash []byte) error {
 	tpm, err := linuxtpm.Open("/dev/tpmrm0")
 	if err != nil {
 		return fmt.Errorf("open tpm: %w", err)
 	}
 	defer tpm.Close()
-	_, err = tpm2.PCRExtend{
-		PCRHandle: tpm2.AuthHandle{Handle: tpm2.TPMHandle(idx), Auth: tpm2.PasswordAuth(nil)},
-		Digests: tpm2.TPMLDigestValues{Digests: []tpm2.TPMTHA{
-			{HashAlg: tpm2.TPMAlgSHA256, Digest: digest},
-		}},
-	}.Execute(tpm)
-	return err
+	banks := []struct {
+		alg tpm2.TPMAlgID
+		h   func() hash.Hash
+	}{
+		{tpm2.TPMAlgSHA256, sha256.New},
+		{tpm2.TPMAlgSHA384, sha512.New384},
+	}
+	extended := 0
+	for _, b := range banks {
+		hh := b.h()
+		hh.Write(appHash)
+		if _, e := (tpm2.PCRExtend{
+			PCRHandle: tpm2.AuthHandle{Handle: tpm2.TPMHandle(idx), Auth: tpm2.PasswordAuth(nil)},
+			Digests:   tpm2.TPMLDigestValues{Digests: []tpm2.TPMTHA{{HashAlg: b.alg, Digest: hh.Sum(nil)}}},
+		}).Execute(tpm); e == nil {
+			extended++
+		}
+	}
+	if extended == 0 {
+		return fmt.Errorf("PCR %d extend: no banks extended", idx)
+	}
+	return nil
 }
 
 func mountPseudo() {

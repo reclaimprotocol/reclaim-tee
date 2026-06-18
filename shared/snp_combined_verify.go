@@ -8,9 +8,9 @@ import (
 	"crypto/subtle"
 	"crypto/x509"
 	_ "embed"
-	"encoding/hex"
 	"fmt"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/google/go-sev-guest/verify"
 	tpmpb "github.com/google/go-tpm-tools/proto/attest"
 	tpmprotopb "github.com/google/go-tpm-tools/proto/tpm"
@@ -37,81 +37,79 @@ const (
 	combinedBasePCR = 11
 )
 
-// SEVSNPPCRIdentityPrefix namespaces the combined code identity in the allowlist
-// and EXPECTED_PEER_IMAGE_DIGEST pin. The value is sha256(PCR11 || PCR8) hex —
-// committing to BOTH the base UKI and the app. Changing either changes it.
-const SEVSNPPCRIdentityPrefix = "snp-pcr:"
-
-// VerifyCombinedGCPAttestation verifies a marshaled go-tpm-tools Attestation and
-// returns the code identity (snp-pcr:<hex(sha256(PCR11||PCR8))>). It checks, in
-// order: (1) the AK cert chains to Google's vTPM CA and matches AkPub; (2) the
-// SEV-SNP report verifies to the AMD root; (3) report_data == sha512(AkPub||SPKI)
-// — the anti-splice binding that welds the AMD-signed report to THIS vTPM key;
-// (4) the vTPM quote is signed by that AK over the PCRs with nonce sha256(SPKI).
-// Only after (3)+(4) are the quoted PCR 8/11 trustworthy code measurements.
-func VerifyCombinedGCPAttestation(attBytes, spkiDER []byte) (string, error) {
+// VerifyCombinedGCPAttestation verifies the GCP envelope (go-tpm-tools
+// Attestation proto + claimed appHash) and returns (app, base) identities. It
+// checks: (1) AK cert -> Google vTPM root, matches AkPub; (2) SEV report -> AMD
+// root; (3) report_data == sha512(AkPub||SPKI) anti-splice binding; (4) the
+// AK-signed quote over the PCRs (nonce sha256(SPKI)); (5) PCR 8 (SHA-256 bank)
+// matches the claimed cross-cloud appHash. PCR 11 is the per-cloud base.
+func VerifyCombinedGCPAttestation(attBytes, spkiDER []byte) (app, base string, err error) {
+	var env combinedEnvelope
+	if err := cbor.Unmarshal(attBytes, &env); err != nil {
+		return "", "", fmt.Errorf("decode GCP envelope: %w", err)
+	}
 	att := &tpmpb.Attestation{}
-	if err := proto.Unmarshal(attBytes, att); err != nil {
-		return "", fmt.Errorf("unmarshal combined attestation: %w", err)
+	if err := proto.Unmarshal(env.TPM, att); err != nil {
+		return "", "", fmt.Errorf("unmarshal go-tpm-tools attestation: %w", err)
 	}
 
 	// (1) AK cert -> Google vTPM roots, and AkPub matches the cert.
 	akCert, err := x509.ParseCertificate(att.GetAkCert())
 	if err != nil {
-		return "", fmt.Errorf("parse AK cert: %w", err)
+		return "", "", fmt.Errorf("parse AK cert: %w", err)
 	}
 	if err := verifyAKCertChain(akCert, att.GetIntermediateCerts()); err != nil {
-		return "", fmt.Errorf("AK cert not Google-rooted: %w", err)
+		return "", "", fmt.Errorf("AK cert not Google-rooted: %w", err)
 	}
 	akArea, err := tpm2.DecodePublic(att.GetAkPub())
 	if err != nil {
-		return "", fmt.Errorf("decode AkPub: %w", err)
+		return "", "", fmt.Errorf("decode AkPub: %w", err)
 	}
 	akKey, err := akArea.Key()
 	if err != nil {
-		return "", fmt.Errorf("AkPub key: %w", err)
+		return "", "", fmt.Errorf("AkPub key: %w", err)
 	}
 	certKey, ok := akCert.PublicKey.(*ecdsa.PublicKey)
 	akPubKey, ok2 := akKey.(*ecdsa.PublicKey)
 	if !ok || !ok2 || !certKey.Equal(akPubKey) {
-		return "", fmt.Errorf("AkPub does not match AK cert")
+		return "", "", fmt.Errorf("AkPub does not match AK cert")
 	}
 
 	// (2) SEV-SNP report -> AMD root (genuine SEV-SNP hardware).
 	sevAtt := att.GetSevSnpAttestation()
 	if sevAtt == nil {
-		return "", fmt.Errorf("attestation carries no SEV-SNP report")
+		return "", "", fmt.Errorf("attestation carries no SEV-SNP report")
 	}
 	opts := verify.DefaultOptions()
 	opts.DisableCertFetching = true
 	roots, err := amdTrustedRoots()
 	if err != nil {
-		return "", fmt.Errorf("AMD roots: %w", err)
+		return "", "", fmt.Errorf("AMD roots: %w", err)
 	}
 	opts.TrustedRoots = roots
 	if err := verify.SnpAttestation(sevAtt, opts); err != nil {
-		return "", fmt.Errorf("SEV-SNP chain verification failed: %w", err)
+		return "", "", fmt.Errorf("SEV-SNP chain verification failed: %w", err)
 	}
 
-	// (3) Binding: report_data == sha512(AkPub || SPKI). Welds the AMD-signed
-	// report to this exact vTPM AK, so a report from one VM can't be spliced
-	// with another VM's quote.
-	expected := CombinedReportData(att.GetAkPub(), spkiDER)
-	if subtle.ConstantTimeCompare(sevAtt.GetReport().GetReportData(), expected[:]) != 1 {
-		return "", fmt.Errorf("report_data does not bind AK+SPKI (splice attempt?)")
+	// (3) Binding: report_data == sha512(AkPub || SPKI).
+	bind := CombinedReportData(att.GetAkPub(), spkiDER)
+	if subtle.ConstantTimeCompare(sevAtt.GetReport().GetReportData(), bind[:]) != 1 {
+		return "", "", fmt.Errorf("report_data does not bind AK+SPKI (splice attempt?)")
 	}
 
 	// (4) vTPM quote: signed by the AK over the PCRs, nonce = sha256(SPKI).
 	nonce := sha256.Sum256(spkiDER)
 	pcr8, pcr11, err := verifiedPCRs(att, akCert.PublicKey, nonce[:])
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	h := sha256.New()
-	h.Write(pcr11)
-	h.Write(pcr8)
-	return SEVSNPPCRIdentityPrefix + hex.EncodeToString(h.Sum(nil)), nil
+	// (5) Prove the claimed cross-cloud appHash against PCR 8 (SHA-256 bank on GCP).
+	if subtle.ConstantTimeCompare(pcr8, expectedPCR8(env.AppHash, sha256.New)) != 1 {
+		return "", "", fmt.Errorf("PCR 8 does not match claimed app hash")
+	}
+	app, base = appBaseIdentity(env.AppHash, pcr11)
+	return app, base, nil
 }
 
 // verifiedPCRs finds the SHA-256 quote, verifies its signature + nonce + PCR

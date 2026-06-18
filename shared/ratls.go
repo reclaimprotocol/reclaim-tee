@@ -289,13 +289,19 @@ func (m *RATLSManager) acquireAttestationExts(ctx context.Context) ([]pkix.Exten
 		if err != nil {
 			return nil, fmt.Errorf("ra-tls SPKI: %w", err)
 		}
+		// appHash (= sha256(app bundle)) is measured + exported by the loader; it's
+		// the cross-cloud payload identity, proven against PCR 8 by the verifier.
+		appHash, herr := hex.DecodeString(os.Getenv("SNP_APP_HASH"))
+		if herr != nil || len(appHash) == 0 {
+			return nil, fmt.Errorf("SNP_APP_HASH not set by loader")
+		}
 		var att []byte
 		tag := byte(snpAttestTagGCP)
 		if IsAWSSEVSNP() {
 			tag = snpAttestTagAWS
-			att, err = GenerateCombinedAWSAttestation(spkiDER)
+			att, err = GenerateCombinedAWSAttestation(spkiDER, appHash)
 		} else {
-			att, err = GenerateCombinedGCPAttestation(spkiDER)
+			att, err = GenerateCombinedGCPAttestation(spkiDER, appHash)
 		}
 		if err != nil {
 			return nil, err

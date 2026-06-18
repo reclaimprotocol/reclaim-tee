@@ -4,7 +4,6 @@ package shared
 
 import (
 	"crypto/ecdsa"
-	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
 	"crypto/x509"
@@ -12,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"hash"
 	"math/big"
 
 	"github.com/fxamacker/cbor/v2"
@@ -34,18 +34,31 @@ const (
 //go:embed aws_nitro_root.pem
 var awsNitroRootPEM []byte
 
-// awsCombinedEnvelope is the CBOR envelope an AWS TEE puts in the cert extension:
-// the Nitro-signed attestation document + the AMD-signed SEV-SNP report.
-type awsCombinedEnvelope struct {
-	NitroTPM []byte `cbor:"nitrotpm"`
-	SEV      []byte `cbor:"sev"`
+// combinedEnvelope is the CBOR cert-extension payload (after the 1-byte cloud
+// tag) for both clouds. AppHash = sha256(app bundle), the cross-cloud payload
+// identity; the verifier proves it against PCR 8. TPM is the go-tpm-tools
+// Attestation proto (GCP); NitroTPM + SEV are the AWS evidence.
+type combinedEnvelope struct {
+	AppHash  []byte `cbor:"app"`
+	TPM      []byte `cbor:"tpm,omitempty"`
+	NitroTPM []byte `cbor:"nitrotpm,omitempty"`
+	SEV      []byte `cbor:"sev,omitempty"`
 }
 
+// Identity prefixes: the cross-cloud app/payload hash (surfaced in the signed
+// claim, like a CS image_digest) and the per-cloud base UKI hash (PCR 11,
+// pinned against known values).
+const (
+	SEVSNPAppPrefix  = "snp-app:"
+	SEVSNPBasePrefix = "snp-base:"
+)
+
 // VerifyCombinedSEVSNPAttestation dispatches a tagged SEV-SNP attestation to the
-// per-cloud verifier and returns the code identity (snp-pcr:<hex>).
-func VerifyCombinedSEVSNPAttestation(att, spkiDER []byte) (string, error) {
+// per-cloud verifier and returns (app, base) code identities: app =
+// snp-app:<sha256(bundle)> (cross-cloud), base = snp-base:<PCR11> (per-cloud).
+func VerifyCombinedSEVSNPAttestation(att, spkiDER []byte) (app, base string, err error) {
 	if len(att) < 1 {
-		return "", fmt.Errorf("empty SEV-SNP attestation")
+		return "", "", fmt.Errorf("empty SEV-SNP attestation")
 	}
 	switch att[0] {
 	case snpAttestTagGCP:
@@ -53,8 +66,28 @@ func VerifyCombinedSEVSNPAttestation(att, spkiDER []byte) (string, error) {
 	case snpAttestTagAWS:
 		return VerifyCombinedAWSAttestation(att[1:], spkiDER)
 	default:
-		return "", fmt.Errorf("unknown SEV-SNP attestation tag 0x%02x", att[0])
+		return "", "", fmt.Errorf("unknown SEV-SNP attestation tag 0x%02x", att[0])
 	}
+}
+
+// expectedPCR8 is the PCR 8 value the loader produces for appHash in bank alg:
+// it extends PCR 8 (pristine 0) once with alg(appHash), so
+// PCR8 = alg(0^algSize || alg(appHash)). Lets the verifier prove a single
+// cross-cloud appHash against the per-cloud, per-bank PCR 8.
+func expectedPCR8(appHash []byte, newHash func() hash.Hash) []byte {
+	inner := newHash()
+	inner.Write(appHash)
+	id := inner.Sum(nil)
+	outer := newHash()
+	outer.Write(make([]byte, len(id)))
+	outer.Write(id)
+	return outer.Sum(nil)
+}
+
+// appBaseIdentity formats the (app, base) identity strings from the proven
+// appHash and the attested PCR 11.
+func appBaseIdentity(appHash, pcr11 []byte) (string, string) {
+	return SEVSNPAppPrefix + hex.EncodeToString(appHash), SEVSNPBasePrefix + hex.EncodeToString(pcr11)
 }
 
 // VerifyCombinedAWSAttestation verifies an AWS combined attestation and returns
@@ -64,50 +97,52 @@ func VerifyCombinedSEVSNPAttestation(att, spkiDER []byte) (string, error) {
 // pins PCR 8 (app) + PCR 11 (base) from nitrotpm_pcrs. The shared sha512(SPKI)
 // in BOTH report_data and user_data welds the AMD hardware proof to the
 // Nitro-rooted code proof for one key.
-func VerifyCombinedAWSAttestation(att, spkiDER []byte) (string, error) {
-	var env awsCombinedEnvelope
+func VerifyCombinedAWSAttestation(att, spkiDER []byte) (app, base string, err error) {
+	var env combinedEnvelope
 	if err := cbor.Unmarshal(att, &env); err != nil {
-		return "", fmt.Errorf("decode AWS envelope: %w", err)
+		return "", "", fmt.Errorf("decode AWS envelope: %w", err)
 	}
 	bind := sha512.Sum512(spkiDER)
 
 	// (1) SEV-SNP report -> AMD root (genuine SEV-SNP hardware), report_data binding.
 	sevAtt := &spb.Attestation{}
 	if err := proto.Unmarshal(env.SEV, sevAtt); err != nil {
-		return "", fmt.Errorf("unmarshal SEV report: %w", err)
+		return "", "", fmt.Errorf("unmarshal SEV report: %w", err)
 	}
 	opts := verify.DefaultOptions()
 	opts.DisableCertFetching = true
 	roots, err := amdTrustedRoots()
 	if err != nil {
-		return "", fmt.Errorf("AMD roots: %w", err)
+		return "", "", fmt.Errorf("AMD roots: %w", err)
 	}
 	opts.TrustedRoots = roots
 	if err := verify.SnpAttestation(sevAtt, opts); err != nil {
-		return "", fmt.Errorf("SEV-SNP chain verification failed: %w", err)
+		return "", "", fmt.Errorf("SEV-SNP chain verification failed: %w", err)
 	}
 	if subtle.ConstantTimeCompare(sevAtt.GetReport().GetReportData(), bind[:]) != 1 {
-		return "", fmt.Errorf("SEV report_data does not bind the SPKI")
+		return "", "", fmt.Errorf("SEV report_data does not bind the SPKI")
 	}
 
 	// (2) NitroTPM document: COSE_Sign1 -> Nitro root, user_data binding.
-	doc, pcrs, userData, err := verifyNitroTPMDocument(env.NitroTPM)
+	_, pcrs, userData, err := verifyNitroTPMDocument(env.NitroTPM)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	_ = doc
 	if subtle.ConstantTimeCompare(userData, bind[:]) != 1 {
-		return "", fmt.Errorf("NitroTPM user_data does not bind the SPKI")
+		return "", "", fmt.Errorf("NitroTPM user_data does not bind the SPKI")
 	}
 
+	// (3) Prove the claimed cross-cloud appHash against PCR 8 (SHA-384 bank on
+	// AWS); PCR 11 is the per-cloud base.
 	pcr8, pcr11 := pcrs[combinedAppPCR], pcrs[combinedBasePCR]
 	if len(pcr8) == 0 || len(pcr11) == 0 {
-		return "", fmt.Errorf("NitroTPM doc missing PCR %d/%d", combinedAppPCR, combinedBasePCR)
+		return "", "", fmt.Errorf("NitroTPM doc missing PCR %d/%d", combinedAppPCR, combinedBasePCR)
 	}
-	h := sha256.New()
-	h.Write(pcr11)
-	h.Write(pcr8)
-	return SEVSNPPCRIdentityPrefix + hex.EncodeToString(h.Sum(nil)), nil
+	if subtle.ConstantTimeCompare(pcr8, expectedPCR8(env.AppHash, sha512.New384)) != 1 {
+		return "", "", fmt.Errorf("PCR 8 does not match claimed app hash")
+	}
+	app, base = appBaseIdentity(env.AppHash, pcr11)
+	return app, base, nil
 }
 
 // coseSign1 is a COSE_Sign1 structure (untagged CBOR 4-array).

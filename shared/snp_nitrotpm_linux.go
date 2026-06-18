@@ -37,7 +37,7 @@ const (
 // proof), both bound to the RA-TLS key via sha512(SPKI): it goes in the SEV
 // report_data AND the NitroTPM user_data. Returned as the CBOR envelope the
 // verifier expects.
-func GenerateCombinedAWSAttestation(spkiDER []byte) ([]byte, error) {
+func GenerateCombinedAWSAttestation(spkiDER, appHash []byte) ([]byte, error) {
 	bind := sha512.Sum512(spkiDER)
 	doc, err := RequestNitroTPMDocument(bind[:], nil, nil)
 	if err != nil {
@@ -47,7 +47,7 @@ func GenerateCombinedAWSAttestation(spkiDER []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sev report: %w", err)
 	}
-	return cbor.Marshal(awsCombinedEnvelope{NitroTPM: doc, SEV: report})
+	return cbor.Marshal(combinedEnvelope{AppHash: appHash, NitroTPM: doc, SEV: report})
 }
 
 // RequestNitroTPMDocument returns the signed NitroTPM attestation document

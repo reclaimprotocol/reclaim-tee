@@ -29,10 +29,10 @@ func TestDispatchingValidator_SEVSNP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate SEV-SNP: %v", err)
 	}
-	if !strings.HasPrefix(id, "snp-pcr:") {
-		t.Fatalf("identity = %q, want snp-pcr: prefix", id)
+	if !strings.HasPrefix(id, "snp-app:") {
+		t.Fatalf("identity = %q, want snp-app: prefix", id)
 	}
-	if len(id) != len("snp-pcr:")+64 {
+	if len(id) != len("snp-app:")+64 {
 		t.Fatalf("identity = %q, want 64 hex chars", id)
 	}
 	if len(bind) != 32 {

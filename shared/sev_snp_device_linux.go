@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/google/go-sev-guest/client"
 	tpmclient "github.com/google/go-tpm-tools/client"
 	legacytpm "github.com/google/go-tpm/legacy/tpm2"
@@ -22,7 +23,7 @@ import (
 // sha512(AkPub || spkiDER) so the AMD-signed report commits to this exact vTPM
 // key (anti-splice), and quotes the PCRs (incl. PCR 8 = app, PCR 11 = base).
 // GCP-only: relies on the GCE AK. AWS (NitroTPM) needs its own producer.
-func GenerateCombinedGCPAttestation(spkiDER []byte) ([]byte, error) {
+func GenerateCombinedGCPAttestation(spkiDER, appHash []byte) ([]byte, error) {
 	rwc, err := legacytpm.OpenTPM("/dev/tpmrm0")
 	if err != nil {
 		return nil, fmt.Errorf("open tpm: %w", err)
@@ -63,7 +64,11 @@ func GenerateCombinedGCPAttestation(spkiDER []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("attest: %w", err)
 	}
-	return proto.Marshal(att)
+	tpmBytes, err := proto.Marshal(att)
+	if err != nil {
+		return nil, fmt.Errorf("marshal attestation: %w", err)
+	}
+	return cbor.Marshal(combinedEnvelope{AppHash: appHash, TPM: tpmBytes})
 }
 
 // sevGuestDevice is where the SEV-SNP guest driver exposes the report ioctl.

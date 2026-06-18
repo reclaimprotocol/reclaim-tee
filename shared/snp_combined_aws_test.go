@@ -20,15 +20,15 @@ func TestVerifyCombinedAWSAttestation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read spki: %v", err)
 	}
-	id, err := VerifyCombinedAWSAttestation(env, spki)
+	app, base, err := VerifyCombinedAWSAttestation(env, spki)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if !strings.HasPrefix(id, SEVSNPPCRIdentityPrefix) || len(id) != len(SEVSNPPCRIdentityPrefix)+64 {
-		t.Fatalf("identity = %q", id)
+	if !strings.HasPrefix(app, SEVSNPAppPrefix) || !strings.HasPrefix(base, SEVSNPBasePrefix) {
+		t.Fatalf("bad identities app=%q base=%q", app, base)
 	}
-	if _, err := VerifyCombinedAWSAttestation(env, []byte("wrong spki")); err == nil {
+	if _, _, err := VerifyCombinedAWSAttestation(env, []byte("wrong spki")); err == nil {
 		t.Fatal("expected binding failure with wrong SPKI")
 	}
-	t.Logf("verified AWS combined attestation, identity = %s", id)
+	t.Logf("verified AWS combined: app=%s base=%s", app, base)
 }

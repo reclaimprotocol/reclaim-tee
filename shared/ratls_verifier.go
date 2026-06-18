@@ -92,13 +92,15 @@ func validateGCPCS(attestation []byte, peerRole string, actualHash [32]byte, log
 // validateSEVSNP verifies a combined vTPM+SEV-SNP attestation: the AK cert chains
 // to the Google vTPM root, the SEV report to the AMD root, report_data binds the
 // AK to this cert's SPKI (anti-splice), and the AK-signed quote pins PCR 8 (app)
-// + PCR 11 (base). Returns the code identity "snp-pcr:<hex(sha256(PCR11||PCR8))>".
+// + PCR 11 (base). Returns the app (payload) identity "snp-app:<hex(appHash)>".
 func validateSEVSNP(attestation, spkiDER []byte) (string, error) {
-	id, err := VerifyCombinedSEVSNPAttestation(attestation, spkiDER)
+	app, _, err := VerifyCombinedSEVSNPAttestation(attestation, spkiDER)
 	if err != nil {
 		return "", fmt.Errorf("ratls: %w", err)
 	}
-	return id, nil
+	// RA-TLS peer pinning matches the app (payload) identity; the per-cloud base
+	// is pinned at the router/attestor on admission.
+	return app, nil
 }
 
 // findExtension returns the value of the first cert extension matching oid, or
