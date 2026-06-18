@@ -267,8 +267,11 @@ func validateRouterConfig(c *TEETConfig) error {
 	if shared.IsProductionTEE() {
 		required = append(required,
 			struct{ name, value string }{"EXPECTED_PEER_IMAGE_DIGEST", c.ExpectedPeerImageDigest},
-			struct{ name, value string }{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey},
 		)
+		if !shared.SNPStaticOPRFTest() {
+			required = append(required,
+				struct{ name, value string }{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey})
+		}
 	}
 	for _, r := range required {
 		if r.value == "" {
