@@ -77,7 +77,7 @@ func (t *TEEK) refreshAttestation() error {
 	// Cache the new attestation
 	t.attestationMutex.Lock()
 	t.cachedAttestation = attestationReport
-	t.attestationExpiry = time.Now().Add(5 * time.Minute) // Cache valid for 5 minutes
+	t.attestationExpiry = time.Now().Add(shared.AttestationCacheTTL())
 	t.attestationMutex.Unlock()
 
 	t.logger.Debug("Cached new attestation")

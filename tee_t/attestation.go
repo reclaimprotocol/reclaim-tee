@@ -62,7 +62,7 @@ func (t *TEET) refreshAttestation() error {
 	attestationReport := &teeproto.AttestationReport{Type: attestationReportType(), Report: raw}
 	t.attestationMutex.Lock()
 	t.cachedAttestation = attestationReport
-	t.attestationExpiry = time.Now().Add(5 * time.Minute)
+	t.attestationExpiry = time.Now().Add(shared.AttestationCacheTTL())
 	t.attestationMutex.Unlock()
 	t.logger.Debug("Cached new attestation",
 		zap.String("type", attestationReport.Type),

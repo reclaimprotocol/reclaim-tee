@@ -45,6 +45,31 @@ const InitialRegisterRetryWindow = 2 * time.Minute
 // refreshing every 4 keeps new handshakes validating cleanly.
 const RATLSRefreshInterval = 4 * time.Minute
 
+// SEV-SNP attestations are bounded by cert validity (AWS NitroTPM leaf ~3h),
+// not a short TTL, and regenerating them is CPU-heavy. 2h stays inside the
+// leaf window while avoiding needless churn.
+const RATLSRefreshIntervalSNP = 2 * time.Hour
+
+// ratlsRefreshInterval picks the cert-refresh cadence for the active TEE mode.
+func ratlsRefreshInterval() time.Duration {
+	if IsSEVSNPMode() {
+		return RATLSRefreshIntervalSNP
+	}
+
+	return RATLSRefreshInterval
+}
+
+// AttestationCacheTTL is how long a TEE may serve a cached attestation before
+// regenerating. Kept above the refresh cadence so the periodic postRefresh
+// (not a lazy cache-miss) drives regeneration.
+func AttestationCacheTTL() time.Duration {
+	if IsSEVSNPMode() {
+		return RATLSRefreshIntervalSNP + 10*time.Minute
+	}
+
+	return 5 * time.Minute
+}
+
 // RunHeartbeats fires a heartbeat to the router every `interval` until
 // ctx is cancelled. On ErrRouterNotFound (router lost our pair_id, e.g.
 // after a restart in single-replica mode), it calls onLost to re-register;
@@ -150,7 +175,7 @@ func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func(
 		}
 	}
 
-	ticker := time.NewTicker(RATLSRefreshInterval)
+	ticker := time.NewTicker(ratlsRefreshInterval())
 	defer ticker.Stop()
 	for {
 		select {
