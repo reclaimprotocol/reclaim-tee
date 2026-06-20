@@ -8,7 +8,6 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY ftp_prox
 # PCR 8) inside a self-contained Docker container (ukify + systemd-repart; no
 # host installs). The loader/app binaries compile on the host with the Go cache.
 #
-#   ./deploy/snp-build-image.sh mini [TAG]    minimal no-rootfs UKI (prober in initrd)
 #   ./deploy/snp-build-image.sh tier [TAG]    base UKI + prober as the app
 #   ./deploy/snp-build-image.sh tee  [TAG]    base UKI + real tee_t as the app
 #   ./deploy/snp-build-image.sh clean         remove build outputs
@@ -96,11 +95,6 @@ run_in_container() {
 }
 
 case "${1:-}" in
-    mini)
-        build_prober "${2:-mini}"
-        echo "[mini] building minimal no-rootfs UKI image..."
-        run_in_container mini-build.sh
-        ;;
     tier)
         build_loader
         build_prober "${2:-tier}"
@@ -131,5 +125,5 @@ case "${1:-}" in
             sudo rm -rf "${IMG_DIR}"/*.raw "${IMG_DIR}/app-bundle.tar" "${IMG_DIR}/mkosi.extra/usr/local/bin"
         echo "[clean] done"
         ;;
-    *) echo "usage: $0 {mini [TAG]|tier [TAG]|tee <k|t> [TAG]|clean}" >&2; exit 1 ;;
+    *) echo "usage: $0 {tier [TAG]|tee <k|t> [TAG]|clean}" >&2; exit 1 ;;
 esac
