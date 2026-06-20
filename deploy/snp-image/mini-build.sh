@@ -13,7 +13,7 @@ cd /work
 
 PROBER=/work/mkosi.extra/usr/local/bin/snp-prober
 [[ -f "${PROBER}" ]] || { echo "prober missing at ${PROBER}" >&2; exit 1; }
-KERNEL="$(ls /boot/vmlinuz-*-gcp 2>/dev/null | sort | tail -1)"
+KERNEL="$(ls /boot/vmlinuz-* 2>/dev/null | grep -v -- '-rescue' | sort | tail -1)"
 [[ -n "${KERNEL}" ]] || { echo "no gcp kernel in container /boot" >&2; exit 1; }
 STUB=/usr/lib/systemd/boot/efi/linuxx64.efi.stub
 CMDLINE="console=ttyS0,115200"

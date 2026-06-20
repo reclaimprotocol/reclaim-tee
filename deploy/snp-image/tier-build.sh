@@ -15,27 +15,29 @@ LOADER=/work/mkosi.extra/usr/local/bin/snp-loader
 # APP defaults to the prober; the `tee` build sets APP_BIN to the real tee_t.
 APP="${APP_BIN:-/work/mkosi.extra/usr/local/bin/snp-prober}"
 [[ -f "${LOADER}" && -f "${APP}" ]] || { echo "loader/app binary missing: ${LOADER} / ${APP}" >&2; exit 1; }
-KERNEL="$(ls /boot/vmlinuz-*-gcp 2>/dev/null | sort | tail -1)"
+KERNEL="$(ls /boot/vmlinuz-* 2>/dev/null | grep -v -- '-rescue' | sort | tail -1)"
 STUB=/usr/lib/systemd/boot/efi/linuxx64.efi.stub
-CMDLINE="console=ttyS0,115200"
+CMDLINE="${SNP_CMDLINE:-console=ttyS0,115200}"
 SEED=b5f8a3c2-1d4e-4a6b-9c8d-7e0f1a2b3c4d
 
 # 1) STABLE base initrd: loader as /init (no app code -> base never changes per release).
 rm -rf /tmp/ir; mkdir -p /tmp/ir/proc /tmp/ir/sys /tmp/ir/dev /tmp/ir/run
 cp "${LOADER}" /tmp/ir/init; chmod 0755 /tmp/ir/init
 
-# Bundle the cloud NIC driver (gve on GCP — not builtin; the loader inserts it).
-# Decompressed here so the loader can use a plain finit_module.
+# Bundle cloud-specific non-builtin modules; the loader inserts them at boot.
+# MODULES: "gve" (GCP NIC) or "sev-guest" (AWS — not builtin there). Decompressed
+# for a plain finit_module.
 mkdir -p /tmp/ir/modules
 KVER="$(ls /usr/lib/modules | head -1)"
-GVE="$(find "/usr/lib/modules/${KVER}" -name 'gve.ko*' | head -1)"
-if [[ -n "${GVE}" ]]; then
-    case "${GVE}" in
-        *.zst) zstd -dqf -o /tmp/ir/modules/gve.ko "${GVE}" ;;
-        *)     cp "${GVE}" /tmp/ir/modules/gve.ko ;;
+for m in ${MODULES:-gve}; do
+    ko="$(find "/usr/lib/modules/${KVER}" -name "${m}.ko*" | head -1)"
+    [[ -n "${ko}" ]] || { echo "[tier] WARN: NIC module ${m} not found in kernel ${KVER}"; continue; }
+    case "${ko}" in
+        *.zst) zstd -dqf -o "/tmp/ir/modules/${m}.ko" "${ko}" ;;
+        *)     cp "${ko}" "/tmp/ir/modules/${m}.ko" ;;
     esac
-    echo "[tier] bundled NIC module: gve.ko ($(du -h /tmp/ir/modules/gve.ko | cut -f1))"
-fi
+    echo "[tier] bundled NIC module: ${m}.ko ($(du -h "/tmp/ir/modules/${m}.ko" | cut -f1))"
+done
 
 # cpio --reproducible normalizes inode/device numbers but NOT mtimes, and the
 # freshly-built loader has a per-build mtime; clamp everything to the epoch.

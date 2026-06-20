@@ -22,7 +22,17 @@ PROBER_SRC="${IMG_DIR}/prober"
 PROBER_DST="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-prober"
 TEET_DST="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-teet"
 DOCKER="${DOCKER:-docker}"
-BUILDER_IMG="snp-img-builder"
+
+# Target cloud selects the kernel + which non-builtin modules the loader must
+# bundle+insert. GCP: gve (NIC) is a module; sev-guest/tpm/nvme are builtin.
+# AWS: ena (NIC)/nvme/tpm are builtin, but sev-guest IS a module.
+CLOUD="${CLOUD:-gcp}"
+case "${CLOUD}" in
+    gcp) KERNEL_PKG=linux-image-gcp; MODULES=gve ;;
+    aws) KERNEL_PKG="linux-image-6.17.0-1017-aws=6.17.0-1017.17~24.04.1"; MODULES="tsm_report sev-guest" ;;
+    *)   echo "unknown CLOUD=${CLOUD} (use gcp|aws)" >&2; exit 1 ;;
+esac
+BUILDER_IMG="snp-img-builder-${CLOUD}"
 
 build_prober() {
     local tag=$1
@@ -44,16 +54,20 @@ build_loader() {
     echo "[build] loader sha256: $(sha256sum "${dst}" | cut -d' ' -f1)"
 }
 
-build_teet() {
-    echo "[build] compiling the real tee_t (main module) as the app..."
-    mkdir -p "$(dirname "${TEET_DST}")"
+# build_tee compiles tee_k or tee_t (role = k|t) into TEE_DST.
+TEE_DST=""
+build_tee() {
+    local role="$1"
+    TEE_DST="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-tee${role}"
+    echo "[build] compiling the real tee_${role} (main module) as the app..."
+    mkdir -p "$(dirname "${TEE_DST}")"
     # Match the prod enclave build tags (no-ops for file selection here, but
     # faithful to Dockerfile.enclave). CGO off gives osusergo/netgo for free.
     ( cd "${REPO_ROOT}" && GOFLAGS=-mod=mod GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
         go build -trimpath -tags 'enclave osusergo netgo static_build' \
-        -ldflags "-s -w -buildid= -extldflags=-static" -o "${TEET_DST}" ./tee_t )
-    chmod 0755 "${TEET_DST}"
-    echo "[build] tee_t sha256: $(sha256sum "${TEET_DST}" | cut -d' ' -f1) ($(du -h "${TEET_DST}" | cut -f1))"
+        -ldflags "-s -w -buildid= -extldflags=-static" -o "${TEE_DST}" "./tee_${role}" )
+    chmod 0755 "${TEE_DST}"
+    echo "[build] tee_${role} sha256: $(sha256sum "${TEE_DST}" | cut -d' ' -f1) ($(du -h "${TEE_DST}" | cut -f1))"
 }
 
 # make_bundle tars a staging dir into a deterministic app bundle. The loader
@@ -68,13 +82,15 @@ make_bundle() {
 }
 
 run_in_container() {
+    echo "[build] cloud=${CLOUD} kernel=${KERNEL_PKG} modules=${MODULES}"
     ${DOCKER} build \
+        --build-arg KERNEL_PKG="${KERNEL_PKG}" \
         --build-arg http_proxy= --build-arg https_proxy= \
         --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg no_proxy= \
         -t "${BUILDER_IMG}" "${IMG_DIR}"
     ${DOCKER} run --rm --privileged \
         -e http_proxy= -e https_proxy= -e HTTP_PROXY= -e HTTPS_PROXY= \
-        -e APP_BIN="${APP_BIN:-}" \
+        -e APP_BIN="${APP_BIN:-}" -e MODULES="${MODULES}" -e SNP_CMDLINE="${SNP_CMDLINE:-}" \
         -v /dev:/dev -v "${IMG_DIR}:/work" \
         "${BUILDER_IMG}" bash "/work/$1"
 }
@@ -94,17 +110,19 @@ case "${1:-}" in
         APP_BIN=/work/app-bundle.tar run_in_container tier-build.sh
         ;;
     tee)
+        role="${2:-t}"
+        case "${role}" in k|t) ;; *) echo "usage: $0 tee <k|t> [TAG]" >&2; exit 1 ;; esac
         build_loader
-        build_teet
-        echo "[tee] assembling app bundle (tee_t + mpcl circuits + CA certs)..."
+        build_tee "${role}"
+        echo "[tee] assembling app bundle (tee_${role} + mpcl circuits + CA certs)..."
         stage="$(mktemp -d)"
-        cp "${TEET_DST}" "${stage}/app"
+        cp "${TEE_DST}" "${stage}/app"
         mpcdir="$(cd "${REPO_ROOT}" && GOFLAGS=-mod=mod go list -m -f '{{.Dir}}' github.com/markkurossi/mpc)"
         mkdir -p "${stage}/mpcl"; cp -r "${mpcdir}/pkg" "${stage}/mpcl/pkg"
         mkdir -p "${stage}/etc/ssl/certs"
         cp /etc/ssl/certs/ca-certificates.crt "${stage}/etc/ssl/certs/" 2>/dev/null || echo "[tee] warn: no host CA bundle"
         make_bundle "${stage}"; rm -rf "${stage}"
-        echo "[tee] building two-tier image with the real tee_t as the app..."
+        echo "[tee] building two-tier image with the real tee_${role} as the app..."
         APP_BIN=/work/app-bundle.tar run_in_container tier-build.sh
         ;;
     clean)
@@ -113,5 +131,5 @@ case "${1:-}" in
             sudo rm -rf "${IMG_DIR}"/*.raw "${IMG_DIR}/app-bundle.tar" "${IMG_DIR}/mkosi.extra/usr/local/bin"
         echo "[clean] done"
         ;;
-    *) echo "usage: $0 {mini [TAG]|tier [TAG]|tee [TAG]|clean}" >&2; exit 1 ;;
+    *) echo "usage: $0 {mini [TAG]|tier [TAG]|tee <k|t> [TAG]|clean}" >&2; exit 1 ;;
 esac
