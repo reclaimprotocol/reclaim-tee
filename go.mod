@@ -12,6 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.77.0
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.42.3
 	github.com/consensys/gnark v0.14.0
 	github.com/coreos/go-json v0.0.0-20231102161613-e49c8866685a
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1

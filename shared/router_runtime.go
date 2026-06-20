@@ -238,6 +238,28 @@ func ExtractIdentityFromRATLS(ratls *RATLSManager, logger *Logger) (imageDigest,
 // disambiguates the secret name. Requires GOOGLE_PROJECT_ID, GOOGLE_KMS_
 // LOCATION, GOOGLE_KMS_KEYRING, GOOGLE_KMS_KEY to be set.
 func LoadOPRFShare(role, deploymentKey string, logger *Logger) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// On AWS SEV-SNP the share lives in AWS Secrets Manager (same secret name,
+	// seeded from the GCP-exported share); GCP keeps using Secret Manager + KMS.
+	if IsAWSSEVSNP() {
+		store, err := NewAWSSecretStore(ctx, GetEnvOrDefault("AWS_OPRF_KMS_KEY_ID", ""))
+		if err != nil {
+			return nil, fmt.Errorf("new aws secret store: %w", err)
+		}
+		share, err := store.LoadOrCreateOPRFShare(ctx, role, deploymentKey)
+		if err != nil {
+			return nil, fmt.Errorf("LoadOrCreateOPRFShare (aws): %w", err)
+		}
+		if logger != nil {
+			logger.Info("Loaded OPRF share from AWS Secrets Manager",
+				zap.String("role", role),
+				zap.String("deployment_key", deploymentKey))
+		}
+		return share, nil
+	}
+
 	required := []struct {
 		name, value string
 	}{
@@ -251,9 +273,6 @@ func LoadOPRFShare(role, deploymentKey string, logger *Logger) ([]byte, error) {
 			return nil, fmt.Errorf("%s required when KMS_ENCLAVE_DOMAIN_KEY is set", r.name)
 		}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	store, err := NewSecretStore(ctx, required[0].value, required[1].value, required[2].value, required[3].value)
 	if err != nil {
