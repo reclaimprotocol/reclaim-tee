@@ -1,226 +1,228 @@
 #!/bin/bash
 set -euo pipefail
 
-# =============================================================================
-# Bring up ONE cross-cloud SEV-SNP TEE pair (tee_k + tee_t split across GCP and
-# AWS) wired to the isolated TEST router, concurrently with any existing pair.
-# Images are assumed pre-built (build them separately with snp-gcp-image.sh /
-# snp-aws-image.sh); this script only creates VMs, injects per-deployment env
-# (tee-env on GCP, user-data on AWS), and waits for both to serve /health.
+# Bring up / tear down ONE SEV-SNP TEE pair, any cloud per half (default
+# K@gcp + T@aws). Each half independently picks a cloud (gcp|aws), a location
+# (gcp zone | aws region) and a pre-built image (snp-build.sh).
 #
-#   ./deploy/snp-pair.sh up       create + wire both TEEs, poll health
-#   ./deploy/snp-pair.sh status   show both VMs + /health
-#   ./deploy/snp-pair.sh down     delete both VMs, release the EIP
+#   ./deploy/snp-pair.sh up | status | down
+#   ./deploy/snp-pair.sh reset <k|t>     reboot one half (new pair_id, same IP)
 #
-# Role x cloud is configurable (default: tee_k@GCP + tee_t@AWS, the mirror of
-# the first pair). Override via GCP_ROLE / AWS_ROLE (k|t). Everything else has
-# defaults below and may be overridden inline or in deploy/.env.
-#
-# IP wiring (no reserved/idle charges): GCP self-IP is auto-discovered by the
-# app; AWS gets one Elastic IP (free while associated). GCP is created first so
-# AWS boots last with both SELF (its EIP) and PEER (GCP's IP) already correct.
-# =============================================================================
+# Per-half overrides via env or deploy/.env: SNP_K_CLOUD / SNP_K_LOCATION /
+# SNP_K_IMAGE and the SNP_T_* equivalents. A stable IP is allocated per half up
+# front (gcp static address, aws EIP) so any cloud combination cross-wires and
+# survives a reset. Everything deployment-specific lives in deploy/.env.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${SCRIPT_DIR}/.env" ]]; then set -a; source "${SCRIPT_DIR}/.env"; set +a; fi
 source "${SCRIPT_DIR}/_lib.sh"
 
-# ---- configuration (env-overridable) ----------------------------------------
-PAIR_NAME="${SNP_PAIR_NAME:-snp-pair2}"
-GCP_PROJECT="${GCP_PROJECT:?set GCP_PROJECT (or put it in deploy/.env)}"
-GCP_ZONE="${SNP_PAIR_GCP_ZONE:?set SNP_PAIR_GCP_ZONE in deploy/.env}"
-AWS_REGION="${SNP_PAIR_AWS_REGION:?set SNP_PAIR_AWS_REGION in deploy/.env}"
-AWS_TYPE="${SNP_PAIR_AWS_TYPE:-c6a.large}"
-AWS_IAM_PROFILE="${SNP_AWS_IAM_PROFILE:-snp-tee-logger}"
-
-GCP_ROLE="${GCP_ROLE:-k}"
-AWS_ROLE="${AWS_ROLE:-t}"
-
+GCP_PROJECT="${GCP_PROJECT:?set GCP_PROJECT in deploy/.env}"
+PAIR_NAME="${SNP_PAIR_NAME:-snp-pair}"
 ROUTER_URL="${SNP_ROUTER_URL:?set SNP_ROUTER_URL in deploy/.env}"
 JWT_ISSUER="${SNP_JWT_ISSUER:?set SNP_JWT_ISSUER in deploy/.env}"
 PORT="${SNP_PORT:-8081}"
 LOG_LEVEL="${SNP_LOG_LEVEL:-debug}"
 STATIC_OPRF="${SNP_TEST_STATIC_OPRF:-1}"
+AWS_TYPE="${SNP_PAIR_AWS_TYPE:-c6a.large}"
+AWS_IAM_PROFILE="${SNP_AWS_IAM_PROFILE:-snp-tee-logger}"
+GCP_MACHINE="${SNP_GCP_MACHINE:-n2d-standard-2}"
+KEYNAME="${SNP_AWS_KEYNAME:-snp-img-key}"
+SIGNKEY="${SCRIPT_DIR}/.test-router-signing-key"
 
-# Cross-cloud-stable app-bundle digests (snp-app:<hash>), one per role. Same
-# bundle on either cloud, so the switched pair reuses these unchanged.
+K_CLOUD="${SNP_K_CLOUD:-gcp}"
+T_CLOUD="${SNP_T_CLOUD:-aws}"
+default_loc() { [[ "$1" == gcp ]] && echo "${SNP_PAIR_GCP_ZONE:?set SNP_PAIR_GCP_ZONE in deploy/.env}" || echo "${SNP_PAIR_AWS_REGION:?set SNP_PAIR_AWS_REGION in deploy/.env}"; }
+default_img() { [[ "$1" == gcp ]] && echo "snp-tee${2}-gcp" || echo "tee${2}-aws"; }
+K_LOC="${SNP_K_LOCATION:-$(default_loc "${K_CLOUD}")}"
+T_LOC="${SNP_T_LOCATION:-$(default_loc "${T_CLOUD}")}"
+K_IMG="${SNP_K_IMAGE:-$(default_img "${K_CLOUD}" k)}"
+T_IMG="${SNP_T_IMAGE:-$(default_img "${T_CLOUD}" t)}"
 K_DIGEST="${SNP_K_DIGEST:?set SNP_K_DIGEST in deploy/.env}"
 T_DIGEST="${SNP_T_DIGEST:?set SNP_T_DIGEST in deploy/.env}"
+K_DEPLOY_KEY="${TEE_K_DEPLOYMENT_KEY:?set TEE_K_DEPLOYMENT_KEY in deploy/.env}"
+T_DEPLOY_KEY="${TEE_T_DEPLOYMENT_KEY:?set TEE_T_DEPLOYMENT_KEY in deploy/.env}"
 
-# Pre-built images: GCP image name + AWS AMI tag (resolved to an AMI by name
-# 'snp-<tag>', mirroring snp-aws-image.sh). Must match the role on that cloud.
-GCP_IMAGE="${SNP_GCP_IMAGE:-snp-teek-gcp}"
-AWS_IMAGE_TAG="${SNP_AWS_IMAGE_TAG:-teet-aws}"
-
-SIGNKEY="${SCRIPT_DIR}/.test-router-signing-key"
-PEM="${SCRIPT_DIR}/snp-img-key.pem"
-KEYNAME="snp-img-key"
-GCP_VM="${PAIR_NAME}-${GCP_ROLE}-gcp"
-AWS_TAG="${PAIR_NAME}-${AWS_ROLE}-aws"
-SGNAME="${PAIR_NAME}-sg"
-
-# ---- cloud wrappers (gcloud wants the proxy unset; aws wants it kept) --------
 g() { ( unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY ftp_proxy FTP_PROXY 2>/dev/null || true; gcloud_retry gcloud "$@" --project="${GCP_PROJECT}" ); }
-awsq() { aws --region "${AWS_REGION}" "$@"; }
-
-role_digest() { [[ "$1" == "k" ]] && echo "${K_DIGEST}" || echo "${T_DIGEST}"; }
+awsr() { local r="$1"; shift; aws --region "$r" "$@"; }
+gcp_region() { echo "${1%-*}"; }
 
 jwt_pubkey() {
-    [[ -f "${SIGNKEY}" ]] || { echo "missing ${SIGNKEY} (the test router signing key)" >&2; exit 1; }
+    [[ -f "${SIGNKEY}" ]] || { echo "missing ${SIGNKEY} (test router signing key)" >&2; exit 1; }
     printf '%b' "$(cat "${SIGNKEY}")" | openssl ec -pubout 2>/dev/null | awk 'NR>1{printf "\\n"}{printf "%s",$0}'
 }
+find_ami() { awsr "$1" ec2 describe-images --owners self --filters "Name=name,Values=snp-$2" "Name=state,Values=available" --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text 2>/dev/null; }
 
-find_ami() {
-    awsq ec2 describe-images --owners self \
-        --filters "Name=name,Values=snp-${AWS_IMAGE_TAG}" "Name=state,Values=available" \
-        --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text 2>/dev/null
-}
-
-# ---- up ----------------------------------------------------------------------
-cmd_up() {
-    local jwt; jwt="$(jwt_pubkey)"
-    local gcp_peer_digest; gcp_peer_digest="$(role_digest "${AWS_ROLE}")"
-    local aws_peer_digest; aws_peer_digest="$(role_digest "${GCP_ROLE}")"
-    local ami; ami="$(find_ami)"
-    [[ -n "${ami}" && "${ami}" != "None" ]] || { echo "no AMI snp-${AWS_IMAGE_TAG} in ${AWS_REGION}; build it first (snp-aws-image.sh image ${AWS_IMAGE_TAG})" >&2; exit 1; }
-    g compute images describe "${GCP_IMAGE}" --format='value(name)' >/dev/null 2>&1 \
-        || { echo "no GCP image ${GCP_IMAGE}; build it first (snp-gcp-image.sh image <tag>)" >&2; exit 1; }
-    echo "[up] pair ${PAIR_NAME}: ${GCP_ROLE}@gcp (${GCP_IMAGE}) + ${AWS_ROLE}@aws (${ami})"
-
-    echo "[up] allocating AWS Elastic IP..."
-    local alloc eip
-    alloc="$(awsq ec2 allocate-address --domain vpc \
-        --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=${AWS_TAG}}]" \
-        --query 'AllocationId' --output text)"
-    eip="$(awsq ec2 describe-addresses --allocation-ids "${alloc}" --query 'Addresses[0].PublicIp' --output text)"
-    echo "[up] EIP ${eip} (${alloc})"
-
-    echo "[up] ensuring GCP firewall tcp:${PORT}..."
+ensure_gcp_fw() {
     g compute firewall-rules create "snp-test-allow-${PORT}" --network=default \
-        --direction=INGRESS --action=ALLOW --rules="tcp:${PORT}" --source-ranges=0.0.0.0/0 \
-        --quiet >/dev/null 2>&1 || true
-
-    echo "[up] creating GCP ${GCP_VM} (peer = AWS EIP, self auto-discovered)..."
-    local genv; genv="$(mktemp)"
-    cat > "${genv}" <<EOF
-ROUTER_URL=${ROUTER_URL}
-PEER_ADDR=${eip}:${PORT}
-EXPECTED_PEER_IMAGE_DIGEST=${gcp_peer_digest}
-JWT_PUBLIC_KEY=${jwt}
-EXPECTED_JWT_ISSUER=${JWT_ISSUER}
-SNP_TEST_STATIC_OPRF=${STATIC_OPRF}
-PORT=${PORT}
-LOG_LEVEL=${LOG_LEVEL}
-GCP_PROJECT_ID=${GCP_PROJECT}
-EOF
-    g compute instances delete "${GCP_VM}" --zone="${GCP_ZONE}" --quiet >/dev/null 2>&1 || true
-    g compute instances create "${GCP_VM}" --zone="${GCP_ZONE}" \
-        --machine-type=n2d-standard-2 \
-        --confidential-compute-type=SEV_SNP --min-cpu-platform="AMD Milan" \
-        --maintenance-policy=TERMINATE \
-        --no-shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
-        --image="${GCP_IMAGE}" --image-project="${GCP_PROJECT}" \
-        --metadata-from-file "tee-env=${genv}" --quiet >/dev/null
-    rm -f "${genv}"
-
-    local gip
-    gip="$(g compute instances describe "${GCP_VM}" --zone="${GCP_ZONE}" \
-        --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null)"
-    [[ -n "${gip}" && "${gip}" != "None" ]] || { echo "[up] GCP VM has no external IP" >&2; exit 1; }
-    echo "[up] GCP ${GCP_VM} IP ${gip}"
-
-    echo "[up] creating AWS ${AWS_TAG} (self = EIP, peer = GCP IP)..."
-    local sgid; sgid="$(ensure_sg)"
-    local aenv; aenv="$(mktemp)"
-    cat > "${aenv}" <<EOF
-ROUTER_URL=${ROUTER_URL}
-SELF_ADDR=${eip}:${PORT}
-PEER_ADDR=${gip}:${PORT}
-EXPECTED_PEER_IMAGE_DIGEST=${aws_peer_digest}
-JWT_PUBLIC_KEY=${jwt}
-EXPECTED_JWT_ISSUER=${JWT_ISSUER}
-SNP_TEST_STATIC_OPRF=${STATIC_OPRF}
-PORT=${PORT}
-LOG_LEVEL=${LOG_LEVEL}
-CLOUDWATCH_LOG_GROUP=/reclaim-tee/snp
-AWS_REGION=${AWS_REGION}
-EOF
-    local iid
-    iid="$(awsq ec2 run-instances --image-id "${ami}" --instance-type "${AWS_TYPE}" \
-        --cpu-options AmdSevSnp=enabled \
-        --key-name "${KEYNAME}" --security-group-ids "${sgid}" \
-        --iam-instance-profile "Name=${AWS_IAM_PROFILE}" \
-        --user-data "file://${aenv}" \
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${AWS_TAG}}]" \
-        --query 'Instances[0].InstanceId' --output text)"
-    rm -f "${aenv}"
-    echo "[up] AWS instance ${iid}; waiting for running..."
-    awsq ec2 wait instance-running --instance-ids "${iid}"
-    awsq ec2 associate-address --instance-id "${iid}" --allocation-id "${alloc}" >/dev/null
-    echo "[up] EIP ${eip} associated to ${iid}"
-
-    echo "[up] polling /health on both (gcp ${gip}, aws ${eip})..."
-    poll_health "${gip}" "${eip}"
+        --direction=INGRESS --action=ALLOW --rules="tcp:${PORT}" --source-ranges=0.0.0.0/0 --quiet >/dev/null 2>&1 || true
+}
+ensure_sg() {
+    local region="$1" sg="${PAIR_NAME}-sg" sgid
+    sgid="$(awsr "$region" ec2 describe-security-groups --group-names "$sg" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
+    [[ -z "$sgid" || "$sgid" == None ]] && sgid="$(awsr "$region" ec2 create-security-group --group-name "$sg" --description "${PAIR_NAME}" --query 'GroupId' --output text)"
+    awsr "$region" ec2 authorize-security-group-ingress --group-id "$sgid" --protocol tcp --port 22 --cidr 0.0.0.0/0 >/dev/null 2>&1 || true
+    awsr "$region" ec2 authorize-security-group-ingress --group-id "$sgid" --protocol tcp --port "${PORT}" --cidr 0.0.0.0/0 >/dev/null 2>&1 || true
+    echo "$sgid"
 }
 
-ensure_sg() {
-    local sgid
-    sgid="$(awsq ec2 describe-security-groups --group-names "${SGNAME}" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
-    if [[ -z "${sgid}" || "${sgid}" == "None" ]]; then
-        sgid="$(awsq ec2 create-security-group --group-name "${SGNAME}" --description "${PAIR_NAME}" --query 'GroupId' --output text)"
+# alloc_ip <role> <cloud> <loc> -> reserves (or reuses) a stable external IP and prints it.
+alloc_ip() {
+    local role="$1" cloud="$2" loc="$3" name="${PAIR_NAME}-${role}"
+    if [[ "$cloud" == gcp ]]; then
+        local region; region="$(gcp_region "$loc")"
+        g compute addresses create "${name}-ip" --region="$region" >/dev/null 2>&1 || true
+        g compute addresses describe "${name}-ip" --region="$region" --format='value(address)'
+    else
+        local alloc
+        alloc="$(awsr "$loc" ec2 describe-addresses --filters "Name=tag:Name,Values=${name}-aws" --query 'Addresses[0].AllocationId' --output text 2>/dev/null || true)"
+        if [[ -z "$alloc" || "$alloc" == None ]]; then
+            alloc="$(awsr "$loc" ec2 allocate-address --domain vpc --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=${name}-aws}]" --query 'AllocationId' --output text)"
+        fi
+        awsr "$loc" ec2 describe-addresses --allocation-ids "$alloc" --query 'Addresses[0].PublicIp' --output text
     fi
-    awsq ec2 authorize-security-group-ingress --group-id "${sgid}" --protocol tcp --port 22 --cidr 0.0.0.0/0 >/dev/null 2>&1 || true
-    awsq ec2 authorize-security-group-ingress --group-id "${sgid}" --protocol tcp --port "${PORT}" --cidr 0.0.0.0/0 >/dev/null 2>&1 || true
-    echo "${sgid}"
+}
+
+# write_env builds the tee-env / user-data file shared shape + cloud extras.
+write_env() {
+    local f="$1" cloud="$2" role="$3" loc="$4" self_ip="$5" peer_ip="$6" peer_digest="$7" deploy_key="$8"
+    {
+        echo "ROUTER_URL=${ROUTER_URL}"
+        echo "SELF_ADDR=${self_ip}:${PORT}"
+        echo "PEER_ADDR=${peer_ip}:${PORT}"
+        echo "EXPECTED_PEER_IMAGE_DIGEST=${peer_digest}"
+        echo "JWT_PUBLIC_KEY=${JWT}"
+        echo "EXPECTED_JWT_ISSUER=${JWT_ISSUER}"
+        echo "PORT=${PORT}"
+        echo "LOG_LEVEL=${LOG_LEVEL}"
+        if [[ "${STATIC_OPRF}" == 1 ]]; then
+            echo "SNP_TEST_STATIC_OPRF=1"
+        else
+            echo "KMS_ENCLAVE_DOMAIN_KEY=${deploy_key}"
+        fi
+        if [[ "$cloud" == gcp ]]; then
+            echo "GCP_PROJECT_ID=${GCP_PROJECT}"
+            if [[ "${STATIC_OPRF}" != 1 ]]; then
+                echo "GOOGLE_PROJECT_ID=${GCP_PROJECT}"
+                echo "GOOGLE_KMS_KEYRING=${KMS_KEYRING:?set KMS_KEYRING in deploy/.env}"
+                [[ "$role" == k ]] && { echo "GOOGLE_KMS_LOCATION=${TEE_K_KMS_LOCATION:?}"; echo "GOOGLE_KMS_KEY=${TEE_K_KMS_KEY:?}"; } \
+                                   || { echo "GOOGLE_KMS_LOCATION=${TEE_T_KMS_LOCATION:?}"; echo "GOOGLE_KMS_KEY=${TEE_T_KMS_KEY:?}"; }
+            fi
+        else
+            echo "CLOUDWATCH_LOG_GROUP=/reclaim-tee/snp"
+            echo "AWS_REGION=${loc}"
+        fi
+    } > "$f"
+}
+
+# create_half <role> <cloud> <loc> <img> <self_ip> <peer_ip> <peer_digest> <deploy_key>
+create_half() {
+    local role="$1" cloud="$2" loc="$3" img="$4" self_ip="$5" peer_ip="$6" peer_digest="$7" deploy_key="$8"
+    local envf; envf="$(mktemp)"
+    write_env "$envf" "$cloud" "$role" "$loc" "$self_ip" "$peer_ip" "$peer_digest" "$deploy_key"
+    if [[ "$cloud" == gcp ]]; then
+        local vm="${PAIR_NAME}-${role}-gcp"
+        g compute instances describe "$img" >/dev/null 2>&1 || g compute images describe "$img" --format='value(name)' >/dev/null 2>&1 || true
+        g compute instances delete "$vm" --zone="$loc" --quiet >/dev/null 2>&1 || true
+        g compute instances create "$vm" --zone="$loc" --machine-type="${GCP_MACHINE}" \
+            --confidential-compute-type=SEV_SNP --min-cpu-platform="AMD Milan" --maintenance-policy=TERMINATE \
+            --no-shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
+            --image="$img" --image-project="${GCP_PROJECT}" --address="${self_ip}" \
+            --metadata-from-file "tee-env=${envf}" --quiet >/dev/null
+    else
+        local ami sgid iid; ami="$(find_ami "$loc" "$img")"
+        [[ -n "$ami" && "$ami" != None ]] || { echo "no AMI snp-${img} in ${loc}; build it (snp-build.sh ${role} aws)" >&2; rm -f "$envf"; exit 1; }
+        sgid="$(ensure_sg "$loc")"
+        iid="$(awsr "$loc" ec2 run-instances --image-id "$ami" --instance-type "${AWS_TYPE}" --cpu-options AmdSevSnp=enabled \
+            --key-name "${KEYNAME}" --security-group-ids "$sgid" --iam-instance-profile "Name=${AWS_IAM_PROFILE}" \
+            --user-data "file://${envf}" --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${PAIR_NAME}-${role}-aws}]" \
+            --query 'Instances[0].InstanceId' --output text)"
+        awsr "$loc" ec2 wait instance-running --instance-ids "$iid"
+        awsr "$loc" ec2 associate-address --instance-id "$iid" --allocation-id "$(awsr "$loc" ec2 describe-addresses --filters "Name=tag:Name,Values=${PAIR_NAME}-${role}-aws" --query 'Addresses[0].AllocationId' --output text)" >/dev/null
+    fi
+    rm -f "$envf"
 }
 
 poll_health() {
-    local gip="$1" eip="$2" gok="" aok=""
+    local kip="$1" tip="$2" kok="" tok=""
     for i in $(seq 1 48); do
-        [[ -z "${gok}" ]] && curl -fksS --max-time 4 "https://${gip}:${PORT}/health" >/dev/null 2>&1 && { gok=1; echo "  [${i}] gcp ${gip} healthy"; }
-        [[ -z "${aok}" ]] && curl -fksS --max-time 4 "https://${eip}:${PORT}/health" >/dev/null 2>&1 && { aok=1; echo "  [${i}] aws ${eip} healthy"; }
-        [[ -n "${gok}" && -n "${aok}" ]] && { echo "[up] both TEEs healthy. Pair registers with ${ROUTER_URL} on boot."; return 0; }
+        [[ -z "$kok" ]] && curl -fksS --max-time 4 "https://${kip}:${PORT}/health" >/dev/null 2>&1 && { kok=1; echo "  [${i}] K ${kip} healthy"; }
+        [[ -z "$tok" ]] && curl -fksS --max-time 4 "https://${tip}:${PORT}/health" >/dev/null 2>&1 && { tok=1; echo "  [${i}] T ${tip} healthy"; }
+        [[ -n "$kok" && -n "$tok" ]] && { echo "[up] both healthy; pair registers with ${ROUTER_URL} on boot."; return 0; }
         sleep 10
     done
-    echo "[up] not both healthy yet (gcp=${gok:-no} aws=${aok:-no}). Check logs (Cloud Logging / CloudWatch)." >&2
+    echo "[up] not both healthy (K=${kok:-no} T=${tok:-no}). Check Cloud Logging / CloudWatch." >&2
 }
 
-# ---- status ------------------------------------------------------------------
+cmd_up() {
+    JWT="$(jwt_pubkey)"
+    [[ "$K_CLOUD" == gcp || "$T_CLOUD" == gcp ]] && ensure_gcp_fw
+    echo "[up] ${PAIR_NAME}: K@${K_CLOUD}/${K_LOC} (${K_IMG}) + T@${T_CLOUD}/${T_LOC} (${T_IMG})"
+    local kip tip; kip="$(alloc_ip k "$K_CLOUD" "$K_LOC")"; tip="$(alloc_ip t "$T_CLOUD" "$T_LOC")"
+    echo "[up] K IP ${kip}  T IP ${tip}"
+    create_half k "$K_CLOUD" "$K_LOC" "$K_IMG" "$kip" "$tip" "$T_DIGEST" "$K_DEPLOY_KEY"
+    create_half t "$T_CLOUD" "$T_LOC" "$T_IMG" "$tip" "$kip" "$K_DIGEST" "$T_DEPLOY_KEY"
+    echo "[up] polling /health (K ${kip}, T ${tip})..."
+    poll_health "$kip" "$tip"
+}
+
+# half_loc / half_cloud resolve a role's cloud+loc for status/down/reset.
+half_cloud() { [[ "$1" == k ]] && echo "$K_CLOUD" || echo "$T_CLOUD"; }
+half_loc() { [[ "$1" == k ]] && echo "$K_LOC" || echo "$T_LOC"; }
+
 cmd_status() {
-    echo "=== GCP ${GCP_VM} (${GCP_ZONE}) ==="
-    local gip
-    gip="$(g compute instances describe "${GCP_VM}" --zone="${GCP_ZONE}" \
-        --format='value(status,networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || echo "absent")"
-    echo "  ${gip}"
-    [[ "${gip}" != "absent" ]] && { gip="${gip##*$'\t'}"; curl -ks -o /dev/null -w "  https://${gip}:${PORT}/health -> %{http_code}\n" --max-time 6 "https://${gip}:${PORT}/health" || true; }
-    echo "=== AWS ${AWS_TAG} (${AWS_REGION}) ==="
-    awsq ec2 describe-instances --filters "Name=tag:Name,Values=${AWS_TAG}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-        --query 'Reservations[].Instances[].[InstanceId,State.Name,PublicIpAddress]' --output text 2>/dev/null || echo "  absent"
+    for role in k t; do
+        local cloud loc; cloud="$(half_cloud "$role")"; loc="$(half_loc "$role")"
+        echo "=== ${role}@${cloud} (${loc}) ==="
+        if [[ "$cloud" == gcp ]]; then
+            g compute instances describe "${PAIR_NAME}-${role}-gcp" --zone="$loc" --format='value(status,networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || echo "  absent"
+        else
+            awsr "$loc" ec2 describe-instances --filters "Name=tag:Name,Values=${PAIR_NAME}-${role}-aws" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+                --query 'Reservations[].Instances[].[InstanceId,State.Name,PublicIpAddress]' --output text 2>/dev/null || echo "  absent"
+        fi
+    done
 }
 
-# ---- down --------------------------------------------------------------------
-cmd_down() {
-    echo "[down] deleting GCP ${GCP_VM}..."
-    g compute instances delete "${GCP_VM}" --zone="${GCP_ZONE}" --quiet >/dev/null 2>&1 || true
-    echo "[down] terminating AWS ${AWS_TAG}..."
-    local iid
-    iid="$(awsq ec2 describe-instances --filters "Name=tag:Name,Values=${AWS_TAG}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-        --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
-    if [[ -n "${iid}" && "${iid}" != "None" ]]; then
-        awsq ec2 terminate-instances --instance-ids "${iid}" >/dev/null
-        awsq ec2 wait instance-terminated --instance-ids "${iid}"
+cmd_reset() {
+    local role="${1:-}"; case "$role" in k|t) ;; *) echo "usage: $0 reset <k|t>" >&2; exit 1 ;; esac
+    local cloud loc; cloud="$(half_cloud "$role")"; loc="$(half_loc "$role")"
+    if [[ "$cloud" == gcp ]]; then
+        echo "[reset] rebooting ${PAIR_NAME}-${role}-gcp..."
+        g compute instances reset "${PAIR_NAME}-${role}-gcp" --zone="$loc" --quiet
+    else
+        local iid; iid="$(awsr "$loc" ec2 describe-instances --filters "Name=tag:Name,Values=${PAIR_NAME}-${role}-aws" "Name=instance-state-name,Values=running" --query 'Reservations[].Instances[].InstanceId' --output text)"
+        echo "[reset] rebooting ${iid}..."
+        awsr "$loc" ec2 reboot-instances --instance-ids "$iid"
     fi
-    echo "[down] releasing EIP tagged ${AWS_TAG}..."
-    local alloc
-    alloc="$(awsq ec2 describe-addresses --filters "Name=tag:Name,Values=${AWS_TAG}" --query 'Addresses[0].AllocationId' --output text 2>/dev/null || true)"
-    [[ -n "${alloc}" && "${alloc}" != "None" ]] && awsq ec2 release-address --allocation-id "${alloc}" >/dev/null 2>&1 || true
-    awsq ec2 delete-security-group --group-name "${SGNAME}" >/dev/null 2>&1 || true
-    echo "[down] pair ${PAIR_NAME} torn down (images kept)."
+}
+
+cmd_down() {
+    for role in k t; do
+        local cloud loc; cloud="$(half_cloud "$role")"; loc="$(half_loc "$role")"
+        if [[ "$cloud" == gcp ]]; then
+            local region; region="$(gcp_region "$loc")"
+            echo "[down] deleting ${PAIR_NAME}-${role}-gcp + its static IP..."
+            g compute instances delete "${PAIR_NAME}-${role}-gcp" --zone="$loc" --quiet >/dev/null 2>&1 || true
+            g compute addresses delete "${PAIR_NAME}-${role}-ip" --region="$region" --quiet >/dev/null 2>&1 || true
+        else
+            echo "[down] terminating ${PAIR_NAME}-${role}-aws + releasing its EIP..."
+            local iid; iid="$(awsr "$loc" ec2 describe-instances --filters "Name=tag:Name,Values=${PAIR_NAME}-${role}-aws" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
+            if [[ -n "$iid" && "$iid" != None ]]; then
+                awsr "$loc" ec2 terminate-instances --instance-ids $iid >/dev/null
+                awsr "$loc" ec2 wait instance-terminated --instance-ids $iid
+            fi
+            local alloc; alloc="$(awsr "$loc" ec2 describe-addresses --filters "Name=tag:Name,Values=${PAIR_NAME}-${role}-aws" --query 'Addresses[0].AllocationId' --output text 2>/dev/null || true)"
+            [[ -n "$alloc" && "$alloc" != None ]] && awsr "$loc" ec2 release-address --allocation-id "$alloc" >/dev/null 2>&1 || true
+            awsr "$loc" ec2 delete-security-group --group-name "${PAIR_NAME}-sg" >/dev/null 2>&1 || true
+        fi
+    done
+    echo "[down] ${PAIR_NAME} torn down (images kept)."
 }
 
 case "${1:-}" in
     up)     cmd_up ;;
     status) cmd_status ;;
     down)   cmd_down ;;
-    *) echo "usage: $0 {up|status|down}" >&2; exit 1 ;;
+    reset)  cmd_reset "${2:-}" ;;
+    *) echo "usage: $0 {up|status|down|reset <k|t>}" >&2; exit 1 ;;
 esac
