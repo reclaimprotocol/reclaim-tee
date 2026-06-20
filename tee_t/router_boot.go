@@ -140,20 +140,16 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		return nil
 	}
 
-	// The pair_id arrives on the wire from TEE_K, not the env. When it does,
-	// register + spin up the heartbeat. TEE_K may reconnect over the life
-	// of the process, firing this hook each time; sync.Once guarantees we
-	// register + start the heartbeat exactly once. The pair_id never
-	// changes for the life of this process.
-	// onPairAssigned must return fast — it's called synchronously from the
-	// peer-link read path, and blocking here stalls every subsequent
-	// envelope from TEE_K. Push the (potentially long) register+retry +
-	// heartbeat goroutine off to its own goroutine so the read loop
-	// proceeds to the TEEKAttestation handshake immediately. startOnce
-	// guarantees we only spawn ONE such goroutine even if K reconnects.
+	// Register + heartbeat once on the first pair_id; re-register if TEE_K
+	// reconnects under a new pair_id. Each register runs off the read path.
 	var startOnce sync.Once
+	var pairMu sync.Mutex
+	var registeredPair string
 	teet.onPairAssigned = func(pairID string) {
 		startOnce.Do(func() {
+			pairMu.Lock()
+			registeredPair = pairID
+			pairMu.Unlock()
 			go func() {
 				if err := shared.RegisterWithRetry(ctx, register, logger); err != nil {
 					logger.Critical("router registration failed after retries", zap.Error(err))
@@ -162,6 +158,24 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 				shared.RunHeartbeats(ctx, teet, "T", logger, register, shared.RouterHeartbeatInterval)
 			}()
 		})
+
+		pairMu.Lock()
+		changed := registeredPair != "" && registeredPair != pairID
+		if changed {
+			registeredPair = pairID
+		}
+		pairMu.Unlock()
+		if !changed {
+			return
+		}
+		// peer reconnected under a new pair_id -> give the new pair its T half
+		go func() {
+			if err := shared.RegisterWithRetry(ctx, register, logger); err != nil {
+				logger.Error("re-register after peer pair_id change failed", zap.Error(err))
+				return
+			}
+			logger.Info("re-registered after peer pair_id change", zap.String("pair_id", pairID))
+		}()
 	}
 
 	if teet.ratls != nil {
