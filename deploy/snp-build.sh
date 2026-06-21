@@ -26,6 +26,10 @@ BUNDLE_HOST="${IMG_DIR}/app-bundle.tar"
 DOCKER="${DOCKER:-docker}"
 AWS_TYPE="${AWS_SNP_TYPE:-c6a.large}"
 
+# The AWS steps go through a flaky local proxy; let the CLI retry dropped
+# connections itself so one blip doesn't kill a 10-min VM-import build.
+export AWS_MAX_ATTEMPTS="${AWS_MAX_ATTEMPTS:-10}" AWS_RETRY_MODE="${AWS_RETRY_MODE:-standard}"
+
 # Per-cloud kernel + modules; versions pinned in snp-image/pins.env.
 kernel_for() { [[ "$1" == aws ]] && echo "${SNP_AWS_KERNEL_PKG}" || echo "${SNP_GCP_KERNEL_PKG}"; }
 modules_for() { [[ "$1" == aws ]] && echo "tsm_report sev-guest" || echo "gve"; }
