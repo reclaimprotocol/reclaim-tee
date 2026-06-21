@@ -16,6 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${SCRIPT_DIR}/.env" ]]; then set -a; source "${SCRIPT_DIR}/.env"; set +a; fi
 source "${SCRIPT_DIR}/_lib.sh"
+set -a; source "${SCRIPT_DIR}/snp-image/pins.env"; set +a
 
 GCP_PROJECT="${GCP_PROJECT:?set GCP_PROJECT in deploy/.env}"
 IMG_DIR="${SCRIPT_DIR}/snp-image"
@@ -25,9 +26,8 @@ BUNDLE_HOST="${IMG_DIR}/app-bundle.tar"
 DOCKER="${DOCKER:-docker}"
 AWS_TYPE="${AWS_SNP_TYPE:-c6a.large}"
 
-# AWS kernel is pinned (versioned package) so PCR 11 is reproducible; GCP tracks
-# the meta-package until its kernel is pinned too.
-kernel_for() { [[ "$1" == aws ]] && echo "linux-image-6.17.0-1017-aws=6.17.0-1017.17~24.04.1" || echo "linux-image-gcp"; }
+# Per-cloud kernel + modules; versions pinned in snp-image/pins.env.
+kernel_for() { [[ "$1" == aws ]] && echo "${SNP_AWS_KERNEL_PKG}" || echo "${SNP_GCP_KERNEL_PKG}"; }
 modules_for() { [[ "$1" == aws ]] && echo "tsm_report sev-guest" || echo "gve"; }
 
 _np() { unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY ftp_proxy FTP_PROXY 2>/dev/null || true; }
@@ -46,28 +46,31 @@ build_loader() {
 # build_bundle compiles tee_<role> + stages mpcl circuits + CA certs into the
 # deterministic app bundle (its sha256 is the cross-cloud snp-app: digest).
 build_bundle() {
-    local role="$1" dst="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-tee${role}"
+    local role="$1"
+    local dst="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-tee${role}"
     echo "[build] compiling tee_${role}..."
     mkdir -p "$(dirname "${dst}")"
-    ( _np; cd "${REPO_ROOT}" && GOFLAGS=-mod=mod GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+    ( _np; cd "${REPO_ROOT}" && GOTOOLCHAIN="${SNP_GO_TOOLCHAIN}" GOFLAGS=-mod=readonly GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
         go build -trimpath -tags 'enclave osusergo netgo static_build' \
         -ldflags "-s -w -buildid= -extldflags=-static" -o "${dst}" "./tee_${role}" )
     chmod 0755 "${dst}"
     local stage; stage="$(mktemp -d)"
     cp "${dst}" "${stage}/app"
-    local mpcdir; mpcdir="$( _np; cd "${REPO_ROOT}" && GOFLAGS=-mod=mod go list -m -f '{{.Dir}}' github.com/markkurossi/mpc )"
+    local mpcdir; mpcdir="$( _np; cd "${REPO_ROOT}" && GOTOOLCHAIN="${SNP_GO_TOOLCHAIN}" GOFLAGS=-mod=readonly go list -m -f '{{.Dir}}' github.com/markkurossi/mpc )"
     mkdir -p "${stage}/mpcl"; cp -r "${mpcdir}/pkg" "${stage}/mpcl/pkg"
     mkdir -p "${stage}/etc/ssl/certs"
-    cp /etc/ssl/certs/ca-certificates.crt "${stage}/etc/ssl/certs/" 2>/dev/null || echo "[build] warn: no host CA bundle"
+    ${DOCKER} run --rm "${SNP_CA_IMAGE}" cat /etc/ssl/certs/ca-certificates.crt > "${stage}/etc/ssl/certs/ca-certificates.crt"
     tar --sort=name --format=gnu --mtime="@1735689600" --owner=0 --group=0 --numeric-owner -C "${stage}" -cf "${BUNDLE_HOST}" .
     rm -rf "${stage}"
     echo "[build] app bundle: $(du -h "${BUNDLE_HOST}" | cut -f1)  sha256: $(sha256sum "${BUNDLE_HOST}" | cut -d' ' -f1)"
 }
 
 build_raw() {
-    local cloud="$1" img="snp-img-builder-${cloud}"
+    local cloud="$1"
+    local img="snp-img-builder-${cloud}"
     echo "[build] two-tier image in Docker (cloud=${cloud} kernel=$(kernel_for "$cloud"))..."
     ( _np; ${DOCKER} build --build-arg KERNEL_PKG="$(kernel_for "$cloud")" \
+        --build-arg SYSTEMD_BOOT_VER="${SNP_SYSTEMD_BOOT_VER}" --build-arg SYSTEMD_UKIFY_VER="${SNP_SYSTEMD_UKIFY_VER}" \
         --build-arg http_proxy= --build-arg https_proxy= --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg no_proxy= \
         -t "${img}" "${IMG_DIR}"
       ${DOCKER} run --rm --privileged \
@@ -77,7 +80,8 @@ build_raw() {
 }
 
 package_gcp() {
-    local tag="$1" image="snp-${tag}" bucket="gs://${GCP_PROJECT}-snp-images"
+    local tag="$1"
+    local image="snp-${tag}" bucket="gs://${GCP_PROJECT}-snp-images"
     local tmp; tmp="$(mktemp -d)"
     cp --reflink=auto "${RAW}" "${tmp}/disk.raw"
     tar --format=oldgnu -C "${tmp}" -Sczf "${tmp}/${image}.tar.gz" disk.raw
@@ -92,7 +96,8 @@ package_gcp() {
 }
 
 package_aws() {
-    local tag="$1" image="snp-${tag}" region="${AWS_SNP_REGION:?set AWS_SNP_REGION in deploy/.env}"
+    local tag="$1"
+    local image="snp-${tag}" region="${AWS_SNP_REGION:?set AWS_SNP_REGION in deploy/.env}"
     local acct bucket key tmp vmdk
     acct="$(aws sts get-caller-identity --query Account --output text)"
     bucket="${SNP_S3_BUCKET:-snp-vmimport-${acct}}"; key="${image}.vmdk"
@@ -146,7 +151,14 @@ echo "[build] === tee_${ROLE}@${CLOUD} (tag ${TAG}) ==="
 build_loader
 build_bundle "${ROLE}"
 build_raw "${CLOUD}"
-DIGEST="$(sha256sum "${BUNDLE_HOST}" | cut -d' ' -f1)"
+DIGEST="snp-app:$(sha256sum "${BUNDLE_HOST}" | cut -d' ' -f1)"
+EXPECTED_VAR="SNP_APP_DIGEST_${ROLE^^}"
+EXPECTED="${!EXPECTED_VAR}"
+if [[ -n "${EXPECTED}" && "${EXPECTED}" != "${DIGEST}" ]]; then
+    echo "[build] DIGEST MISMATCH: built ${DIGEST}, pins.env ${EXPECTED_VAR}=${EXPECTED}" >&2
+    echo "[build] if intentional, update ${EXPECTED_VAR} in deploy/snp-image/pins.env" >&2
+    exit 1
+fi
 [[ "${CLOUD}" == gcp ]] && package_gcp "${TAG}" || package_aws "${TAG}"
-echo "[build] DONE tee_${ROLE}@${CLOUD}: app digest = snp-app:${DIGEST}"
-echo "[build]   set SNP_${ROLE^^}_DIGEST=snp-app:${DIGEST} in deploy/.env (+ allowlist on the router)"
+echo "[build] DONE tee_${ROLE}@${CLOUD}: app digest = ${DIGEST}"
+[[ -z "${EXPECTED}" ]] && echo "[build]   set ${EXPECTED_VAR}=${DIGEST} in deploy/snp-image/pins.env, then allowlist it on the router"

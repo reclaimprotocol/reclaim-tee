@@ -9,11 +9,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 # non-builtin modules the loader bundles+inserts (gve on GCP, sev-guest on AWS).
 ARG KERNEL_PKG=linux-image-gcp
 
-# systemd-boot-efi (the UKI stub) and systemd-ukify (the UKI builder) are pinned
-# because the stub is embedded in the base UKI and thus measured into PCR 11.
+# systemd-boot-efi (the UKI stub) + systemd-ukify (the UKI builder) are version-
+# pinned (snp-image/pins.env -> these build-args): the stub is embedded in the
+# base UKI and measured into PCR 11. Defaults match pins.env for direct builds.
+ARG SYSTEMD_BOOT_VER=255.4-1ubuntu8.16
+ARG SYSTEMD_UKIFY_VER=255.4-1ubuntu8.16
 RUN apt-get update && apt-get install -y --no-install-recommends \
         systemd \
-        systemd-boot-efi=255.4-1ubuntu8.16 systemd-ukify=255.4-1ubuntu8.16 \
+        "systemd-boot-efi=${SYSTEMD_BOOT_VER}" "systemd-ukify=${SYSTEMD_UKIFY_VER}" \
         dosfstools mtools \
         zstd cpio binutils \
         "${KERNEL_PKG}" ca-certificates \
