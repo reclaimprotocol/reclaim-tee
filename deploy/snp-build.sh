@@ -75,6 +75,9 @@ build_raw() {
     local cloud="$1"
     local img="snp-img-builder-${cloud}"
     echo "[build] two-tier image in Docker (cloud=${cloud} kernel=$(kernel_for "$cloud"))..."
+    # Identity-only (verify) builds skip systemd-repart -> no --privileged, no /dev.
+    local priv="--privileged -v /dev:/dev" idonly=""
+    [[ "${SNP_BUILD_ONLY:-0}" == 1 ]] && { priv=""; idonly="-e SNP_IDENTITY_ONLY=1"; }
     ( _np; ${DOCKER} build --build-arg KERNEL_PKG="$(kernel_for "$cloud")" \
         --build-arg UBUNTU_DIGEST="${SNP_UBUNTU_DIGEST}" \
         --build-arg SYSTEMD_BOOT_VER="${SNP_SYSTEMD_BOOT_VER}" --build-arg SYSTEMD_UKIFY_VER="${SNP_SYSTEMD_UKIFY_VER}" \
@@ -82,11 +85,11 @@ build_raw() {
         --build-arg CPIO_VER="${SNP_CPIO_VER}" --build-arg BINUTILS_VER="${SNP_BINUTILS_VER}" \
         --build-arg http_proxy= --build-arg https_proxy= --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg no_proxy= \
         -t "${img}" "${IMG_DIR}"
-      ${DOCKER} run --rm --privileged \
+      ${DOCKER} run --rm ${priv} \
         -e http_proxy= -e https_proxy= -e HTTP_PROXY= -e HTTPS_PROXY= \
         -e APP_BIN=/work/app-bundle.tar -e MODULES="$(modules_for "$cloud")" -e SNP_CMDLINE="${SNP_CMDLINE:-}" \
-        -e SNP_PCR_BANK="$([[ "${cloud}" == aws ]] && echo sha384 || echo sha256)" \
-        -v /dev:/dev -v "${IMG_DIR}:/work" "${img}" bash /work/tier-build.sh )
+        -e SNP_PCR_BANK="$([[ "${cloud}" == aws ]] && echo sha384 || echo sha256)" ${idonly} \
+        -v "${IMG_DIR}:/work" "${img}" bash /work/tier-build.sh )
 }
 
 package_gcp() {
@@ -182,7 +185,10 @@ fi
 
 # App bundle (PCR 8) tracks the commit -> compute + report; operator allowlists.
 DIGEST="snp-app:$(sha256sum "${BUNDLE_HOST}" | cut -d' ' -f1)"
-[[ "${CLOUD}" == gcp ]] && package_gcp "${TAG}" || package_aws "${TAG}"
+# SNP_BUILD_ONLY: identity verify (verify.sh) — emit digests, skip cloud packaging.
+if [[ "${SNP_BUILD_ONLY:-0}" != 1 ]]; then
+    [[ "${CLOUD}" == gcp ]] && package_gcp "${TAG}" || package_aws "${TAG}"
+fi
 echo "[build] DONE tee_${ROLE}@${CLOUD}"
 echo "[build]   base UKI   = ${BASE_UKI}  (${BASE_VAR}, commit-independent)"
 echo "[build]   app digest = ${DIGEST}  (commit $(git -C "${REPO_ROOT}" rev-parse --short HEAD))"

@@ -49,6 +49,10 @@ find /tmp/ir -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 ukify build --linux="${KERNEL}" --initrd=/work/base-initrd.zst \
     --cmdline="${CMDLINE}" --stub "${STUB}" --output /work/snp-base.efi
 
+# Disk assembly (steps 3-4) uses systemd-repart -> loop devices + --privileged.
+# Identity-only mode (verify) skips it: the UKI + app digest are the measured
+# identity; the disk is just a carrier and nothing attests it.
+if [[ "${SNP_IDENTITY_ONLY:-0}" != 1 ]]; then
 # Assemble the systemd-repart source root. Note: with --root=, repart resolves
 # CopyFiles= AND CopyBlocks= RELATIVE to this root, so the app blob lives here.
 rm -rf /tmp/sysroot; mkdir -p /tmp/sysroot/EFI/BOOT
@@ -84,10 +88,11 @@ EOF
 rm -f /work/snp-tier.raw
 systemd-repart --empty=create --size=auto --seed="${SEED}" \
     --definitions=/tmp/defs --root=/tmp/sysroot --dry-run=no /work/snp-tier.raw
+fi
 
 # 5) Report the values a verifier would pin.
 APPSHA="$(sha256sum "${APP}" | cut -d' ' -f1)"
-echo "[tier] base UKI: $(du -h /work/snp-base.efi | cut -f1)  raw: $(du -h /work/snp-tier.raw | cut -f1)"
+echo "[tier] base UKI: $(du -h /work/snp-base.efi | cut -f1)$([[ -f /work/snp-tier.raw ]] && echo "  raw: $(du -h /work/snp-tier.raw | cut -f1)")"
 echo "[tier] base_uki_sha256 = $(sha256sum /work/snp-base.efi | cut -d' ' -f1)  (stable across app changes)"
 echo "[tier] app_sha256      = ${APPSHA}"
 echo "[tier] expected_PCR8   = $(python3 -c "import hashlib,binascii;print(hashlib.sha256(b'\x00'*32+binascii.unhexlify('${APPSHA}')).hexdigest())")  (app, if PCR8 pristine)"
