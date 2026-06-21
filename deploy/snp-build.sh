@@ -37,8 +37,10 @@ build_loader() {
     local dst="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-loader"
     echo "[build] compiling loader (stable base init)..."
     mkdir -p "$(dirname "${dst}")"
-    ( _np; cd "${IMG_DIR}/loader" && GOFLAGS=-mod=mod GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-        go build -trimpath -ldflags "-buildid=" -o "${dst}" . )
+    # -buildvcs=false: the loader (and thus the base UKI / PCR 11) must NOT embed
+    # the repo commit, so the base is reproducible regardless of commit.
+    ( _np; cd "${IMG_DIR}/loader" && GOTOOLCHAIN="${SNP_GO_TOOLCHAIN}" GOFLAGS=-mod=readonly GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+        go build -trimpath -buildvcs=false -ldflags "-buildid=" -o "${dst}" . )
     chmod 0755 "${dst}"
     echo "[build] loader sha256: $(sha256sum "${dst}" | cut -d' ' -f1)"
 }
