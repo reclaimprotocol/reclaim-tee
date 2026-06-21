@@ -78,6 +78,7 @@ build_raw() {
       ${DOCKER} run --rm --privileged \
         -e http_proxy= -e https_proxy= -e HTTP_PROXY= -e HTTPS_PROXY= \
         -e APP_BIN=/work/app-bundle.tar -e MODULES="$(modules_for "$cloud")" -e SNP_CMDLINE="${SNP_CMDLINE:-}" \
+        -e SNP_PCR_BANK="$([[ "${cloud}" == aws ]] && echo sha384 || echo sha256)" \
         -v /dev:/dev -v "${IMG_DIR}:/work" "${img}" bash /work/tier-build.sh )
 }
 

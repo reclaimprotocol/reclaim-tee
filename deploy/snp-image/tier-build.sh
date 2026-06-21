@@ -91,5 +91,17 @@ echo "[tier] base UKI: $(du -h /work/snp-base.efi | cut -f1)  raw: $(du -h /work
 echo "[tier] base_uki_sha256 = $(sha256sum /work/snp-base.efi | cut -d' ' -f1)  (stable across app changes)"
 echo "[tier] app_sha256      = ${APPSHA}"
 echo "[tier] expected_PCR8   = $(python3 -c "import hashlib,binascii;print(hashlib.sha256(b'\x00'*32+binascii.unhexlify('${APPSHA}')).hexdigest())")  (app, if PCR8 pristine)"
+# Predict PCR 11 (snp-base) = what sd-stub leaves in PCR 11 at the <enter-initrd>
+# phase, i.e. what the loader (initrd /init) sees when it attests. Per-cloud bank
+# via SNP_PCR_BANK (gcp sha256, aws sha384). This is the value to pin in the
+# attestor BEFORE deploy; measured off the UKI's own sections so it's exact.
 M=/usr/lib/systemd/systemd-measure
-[[ -x "${M}" ]] && { echo "[tier] predicted PCR11 (base):"; "${M}" calculate --linux="${KERNEL}" --initrd=/work/base-initrd.zst --cmdline="${CMDLINE}" --stub "${STUB}" 2>/dev/null | grep -iE '11:' | head -2 || true; }
+if [[ -x "${M}" ]]; then
+    pd="$(mktemp -d)"; margs=""
+    for s in linux osrel cmdline initrd uname sbat pcrpkey; do
+        objcopy -O binary --only-section=.${s} /work/snp-base.efi "${pd}/${s}" 2>/dev/null && [[ -s "${pd}/${s}" ]] && margs="${margs} --${s}=${pd}/${s}"
+    done
+    pcr11="$("${M}" calculate ${margs} --bank="${SNP_PCR_BANK:-sha256}" 2>&1 | awk '/Phase <enter-initrd>$/{getline; sub(/.*=/,""); print; exit}')"
+    echo "[tier] snp-base (PCR11 ${SNP_PCR_BANK:-sha256}) = snp-base:${pcr11}"
+    rm -rf "${pd}"
+fi
