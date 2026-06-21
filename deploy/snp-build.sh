@@ -72,7 +72,10 @@ build_raw() {
     local img="snp-img-builder-${cloud}"
     echo "[build] two-tier image in Docker (cloud=${cloud} kernel=$(kernel_for "$cloud"))..."
     ( _np; ${DOCKER} build --build-arg KERNEL_PKG="$(kernel_for "$cloud")" \
+        --build-arg UBUNTU_DIGEST="${SNP_UBUNTU_DIGEST}" \
         --build-arg SYSTEMD_BOOT_VER="${SNP_SYSTEMD_BOOT_VER}" --build-arg SYSTEMD_UKIFY_VER="${SNP_SYSTEMD_UKIFY_VER}" \
+        --build-arg SYSTEMD_VER="${SNP_SYSTEMD_VER}" --build-arg ZSTD_VER="${SNP_ZSTD_VER}" \
+        --build-arg CPIO_VER="${SNP_CPIO_VER}" --build-arg BINUTILS_VER="${SNP_BINUTILS_VER}" \
         --build-arg http_proxy= --build-arg https_proxy= --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg no_proxy= \
         -t "${img}" "${IMG_DIR}"
       ${DOCKER} run --rm --privileged \
