@@ -149,18 +149,33 @@ case "${ROLE}" in k|t) ;; *) echo "role must be k|t" >&2; exit 1 ;; esac
 case "${CLOUD}" in gcp|aws) ;; *) echo "cloud must be gcp|aws" >&2; exit 1 ;; esac
 TAG="${3:-tee${ROLE}-${CLOUD}}"
 
+# The app digest is VCS-stamped (tracks the commit), so a dirty tree yields a
+# vcs.modified artifact, not the clean-commit value. Refuse unless overridden.
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" && "${SNP_ALLOW_DIRTY:-0}" != 1 ]]; then
+    echo "[build] working tree is dirty -> app digest would be a vcs.modified artifact." >&2
+    echo "[build] commit/stash first, or set SNP_ALLOW_DIRTY=1 to override." >&2
+    exit 1
+fi
+
 echo "[build] === tee_${ROLE}@${CLOUD} (tag ${TAG}) ==="
 build_loader
 build_bundle "${ROLE}"
 build_raw "${CLOUD}"
-DIGEST="snp-app:$(sha256sum "${BUNDLE_HOST}" | cut -d' ' -f1)"
-EXPECTED_VAR="SNP_APP_DIGEST_${ROLE^^}"
-EXPECTED="${!EXPECTED_VAR}"
-if [[ -n "${EXPECTED}" && "${EXPECTED}" != "${DIGEST}" ]]; then
-    echo "[build] DIGEST MISMATCH: built ${DIGEST}, pins.env ${EXPECTED_VAR}=${EXPECTED}" >&2
-    echo "[build] if intentional, update ${EXPECTED_VAR} in deploy/snp-image/pins.env" >&2
+
+# Base UKI (PCR 11) is commit-independent -> assert it matches the pin so any
+# unexpected base drift (kernel/loader/systemd/cmdline) fails the build loudly.
+BASE_UKI="$(sha256sum "${IMG_DIR}/snp-base.efi" | cut -d' ' -f1)"
+BASE_VAR="SNP_BASE_UKI_${CLOUD^^}"
+if [[ -n "${!BASE_VAR}" && "${!BASE_VAR}" != "${BASE_UKI}" ]]; then
+    echo "[build] BASE UKI DRIFT: built ${BASE_UKI}, pins.env ${BASE_VAR}=${!BASE_VAR}" >&2
+    echo "[build] the base changed unexpectedly; investigate or bump ${BASE_VAR} in deploy/snp-image/pins.env." >&2
     exit 1
 fi
+
+# App bundle (PCR 8) tracks the commit -> compute + report; operator allowlists.
+DIGEST="snp-app:$(sha256sum "${BUNDLE_HOST}" | cut -d' ' -f1)"
 [[ "${CLOUD}" == gcp ]] && package_gcp "${TAG}" || package_aws "${TAG}"
-echo "[build] DONE tee_${ROLE}@${CLOUD}: app digest = ${DIGEST}"
-[[ -z "${EXPECTED}" ]] && echo "[build]   set ${EXPECTED_VAR}=${DIGEST} in deploy/snp-image/pins.env, then allowlist it on the router"
+echo "[build] DONE tee_${ROLE}@${CLOUD}"
+echo "[build]   base UKI   = ${BASE_UKI}  (${BASE_VAR}, commit-independent)"
+echo "[build]   app digest = ${DIGEST}  (commit $(git -C "${REPO_ROOT}" rev-parse --short HEAD))"
+echo "[build]   -> record in deploy/image-history.json + allowlist on the router; pass to snp-pair.sh via SNP_${ROLE^^}_DIGEST"

@@ -16,7 +16,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${SCRIPT_DIR}/.env" ]]; then set -a; source "${SCRIPT_DIR}/.env"; set +a; fi
 source "${SCRIPT_DIR}/_lib.sh"
-set -a; source "${SCRIPT_DIR}/snp-image/pins.env"; set +a
 
 GCP_PROJECT="${GCP_PROJECT:?set GCP_PROJECT in deploy/.env}"
 PAIR_NAME="${SNP_PAIR_NAME:-snp-pair}"
@@ -39,8 +38,10 @@ K_LOC="${SNP_K_LOCATION:-$(default_loc "${K_CLOUD}")}"
 T_LOC="${SNP_T_LOCATION:-$(default_loc "${T_CLOUD}")}"
 K_IMG="${SNP_K_IMAGE:-$(default_img "${K_CLOUD}" k)}"
 T_IMG="${SNP_T_IMAGE:-$(default_img "${T_CLOUD}" t)}"
-K_DIGEST="${SNP_APP_DIGEST_K:?set SNP_APP_DIGEST_K in deploy/snp-image/pins.env}"
-T_DIGEST="${SNP_APP_DIGEST_T:?set SNP_APP_DIGEST_T in deploy/snp-image/pins.env}"
+# App digests track the commit (image-history.json), so they're passed per-run,
+# not committed: SNP_K_DIGEST / SNP_T_DIGEST from that build's output.
+K_DIGEST="${SNP_K_DIGEST:?set SNP_K_DIGEST (tee_k app digest for this build) — see image-history.json / snp-build.sh output}"
+T_DIGEST="${SNP_T_DIGEST:?set SNP_T_DIGEST (tee_t app digest for this build)}"
 K_DEPLOY_KEY="${TEE_K_DEPLOYMENT_KEY:?set TEE_K_DEPLOYMENT_KEY in deploy/.env}"
 T_DEPLOY_KEY="${TEE_T_DEPLOYMENT_KEY:?set TEE_T_DEPLOYMENT_KEY in deploy/.env}"
 
