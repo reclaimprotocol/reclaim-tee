@@ -156,6 +156,13 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 			p.LastHeartbeatK = now
 			p.LastHeartbeatT = now
 		}
+		// Record the pair's attestation type (idempotent across both halves) so
+		// /allocate matches it only to clients that can verify it.
+		if isSEVSNP {
+			p.AttestationType = auth.AttestationTypeSEVSNP
+		} else {
+			p.AttestationType = auth.AttestationTypeCS
+		}
 		switch store.Role(req.Role) {
 		case store.RoleK:
 			p.TEEKAddr = req.SelfAddr
