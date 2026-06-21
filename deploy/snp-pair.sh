@@ -30,6 +30,10 @@ GCP_MACHINE="${SNP_GCP_MACHINE:-n2d-standard-2}"
 KEYNAME="${SNP_AWS_KEYNAME:-snp-img-key}"
 SIGNKEY="${SCRIPT_DIR}/.test-router-signing-key"
 
+# AWS calls go through a flaky local proxy; let the CLI retry dropped
+# connections so a blip can't half-finish an up/down (e.g. terminate K, miss T).
+export AWS_MAX_ATTEMPTS="${AWS_MAX_ATTEMPTS:-10}" AWS_RETRY_MODE="${AWS_RETRY_MODE:-standard}"
+
 K_CLOUD="${SNP_K_CLOUD:-gcp}"
 T_CLOUD="${SNP_T_CLOUD:-aws}"
 default_loc() { [[ "$1" == gcp ]] && echo "${SNP_PAIR_GCP_ZONE:?set SNP_PAIR_GCP_ZONE in deploy/.env}" || echo "${SNP_PAIR_AWS_REGION:?set SNP_PAIR_AWS_REGION in deploy/.env}"; }
