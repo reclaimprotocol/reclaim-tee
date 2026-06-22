@@ -131,9 +131,18 @@ create_half() {
         local vm="${PAIR_NAME}-${role}-gcp"
         g compute instances describe "$img" >/dev/null 2>&1 || g compute images describe "$img" --format='value(name)' >/dev/null 2>&1 || true
         g compute instances delete "$vm" --zone="$loc" --quiet >/dev/null 2>&1 || true
+        # Real OPRF needs Secret Manager + KMS, which the default compute SA's
+        # scopes don't grant -> attach the role SA + cloud-platform scope. The
+        # static-share path stays SA-less (matches NoopTokenSource registration).
+        local sa_flags=()
+        if [[ "${STATIC_OPRF}" != 1 ]]; then
+            local role_sa; [[ "$role" == k ]] && role_sa="${TEE_K_SA:?set TEE_K_SA in deploy/.env}" || role_sa="${TEE_T_SA:?set TEE_T_SA in deploy/.env}"
+            sa_flags=(--service-account="${role_sa}" --scopes=cloud-platform)
+        fi
         g compute instances create "$vm" --zone="$loc" --machine-type="${GCP_MACHINE}" \
             --confidential-compute-type=SEV_SNP --min-cpu-platform="AMD Milan" --maintenance-policy=TERMINATE \
             --no-shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
+            "${sa_flags[@]}" \
             --image="$img" --image-project="${GCP_PROJECT}" --address="${self_ip}" \
             --metadata-from-file "tee-env=${envf}" --quiet >/dev/null
     else
