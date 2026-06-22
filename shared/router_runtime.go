@@ -205,6 +205,12 @@ func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func(
 				d = n
 			}
 		}
+		// Emit as strings: the GCP logging core doesn't serialize zap.Duration
+		// or zap.Time (they render as null / {} in jsonPayload).
+		nextAt := time.Now().Add(d)
+		logger.Info("next RA-TLS attestation refresh scheduled",
+			zap.String("in", d.Round(time.Second).String()),
+			zap.String("at", nextAt.UTC().Format(time.RFC3339)))
 		timer := time.NewTimer(d)
 		select {
 		case <-ctx.Done():
@@ -221,7 +227,7 @@ func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func(
 					continue
 				}
 			}
-			logger.Debug("RA-TLS refreshed", zap.Duration("next_in", d))
+			logger.Debug("RA-TLS attestation refreshed")
 		}
 	}
 }
