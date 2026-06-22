@@ -45,10 +45,17 @@ const InitialRegisterRetryWindow = 2 * time.Minute
 // refreshing every 4 keeps new handshakes validating cleanly.
 const RATLSRefreshInterval = 4 * time.Minute
 
-// SEV-SNP attestations are bounded by cert validity (AWS NitroTPM leaf ~3h),
-// not a short TTL, and regenerating them is CPU-heavy. 2h stays inside the
-// leaf window while avoiding needless churn.
+// SEV-SNP attestations are bounded by cert validity (AWS NitroTPM leaf), not a
+// short TTL, and regenerating them is CPU-heavy. This is now a CEILING: the
+// actual cadence is driven by the real leaf NotAfter (SNPAttestationExpiry),
+// refreshing SNPRefreshMargin before it expires. The ceiling caps churn when
+// the leaf is long-lived; a shorter-than-expected leaf refreshes faster.
 const RATLSRefreshIntervalSNP = 2 * time.Hour
+
+// SNPRefreshMargin is how long before the NitroTPM leaf's NotAfter a TEE stops
+// serving / regenerates its attestation, so a verifier (peer or attestor) never
+// sees a leaf within this window of expiry.
+const SNPRefreshMargin = 30 * time.Minute
 
 // ratlsRefreshInterval picks the cert-refresh cadence for the active TEE mode.
 func ratlsRefreshInterval() time.Duration {
@@ -68,6 +75,18 @@ func AttestationCacheTTL() time.Duration {
 	}
 
 	return 5 * time.Minute
+}
+
+// SNPAttestationExpiry returns when a just-generated attestation should be
+// considered stale. For AWS it's the real NitroTPM leaf NotAfter minus
+// SNPRefreshMargin — so the cadence tracks AWS's actual leaf TTL instead of a
+// hardcoded guess. For GCP/CS (no short-lived NitroTPM leaf) it falls back to
+// now + AttestationCacheTTL().
+func SNPAttestationExpiry(attestation []byte) time.Time {
+	if notAfter, ok := SNPNitroLeafNotAfter(attestation); ok {
+		return notAfter.Add(-SNPRefreshMargin)
+	}
+	return time.Now().Add(AttestationCacheTTL())
 }
 
 // RunHeartbeats fires a heartbeat to the router every `interval` until
@@ -159,7 +178,11 @@ func RegisterWithRetry(ctx context.Context, register func(context.Context) error
 // the cached attestation atomically in sync from any consumer's point
 // of view (no window where the cert is new but the cached attestation
 // still references the old hash). Pass nil if not needed.
-func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func() error, logger *Logger) {
+// nextInterval, when non-nil, is consulted after each refresh to pick the delay
+// until the next one — letting SEV-SNP track the actual NitroTPM leaf expiry
+// (refresh SNPRefreshMargin before NotAfter) instead of a fixed cadence. A nil
+// callback (or a non-positive return) falls back to the fixed ratlsRefreshInterval().
+func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func() error, nextInterval func() time.Duration, logger *Logger) {
 	// Run postRefresh once immediately so the per-session attestation
 	// cache is populated before the server starts accepting traffic.
 	// Without this, the cache sits empty for the first RATLSRefreshInterval
@@ -175,13 +198,19 @@ func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func(
 		}
 	}
 
-	ticker := time.NewTicker(ratlsRefreshInterval())
-	defer ticker.Stop()
 	for {
+		d := ratlsRefreshInterval()
+		if nextInterval != nil {
+			if n := nextInterval(); n > 0 {
+				d = n
+			}
+		}
+		timer := time.NewTimer(d)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			if err := ratls.Refresh(ctx); err != nil {
 				logger.Error("RA-TLS refresh failed", zap.Error(err))
 				continue
@@ -192,7 +221,7 @@ func RunRATLSRefresh(ctx context.Context, ratls *RATLSManager, postRefresh func(
 					continue
 				}
 			}
-			logger.Debug("RA-TLS refreshed")
+			logger.Debug("RA-TLS refreshed", zap.Duration("next_in", d))
 		}
 	}
 }

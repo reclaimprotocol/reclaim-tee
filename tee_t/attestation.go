@@ -62,12 +62,37 @@ func (t *TEET) refreshAttestation() error {
 	attestationReport := &teeproto.AttestationReport{Type: attestationReportType(), Report: raw}
 	t.attestationMutex.Lock()
 	t.cachedAttestation = attestationReport
-	t.attestationExpiry = time.Now().Add(shared.AttestationCacheTTL())
+	// Expiry tracks the real NitroTPM leaf (AWS) so we stop serving / refresh
+	// before it expires, instead of a fixed guess; falls back to the cache TTL
+	// for GCP/CS. A cache miss regenerates, so this self-heals if AWS shortens
+	// the leaf.
+	t.attestationExpiry = shared.SNPAttestationExpiry(raw)
 	t.attestationMutex.Unlock()
 	t.logger.Debug("Cached new attestation",
 		zap.String("type", attestationReport.Type),
 		zap.Int("bytes", len(attestationReport.Report)))
 	return nil
+}
+
+// nextRATLSRefresh is the adaptive cadence passed to RunRATLSRefresh: for
+// SEV-SNP, refresh when the cached attestation is due to go stale (the
+// NitroTPM leaf expiry minus margin), clamped to a floor (avoid churn) and the
+// RATLSRefreshIntervalSNP ceiling. Returns 0 for CS so the fixed cadence applies.
+func (t *TEET) nextRATLSRefresh() time.Duration {
+	if !shared.IsSEVSNPMode() {
+		return 0
+	}
+	t.attestationMutex.RLock()
+	exp := t.attestationExpiry
+	t.attestationMutex.RUnlock()
+	d := time.Until(exp)
+	if d > shared.RATLSRefreshIntervalSNP {
+		d = shared.RATLSRefreshIntervalSNP
+	}
+	if d < 10*time.Minute {
+		d = 10 * time.Minute
+	}
+	return d
 }
 
 // getCachedAttestation returns the cached attestation if valid, otherwise

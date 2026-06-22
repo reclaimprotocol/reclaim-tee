@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"hash"
 	"math/big"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	spb "github.com/google/go-sev-guest/proto/sevsnp"
@@ -236,6 +237,36 @@ type coseSign1 struct {
 	Unprotected cbor.RawMessage
 	Payload     []byte
 	Signature   []byte
+}
+
+// SNPNitroLeafNotAfter extracts the NitroTPM leaf certificate's NotAfter from an
+// AWS combined attestation (1-byte AWS tag + CBOR envelope). The NitroTPM leaf
+// is the short-lived cert that bounds attestation freshness; callers use this to
+// schedule their own refresh before it expires, so the cadence tracks whatever
+// TTL AWS actually issues instead of a hardcoded guess. ok=false for non-AWS
+// attestations (no short-lived leaf). No signature/chain check — this only reads
+// the expiry of a doc the caller just generated, never to trust it.
+func SNPNitroLeafNotAfter(attestation []byte) (time.Time, bool) {
+	if len(attestation) < 1 || attestation[0] != snpAttestTagAWS {
+		return time.Time{}, false
+	}
+	var env combinedEnvelope
+	if err := cbor.Unmarshal(attestation[1:], &env); err != nil || len(env.NitroTPM) == 0 {
+		return time.Time{}, false
+	}
+	var cose coseSign1
+	if err := cbor.Unmarshal(env.NitroTPM, &cose); err != nil {
+		return time.Time{}, false
+	}
+	var doc nitroAttestationDoc
+	if err := cbor.Unmarshal(cose.Payload, &doc); err != nil {
+		return time.Time{}, false
+	}
+	leaf, err := x509.ParseCertificate(doc.Certificate)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return leaf.NotAfter, true
 }
 
 // nitroAttestationDoc is the NitroTPM attestation document payload.
