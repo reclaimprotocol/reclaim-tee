@@ -4,7 +4,6 @@ package shared
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 
@@ -59,16 +58,10 @@ func (s *AWSSecretStore) LoadOrCreateOPRFShare(ctx context.Context, role, deploy
 		return nil, fmt.Errorf("get secret %q: %w", secretID, err)
 	}
 
-	share = make([]byte, oprfKeyShareSize)
-	if _, err := rand.Read(share); err != nil {
-		return nil, fmt.Errorf("generate oprf share: %w", err)
-	}
-
-	if err := s.create(ctx, secretID, share); err != nil {
-		return nil, fmt.Errorf("persist new oprf share: %w", err)
-	}
-
-	return share, nil
+	// Fail closed: the AWS share must be the GCP original, seeded out of band
+	// (cmd/oprfshare import). Auto-minting a fresh random share here would
+	// silently diverge the cross-cloud OPRF key -> wrong nullifiers, no alarm.
+	return nil, fmt.Errorf("oprf share %q not found in AWS Secrets Manager; seed it from the GCP share via cmd/oprfshare before launching (refusing to auto-generate a divergent key)", secretID)
 }
 
 // StoreOPRFShare creates or overwrites the share for (role, deploymentKey).

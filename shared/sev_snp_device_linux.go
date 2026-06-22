@@ -177,15 +177,6 @@ func IsSEVSNPMode() bool {
 	return err == nil
 }
 
-// SNPStaticOPRFTest reports whether this SEV-SNP TEE is allowed to boot in
-// router mode without KMS-backed OPRF storage, falling back to the hardcoded
-// static share. Gated on SEV-SNP + an explicit opt-in so it can never trigger
-// on a Confidential Space TEE or a real SEV-SNP deployment. Test-only, pending
-// the cross-cloud OPRF secret story.
-func SNPStaticOPRFTest() bool {
-	return IsSEVSNPMode() && os.Getenv("SNP_TEST_STATIC_OPRF") == "1"
-}
-
 // IsAWSSEVSNP reports whether the SEV-SNP guest is on AWS (vs GCP), via the DMI
 // system vendor. Selects the AWS (NitroTPM) attestation producer over the GCP
 // (GCE vTPM) one.

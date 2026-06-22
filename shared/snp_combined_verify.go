@@ -85,6 +85,9 @@ func verifyCombinedGCP(env combinedEnvelope, bound []byte) (app, base string, er
 	if err := verify.SnpAttestation(sevAtt, opts); err != nil {
 		return "", "", fmt.Errorf("SEV-SNP chain verification failed: %w", err)
 	}
+	if err := assertSnpReportSafe(sevAtt.GetReport()); err != nil {
+		return "", "", err
+	}
 
 	// (3) Binding: report_data == sha512(AkPub || bound), where bound is the SPKI
 	// (cert path) or the nonce commitment (claim path).

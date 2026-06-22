@@ -10,11 +10,31 @@ import (
 	"io"
 	"os"
 
+	"github.com/google/go-sev-guest/abi"
 	spb "github.com/google/go-sev-guest/proto/sevsnp"
 	"github.com/google/go-sev-guest/verify"
 	"github.com/google/go-sev-guest/verify/trust"
 	"google.golang.org/protobuf/proto"
 )
+
+// assertSnpReportSafe rejects a SEV-SNP report whose guest policy permits DEBUG
+// (the host can decrypt/tamper guest memory) or that isn't from VMPL 0. The
+// go-sev-guest verify.SnpAttestation checks the cert chain + signature but NOT
+// the policy or VMPL, so without this a debug-decryptable guest still produces
+// a fully "valid" attestation. Call at every SEV report verification site.
+func assertSnpReportSafe(report *spb.Report) error {
+	policy, err := abi.ParseSnpPolicy(report.GetPolicy())
+	if err != nil {
+		return fmt.Errorf("parse SEV-SNP guest policy: %w", err)
+	}
+	if policy.Debug {
+		return fmt.Errorf("SEV-SNP guest policy permits DEBUG (host can decrypt guest memory)")
+	}
+	if report.GetVmpl() != 0 {
+		return fmt.Errorf("SEV-SNP report VMPL=%d, require 0", report.GetVmpl())
+	}
+	return nil
+}
 
 // CombinedReportData is the 64-byte SEV-SNP report_data for the vTPM-bound GCP
 // attestation: sha512(akPub || spkiDER). It welds the AMD-signed report to this
@@ -97,6 +117,9 @@ func VerifySEVSNPAttestation(raw []byte, allowOffline bool) (measurement []byte,
 	opts.TrustedRoots = roots
 	if err := verify.SnpAttestation(att, opts); err != nil {
 		return nil, rd, fmt.Errorf("SEV-SNP chain verification failed: %w", err)
+	}
+	if err := assertSnpReportSafe(att.GetReport()); err != nil {
+		return nil, rd, err
 	}
 
 	report := att.GetReport()

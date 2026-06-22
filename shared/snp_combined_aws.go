@@ -200,6 +200,9 @@ func verifyCombinedAWS(env combinedEnvelope, bound []byte) (app, base string, er
 	if err := verify.SnpAttestation(sevAtt, opts); err != nil {
 		return "", "", fmt.Errorf("SEV-SNP chain verification failed: %w", err)
 	}
+	if err := assertSnpReportSafe(sevAtt.GetReport()); err != nil {
+		return "", "", err
+	}
 	if subtle.ConstantTimeCompare(sevAtt.GetReport().GetReportData(), bind[:]) != 1 {
 		return "", "", fmt.Errorf("SEV report_data does not bind the SPKI")
 	}

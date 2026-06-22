@@ -200,13 +200,13 @@ func validateRouterConfig(c *TEEKConfig) error {
 		{"EXPECTED_JWT_ISSUER", c.ExpectedJWTIssuer},
 	}
 	if shared.IsProductionTEE() {
+		// An attested TEE (SEV-SNP or enclave) must use the real KMS-backed OPRF
+		// share, never the world-known static dev share. No test exemption: the
+		// static path is local-dev-only (see initializeOPRFKeyShare).
 		required = append(required,
 			struct{ name, value string }{"EXPECTED_PEER_IMAGE_DIGEST", c.ExpectedPeerImageDigest},
+			struct{ name, value string }{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey},
 		)
-		if !shared.SNPStaticOPRFTest() {
-			required = append(required,
-				struct{ name, value string }{"KMS_ENCLAVE_DOMAIN_KEY", c.KMSEnclaveDomainKey})
-		}
 	}
 	for _, r := range required {
 		if r.value == "" {
