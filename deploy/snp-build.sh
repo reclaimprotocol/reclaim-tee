@@ -66,6 +66,12 @@ build_bundle() {
     mkdir -p "${stage}/mpcl"; cp -r "${mpcdir}/pkg" "${stage}/mpcl/pkg"
     mkdir -p "${stage}/etc/ssl/certs"
     ${DOCKER} run --rm "${SNP_CA_IMAGE}" cat /etc/ssl/certs/ca-certificates.crt > "${stage}/etc/ssl/certs/ca-certificates.crt"
+    # mpcl is copied from Go's read-only module cache (0444/0555), whose perms
+    # vary by host and block the rm below. Canonicalize modes so the tar (-> app
+    # digest) is reproducible cross-host AND the staging dir is removable.
+    find "${stage}" -type d -exec chmod 0755 {} +
+    find "${stage}" -type f -exec chmod 0644 {} +
+    chmod 0755 "${stage}/app"
     tar --sort=name --format=gnu --mtime="@1735689600" --owner=0 --group=0 --numeric-owner -C "${stage}" -cf "${BUNDLE_HOST}" .
     rm -rf "${stage}"
     echo "[build] app bundle: $(du -h "${BUNDLE_HOST}" | cut -f1)  sha256: $(sha256sum "${BUNDLE_HOST}" | cut -d' ' -f1)"
