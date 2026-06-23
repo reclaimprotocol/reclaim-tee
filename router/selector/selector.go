@@ -62,7 +62,8 @@ func PickReadyPair(
 		var nearest []*store.Pair
 		best := math.MaxFloat64
 		for _, p := range ready {
-			d, ok := geo.PairDistanceKm(clientLoc.Lat, clientLoc.Lon, p.TEEKRegion, p.TEETRegion)
+			kr, tr := pairRegions(p)
+			d, ok := geo.PairDistanceKm(clientLoc.Lat, clientLoc.Lon, kr, tr)
 			if !ok {
 				continue
 			}
@@ -77,6 +78,20 @@ func PickReadyPair(
 		}
 	}
 	return pickRandom(ready)
+}
+
+// pairRegions returns each TEE's cloud region, falling back to a live lookup
+// from the TEE's stored IP when the cached field is empty. This geo-locates
+// pairs that registered before region tracking existed, with no re-register.
+func pairRegions(p *store.Pair) (teek, teet string) {
+	teek, teet = p.TEEKRegion, p.TEETRegion
+	if teek == "" {
+		teek = geo.RegionForIP(p.TEEKAddr)
+	}
+	if teet == "" {
+		teet = geo.RegionForIP(p.TEETAddr)
+	}
+	return teek, teet
 }
 
 func pickRandom(pairs []*store.Pair) (*store.Pair, error) {
