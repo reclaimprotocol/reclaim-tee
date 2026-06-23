@@ -19,8 +19,22 @@ source "${SCRIPT_DIR}/_lib.sh"
 
 GCP_PROJECT="${GCP_PROJECT:?set GCP_PROJECT in deploy/.env}"
 PAIR_NAME="${SNP_PAIR_NAME:-snp-pair}"
-ROUTER_URL="${SNP_ROUTER_URL:?set SNP_ROUTER_URL in deploy/.env}"
-JWT_ISSUER="${SNP_JWT_ISSUER:?set SNP_JWT_ISSUER in deploy/.env}"
+# SNP_TARGET selects the router the pair registers with + the JWT issuer/pubkey
+# it trusts. test = SNP test router (local signing key, derived below). prod =
+# the production router (KMS-signed; pubkey fetched from its /jwt-pubkey).
+TARGET="${SNP_TARGET:-test}"
+case "${TARGET}" in
+test)
+	ROUTER_URL="${SNP_ROUTER_URL:?set SNP_ROUTER_URL in deploy/.env}"
+	JWT_ISSUER="${SNP_JWT_ISSUER:?set SNP_JWT_ISSUER in deploy/.env}"
+	;;
+prod)
+	ROUTER_URL="${ROUTER_URL:?set ROUTER_URL in deploy/.env}"
+	JWT_ISSUER="${ROUTER_JWT_ISSUER:?set ROUTER_JWT_ISSUER in deploy/.env}"
+	;;
+*)
+	echo "SNP_TARGET must be 'test' or 'prod' (got '${TARGET}')" >&2; exit 1 ;;
+esac
 PORT="${SNP_PORT:-8081}"
 LOG_LEVEL="${SNP_LOG_LEVEL:-debug}"
 STATIC_OPRF="${SNP_TEST_STATIC_OPRF:-1}"
@@ -54,6 +68,16 @@ awsr() { local r="$1"; shift; aws --region "$r" "$@"; }
 gcp_region() { echo "${1%-*}"; }
 
 jwt_pubkey() {
+    if [[ "${TARGET}" == prod ]]; then
+        # Prod router signs JWTs with KMS -> no local key; fetch its published
+        # pubkey (proxy unset: the router LB is directly reachable). Same PEM
+        # shape as the test path, joined to a single \n-escaped metadata value.
+        local pem
+        pem="$(unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; curl -fsS "${ROUTER_URL}/jwt-pubkey")" \
+            || { echo "failed to fetch ${ROUTER_URL}/jwt-pubkey" >&2; exit 1; }
+        printf '%s\n' "${pem}" | awk 'NR>1{printf "\\n"}{printf "%s",$0}'
+        return
+    fi
     [[ -f "${SIGNKEY}" ]] || { echo "missing ${SIGNKEY} (test router signing key)" >&2; exit 1; }
     printf '%b' "$(cat "${SIGNKEY}")" | openssl ec -pubout 2>/dev/null | awk 'NR>1{printf "\\n"}{printf "%s",$0}'
 }
