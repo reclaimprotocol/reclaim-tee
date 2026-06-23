@@ -204,10 +204,15 @@ if [[ -x "${SNP_BUILD}" ]]; then
     while read -r CLOUD EXP_UKI; do
         [[ -z "${CLOUD}" ]] && continue
         log "Verifying SNP base (${CLOUD}) from pins.env..."
-        ACT_UKI=$(GCP_PROJECT=verify SNP_BUILD_ONLY=1 SNP_ALLOW_DIRTY=1 "${SNP_BUILD}" t "${CLOUD}" 2>/dev/null \
-            | sed -n 's/.*base UKI *= *\([0-9a-f]\{64\}\).*/\1/p' | tail -1)
+        BASE_LOG="${TMPDIR}/snp-base-${CLOUD}.log"
+        GCP_PROJECT=verify SNP_BUILD_ONLY=1 SNP_ALLOW_DIRTY=1 "${SNP_BUILD}" t "${CLOUD}" >"${BASE_LOG}" 2>&1 || true
+        ACT_UKI=$(sed -n 's/.*base UKI *= *\([0-9a-f]\{64\}\).*/\1/p' "${BASE_LOG}" | tail -1)
         echo "SNP base ${CLOUD}: expected ${EXP_UKI:0:16}… actual ${ACT_UKI:0:16}…"
-        if [[ "${ACT_UKI}" != "${EXP_UKI}" ]]; then echo "  Result:   MISMATCH"; PASS=false; else echo "  Result:   MATCH"; fi
+        if [[ "${ACT_UKI}" != "${EXP_UKI}" ]]; then
+            echo "  Result:   MISMATCH — snp-build.sh output (tail):"
+            tail -25 "${BASE_LOG}" | sed 's/^/    /'
+            PASS=false
+        else echo "  Result:   MATCH"; fi
     done < <(python3 -c "
 import json
 for b in json.load(open('${HISTORY}')).get('base_images', []):
@@ -219,11 +224,16 @@ for b in json.load(open('${HISTORY}')).get('base_images', []):
         git -C "${REPO_ROOT}" rev-parse --verify "${COMMIT}^{commit}" >/dev/null 2>&1 || { log "ERROR: sourceCommit ${COMMIT} not in repo"; PASS=false; continue; }
         WT="${TMPDIR}/snp-${ROLE}-${COMMIT}"
         git -C "${REPO_ROOT}" worktree add --detach "${WT}" "${COMMIT}" >/dev/null
-        ACT_APP=$(cd "${WT}" && GCP_PROJECT=verify SNP_BUILD_ONLY=1 ./deploy/snp-build.sh "${ROLE}" gcp 2>/dev/null \
-            | sed -n 's/.*app digest *= *\(snp-app:[0-9a-f]*\).*/\1/p' | tail -1)
+        APP_LOG="${TMPDIR}/snp-app-${ROLE}.log"
+        ( cd "${WT}" && GCP_PROJECT=verify SNP_BUILD_ONLY=1 ./deploy/snp-build.sh "${ROLE}" gcp ) >"${APP_LOG}" 2>&1 || true
+        ACT_APP=$(sed -n 's/.*app digest *= *\(snp-app:[0-9a-f]*\).*/\1/p' "${APP_LOG}" | tail -1)
         git -C "${REPO_ROOT}" worktree remove --force "${WT}" 2>/dev/null || true
         echo "SNP app tee_${ROLE}: expected ${EXP_APP:0:24}… actual ${ACT_APP:0:24}…"
-        if [[ "${ACT_APP}" != "${EXP_APP}" ]]; then echo "  Result:   MISMATCH"; PASS=false; else echo "  Result:   MATCH"; fi
+        if [[ "${ACT_APP}" != "${EXP_APP}" ]]; then
+            echo "  Result:   MISMATCH — snp-build.sh output (tail):"
+            tail -25 "${APP_LOG}" | sed 's/^/    /'
+            PASS=false
+        else echo "  Result:   MATCH"; fi
     done < <(python3 -c "
 import json
 for a in json.load(open('${HISTORY}')).get('app_images', []):
