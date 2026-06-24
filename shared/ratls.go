@@ -229,6 +229,41 @@ func (m *RATLSManager) SignRegistration(digest [32]byte) ([]byte, error) {
 	return ecdsa.SignASN1(rand.Reader, priv, digest[:])
 }
 
+// RATLSSnapshot is an immutable point-in-time view of one RA-TLS epoch
+// {priv, spkiHash, cert}. Because the keypair rotates on every Refresh, code
+// that needs several of these values to come from the SAME epoch (e.g.
+// building a registration body: attestation + SPKI + body signature) must take
+// one Snapshot and read everything from it, rather than making separate
+// manager calls that could straddle a rotation.
+type RATLSSnapshot struct {
+	priv     *ecdsa.PrivateKey
+	spkiHash [32]byte
+	cert     *tls.Certificate
+}
+
+// Snapshot captures the current {priv, spkiHash, cert} under a single lock.
+func (m *RATLSManager) Snapshot() RATLSSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return RATLSSnapshot{priv: m.priv, spkiHash: m.spkiHash, cert: m.cert}
+}
+
+// Certificate returns the snapshot's cert.
+func (s RATLSSnapshot) Certificate() *tls.Certificate { return s.cert }
+
+// SPKIHash returns sha256(SPKI) of the snapshot's keypair.
+func (s RATLSSnapshot) SPKIHash() [32]byte { return s.spkiHash }
+
+// PublicKeyDER returns the PKIX-marshaled public key of the snapshot's keypair.
+func (s RATLSSnapshot) PublicKeyDER() ([]byte, error) {
+	return x509.MarshalPKIXPublicKey(&s.priv.PublicKey)
+}
+
+// SignRegistration signs a registration digest with the snapshot's private key.
+func (s RATLSSnapshot) SignRegistration(digest [32]byte) ([]byte, error) {
+	return ecdsa.SignASN1(rand.Reader, s.priv, digest[:])
+}
+
 // GetCertificate is intended for tls.Config.GetCertificate. Always returns
 // the current cert, so handshakes that arrive after a Refresh() see the
 // fresh attestation.

@@ -190,9 +190,9 @@ func ClientLatLon(v string) (lat, lon float64, ok bool) {
 	if v == "" {
 		return 0, 0, false
 	}
-	if i := strings.IndexByte(v, ','); i >= 0 {
-		la, e1 := strconv.ParseFloat(strings.TrimSpace(v[:i]), 64)
-		lo, e2 := strconv.ParseFloat(strings.TrimSpace(v[i+1:]), 64)
+	if before, after, ok0 := strings.Cut(v, ","); ok0 {
+		la, e1 := strconv.ParseFloat(strings.TrimSpace(before), 64)
+		lo, e2 := strconv.ParseFloat(strings.TrimSpace(after), 64)
 		if e1 == nil && e2 == nil {
 			return la, lo, true
 		}

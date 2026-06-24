@@ -109,10 +109,7 @@ func (t *TEEK) nextRATLSRefresh() time.Duration {
 	t.attestationMutex.RLock()
 	exp := t.attestationExpiry
 	t.attestationMutex.RUnlock()
-	d := time.Until(exp)
-	if d > shared.RATLSRefreshIntervalSNP {
-		d = shared.RATLSRefreshIntervalSNP
-	}
+	d := min(time.Until(exp), shared.RATLSRefreshIntervalSNP)
 	if d < 10*time.Minute {
 		d = 10 * time.Minute
 	}

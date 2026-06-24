@@ -830,10 +830,7 @@ func TestCreateRequest_HostAndConnectionAreFirstTwoHeaders(t *testing.T) {
 		"Host: example.com\r\n" +
 		"Connection: close\r\n"
 	if !strings.HasPrefix(string(res.Data), want) {
-		clip := len(want) + 50
-		if clip > len(res.Data) {
-			clip = len(res.Data)
-		}
+		clip := min(len(want)+50, len(res.Data))
 		t.Errorf("request did not start with required prefix.\nwant:\n%q\ngot:\n%q",
 			want, string(res.Data[:clip]))
 	}

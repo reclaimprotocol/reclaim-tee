@@ -215,8 +215,8 @@ func main() {
 			positional = append(positional, a)
 			continue
 		}
-		if strings.HasPrefix(a, "--router-url=") {
-			routerURL = strings.TrimPrefix(a, "--router-url=")
+		if after, ok := strings.CutPrefix(a, "--router-url="); ok {
+			routerURL = after
 			continue
 		}
 		positional = append(positional, a)
