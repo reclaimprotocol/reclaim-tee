@@ -524,14 +524,6 @@ func deriveReceivedLabelFromEntry(entry *OTReceiverEntry, index int, s *nistecSc
 
 // Serialization helpers for wire protocol
 
-// serializeLabel serializes a Label (two uint64s) to 16 bytes
-func serializeLabel(l ot.Label) []byte {
-	buf := make([]byte, 16)
-	binary.BigEndian.PutUint64(buf[0:8], l.D0)
-	binary.BigEndian.PutUint64(buf[8:16], l.D1)
-	return buf
-}
-
 // deserializeLabel deserializes 16 bytes to a Label
 func deserializeLabel(data []byte) ot.Label {
 	return ot.Label{

@@ -208,7 +208,9 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		// Production: RA-TLS-protected HTTPS, RequestClientCert so peers
 		// can present an attested client cert (gated on the peer routes
 		// by enforcePeerMTLS) while anonymous clients hit /ws.
-		srvTLS := ratls.ServerTLSConfig()
+		// Deref teet.ratls (the guarded value), not the local alias, so the
+		// non-nil guard and the use are provably the same pointer.
+		srvTLS := teet.ratls.ServerTLSConfig()
 		srvTLS.ClientAuth = tls.RequestClientCert
 		// VerifyPeerCertificate fires for every handshake — including
 		// anonymous /ws clients who send no cert. Skip the RA-TLS check

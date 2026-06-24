@@ -143,13 +143,6 @@ func zkInitCallback(algorithmID uint8) bool {
 	return true
 }
 
-// ptrString returns a pointer to a string value
-//
-//go:fix inline
-func ptrString(s string) *string {
-	return new(s)
-}
-
 // setupZKLazyLoading sets up the lazy loading callback for ZK circuits
 func setupZKLazyLoading(logger *shared.Logger) error {
 	// Resolve and validate circuits directory exists
