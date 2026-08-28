@@ -15,7 +15,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.37
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.82.2
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.44.6
-	github.com/consensys/gnark v0.16.0
+	github.com/consensys/gnark v0.16.3
 	github.com/consensys/gnark-crypto v0.21.0
 	github.com/coreos/go-json v0.0.0-20231102161613-e49c8866685a
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
@@ -31,7 +31,7 @@ require (
 	github.com/mr-tron/base58 v1.3.0
 	github.com/reclaimprotocol/jsonpathplus-go/v2 v2.0.1
 	github.com/reclaimprotocol/xpath-go v1.7.1
-	github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260526062330-40c74b9e1c9f
+	github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260828160325-bd1c5c6baa78
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.mozilla.org/pkcs7 v0.10.0
 	go.uber.org/zap v1.28.0
@@ -80,7 +80,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.21 // indirect
 	github.com/googleapis/gax-go/v2 v2.23.0 // indirect
-	github.com/ingonyama-zk/icicle-gnark/v3 v3.2.2 // indirect
 	github.com/markkurossi/crypto v0.0.0-20240520115340-daed3f9a1082 // indirect
 	github.com/markkurossi/tabulate v0.0.0-20251126123558-a08056f6160f // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
@@ -97,16 +96,9 @@ require (
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/exp v0.0.0-20260813180055-c1d0aacb2297 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	google.golang.org/genproto v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
-)
-
-replace (
-	github.com/consensys/gnark v0.16.0 => github.com/consensys/gnark v0.14.0
-	github.com/consensys/gnark-crypto v0.21.0 => github.com/consensys/gnark-crypto v0.19.2
-	github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260526062330-40c74b9e1c9f => github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20251205140100-6fd752973b8f
 )
