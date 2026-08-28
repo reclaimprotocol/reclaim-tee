@@ -31,7 +31,7 @@ require (
 	github.com/mr-tron/base58 v1.3.0
 	github.com/reclaimprotocol/jsonpathplus-go/v2 v2.0.1
 	github.com/reclaimprotocol/xpath-go v1.7.1
-	github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260828160325-bd1c5c6baa78
+	github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260828170805-394f777fa404
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.mozilla.org/pkcs7 v0.10.0
 	go.uber.org/zap v1.28.0

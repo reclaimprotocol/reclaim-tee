@@ -158,8 +158,8 @@ github.com/reclaimprotocol/jsonpathplus-go/v2 v2.0.1 h1:Ta8FX0L2I47PzULylS+DaNu+
 github.com/reclaimprotocol/jsonpathplus-go/v2 v2.0.1/go.mod h1:V+SpXGMNwIyl7GrirT0T4aqJwr11hROji2JHe1Z6fuM=
 github.com/reclaimprotocol/xpath-go v1.7.1 h1:cybmo3iLCAcydYhbLU+HgGvToT4QT44FrdC9UZYwj4M=
 github.com/reclaimprotocol/xpath-go v1.7.1/go.mod h1:AJhZ9m0JV4GygcE/Aa+3nh/lvH3pxshyTuiFl24Z7hU=
-github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260828160325-bd1c5c6baa78 h1:OJo4wl22UPP45jWcmNm1hOKjc3qsgeyoTBp4EUo61mk=
-github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260828160325-bd1c5c6baa78/go.mod h1:tjC64Jotm97Ixj6tyFETCbRWjChDMRPp6ngJzYXZ7z4=
+github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260828170805-394f777fa404 h1:4k13vXftoGplzuw+EG/8zeg8blfn17bZPYsMx8X6LQU=
+github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260828170805-394f777fa404/go.mod h1:tjC64Jotm97Ixj6tyFETCbRWjChDMRPp6ngJzYXZ7z4=
 github.com/ronanh/intcomp v1.1.1 h1:+1bGV/wEBiHI0FvzS7RHgzqOpfbBJzLIxkqMJ9e6yxY=
 github.com/ronanh/intcomp v1.1.1/go.mod h1:7FOLy3P3Zj3er/kVrU/pl+Ql7JFZj7bwliMGketo0IU=
 github.com/rs/zerolog v1.35.1 h1:m7xQeoiLIiV0BCEY4Hs+j2NG4Gp2o2KPKmhnnLiazKI=
