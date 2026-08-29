@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json/v2"
@@ -36,6 +37,7 @@ type AttestorClient struct {
 	connecting     bool
 	connectingConn *websocket.Conn
 	connectDone    chan struct{}
+	toprfPublicKey []byte // Protected by connMutex; copied from the active connection's InitResponse.
 	// authRequest is forwarded to the attestor in the InitRequest when non-nil.
 	authRequest *teeproto.AuthenticationRequest
 }
@@ -208,13 +210,26 @@ func (ac *AttestorClient) initializeConnection(conn *websocket.Conn) error {
 	}
 
 	// Verify we got an init response
-	if responseMessage.GetInitResponse() == nil {
+	initResponse := responseMessage.GetInitResponse()
+	if initResponse == nil {
 		ac.logger.Error("Unexpected response type - expected init response")
 		return fmt.Errorf("expected init response, got different message type")
 	}
 
+	ac.connMutex.Lock()
+	if ac.connectingConn == conn && !ac.closed {
+		ac.toprfPublicKey = bytes.Clone(initResponse.GetToprfPublicKey())
+	}
+	ac.connMutex.Unlock()
+
 	ac.logger.Info("InitRequest completed successfully")
 	return nil
+}
+
+func (ac *AttestorClient) toprfPublicKeySnapshot() []byte {
+	ac.connMutex.Lock()
+	defer ac.connMutex.Unlock()
+	return bytes.Clone(ac.toprfPublicKey)
 }
 
 // Close closes the WebSocket connection

@@ -190,7 +190,7 @@ func (c *Client) ProcessOPRFForHashedRanges(attestorClient *AttestorClient) erro
 		oprfData.Response = toprfResponse
 
 		// Finalize OPRF
-		finalOutput, err := c.finalizeOPRF(utilsOprfRequest, toprfResponse)
+		finalOutput, err := c.finalizeOPRF(attestorClient.toprfPublicKeySnapshot(), utilsOprfRequest, toprfResponse)
 		if err != nil {
 			return fmt.Errorf("OPRF finalization failed for range [%d:%d]: %v",
 				rangeStart, rangeStart+rangeLength, err)
@@ -249,7 +249,11 @@ func (c *Client) ProcessOPRFForHashedRanges(attestorClient *AttestorClient) erro
 }
 
 // finalizeOPRF finalizes the OPRF with the attestor's response
-func (c *Client) finalizeOPRF(oprfRequest *utils.OPRFRequest, toprfResponse *teeproto.TOPRFResponse) ([]byte, error) {
+func (c *Client) finalizeOPRF(serverPublicKey []byte, oprfRequest *utils.OPRFRequest, toprfResponse *teeproto.TOPRFResponse) ([]byte, error) {
+	if len(serverPublicKey) == 0 {
+		return nil, fmt.Errorf("attestor init response did not include a TOPRF public key")
+	}
+
 	// Convert utils.OPRFRequest to oprf.OPRFRequest format
 	maskedDataBytes := oprfRequest.MaskedData.Bytes()
 	oprfRequestForFinalize := &oprf.OPRFRequest{
@@ -263,7 +267,7 @@ func (c *Client) finalizeOPRF(oprfRequest *utils.OPRFRequest, toprfResponse *tee
 
 	// Prepare finalize parameters
 	finalizeParams := &oprf.InputTOPRFFinalizeParams{
-		ServerPublicKey: toprfResponse.PublicKeyShare,
+		ServerPublicKey: serverPublicKey,
 		Request:         oprfRequestForFinalize,
 		Responses: []*oprf.OPRFResponse{
 			{

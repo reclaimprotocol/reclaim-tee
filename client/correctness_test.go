@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,10 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/consensys/gnark-crypto/ecc/bn254/twistededwards"
 	"github.com/gorilla/websocket"
 	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 	"github.com/reclaimprotocol/reclaim-tee/providers"
 	"github.com/reclaimprotocol/reclaim-tee/shared"
+	zkutils "github.com/reclaimprotocol/zk-symmetric-crypto/gnark/utils"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -235,7 +238,8 @@ func TestGetAttestorClientRetriesAfterConfigurationFailure(t *testing.T) {
 }
 
 func TestAttestorConnectionRetriesAfterDialFailure(t *testing.T) {
-	server := newAttestorInitServer(t)
+	toprfPublicKey := []byte("attestor-toprf-public-key")
+	server := newAttestorInitServer(t, toprfPublicKey)
 	defer server.Close()
 	pair, err := shared.GenerateSigningKeyPair()
 	if err != nil {
@@ -262,8 +266,48 @@ func TestAttestorConnectionRetriesAfterDialFailure(t *testing.T) {
 	if got := dials.Load(); got != 2 {
 		t.Fatalf("dial count = %d, want 2", got)
 	}
+	storedKey := client.toprfPublicKeySnapshot()
+	if !bytes.Equal(storedKey, toprfPublicKey) {
+		t.Fatalf("stored TOPRF public key = %x, want %x", storedKey, toprfPublicKey)
+	}
+	storedKey[0] ^= 0xff
+	if bytes.Equal(client.toprfPublicKeySnapshot(), storedKey) {
+		t.Fatal("TOPRF public key snapshot aliases AttestorClient state")
+	}
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFinalizeOPRFRejectsShareThatDoesNotMatchInitKey(t *testing.T) {
+	request, err := zkutils.OPRFGenerateRequest([]byte("test"), "reclaim")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	curve := twistededwards.GetEdwardsCurve()
+	sharePublicKey := curve.Base.Marshal()
+	serverPublicKey := new(twistededwards.PointAffine).ScalarMultiplication(&curve.Base, big.NewInt(2)).Marshal()
+	response := &teeproto.TOPRFResponse{
+		PublicKeyShare: sharePublicKey,
+		Evaluated:      sharePublicKey,
+		C:              []byte{1},
+		R:              []byte{1},
+	}
+
+	var panicValue any
+	func() {
+		defer func() {
+			panicValue = recover()
+		}()
+		_, err = NewClient("").finalizeOPRF(serverPublicKey, request, response)
+	}()
+
+	if panicValue == nil {
+		t.Fatalf("finalizeOPRF returned %v, want public-key reconstruction failure", err)
+	}
+	if !strings.Contains(fmt.Sprint(panicValue), "share public keys do not reconstruct to server public key") {
+		t.Fatalf("finalizeOPRF panic = %v, want public-key reconstruction failure", panicValue)
 	}
 }
 
@@ -516,7 +560,7 @@ func newPassiveWSServer(t *testing.T) (*httptest.Server, <-chan *websocket.Conn,
 	return server, accepted, closed
 }
 
-func newAttestorInitServer(t *testing.T) *httptest.Server {
+func newAttestorInitServer(t *testing.T, toprfPublicKey []byte) *httptest.Server {
 	t.Helper()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -535,7 +579,7 @@ func newAttestorInitServer(t *testing.T) *httptest.Server {
 		}
 		response := &teeproto.RPCMessages{Messages: []*teeproto.RPCMessage{{
 			Id:      requests.GetMessages()[0].GetId(),
-			Message: &teeproto.RPCMessage_InitResponse{InitResponse: &teeproto.InitResponse{}},
+			Message: &teeproto.RPCMessage_InitResponse{InitResponse: &teeproto.InitResponse{ToprfPublicKey: toprfPublicKey}},
 		}}}
 		encoded, err := proto.Marshal(response)
 		if err == nil {
