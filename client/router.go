@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json/v2"
 	"fmt"
 	"io"
@@ -23,6 +24,12 @@ type AllocationResponse struct {
 // client nonce and returns the pair allocation + JWT. routerURL is the
 // base URL (e.g. http://localhost:9090 or https://tee.reclaimprotocol.org).
 func AllocatePair(routerURL, clientNonce string) (*AllocationResponse, error) {
+	return AllocatePairWithContext(context.Background(), routerURL, clientNonce)
+}
+
+// AllocatePairWithContext hits the router's /allocate endpoint and cancels the
+// request when ctx is done. The client's 10-second timeout remains the upper bound.
+func AllocatePairWithContext(ctx context.Context, routerURL, clientNonce string) (*AllocationResponse, error) {
 	// Announce the attestation types this client can verify so the router never
 	// allocates a pair we can't check. Wire values mirror shared.AttestationType*
 	// ("cs","sev-snp","secure-boot"); the client package cannot import shared.
@@ -36,8 +43,13 @@ func AllocatePair(routerURL, clientNonce string) (*AllocationResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, routerURL+"/allocate", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("POST /allocate: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	resp, err := httpClient.Post(routerURL+"/allocate", "application/json", bytes.NewReader(body))
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("POST /allocate: %w", err)
 	}

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
@@ -43,6 +44,12 @@ type ReclaimClient struct {
 //
 // Returns an error if /allocate fails.
 func NewReclaimClient(config ClientConfig) (*ReclaimClient, error) {
+	return NewReclaimClientWithContext(context.Background(), config)
+}
+
+// NewReclaimClientWithContext creates a new ReclaimClient and bounds router
+// allocation with ctx. The context is used only during client construction.
+func NewReclaimClientWithContext(ctx context.Context, config ClientConfig) (*ReclaimClient, error) {
 	if config.RouterURL == "" {
 		config.RouterURL = DefaultRouterURL
 	}
@@ -57,9 +64,9 @@ func NewReclaimClient(config ClientConfig) (*ReclaimClient, error) {
 	if nonce == "" {
 		nonce = fmt.Sprintf("client-%d", time.Now().UnixNano())
 	}
-	alloc, err := AllocatePair(config.RouterURL, nonce)
+	alloc, err := AllocatePairWithContext(ctx, config.RouterURL, nonce)
 	if err != nil {
-		return nil, fmt.Errorf("router allocate: %v", err)
+		return nil, fmt.Errorf("router allocate: %w", err)
 	}
 	scheme := "ws"
 	if strings.HasPrefix(config.RouterURL, "https://") {
@@ -120,6 +127,12 @@ const (
 
 // NewReclaimClientFromJSON creates a new ReclaimClient with JSON-encoded provider params and optional config
 func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*ReclaimClient, error) {
+	return NewReclaimClientFromJSONWithContext(context.Background(), providerParamsJSON, configJSON)
+}
+
+// NewReclaimClientFromJSONWithContext creates a new ReclaimClient with
+// JSON-encoded provider params and bounds router allocation with ctx.
+func NewReclaimClientFromJSONWithContext(ctx context.Context, providerParamsJSON string, configJSON string) (*ReclaimClient, error) {
 	// First parse to extract provider name and raw JSON for validation
 	var rawData map[string]jsontext.Value
 	if err := json.Unmarshal([]byte(providerParamsJSON), &rawData); err != nil {
@@ -157,11 +170,11 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 	}
 
 	// Extract context if provided
-	var context string
+	var providerContext string
 	if contextRaw, ok := rawData["context"]; ok && contextRaw != nil && string(contextRaw) != "null" {
-		if err := json.Unmarshal(contextRaw, &context); err != nil {
+		if err := json.Unmarshal(contextRaw, &providerContext); err != nil {
 			// Context is optional, so we can ignore errors
-			context = ""
+			providerContext = ""
 		}
 	}
 
@@ -200,12 +213,12 @@ func NewReclaimClientFromJSON(providerParamsJSON string, configJSON string) (*Re
 		Mode:                 ModeAuto,
 		ProviderParams:       &params,
 		ProviderSecretParams: secretParams,
-		ProviderContext:      context,
+		ProviderContext:      providerContext,
 		Logger:               logger,
 		RequestId:            requestID,
 	}
 
-	return NewReclaimClient(config)
+	return NewReclaimClientWithContext(ctx, config)
 }
 
 // Connect establishes connections to both TEE_K and TEE_T
