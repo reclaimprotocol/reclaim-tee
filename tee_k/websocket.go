@@ -244,15 +244,23 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		clientVersion = cv
 	}
 
-	// Create session for this client connection
+	// Create session for this client connection. The drain reservation spans
+	// the authoritative session-manager insert and active-session increment.
 	wsConn := shared.NewWSConnection(conn)
-	sessionID, err := t.sessionManager.CreateSession(wsConn)
+	sessionID, err := t.createAdmittedSession(wsConn)
 	if err != nil {
+		if errors.Is(err, errAttestationDraining) {
+			t.logger.Warn("Rejecting authenticated client: attestation drain in progress")
+			_ = conn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "service draining"),
+				time.Now().Add(time.Second))
+			conn.Close()
+			return
+		}
 		t.logger.Error("Failed to create session", zap.Error(err))
 		conn.Close()
 		return
 	}
-	t.activeSessions.Add(1)
 
 	// client_version is empty for pre-versioning builds; a non-empty value on a
 	// later tag-failure means a build that should already carry the fix.

@@ -147,6 +147,16 @@ The native Secure Boot type remains on the TEE control channel. This rule preven
 
 The secure base hashes do not belong in the legacy base allowlist. The signed marker selects the secure trust path instead.
 
+### Terminal SEV-SNP attestation drain
+
+Terminal SEV-SNP attestation evidence starts an independent local drain in the affected TEE member.
+
+The member closes admission and stops its heartbeat and refresh loops. When the loops stop, active sessions reach zero, and admission reservations reach zero, the member resets. If those conditions remain incomplete, the cached-attestation expiry forces the reset.
+
+The router makes the whole pair unavailable after the heartbeat of either member becomes stale. The two members send no drain messages. They do not agree on the drain.
+
+Read the [runbook for the SEV-SNP attestation drain](docs/SNP_ATTESTATION_DRAIN_RUNBOOK.md) for the exact behavior and operator procedure.
+
 ### AWS same-guest evidence
 
 New AWS bases run the network process as UID 65532. A measured root broker owns the NitroTPM and SEV-SNP devices.

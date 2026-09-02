@@ -140,13 +140,23 @@ func startRouterMode(parent context.Context, config *TEEKConfig, logger *shared.
 	}
 
 	teek.attestHealth = shared.NewAttestationHealth(logger)
-	if teek.ratls != nil {
-		// Regenerate the per-session cached attestation on every cert
-		// rotation so its cert_hash nonce stays in lockstep with the
-		// live cert. Single ticker drives both — no drift window.
-		go shared.RunRATLSRefresh(ctx, teek.ratls, teek.refreshAttestation, teek.nextRATLSRefresh, teek.attestHealth, logger)
-	}
-	go shared.RunHeartbeats(ctx, teek, "K", logger, register, shared.RouterHeartbeatInterval)
+	teek.startAttestationDrainLifecycle(
+		ctx,
+		teek.attestHealth.DrainRequested(),
+		func(heartbeatCtx context.Context) {
+			shared.RunHeartbeats(heartbeatCtx, teek, "K", logger, register, shared.RouterHeartbeatInterval)
+		},
+		func(refreshCtx context.Context) {
+			if teek.ratls == nil {
+				return
+			}
+			// Regenerate the per-session cached attestation on every cert
+			// rotation so its cert_hash nonce stays in lockstep with the
+			// live cert. Single ticker drives both — no drift window.
+			shared.RunRATLSRefresh(refreshCtx, teek.ratls, teek.refreshAttestation, teek.nextRATLSRefresh, teek.attestHealth, logger)
+		},
+		nil,
+	)
 
 	// Bring up the control connection to TEE_T. Connection manager picks
 	// up router mode via teek.pairID (sends TEEKPairAssignment first);

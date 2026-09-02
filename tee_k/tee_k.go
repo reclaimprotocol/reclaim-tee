@@ -105,6 +105,9 @@ type TEEK struct {
 	// beforeReserveOTReadyPublish is a deterministic test-only hook invoked
 	// while OT state ownership is still held. Production leaves it nil.
 	beforeReserveOTReadyPublish func()
+	// beforeActiveSessionIncrement pauses the admission critical section in
+	// deterministic drain tests. Production leaves it nil.
+	beforeActiveSessionIncrement func()
 
 	// Final-signature dependency hooks are nil in production. Tests replace one
 	// operation at a time to prove that sign, marshal, and client-write failures
@@ -116,6 +119,7 @@ type TEEK struct {
 	// attestHealth gates the pair off the router (via ControlHealthy) and
 	// self-resets when the SEV attestation path wedges. Nil-safe.
 	attestHealth *shared.AttestationHealth
+	attestDrain  *shared.AttestationDrainController
 }
 
 // NewTEEKWithConfig creates a new TEEK instance with the provided configuration
@@ -309,6 +313,9 @@ func (t *TEEK) cleanupSessionWithSession(session *shared.Session) {
 	}
 	_ = t.sessionManager.CloseSessionIfCurrent(session)
 	t.activeSessions.Add(-1)
+	if t.attestDrain != nil {
+		t.attestDrain.SessionCountChanged()
+	}
 	if t.sessionTerminator != nil {
 		t.sessionTerminator.CleanupSession(session.ID)
 	}

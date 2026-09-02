@@ -101,9 +101,7 @@ func (t *TEET) nextRATLSRefresh() time.Duration {
 	if !shared.IsSEVSNPMode() {
 		return 0
 	}
-	t.attestationMutex.RLock()
-	exp := t.attestationExpiry
-	t.attestationMutex.RUnlock()
+	exp := t.cachedAttestationExpiry()
 	d := max(min(time.Until(exp), shared.RATLSRefreshIntervalSNP), 10*time.Minute)
 	return d
 }

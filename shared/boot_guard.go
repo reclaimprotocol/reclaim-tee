@@ -3,6 +3,7 @@
 package shared
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -32,24 +33,69 @@ const (
 // exit 0, which kills PID 1 and panics the guest into a RUNNING-but-dead VM
 // that nothing reaps (observed 2026-07-29, a transient cert-chain fetch).
 func FatalBootReset(logger *Logger, reason error) {
+	FatalBootResetContext(context.Background(), logger, reason)
+}
+
+type fatalBootResetOperations struct {
+	isSEVSNP  func() bool
+	waitDelay func(context.Context) bool
+	reset     func(*Logger)
+	exit      func(int)
+}
+
+// FatalBootResetContext is FatalBootReset with a cancelable diagnostic delay.
+// Cancellation returns without resetting so an attestation drain controller
+// can own the reset deadline and session drain instead.
+func FatalBootResetContext(ctx context.Context, logger *Logger, reason error) {
+	fatalBootResetContext(ctx, logger, reason, fatalBootResetOperations{
+		isSEVSNP: IsSEVSNPMode,
+		waitDelay: func(ctx context.Context) bool {
+			timer := time.NewTimer(BootResetDelay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return false
+			case <-timer.C:
+				return true
+			}
+		},
+		reset: attestSelfReset,
+		exit:  os.Exit,
+	})
+}
+
+func fatalBootResetContext(ctx context.Context, logger *Logger, reason error, operations fatalBootResetOperations) {
+	if ctx.Err() != nil {
+		return
+	}
 	if logger != nil {
 		logger.Critical(BootFatalMessage, zap.Error(reason))
 		_ = logger.Sync()
 	}
 	// Outside SEV-SNP this is a workstation or a test host — rebooting it
 	// would be catastrophic and there is no PID-1 constraint to satisfy.
-	if !IsSEVSNPMode() {
-		os.Exit(1)
+	isSEVSNP := operations.isSEVSNP()
+	if ctx.Err() != nil {
+		return
 	}
-	time.Sleep(BootResetDelay)
-	attestSelfReset(logger)
+	if !isSEVSNP {
+		operations.exit(1)
+		return
+	}
+	if !operations.waitDelay(ctx) {
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	operations.reset(logger)
 	// Reboot refused (no CAP_SYS_BOOT). Hold: the router health-gate and the
 	// alert on BootFatalMessage cover it, and holding beats exiting 0.
 	if logger != nil {
 		logger.Critical("self-reset did not take effect — holding for manual intervention")
 		_ = logger.Sync()
 	}
-	select {}
+	<-ctx.Done()
 }
 
 // BootGuard reboots the guest if it never reaches "serving". It catches what

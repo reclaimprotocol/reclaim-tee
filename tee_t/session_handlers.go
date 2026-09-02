@@ -287,6 +287,12 @@ func (t *TEET) registerSession(sessionID string) error {
 }
 
 func (t *TEET) registerSessionForControl(sessionID string, controlGeneration uint64) (*shared.Session, error) {
+	releaseAdmission, ok := t.beginSessionAdmission()
+	if !ok {
+		return nil, errAttestationDraining
+	}
+	defer releaseAdmission()
+
 	if err := t.sessionManager.RegisterSession(sessionID); err != nil {
 		return nil, err
 	}

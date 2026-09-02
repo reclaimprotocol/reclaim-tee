@@ -4,12 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -19,9 +17,8 @@ import (
 )
 
 // startRouterMode is TEE_T's V2 boot path. TEE_T cannot register at boot —
-// it doesn't know the pair_id yet — so it brings up the server, sets an
-// onPairAssigned hook that registers + starts the heartbeat the moment
-// TEE_K's first envelope arrives, and waits.
+// it doesn't know the pair_id yet — so it starts a fixed heartbeat supervisor
+// that waits until onPairAssigned signals TEE_K's first authenticated pair ID.
 //
 // In production (running inside GCP Confidential Space, detected via
 // launcher socket) the server is HTTPS over RA-TLS + mTLS for peer
@@ -90,10 +87,9 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 	}
 	teet.sessionManager.StartCleanupRoutine()
 
-	register := func(ctx context.Context) error {
-		pid := teet.PairID()
-		if pid == "" {
-			return errors.New("register: pair_id not yet known")
+	register := func(ctx context.Context, pairID string) error {
+		if pairID == "" {
+			return errTEETPairIDNotKnown
 		}
 		var imageDigest, attestationType string
 		var attestation []byte
@@ -113,7 +109,7 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 			imageDigest = "local-dev"
 		}
 		regReq := shared.RegisterRequest{
-			PairID:          pid,
+			PairID:          pairID,
 			Role:            "T",
 			SelfAddr:        config.SelfAddr,
 			PeerAddrClaim:   config.PeerAddr,
@@ -146,49 +142,55 @@ func startRouterMode(parent context.Context, config *TEETConfig, logger *shared.
 		return nil
 	}
 
-	// Register + heartbeat once on the first pair_id; re-register if TEE_K
-	// reconnects under a new pair_id. Each register runs off the read path.
-	var startOnce sync.Once
-	var pairMu sync.Mutex
-	var registeredPair string
-	teet.onPairAssigned = func(pairID string) {
-		startOnce.Do(func() {
-			pairMu.Lock()
-			registeredPair = pairID
-			pairMu.Unlock()
-			go func() {
-				if err := shared.RegisterWithRetry(ctx, register, logger); err != nil {
-					shared.FatalBootReset(logger, fmt.Errorf("router registration failed after retries: %w", err))
-				}
-				shared.RunHeartbeats(ctx, teet, "T", logger, register, shared.RouterHeartbeatInterval)
-			}()
-		})
-
-		pairMu.Lock()
-		changed := registeredPair != "" && registeredPair != pairID
-		if changed {
-			registeredPair = pairID
-		}
-		pairMu.Unlock()
-		if !changed {
-			return
-		}
-		// peer reconnected under a new pair_id -> give the new pair its T half
-		go func() {
-			if err := shared.RegisterWithRetry(ctx, register, logger); err != nil {
-				logger.Error("re-register after peer pair_id change failed", zap.Error(err))
+	teet.attestHealth = shared.NewAttestationHealth(logger)
+	drainRequested := teet.attestHealth.DrainRequested()
+	assignments := newTEETPairRegistrationQueue()
+	heartbeatCtx, _ := teet.startAttestationDrainLifecycle(
+		ctx,
+		drainRequested,
+		func(supervisorCtx context.Context) {
+			runTEETRouterSupervisor(supervisorCtx, teetRouterSupervisorConfig{
+				Requested:   drainRequested,
+				Assignments: assignments,
+				Register: func(registerCtx context.Context, pairID string) error {
+					return shared.RegisterWithRetry(registerCtx, func(ctx context.Context) error {
+						return register(ctx, pairID)
+					}, logger)
+				},
+				RunHeartbeat: func(runCtx context.Context, requestReregistration func(context.Context) error) {
+					shared.RunHeartbeats(runCtx, teet, "T", logger, requestReregistration, shared.RouterHeartbeatInterval)
+				},
+				FatalRegister: func(fatalCtx context.Context, err error) {
+					shared.FatalBootResetContext(fatalCtx, logger, fmt.Errorf("router registration failed after retries: %w", err))
+				},
+				PairRegistered: func(pairID string, initial bool) {
+					if !initial {
+						logger.Info("re-registered after peer pair_id change", zap.String("pair_id", pairID))
+					}
+				},
+				RegisterFailed: func(_ string, err error) {
+					logger.Error("re-register after peer pair_id change failed", zap.Error(err))
+				},
+			})
+		},
+		func(refreshCtx context.Context) {
+			if teet.ratls == nil {
 				return
 			}
-			logger.Info("re-registered after peer pair_id change", zap.String("pair_id", pairID))
-		}()
-	}
+			// Regenerate per-session cached attestation on every cert rotation.
+			shared.RunRATLSRefresh(refreshCtx, teet.ratls, teet.refreshAttestation, teet.nextRATLSRefresh, teet.attestHealth, logger)
+		},
+		nil,
+	)
 
-	teet.attestHealth = shared.NewAttestationHealth(logger)
-	if teet.ratls != nil {
-		// Regenerate per-session cached attestation on every cert rotation
-		// — single ticker drives both so cert_hash nonce can't drift from
-		// the live cert.
-		go shared.RunRATLSRefresh(ctx, teet.ratls, teet.refreshAttestation, teet.nextRATLSRefresh, teet.attestHealth, logger)
+	// Publish every authenticated assignment to the fixed supervisor. The read
+	// path never starts a goroutine, and the latest pair ID wins if assignments
+	// change while registration is in flight.
+	teet.onPairAssigned = func(pairID string) {
+		if heartbeatCtx.Err() != nil || attestationDrainRequested(drainRequested) {
+			return
+		}
+		assignments.assign(pairID)
 	}
 
 	// Build the mux once; choose whether to wrap it with the peer-mTLS

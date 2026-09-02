@@ -98,11 +98,12 @@ type TEET struct {
 	// attestHealth gates the pair off the router (via ControlHealthy) and
 	// self-resets when the SEV attestation path wedges. Nil-safe.
 	attestHealth *shared.AttestationHealth
+	attestDrain  *shared.AttestationDrainController
 
 	// onPairAssigned is fired only after the connection carrying TEE_K's
 	// TEEKPairAssignment completes mutual attestation, sends the response, and
 	// remains the current control generation. Nil in standalone mode; set by
-	// router_boot to register with the router and spin up the heartbeat.
+	// router_boot to signal the fixed heartbeat supervisor.
 	onPairAssigned func(pairID string)
 }
 
@@ -256,6 +257,9 @@ func (t *TEET) cleanupSessionWithSession(session *shared.Session) {
 	}
 	_ = t.sessionManager.closeSessionIfCurrent(session)
 	t.activeSessions.Add(-1)
+	if t.attestDrain != nil {
+		t.attestDrain.SessionCountChanged()
+	}
 	if ownsSessionState && t.sessionTerminator != nil {
 		t.sessionTerminator.CleanupSession(session.ID)
 	}

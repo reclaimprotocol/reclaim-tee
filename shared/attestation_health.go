@@ -13,12 +13,22 @@ import (
 // us-central1 SEV guests returned ENOTTY until a VM reset. Concurrency-safe and
 // nil-safe (a nil receiver reports healthy and no-ops).
 type AttestationHealth struct {
-	mu           sync.Mutex
-	consecFails  int
-	diagCaptured bool
-	wedged       bool
-	lastSelfHeal time.Time
-	logger       *Logger
+	mu                 sync.Mutex
+	consecFails        int
+	generation         uint64
+	diagLogged         bool
+	terminalDiagLogged bool
+	wedged             bool
+	drainRequested     chan struct{}
+	drainNotified      bool
+	lastSelfHeal       time.Time
+	logger             *Logger
+	selfReset          func(*Logger)
+}
+
+type attestationDiagnostics struct {
+	fields        []zap.Field
+	terminalVMPCK bool
 }
 
 const (
@@ -28,72 +38,141 @@ const (
 )
 
 func NewAttestationHealth(logger *Logger) *AttestationHealth {
-	return &AttestationHealth{logger: logger}
+	return &AttestationHealth{logger: logger, selfReset: attestSelfReset}
 }
 
-// RecordSuccess clears the failure streak.
+// RecordSuccess clears a recoverable failure streak. A confirmed terminal
+// wedge is sticky and leaves all failure state unchanged.
 func (a *AttestationHealth) RecordSuccess() {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
+	if a.wedged {
+		a.mu.Unlock()
+		return
+	}
 	if a.consecFails > 0 && a.logger != nil {
 		a.logger.Info("attestation recovered", zap.Int("after_consecutive_failures", a.consecFails))
 	}
 	a.consecFails = 0
-	a.diagCaptured = false
-	a.wedged = false
+	a.generation++
+	a.diagLogged = false
+	a.terminalDiagLogged = false
 	a.mu.Unlock()
 }
 
-// RecordFailure increments the streak, captures one-shot device/kernel
-// diagnostics on the first failure, and triggers a rate-limited self-reset once
-// the streak crosses the self-heal threshold.
+// RecordFailure increments the streak, checks device/kernel diagnostics for a
+// terminal wedge, requests a drain when found, and triggers a rate-limited
+// self-reset once a recoverable failure streak crosses the self-heal threshold.
 func (a *AttestationHealth) RecordFailure(err error) {
+	a.recordFailure(err, captureAttestationDiag)
+}
+
+func (a *AttestationHealth) recordFailure(err error, captureDiag func(error) attestationDiagnostics) {
 	if a == nil {
 		return
 	}
-	// A terminal wedge (VMPCK wiped -> sticky ENOTTY) never self-recovers, so
-	// self-reset on first sight instead of waiting out the consecutive count.
-	terminal := isTerminalAttestWedge(err)
+	directTerminal := isTerminalAttestWedge(err)
+	drainRequested := false
 	a.mu.Lock()
 	a.consecFails++
-	n := a.consecFails
-	captureDiag := !a.diagCaptured
-	a.diagCaptured = true
-	if terminal {
-		a.wedged = true
+	failureGeneration := a.generation
+	if directTerminal {
+		drainRequested = a.markTerminalWedgeLocked()
 	}
-	selfHeal := (n >= attestSelfHealAfter || terminal) && time.Since(a.lastSelfHeal) >= attestSelfHealMinGap
+	a.mu.Unlock()
+
+	// Read kmsg on every failure so a VMPCK-disable marker written after an
+	// earlier failure is not missed. The returned fields reuse that same read.
+	diagnostics := captureDiag(err)
+	terminalEvidence := directTerminal || diagnostics.terminalVMPCK
+
+	a.mu.Lock()
+	logger := a.logger
+	selfReset := a.selfReset
+	if selfReset == nil {
+		selfReset = attestSelfReset
+	}
+	if diagnostics.terminalVMPCK {
+		if a.markTerminalWedgeLocked() {
+			drainRequested = true
+		}
+	}
+	sameGeneration := failureGeneration == a.generation
+	logDiagnostics := false
+	logTerminalDiagnostics := false
+	if logger != nil && diagnostics.terminalVMPCK && !a.terminalDiagLogged {
+		a.terminalDiagLogged = true
+		a.diagLogged = true
+		logTerminalDiagnostics = true
+	} else if logger != nil && sameGeneration && !a.diagLogged {
+		a.diagLogged = true
+		logDiagnostics = true
+	}
+	consecutiveFailures := a.consecFails
+	terminalWedge := a.wedged
+	healthy := !terminalWedge && consecutiveFailures < attestUnhealthyAfter
+	selfHeal := sameGeneration && !terminalWedge && consecutiveFailures >= attestSelfHealAfter && time.Since(a.lastSelfHeal) >= attestSelfHealMinGap
+	logFailure := sameGeneration || terminalEvidence
 	if selfHeal {
 		a.lastSelfHeal = time.Now()
 	}
-	logger := a.logger
 	a.mu.Unlock()
 
-	if logger != nil {
+	if logger != nil && logFailure {
 		logger.Error("attestation generation failed",
-			zap.Int("consecutive_failures", n),
-			zap.Bool("healthy", !terminal && n < attestUnhealthyAfter),
-			zap.Bool("terminal_wedge", terminal),
+			zap.Int("consecutive_failures", consecutiveFailures),
+			zap.Bool("healthy", healthy),
+			zap.Bool("terminal_wedge", terminalWedge),
 			zap.Error(err))
 	}
-	// Recovery fires before diagnostics: captureAttestationDiag touches the wedged
-	// device, so it must never sit in front of the self-reset.
+	if drainRequested && logger != nil {
+		logger.Error("terminal attestation wedge detected; drain requested",
+			zap.Int("consecutive_failures", consecutiveFailures))
+	}
 	if selfHeal {
 		if logger != nil {
-			reason := "attestation wedged past self-heal threshold; self-resetting VM"
-			if terminal {
-				reason = "attestation channel wedged (terminal ENOTTY); self-resetting VM"
-			}
-			logger.Error(reason, zap.Int("consecutive_failures", n), zap.Bool("terminal_wedge", terminal))
+			logger.Error("attestation wedged past self-heal threshold; self-resetting VM",
+				zap.Int("consecutive_failures", consecutiveFailures), zap.Bool("terminal_wedge", terminalWedge))
 			logger.Sync()
 		}
-		go attestSelfReset(logger)
+		go selfReset(logger)
 	}
-	if logger != nil && captureDiag {
-		logger.Error("attestation failure diagnostics", captureAttestationDiag(err)...)
+	if logTerminalDiagnostics {
+		logger.Error("terminal attestation failure diagnostics", diagnostics.fields...)
 	}
+	if logDiagnostics {
+		logger.Error("attestation failure diagnostics", diagnostics.fields...)
+	}
+}
+
+func (a *AttestationHealth) markTerminalWedgeLocked() bool {
+	a.wedged = true
+	if a.drainRequested == nil {
+		a.drainRequested = make(chan struct{})
+	}
+	if a.drainNotified {
+		return false
+	}
+	close(a.drainRequested)
+	a.drainNotified = true
+	return true
+}
+
+// DrainRequested returns a channel that closes when a terminal attestation
+// wedge is detected. The channel is stable and closes at most once. A nil
+// receiver returns a nil channel.
+func (a *AttestationHealth) DrainRequested() <-chan struct{} {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.drainRequested == nil {
+		a.drainRequested = make(chan struct{})
+	}
+	return a.drainRequested
 }
 
 // Healthy reports whether the TEE can currently attest. Folded into the
