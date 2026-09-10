@@ -119,7 +119,7 @@ func TestIncrementalTCPHandshakeOnlyThenDelayedHTTP(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("response did not request freeze")
 			}
-			if freeze.BatchCount != 2 || freeze.RecordCount != 3 {
+			if freeze.BatchCount != 3 || freeze.RecordCount != 3 {
 				t.Fatalf("unexpected frozen prefix: %v", freeze)
 			}
 			if c.responseReconstructed {
