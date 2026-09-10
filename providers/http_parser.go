@@ -335,6 +335,8 @@ func (p *HTTPResponseParser) finishHeaders() error {
 		p.remainingBodyBytes = 0
 	} else if contentLength != "" {
 		// Fixed content length
+		// Trim HTTP optional whitespace without changing stored values or ranges.
+		contentLength = strings.Trim(contentLength, " \t")
 		if p.strictFraming {
 			for _, char := range []byte(contentLength) {
 				if char < '0' || char > '9' {
