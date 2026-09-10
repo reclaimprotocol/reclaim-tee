@@ -298,7 +298,7 @@ func (c *Client) handleMessages(conn *websocket.Conn, generation uint64, done ch
 			msg := &shared.Message{Type: shared.MsgSendTCPData, SessionID: env.GetSessionId(), Data: shared.TCPData{Data: p.TcpData.GetData()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleSendTCPData(msg)
 		case *teeproto.Envelope_HandshakeComplete:
-			msg := &shared.Message{Type: shared.MsgHandshakeComplete, SessionID: env.GetSessionId(), Data: shared.HandshakeCompleteData{Success: p.HandshakeComplete.GetSuccess(), CertificateChain: p.HandshakeComplete.GetCertificateChain(), CipherSuite: uint16(p.HandshakeComplete.GetCipherSuite()), TLS12CBCBinding: p.HandshakeComplete.GetTls12CbcBinding()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
+			msg := &shared.Message{Type: shared.MsgHandshakeComplete, SessionID: env.GetSessionId(), Data: shared.HandshakeCompleteData{Success: p.HandshakeComplete.GetSuccess(), CertificateChain: p.HandshakeComplete.GetCertificateChain(), CipherSuite: uint16(p.HandshakeComplete.GetCipherSuite()), TLS12CBCBinding: p.HandshakeComplete.GetTls12CbcBinding(), SelectedResponseMode: p.HandshakeComplete.GetSelectedResponseMode(), ResponseBinding: p.HandshakeComplete.GetResponseBinding()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
 			c.handleHandshakeComplete(msg)
 		case *teeproto.Envelope_SessionReady:
 			msg := &shared.Message{Type: shared.MsgSessionReady, SessionID: env.GetSessionId(), Data: shared.SessionReadyData{SessionID: env.GetSessionId(), Ready: p.SessionReady.GetReady()}, Timestamp: time.UnixMilli(env.GetTimestampMs())}
@@ -316,6 +316,17 @@ func (c *Client) handleMessages(conn *websocket.Conn, generation uint64, done ch
 			c.checkForProtocolCompletion()
 
 		case *teeproto.Envelope_BatchedDecryptionStreams:
+			if c.incrementalResponseEnabled() {
+				if err := c.receiveIncrementalDecryption(env.GetSessionId(), p.BatchedDecryptionStreams); err != nil {
+					c.terminateConnectionWithError("Invalid incremental decryption batch", err)
+					return
+				}
+				continue
+			}
+			if p.BatchedDecryptionStreams.GetMetadata() != nil {
+				c.terminateConnectionWithError("Unexpected incremental response metadata", fmt.Errorf("legacy response mode selected"))
+				return
+			}
 			var ds []shared.ResponseDecryptionStreamData
 			for _, s := range p.BatchedDecryptionStreams.GetDecryptionStreams() {
 				ds = append(ds, shared.ResponseDecryptionStreamData{DecryptionStream: s.GetDecryptionStream(), SeqNum: s.GetSeqNum(), Length: int(s.GetLength())})
@@ -325,6 +336,16 @@ func (c *Client) handleMessages(conn *websocket.Conn, generation uint64, done ch
 		case *teeproto.Envelope_BatchedTlsRecords:
 			if err := c.handleBatchedTLS12CBCRequest(env.GetSessionId(), p.BatchedTlsRecords); err != nil {
 				c.terminateConnectionWithError("Invalid TLS 1.2 CBC request records", err)
+				return
+			}
+		case *teeproto.Envelope_ResponseFrozen:
+			if err := c.receiveResponseFrozen(env.GetSessionId(), p.ResponseFrozen); err != nil {
+				c.terminateConnectionWithError("Invalid frozen response", err)
+				return
+			}
+		case *teeproto.Envelope_ResponseCaptureReady:
+			if err := c.receiveResponseCaptureReady(env.GetSessionId(), p.ResponseCaptureReady); err != nil {
+				c.terminateConnectionWithError("Invalid response capture acknowledgment", err)
 				return
 			}
 		default:
@@ -527,13 +548,14 @@ func (c *Client) sendPendingConnectionRequest() error {
 		TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_RequestConnection{
 			RequestConnection: &teeproto.RequestConnection{
-				Hostname:         reqData.Hostname,
-				Port:             int32(reqData.Port),
-				Sni:              reqData.SNI,
-				Alpn:             reqData.ALPN,
-				ForceTlsVersion:  reqData.ForceTLSVersion,
-				ForceCipherSuite: reqData.ForceCipherSuite,
-				SupportsTls12Cbc: reqData.SupportsTLS12CBC,
+				Hostname:              reqData.Hostname,
+				Port:                  int32(reqData.Port),
+				Sni:                   reqData.SNI,
+				Alpn:                  reqData.ALPN,
+				ForceTlsVersion:       reqData.ForceTLSVersion,
+				ForceCipherSuite:      reqData.ForceCipherSuite,
+				SupportsTls12Cbc:      reqData.SupportsTLS12CBC,
+				RequestedResponseMode: reqData.RequestedResponseMode,
 			},
 		},
 	}

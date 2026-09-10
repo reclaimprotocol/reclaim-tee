@@ -241,11 +241,39 @@ func (c *Client) tcpToWebsocket() {
 				} else {
 					// After handshake: Process for split AEAD
 					c.processTLSRecordFromData(packet)
+					if c.incrementalResponseEnabled() && len(c.batchedResponses) >= shared.MaxIncrementalBatchRecords {
+						if err := c.authenticateIncrementalBatch(); err != nil {
+							c.terminateConnectionWithError("Failed to authenticate response batch", err)
+							return
+						}
+						if c.incrementalResponse.framer.Complete() {
+							if err := c.finalizeIncrementalResponse(false); err != nil {
+								c.terminateConnectionWithError("Failed to finalize response", err)
+							}
+							return
+						}
+					}
 				}
 
 				offset += fullLength
 			}
 		} // Close the "if n > 0" block
+
+		if c.isClosing.Load() {
+			return
+		}
+		if c.incrementalResponseEnabled() && len(c.batchedResponses) > 0 {
+			if err := c.authenticateIncrementalBatch(); err != nil {
+				c.terminateConnectionWithError("Failed to authenticate response batch", err)
+				return
+			}
+			if c.incrementalResponse.framer.Complete() {
+				if err := c.finalizeIncrementalResponse(false); err != nil {
+					c.terminateConnectionWithError("Failed to finalize response", err)
+				}
+				return
+			}
+		}
 
 		// Handle errors only after consuming all returned bytes.
 		eofReceived := false
@@ -282,6 +310,16 @@ func (c *Client) tcpToWebsocket() {
 
 		// After processing any final data, break if EOF was received
 		if eofReceived {
+			if c.incrementalResponseEnabled() {
+				if len(pending) != 0 {
+					c.terminateConnectionWithError("Incomplete TLS record at EOF", io.ErrUnexpectedEOF)
+					return
+				}
+				if err := c.finalizeIncrementalResponse(true); err != nil {
+					c.terminateConnectionWithError("Failed to finalize response", err)
+				}
+				return
+			}
 			// A real EOF before any response record leaves downstream with
 			// nothing to verify, so terminate immediately.
 			if !c.hasCapturedResponseRecords() {

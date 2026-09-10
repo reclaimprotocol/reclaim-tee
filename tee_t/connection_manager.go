@@ -911,6 +911,10 @@ func (cm *TEEKConnectionManager) handleSessionMessages(sessionID string, session
 			}
 			handlerErr = cm.teet.handleBatchedEncryptedRequest(identity, msg)
 
+		case *teeproto.Envelope_ResponseModeRequest:
+			handlerErr = cm.teet.handleResponseModeRequest(identity, p.ResponseModeRequest)
+		case *teeproto.Envelope_FinalizeResponse:
+			handlerErr = cm.teet.handleFinalizeResponse(identity, p.FinalizeResponse)
 		case *teeproto.Envelope_Tls12CbcReadState:
 			handlerErr = cm.teet.handleTLS12CBCReadState(identity, p.Tls12CbcReadState)
 
@@ -943,6 +947,7 @@ func (cm *TEEKConnectionManager) handleSessionMessages(sessionID string, session
 				SessionID: sessionID,
 				Type:      shared.MsgBatchedTagSecrets,
 				Data: shared.BatchedTagSecretsData{
+					Metadata:   p.BatchedTagSecrets.GetMetadata(),
 					TagSecrets: ts,
 					SessionID:  sessionID,
 					TotalCount: int(p.BatchedTagSecrets.GetTotalCount()),
@@ -1003,9 +1008,10 @@ func (cm *TEEKConnectionManager) sendSessionConnectionAck(conn *websocket.Conn, 
 		TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_SessionConnectionAck{
 			SessionConnectionAck: &teeproto.SessionConnectionAck{
-				SessionId:    sessionID,
-				Success:      success,
-				ErrorMessage: errMsg,
+				SupportsIncrementalResponses: success,
+				SessionId:                    sessionID,
+				Success:                      success,
+				ErrorMessage:                 errMsg,
 			},
 		},
 	}

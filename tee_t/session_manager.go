@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"maps"
 	"sync"
@@ -24,13 +25,18 @@ type TEETSessionState struct {
 	session           *shared.Session
 	controlGeneration uint64
 
-	KeyShare                       []byte
-	CipherSuite                    uint16
-	PendingEncryptedRequest        *shared.EncryptedRequestData            // Legacy: single request
-	PendingEncryptedFragments      map[uint64]*shared.EncryptedRequestData // New: multiple fragments by sequence number
-	ExpectedFragmentCount          int                                     // Total number of fragments expected
-	RequestProofStreams            [][]byte                                // Store R_SP streams for cryptographic signing
-	ConsolidatedResponseCiphertext []byte                                  // Response ciphertext consolidation
+	negotiatedResponseCipher  atomic.Uint32
+	KeyShare                  []byte
+	CipherSuite               uint16
+	PendingEncryptedRequest   *shared.EncryptedRequestData            // Legacy: single request
+	PendingEncryptedFragments map[uint64]*shared.EncryptedRequestData // New: multiple fragments by sequence number
+	ExpectedFragmentCount     int                                     // Total number of fragments expected
+	RequestProofStreams       [][]byte                                // Store R_SP streams for cryptographic signing
+	// responseCiphertextMu guards the consolidated bytes, including the CBC
+	// plaintext stored here, and prevents publication after cleanup starts.
+	ConsolidatedResponseCiphertext []byte
+	responseCiphertextMu           sync.Mutex
+	responseCiphertextDestroyed    bool
 
 	// Trusted-TEE TLS 1.2 CBC state. CBCReadStateReceived and
 	// ResponseBatchReceived make the key handoff and response transcript
@@ -200,9 +206,45 @@ func (t *TEETSessionManager) CloseSession(sessionID string) error {
 	return t.SessionManager.CloseSession(sessionID)
 }
 
-// AppendResponseCiphertext adds response ciphertext to the consolidated stream
-func (s *TEETSessionState) AppendResponseCiphertext(ciphertext []byte) {
+// AppendResponseCiphertext adds authenticated bytes unless cleanup has started.
+func (s *TEETSessionState) AppendResponseCiphertext(ciphertext []byte) error {
+	s.responseCiphertextMu.Lock()
+	defer s.responseCiphertextMu.Unlock()
+	if s.responseCiphertextDestroyed {
+		return fmt.Errorf("response ciphertext state is destroyed")
+	}
 	s.ConsolidatedResponseCiphertext = append(s.ConsolidatedResponseCiphertext, ciphertext...)
+	return nil
+}
+
+func (s *TEETSessionState) replaceResponseCiphertext(ciphertext []byte) error {
+	s.responseCiphertextMu.Lock()
+	defer s.responseCiphertextMu.Unlock()
+	if s.responseCiphertextDestroyed {
+		return fmt.Errorf("response ciphertext state is destroyed")
+	}
+	clear(s.ConsolidatedResponseCiphertext)
+	s.ConsolidatedResponseCiphertext = bytes.Clone(ciphertext)
+	return nil
+}
+
+func (s *TEETSessionState) snapshotResponseCiphertext() []byte {
+	s.responseCiphertextMu.Lock()
+	defer s.responseCiphertextMu.Unlock()
+	return bytes.Clone(s.ConsolidatedResponseCiphertext)
+}
+
+// snapshotResponseCiphertextRange copies only the bytes consumed by one OPRF.
+func (s *TEETSessionState) snapshotResponseCiphertextRange(start, length int) ([]byte, error) {
+	s.responseCiphertextMu.Lock()
+	defer s.responseCiphertextMu.Unlock()
+	if s.responseCiphertextDestroyed {
+		return nil, fmt.Errorf("response ciphertext state is destroyed")
+	}
+	if start < 0 || length <= 0 || start > len(s.ConsolidatedResponseCiphertext) || length > len(s.ConsolidatedResponseCiphertext)-start {
+		return nil, fmt.Errorf("range exceeds ciphertext (start=%d length=%d, ciphertext_len=%d)", start, length, len(s.ConsolidatedResponseCiphertext))
+	}
+	return bytes.Clone(s.ConsolidatedResponseCiphertext[start : start+length]), nil
 }
 
 // AddRequestProofStream adds an R_SP stream for cryptographic verification
@@ -301,6 +343,13 @@ func (s *TEETSessionState) DestroySessionState() {
 	if s == nil {
 		return
 	}
+	// Do not hold this lock while waiting for CBC or OPRF work. Their handlers
+	// can publish or snapshot response bytes while holding their own locks.
+	s.responseCiphertextMu.Lock()
+	s.responseCiphertextDestroyed = true
+	clear(s.ConsolidatedResponseCiphertext)
+	s.ConsolidatedResponseCiphertext = nil
+	s.responseCiphertextMu.Unlock()
 	s.DestroyOPRFSessions()
 	s.cbcMu.Lock()
 	defer s.cbcMu.Unlock()
@@ -309,8 +358,6 @@ func (s *TEETSessionState) DestroySessionState() {
 	s.CBCAuthenticatedResponse = nil
 	clear(s.CBCAuthenticatedRedactedResponse)
 	s.CBCAuthenticatedRedactedResponse = nil
-	clear(s.ConsolidatedResponseCiphertext)
-	s.ConsolidatedResponseCiphertext = nil
 	clear(s.CBCResponseDigest)
 	s.CBCResponseDigest = nil
 	s.CBCCloseNotify = false

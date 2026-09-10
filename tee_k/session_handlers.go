@@ -46,6 +46,9 @@ func (t *TEEK) handleRequestConnection(sessionID string, msg *shared.Message) er
 		t.terminateSessionWithError(sessionID, shared.ReasonMessageParsingFailed, err, "Failed to parse connection request")
 		return err
 	}
+	if reqData.RequestedResponseMode != teeproto.ResponseMode_RESPONSE_MODE_LEGACY_EOF && reqData.RequestedResponseMode != teeproto.ResponseMode_RESPONSE_MODE_INCREMENTAL_V1 {
+		return fmt.Errorf("unsupported requested response mode: %d", reqData.RequestedResponseMode)
+	}
 	if err := validateHTTPSPort(reqData.Port); err != nil {
 		t.terminateSessionWithError(sessionID, shared.ReasonProtocolViolation, err, "Invalid target port")
 		return err
@@ -114,6 +117,9 @@ func (t *TEEK) handleTCPData(sessionID string, msg *shared.Message) error {
 		return err
 	}
 
+	if tlsState.responseCaptureReady.Load() {
+		return fmt.Errorf("TCPData received after incremental response capture barrier")
+	}
 	if tlsState.WSConn2TLS != nil {
 		// Count App records so TLS-1.3 response tag-gen can derive the right offset.
 		if len(tcpData.Data) >= 1 && tcpData.Data[0] == 0x17 {
@@ -518,6 +524,11 @@ func (t *TEEK) handleRedactionSpec(sessionID string, msg *shared.Message) error 
 	if err != nil {
 		t.terminateSessionWithError(sessionID, shared.ReasonInternalError, err, "Failed to get TLS session state")
 		return err
+	}
+	if session.ResponseState != nil {
+		if err := session.ResponseState.Incremental.BeginRedaction(); err != nil {
+			return err
+		}
 	}
 	if isTLS12CBCSession(teekState) && !teekState.CBCRedactionSpecReceived.CompareAndSwap(false, true) {
 		err = fmt.Errorf("multiple TLS 1.2 CBC response redaction specifications received")

@@ -108,7 +108,7 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			for _, r := range p.BatchedEncryptedResponses.GetResponses() {
 				arr = append(arr, shared.EncryptedResponseData{EncryptedData: r.GetEncryptedData(), Tag: r.GetTag(), RecordHeader: r.GetRecordHeader(), SeqNum: r.GetSeqNum(), ExplicitIV: r.GetExplicitIv()})
 			}
-			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgBatchedEncryptedResponses, Data: shared.BatchedEncryptedResponseData{Responses: arr, SessionID: p.BatchedEncryptedResponses.GetSessionId(), TotalCount: int(p.BatchedEncryptedResponses.GetTotalCount())}}
+			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgBatchedEncryptedResponses, Data: shared.BatchedEncryptedResponseData{Metadata: p.BatchedEncryptedResponses.GetMetadata(), Responses: arr, SessionID: p.BatchedEncryptedResponses.GetSessionId(), TotalCount: int(p.BatchedEncryptedResponses.GetTotalCount())}}
 		case *teeproto.Envelope_BatchedTlsRecords:
 			msg = &shared.Message{SessionID: env.GetSessionId(), Type: shared.MsgBatchedTLSRecords, Data: p.BatchedTlsRecords}
 		default:
@@ -183,8 +183,10 @@ func (t *TEET) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// If handler returned error, session already terminated - exit loop
+		// New protocol validators can return before invoking termination. Always
+		// terminate the exact client session; repeated cleanup is idempotent.
 		if handlerErr != nil {
+			t.terminateSessionWithErrorForIdentity(sessionIdentity, shared.ReasonProtocolViolation, handlerErr, "Client response protocol failed")
 			return
 		}
 	}

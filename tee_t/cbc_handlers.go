@@ -213,10 +213,15 @@ func (t *TEET) handleTLS12CBCResponseRecords(identity *teetSessionIdentity, batc
 		return t.rejectTLS12CBCResponse(identity, err)
 	}
 
+	if err := state.replaceResponseCiphertext(authenticated.response); err != nil {
+		state.cbcMu.Unlock()
+		authenticated.readContext.Destroy()
+		clear(authenticated.response)
+		return t.rejectTLS12CBCResponse(identity, err)
+	}
 	previousReadContext := state.CBCReadContext
 	state.CBCReadContext = authenticated.readContext
 	state.CBCAuthenticatedResponse = append([]byte(nil), authenticated.response...)
-	state.ConsolidatedResponseCiphertext = append([]byte(nil), authenticated.response...)
 	state.CBCResponseDigest = digest
 	state.CBCPlaintextRecordLengths = authenticated.plaintextLengths
 	state.CBCCloseNotify = authenticated.closeNotify

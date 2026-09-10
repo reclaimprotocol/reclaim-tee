@@ -18,6 +18,12 @@ import (
 type TEEKSessionState struct {
 	session *shared.Session
 
+	responseModeMu         sync.Mutex
+	responseModeAck        chan error
+	responseModeAcked      bool
+	responseCaptureStarted atomic.Bool
+	responseCaptureReady   atomic.Bool
+
 	HandshakeComplete bool
 	ClientHello       []byte
 	ServerHello       []byte
@@ -238,7 +244,7 @@ func (t *TEEKSessionManager) CloseSessionIfCurrent(session *shared.Session) erro
 // tag-secret nonce. On first call, initializes from the offset = (App records
 // arrived via TCPData) − (App records minitls consumed during handshake).
 // Subsequent calls increment. TLS-1.3 only — TLS-1.2 uses client-provided seq.
-func (s *TEEKSessionState) NextResponseTagSeq() uint64 {
+func (s *TEEKSessionState) initializeResponseTagSeq() {
 	s.responseTagSeqInit.Do(func() {
 		var consumed uint32
 		if s.TLSClient != nil {
@@ -249,6 +255,10 @@ func (s *TEEKSessionState) NextResponseTagSeq() uint64 {
 			s.responseTagSeq.Store(uint64(arrived - consumed))
 		}
 	})
+}
+
+func (s *TEEKSessionState) NextResponseTagSeq() uint64 {
+	s.initializeResponseTagSeq()
 	return s.responseTagSeq.Add(1) - 1
 }
 

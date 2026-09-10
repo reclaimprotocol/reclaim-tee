@@ -49,6 +49,11 @@ func (t *TEET) handleFinishedFromTEEK(identity *teetSessionIdentity, msg *shared
 	t.logger.Debug("Received finished command from TEE_K",
 		zap.String("session_id", msg.SessionID))
 	session := identity.session
+	if session.ResponseState != nil {
+		if err := session.ResponseState.Incremental.RequireFrozenForInput(); err != nil {
+			return err
+		}
+	}
 	session.FinishedStateMutex.Lock()
 	session.TEEKFinished = true
 	session.FinishedStateMutex.Unlock()
@@ -63,6 +68,9 @@ func (t *TEET) checkFinishedCondition(identity *teetSessionIdentity) error {
 	session := identity.session
 	sessionID := session.ID
 
+	if session.ResponseState != nil && session.ResponseState.Incremental.RequireFrozen() != nil {
+		return nil
+	}
 	// Get TEE_T state for OPRF check
 	teetState, err := t.sessionManager.stateForSession(session)
 	if err != nil {
@@ -84,18 +92,13 @@ func (t *TEET) checkFinishedCondition(identity *teetSessionIdentity) error {
 
 		cbcSnapshot := teetState.snapshotTLS12CBCSigningState()
 		isCBC := cbcSnapshot.active
-		// Snapshot the legacy consolidated ciphertext under the same mutex that
-		// guards its append. CBC response state is immutable after the one-shot
-		// terminal batch and is copied directly.
+		// Copy response bytes under the mutex used by publication and cleanup.
 		var ciphertext []byte
 		if isCBC {
 			ciphertext = cbcSnapshot.response
 		} else if session.ResponseState != nil {
 			session.ResponseState.ResponsesMutex.Lock()
-			if n := len(teetState.ConsolidatedResponseCiphertext); n > 0 {
-				ciphertext = make([]byte, n)
-				copy(ciphertext, teetState.ConsolidatedResponseCiphertext)
-			}
+			ciphertext = teetState.snapshotResponseCiphertext()
 			session.ResponseState.ResponsesMutex.Unlock()
 		}
 

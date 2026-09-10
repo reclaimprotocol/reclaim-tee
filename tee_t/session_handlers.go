@@ -146,6 +146,10 @@ func (t *TEET) handleBatchedEncryptedResponses(identity *teetSessionIdentity, ms
 		return err
 	}
 
+	if batchedResponses.Metadata != nil || (session.ResponseState != nil && session.ResponseState.Incremental.Active()) {
+		return t.handleIncrementalEncryptedResponses(identity, batchedResponses)
+	}
+
 	t.logger.Debug("Received batch of encrypted responses",
 		zap.String("session_id", sessionID),
 		zap.Int("total_count", batchedResponses.TotalCount))
@@ -157,6 +161,11 @@ func (t *TEET) handleBatchedEncryptedResponses(identity *teetSessionIdentity, ms
 	if err != nil {
 		t.terminateSessionWithErrorForIdentity(identity, shared.ReasonSessionStateCorrupted, err, "Failed to get TEE_T session state")
 		return err
+	}
+	if session.ResponseState != nil {
+		if err := session.ResponseState.Incremental.StartLegacy(); err != nil {
+			return err
+		}
 	}
 	if !teetState.ResponseBatchReceived.CompareAndSwap(false, true) {
 		err = fmt.Errorf("multiple encrypted response batches received for session")
@@ -432,6 +441,10 @@ func (t *TEET) handleBatchedEncryptedRequest(identity *teetSessionIdentity, msg 
 		return err
 	}
 
+	if negotiated := teetState.negotiatedResponseCipher.Load(); negotiated != 0 && uint16(negotiated) != batchedReq.CipherSuite {
+		return fmt.Errorf("request cipher differs from negotiated response cipher")
+	}
+
 	// Initialize fragment map if needed
 	if teetState.PendingEncryptedFragments == nil {
 		teetState.PendingEncryptedFragments = make(map[uint64]*shared.EncryptedRequestData)
@@ -476,6 +489,10 @@ func (t *TEET) handleBatchedTagSecrets(identity *teetSessionIdentity, msg *share
 	if err := msg.UnmarshalData(&batchedTagSecrets); err != nil {
 		t.terminateSessionWithErrorForIdentity(identity, shared.ReasonMessageParsingFailed, err, "Failed to unmarshal batched tag secrets")
 		return err
+	}
+
+	if batchedTagSecrets.Metadata != nil || (session.ResponseState != nil && session.ResponseState.Incremental.Active()) {
+		return t.handleIncrementalTagSecrets(identity, batchedTagSecrets)
 	}
 	t.logger.Debug("Received batch of tag secrets",
 		zap.String("session_id", sessionID),
@@ -598,7 +615,9 @@ func (t *TEET) processEncryptedRequestWithStreams(identity *teetSessionIdentity,
 		t.terminateSessionWithErrorForIdentity(identity, shared.ReasonSessionStateCorrupted, err, "Failed to get TEE_T session state")
 		return err
 	}
-	teetState.CipherSuite = encReq.CipherSuite
+	if err := teetState.setResponseCipherSuite(encReq.CipherSuite); err != nil {
+		return err
+	}
 	t.logger.Debug("Stored CipherSuite in session state",
 		zap.String("session_id", sessionID),
 		zap.Uint16("cipher_suite", encReq.CipherSuite))
@@ -771,7 +790,9 @@ func (t *TEET) processEncryptedFragmentsWithStreams(identity *teetSessionIdentit
 		allAuthTags = append(allAuthTags, authTag...)
 	}
 
-	teetState.CipherSuite = cipherSuite
+	if err := teetState.setResponseCipherSuite(cipherSuite); err != nil {
+		return err
+	}
 	t.logger.Debug("Successfully processed all fragments",
 		zap.String("session_id", sessionID),
 		zap.Int("total_data_bytes", len(allReconstructedData)),
@@ -852,7 +873,7 @@ func (t *TEET) addSingleResponseToTranscript(identity *teetSessionIdentity, encr
 		t.terminateSessionWithErrorForIdentity(identity, shared.ReasonSessionStateCorrupted, err, "Failed to get TEE_T session state")
 		return err
 	}
-	isTLS12AESGCMCipher := minitls.IsTLS12AESGCMCipherSuite(teetState.CipherSuite)
+	isTLS12AESGCMCipher := minitls.IsTLS12AESGCMCipherSuite(teetState.responseCipherSuite())
 	var payload []byte
 	if isTLS12AESGCMCipher && encryptedResp.ExplicitIV != nil && len(encryptedResp.ExplicitIV) == 8 {
 		payload = make([]byte, 8+len(encryptedResp.EncryptedData)+len(encryptedResp.Tag))

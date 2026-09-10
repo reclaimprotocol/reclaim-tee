@@ -20,6 +20,7 @@ type ClientConfig struct {
 	ProviderContext      string                              // Optional provider context
 	ForceTLSVersion      string                              // Force specific TLS version: "1.2", "1.3", or "" for auto
 	ForceCipherSuite     string                              // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
+	ResponseMode         string                              // "" or "incremental" requests incremental v1; "legacy" waits for EOF
 	Logger               *shared.Logger                      // Optional logger with request context
 	RequestId            string                              // Request ID for tracking across system
 }

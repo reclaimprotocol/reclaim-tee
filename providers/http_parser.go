@@ -453,6 +453,20 @@ func (p *HTTPResponseParser) processChunkedBody() error {
 				p.Response.Complete = true
 				break
 			}
+			if p.strictFraming {
+				name, value, ok := strings.Cut(line, ":")
+				if !ok || !validHTTPResponseHeaderName(name) {
+					return errors.New("invalid HTTP response trailer")
+				}
+				if strings.EqualFold(name, "content-length") || strings.EqualFold(name, "transfer-encoding") {
+					return errors.New("HTTP response trailer contains a framing header")
+				}
+				for _, char := range []byte(value) {
+					if (char < 0x20 && char != '\t') || char == 0x7f {
+						return errors.New("invalid HTTP response trailer value")
+					}
+				}
+			}
 			continue
 		}
 

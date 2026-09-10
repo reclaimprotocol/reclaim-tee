@@ -92,15 +92,16 @@ type controlConnectionToken struct {
 
 // SessionTEETConnection represents a per-session connection to TEE_T
 type SessionTEETConnection struct {
-	sessionID         string
-	session           *shared.Session
-	controlConn       *shared.WSConnection
-	controlGeneration uint64
-	admissionOwner    *controlConnectionToken
-	conn              *shared.WSConnection
-	established       time.Time
-	mu                sync.Mutex // Protects writes to this connection
-	closed            bool
+	supportsIncrementalResponses bool
+	sessionID                    string
+	session                      *shared.Session
+	controlConn                  *shared.WSConnection
+	controlGeneration            uint64
+	admissionOwner               *controlConnectionToken
+	conn                         *shared.WSConnection
+	established                  time.Time
+	mu                           sync.Mutex // Protects writes to this connection
+	closed                       bool
 }
 
 func (c *SessionTEETConnection) isClosed() bool {
@@ -843,22 +844,26 @@ func (cm *TEETConnectionManager) EstablishSessionConnection(sessionID string, or
 		return fmt.Errorf("cannot establish session connection: control attestation not verified")
 	}
 
-	dial := cm.dialSessionConnectionFn
-	if dial == nil {
-		dial = cm.dialSessionConnection
+	var wsConn *shared.WSConnection
+	var err error
+	var supportsIncremental bool
+	if cm.dialSessionConnectionFn != nil {
+		wsConn, err = cm.dialSessionConnectionFn(sessionID)
+	} else {
+		wsConn, supportsIncremental, err = cm.dialSessionConnectionCapabilities(sessionID)
 	}
-	wsConn, err := dial(sessionID)
 	if err != nil {
 		return err
 	}
 	candidate := &SessionTEETConnection{
-		sessionID:         sessionID,
-		session:           session,
-		controlConn:       origin.conn,
-		controlGeneration: origin.generation,
-		admissionOwner:    origin,
-		conn:              wsConn,
-		established:       time.Now(),
+		supportsIncrementalResponses: supportsIncremental,
+		sessionID:                    sessionID,
+		session:                      session,
+		controlConn:                  origin.conn,
+		controlGeneration:            origin.generation,
+		admissionOwner:               origin,
+		conn:                         wsConn,
+		established:                  time.Now(),
 	}
 
 	if err := cm.publishSessionConnection(candidate); err != nil {
@@ -880,12 +885,17 @@ func (cm *TEETConnectionManager) EstablishSessionConnection(sessionID string, or
 }
 
 func (cm *TEETConnectionManager) dialSessionConnection(sessionID string) (*shared.WSConnection, error) {
+	conn, _, err := cm.dialSessionConnectionCapabilities(sessionID)
+	return conn, err
+}
+
+func (cm *TEETConnectionManager) dialSessionConnectionCapabilities(sessionID string) (*shared.WSConnection, bool, error) {
 	// Dial session WebSocket — same dialer policy as the control link.
 	// Per-session dials skip the pair-assignment handshake; that runs only
 	// once on control.
 	conn, _, err := cm.dialer(cm.sessionURL).Dial(cm.sessionURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial session connection: %v", err)
+		return nil, false, fmt.Errorf("failed to dial session connection: %v", err)
 	}
 
 	conn.SetReadLimit(MaxWebSocketMessageSize)
@@ -904,12 +914,12 @@ func (cm *TEETConnectionManager) dialSessionConnection(sessionID string) (*share
 	data, err := proto.Marshal(env)
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("failed to marshal SessionConnectionInit: %v", err)
+		return nil, false, fmt.Errorf("failed to marshal SessionConnectionInit: %v", err)
 	}
 
 	if err := shared.WriteWSBinary(conn, data); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("failed to send SessionConnectionInit: %v", err)
+		return nil, false, fmt.Errorf("failed to send SessionConnectionInit: %v", err)
 	}
 
 	// Wait for SessionConnectionAck
@@ -919,26 +929,30 @@ func (cm *TEETConnectionManager) dialSessionConnection(sessionID string) (*share
 
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("failed to receive SessionConnectionAck: %v", err)
+		return nil, false, fmt.Errorf("failed to receive SessionConnectionAck: %v", err)
 	}
 
 	var ackEnv teeproto.Envelope
 	if err := proto.Unmarshal(msgBytes, &ackEnv); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("failed to parse SessionConnectionAck: %v", err)
+		return nil, false, fmt.Errorf("failed to parse SessionConnectionAck: %v", err)
 	}
 
 	ack, ok := ackEnv.Payload.(*teeproto.Envelope_SessionConnectionAck)
 	if !ok {
 		conn.Close()
-		return nil, fmt.Errorf("expected SessionConnectionAck, got %T", ackEnv.Payload)
+		return nil, false, fmt.Errorf("expected SessionConnectionAck, got %T", ackEnv.Payload)
 	}
 
+	if ackEnv.GetSessionId() != sessionID || ack.SessionConnectionAck.GetSessionId() != sessionID {
+		conn.Close()
+		return nil, false, fmt.Errorf("session connection acknowledgment ID mismatch")
+	}
 	if !ack.SessionConnectionAck.GetSuccess() {
 		conn.Close()
-		return nil, fmt.Errorf("session connection rejected: %s", ack.SessionConnectionAck.GetErrorMessage())
+		return nil, false, fmt.Errorf("session connection rejected: %s", ack.SessionConnectionAck.GetErrorMessage())
 	}
-	return shared.NewWSConnection(conn), nil
+	return shared.NewWSConnection(conn), ack.SessionConnectionAck.GetSupportsIncrementalResponses(), nil
 }
 
 func (cm *TEETConnectionManager) publishSessionConnection(candidate *SessionTEETConnection) error {

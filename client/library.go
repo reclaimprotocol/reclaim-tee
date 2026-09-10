@@ -50,6 +50,10 @@ func NewReclaimClient(config ClientConfig) (*ReclaimClient, error) {
 // NewReclaimClientWithContext creates a new ReclaimClient and bounds router
 // allocation with ctx. The context is used only during client construction.
 func NewReclaimClientWithContext(ctx context.Context, config ClientConfig) (*ReclaimClient, error) {
+	responseMode, err := parseResponseMode(config.ResponseMode)
+	if err != nil {
+		return nil, err
+	}
 	if config.RouterURL == "" {
 		config.RouterURL = DefaultRouterURL
 	}
@@ -80,6 +84,7 @@ func NewReclaimClientWithContext(ctx context.Context, config ClientConfig) (*Rec
 	}
 
 	client := NewClient(teekURL)
+	client.requestedResponseMode = responseMode
 	client.SetTEETURL(teetURL)
 	client.SetRouterJWT(alloc.JWT)
 	client.coreProtocolTimeout = config.Timeout
@@ -114,9 +119,10 @@ func NewReclaimClientWithContext(ctx context.Context, config ClientConfig) (*Rec
 // routerUrl defaults to DefaultRouterURL when omitted — the library always
 // resolves the TEE pair via /allocate. No direct TEE URLs.
 type ConfigJSON struct {
-	RouterURL   string `json:"routerUrl"`
-	AttestorURL string `json:"attestorUrl,omitempty"`
-	RequestID   string `json:"requestId,omitempty"`
+	RouterURL    string `json:"routerUrl"`
+	AttestorURL  string `json:"attestorUrl,omitempty"`
+	RequestID    string `json:"requestId,omitempty"`
+	ResponseMode string `json:"responseMode,omitempty"`
 }
 
 // Default URLs for TEE services
@@ -182,6 +188,7 @@ func NewReclaimClientFromJSONWithContext(ctx context.Context, providerParamsJSON
 	attestorURL := DefaultAttestorURL
 	routerURL := DefaultRouterURL
 	var requestID string
+	var responseMode string
 
 	if configJSON != "" {
 		var cfg ConfigJSON
@@ -190,6 +197,7 @@ func NewReclaimClientFromJSONWithContext(ctx context.Context, providerParamsJSON
 				attestorURL = cfg.AttestorURL
 			}
 			requestID = cfg.RequestID
+			responseMode = cfg.ResponseMode
 			if cfg.RouterURL != "" {
 				routerURL = cfg.RouterURL
 			}
@@ -216,6 +224,7 @@ func NewReclaimClientFromJSONWithContext(ctx context.Context, providerParamsJSON
 		ProviderContext:      providerContext,
 		Logger:               logger,
 		RequestId:            requestID,
+		ResponseMode:         responseMode,
 	}
 
 	return NewReclaimClientWithContext(ctx, config)

@@ -15,6 +15,11 @@ enum Sender {
   SENDER_TEE_T = 3;
 }
 
+enum ResponseMode {
+  RESPONSE_MODE_LEGACY_EOF = 0;
+  RESPONSE_MODE_INCREMENTAL_V1 = 1;
+}
+
 // Envelope for all websocket frames
 message Envelope {
   string session_id = 1;
@@ -102,6 +107,11 @@ message Envelope {
     TLS12CBCRequest tls12_cbc_request = 88;               // Client -> TEE_K
     BatchedTLSRecords batched_tls_records = 89;           // TEE_K -> Client or Client -> TEE_T
     AuthenticatedCBCResponse authenticated_cbc_response = 90; // TEE_T -> Client
+    ResponseModeRequest response_mode_request = 91; // TEE_K -> TEE_T
+    ResponseModeAck response_mode_ack = 92; // TEE_T -> TEE_K
+    FinalizeResponse finalize_response = 93; // Client -> TEE_K -> TEE_T
+    ResponseFrozen response_frozen = 94; // TEE_T -> TEE_K -> Client
+    ResponseCaptureReady response_capture_ready = 95; // TCP owner -> TEE_K -> Client
   }
 }
 
@@ -113,6 +123,7 @@ message RequestConnection {
   repeated string alpn = 4;
   string force_tls_version = 5; // optional
   string force_cipher_suite = 6; // optional (kept string form)
+  ResponseMode requested_response_mode = 8;
   bool supports_tls12_cbc = 7; // additive client capability; absent means legacy split-AEAD only
 }
 
@@ -124,6 +135,8 @@ message HandshakeComplete {
   bool success = 1;
   repeated bytes certificate_chain = 2;
   uint32 cipher_suite = 3;  // Negotiated cipher suite for consolidated verification
+  ResponseMode selected_response_mode = 5;
+  bytes response_binding = 6;
   TLS12CBCSessionBinding tls12_cbc_binding = 4; // present only for trusted CBC
 }
 
@@ -212,12 +225,14 @@ message ResponseTagVerification {
 
 // Batches
 message BatchedEncryptedResponses {
+  ResponseBatchMetadata metadata = 4;
   repeated EncryptedResponseData responses = 1;
   string session_id = 2;
   int32 total_count = 3;
 }
 
 message BatchedResponseLengths {
+  ResponseBatchMetadata metadata = 4;
   message Length {
     int32 length = 1;
     bytes record_header = 2;
@@ -230,6 +245,7 @@ message BatchedResponseLengths {
 }
 
 message BatchedTagSecrets {
+  ResponseBatchMetadata metadata = 4;
   message TagSecret {
     bytes tag_secrets = 1;
     uint64 seq_num = 2;
@@ -240,6 +256,7 @@ message BatchedTagSecrets {
 }
 
 message BatchedTagVerifications {
+  ResponseBatchMetadata metadata = 5;
   message Verification {
     bool success = 1;
     uint64 seq_num = 2;
@@ -252,6 +269,7 @@ message BatchedTagVerifications {
 }
 
 message BatchedDecryptionStreams {
+  ResponseBatchMetadata metadata = 4;
   repeated ResponseDecryptionStreamData decryption_streams = 1;
   string session_id = 2;
   int32 total_count = 3;
@@ -377,6 +395,7 @@ message SessionConnectionInit {
 }
 
 message SessionConnectionAck {
+  bool supports_incremental_responses = 4;
   string session_id = 1;
   bool success = 2;
   string error_message = 3;      // If !success
@@ -438,4 +457,42 @@ message AuthenticatedCBCResponse {
   }
   repeated Fragment fragments = 1;
   bool close_notify = 2;
+}
+
+// Incremental response v1 is a transport optimization, not a completeness claim.
+message ResponseModeRequest {
+  ResponseMode mode = 1;
+  bytes session_binding = 2;
+  uint32 cipher_suite = 3;
+}
+message ResponseModeAck {
+  ResponseMode mode = 1;
+  bytes session_binding = 2;
+  bool success = 3;
+}
+message ResponseBatchMetadata {
+  bytes session_binding = 1;
+  uint64 batch_id = 2;
+  uint64 first_record = 3;
+  uint32 record_count = 4;
+  bytes prefix_commitment = 5;
+}
+message FinalizeResponse {
+  bytes session_binding = 1;
+  uint64 batch_count = 2;
+  uint64 record_count = 3;
+  bytes prefix_commitment = 4;
+}
+message ResponseFrozen {
+  bytes session_binding = 1;
+  uint64 batch_count = 2;
+  uint64 record_count = 3;
+  bytes prefix_commitment = 4;
+}
+
+// FIFO marker on client->TEE_K: earlier TCPData records are accounted for before
+// TEE_K seals its response nonce offset. The client waits for acknowledgment.
+message ResponseCaptureReady {
+  bytes session_binding = 1;
+  bool acknowledged = 2;
 }

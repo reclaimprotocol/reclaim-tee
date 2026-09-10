@@ -113,6 +113,10 @@ func (t *TEEK) handleSharedTEETMessage(identity *teekSessionIdentity, msgBytes [
 	// Route session-aware messages
 	var handlerErr error
 	switch p := env.Payload.(type) {
+	case *teeproto.Envelope_ResponseModeAck:
+		handlerErr = t.handleResponseModeAck(identity, p.ResponseModeAck)
+	case *teeproto.Envelope_ResponseFrozen:
+		handlerErr = t.handleResponseFrozen(identity, p.ResponseFrozen)
 	case *teeproto.Envelope_Finished:
 		// Protocol specification: TEE_T no longer sends finished responses to TEE_K
 		t.logger.WithSession(sessionID).Debug("Ignoring finished message from TEE_T")
@@ -122,6 +126,7 @@ func (t *TEEK) handleSharedTEETMessage(identity *teekSessionIdentity, msgBytes [
 		msg := &shared.Message{SessionID: sessionID, Type: shared.MsgBatchedResponseLengths,
 			Data: func() shared.BatchedResponseLengthData {
 				var out shared.BatchedResponseLengthData
+				out.Metadata = p.BatchedResponseLengths.GetMetadata()
 				out.SessionID = p.BatchedResponseLengths.GetSessionId()
 				out.TotalCount = int(p.BatchedResponseLengths.GetTotalCount())
 				for _, l := range p.BatchedResponseLengths.GetLengths() {
@@ -141,6 +146,7 @@ func (t *TEEK) handleSharedTEETMessage(identity *teekSessionIdentity, msgBytes [
 		msg := &shared.Message{SessionID: sessionID, Type: shared.MsgBatchedTagVerifications,
 			Data: func() shared.BatchedTagVerificationData {
 				var out shared.BatchedTagVerificationData
+				out.Metadata = p.BatchedTagVerifications.GetMetadata()
 				out.SessionID = p.BatchedTagVerifications.GetSessionId()
 				out.TotalCount = int(p.BatchedTagVerifications.GetTotalCount())
 				out.AllSuccessful = p.BatchedTagVerifications.GetAllSuccessful()
@@ -284,6 +290,11 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	boundClientSession, err := t.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return
+	}
+
 	// shared.Message handling loop
 	for {
 		conn.SetReadDeadline(time.Now().Add(SessionReadTimeout))
@@ -315,9 +326,13 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// Handle message based on type
 		var handlerErr error
 		switch p := env.Payload.(type) {
+		case *teeproto.Envelope_ResponseCaptureReady:
+			handlerErr = t.handleResponseCaptureReady(sessionID, p.ResponseCaptureReady)
+		case *teeproto.Envelope_FinalizeResponse:
+			handlerErr = t.handleFinalizeResponse(sessionID, p.FinalizeResponse)
 		case *teeproto.Envelope_RequestConnection:
 			// Inline conversion
-			data := shared.RequestConnectionData{Hostname: p.RequestConnection.GetHostname(), Port: int(p.RequestConnection.GetPort()), SNI: p.RequestConnection.GetSni(), ALPN: p.RequestConnection.GetAlpn(), ForceTLSVersion: p.RequestConnection.GetForceTlsVersion(), ForceCipherSuite: p.RequestConnection.GetForceCipherSuite(), SupportsTLS12CBC: p.RequestConnection.GetSupportsTls12Cbc()}
+			data := shared.RequestConnectionData{RequestedResponseMode: p.RequestConnection.GetRequestedResponseMode(), Hostname: p.RequestConnection.GetHostname(), Port: int(p.RequestConnection.GetPort()), SNI: p.RequestConnection.GetSni(), ALPN: p.RequestConnection.GetAlpn(), ForceTLSVersion: p.RequestConnection.GetForceTlsVersion(), ForceCipherSuite: p.RequestConnection.GetForceCipherSuite(), SupportsTLS12CBC: p.RequestConnection.GetSupportsTls12Cbc()}
 			msg := &shared.Message{SessionID: sessionID, Type: shared.MsgRequestConnection, Data: data}
 			handlerErr = t.handleRequestConnection(sessionID, msg)
 		case *teeproto.Envelope_TcpReady:
@@ -358,8 +373,16 @@ func (t *TEEK) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// If handler returned error, session already terminated - exit loop
+		// Validation errors must terminate this client connection's session even
+		// when the handler has not already done so. Never resolve a reused ID.
 		if handlerErr != nil {
+			if t.sessionManager.IsCurrentSessionWithClient(boundClientSession, wsConn) {
+				if identity, err := t.connManager.identityForSession(boundClientSession); err == nil {
+					t.terminateSessionWithErrorForIdentity(identity, shared.ReasonProtocolViolation, handlerErr, "Client response protocol failed")
+				} else {
+					t.cleanupSessionWithSession(boundClientSession)
+				}
+			}
 			return
 		}
 	}
