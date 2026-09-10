@@ -1,7 +1,8 @@
 # Negotiated incremental response completion
 
 Status: implementation and fresh source audits are complete.
-The full build and local race suites pass. Signed-claim verification of the latest audit fixes remains pending.
+The full build, local race suites, and 14 live compatibility cases pass.
+The live matrix includes pre-PR clients, mixed TEE versions, and delayed responses without EOF.
 The baseline includes the EOF fix from PR #29.
 
 ## Objective
