@@ -138,12 +138,10 @@ func (c *Client) tcpToWebsocket() {
 
 	buffer := make([]byte, TCPBufferSize)
 	var pending []byte // Buffer for incomplete TLS packets
-	// Post-response idle flush: after at least one complete response record,
-	// treat 5 consecutive 1s read timeouts between records as end-of-response.
-	// Before the first response record, the core protocol timeout owns the wait.
-	const idleFlushAfter = 5
-	idleStreak := 0
-	var requestSentObserved bool
+	// Response records are opaque here: TLS 1.3 post-handshake messages also
+	// have outer type ApplicationData. Idle time cannot establish that HTTP
+	// has started or finished. Requests require Connection: close, so capture
+	// through real EOF; the core protocol watchdog bounds a peer that stays open.
 
 	// Handshake-stall guard: before the HTTP request is sent we're still
 	// relaying the TLS handshake. A proxy tunnel can stay open but silent when
@@ -161,62 +159,11 @@ func (c *Client) tcpToWebsocket() {
 			c.tcpConn.SetReadDeadline(time.Now().Add(DefaultTCPReadTimeout))
 		}
 
-		// Reset idle clock first time we observe request-sent.
-		if !requestSentObserved && c.httpRequestSent.Load() {
-			requestSentObserved = true
-			idleStreak = 0
-		}
-
 		n, err := c.tcpConn.Read(buffer)
 
-		// Process any received data before handling EOF
-		eofReceived := false
-		if err != nil {
-			if err == io.EOF {
-				c.logger.Info("TCP connection closed by server (EOF)")
-				eofReceived = true // Mark EOF but continue to process any final data
-			} else {
-				if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
-					// Only treat idle as "done" after capturing at least one
-					// complete response record and while cleanly between records.
-					// Pre-response silence remains bounded by the core protocol
-					// timeout instead of being mistaken for a completed response.
-					if c.httpRequestSent.Load() && c.hasCapturedResponseRecords() && pending == nil {
-						idleStreak++
-						if idleStreak >= idleFlushAfter {
-							c.logger.Info("Server idle after response — flushing to TEE_T",
-								zap.Duration("idle_for", time.Duration(idleStreak)*DefaultTCPReadTimeout))
-							eofReceived = true
-						} else {
-							continue
-						}
-					} else if !c.httpRequestSent.Load() {
-						// Handshake phase: bound the wait so a silent proxy tunnel
-						// (target unreachable) fails fast instead of hanging.
-						handshakeIdleStreak++
-						if handshakeIdleStreak >= handshakeStallAfter {
-							c.terminateConnectionWithError(
-								"target server unresponsive during TLS handshake",
-								fmt.Errorf("no handshake data after %ds (proxy tunnel idle)", handshakeStallAfter))
-							return
-						}
-						continue
-					} else {
-						// Request sent, but no complete response exists yet or a record
-						// is incomplete: keep waiting.
-						continue
-					}
-				} else if !isClientNetworkShutdownError(err) {
-					c.logger.Error("TCP read error", zap.Error(err))
-
-					break
-				} else {
-					break
-				}
-			}
-		} else if n > 0 {
-			// Any byte from the server resets the idle clocks.
-			idleStreak = 0
+		// Read may return bytes together with any error, including a timeout.
+		// Consume those bytes before deciding whether to retry or stop.
+		if n > 0 {
 			handshakeIdleStreak = 0
 		}
 
@@ -299,6 +246,39 @@ func (c *Client) tcpToWebsocket() {
 				offset += fullLength
 			}
 		} // Close the "if n > 0" block
+
+		// Handle errors only after consuming all returned bytes.
+		eofReceived := false
+		if err != nil {
+			if err == io.EOF {
+				c.logger.Info("TCP connection closed by server (EOF)")
+				eofReceived = true
+			} else {
+				if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
+					if n == 0 && !c.httpRequestSent.Load() {
+						// Handshake phase: bound the wait so a silent proxy tunnel
+						// (target unreachable) fails fast instead of hanging.
+						handshakeIdleStreak++
+						if handshakeIdleStreak >= handshakeStallAfter {
+							c.terminateConnectionWithError(
+								"target server unresponsive during TLS handshake",
+								fmt.Errorf("no handshake data after %ds (proxy tunnel idle)", handshakeStallAfter))
+							return
+						}
+						continue
+					}
+					// Keep buffered records and sequence numbers across read timeouts.
+					// A quiet connection is not a completed HTTP response.
+					continue
+				} else if !isClientNetworkShutdownError(err) {
+					c.logger.Error("TCP read error", zap.Error(err))
+
+					break
+				} else {
+					break
+				}
+			}
+		}
 
 		// After processing any final data, break if EOF was received
 		if eofReceived {
