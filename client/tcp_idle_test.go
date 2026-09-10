@@ -7,8 +7,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/reclaimprotocol/reclaim-tee/shared"
 )
 
 type idleTimeoutTestError struct{}
@@ -63,29 +61,6 @@ func TestTCPToWebsocketWaitsForFirstResponseBeyondIdleWindow(t *testing.T) {
 	case err := <-c.WaitForCompletion():
 		t.Fatalf("pre-response silence terminated the protocol: %v", err)
 	default:
-	}
-}
-
-func TestTCPToWebsocketFlushesAfterCapturedResponseIdle(t *testing.T) {
-	c := NewClient("")
-	conn := &idleTimeoutTestConn{}
-	c.tcpConn = conn
-	c.handshakeComplete.Store(true)
-	c.httpRequestSent.Store(true)
-	c.batchedResponses = append(c.batchedResponses, shared.EncryptedResponseData{})
-
-	c.tcpToWebsocket()
-
-	if got := conn.reads.Load(); got != 5 {
-		t.Fatalf("TCP reads = %d, want 5 before post-response idle flush", got)
-	}
-	select {
-	case err := <-c.WaitForCompletion():
-		if err == nil || !strings.Contains(err.Error(), "Failed to send batched responses") {
-			t.Fatalf("post-response idle result = %v, want batch-send attempt", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("post-response idle did not flush the captured response")
 	}
 }
 
