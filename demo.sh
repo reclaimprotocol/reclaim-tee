@@ -132,12 +132,7 @@ echo ""
 # 6. Run the client through the router.
 echo "Running demo client through router..."
 echo ""
-if [ "${DEMO_INCREMENTAL_TEST:-}" = "1" ]; then
-    DEMO_ROUTER_URL=${ROUTER_URL} go test ./client \
-        -run '^TestIncrementalDemoIntegration$' -count=1 -v -timeout=120s
-else
-    ./bin/client --router-url=${ROUTER_URL} "$@"
-fi
+./bin/client --router-url=${ROUTER_URL} "$@"
 CLIENT_EXIT_CODE=$?
 
 echo ""

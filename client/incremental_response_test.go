@@ -2,16 +2,24 @@ package client
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/binary"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/reclaimprotocol/reclaim-tee/minitls"
 	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 	"github.com/reclaimprotocol/reclaim-tee/shared"
+	"golang.org/x/crypto/chacha20poly1305"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -119,7 +127,7 @@ func TestIncrementalTCPHandshakeOnlyThenDelayedHTTP(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("response did not request freeze")
 			}
-			if freeze.BatchCount != 3 || freeze.RecordCount != 3 {
+			if freeze.BatchCount != 2 || freeze.RecordCount != 3 {
 				t.Fatalf("unexpected frozen prefix: %v", freeze)
 			}
 			if c.responseReconstructed {
@@ -155,6 +163,153 @@ func fmtSprintError(err error) string {
 		return "without EOF"
 	}
 	return err.Error()
+}
+
+func TestIncrementalTCPAuthenticatesBoundedBatches(t *testing.T) {
+	for _, suite := range []uint16{minitls.TLS_AES_128_GCM_SHA256, minitls.TLS_CHACHA20_POLY1305_SHA256} {
+		for _, tc := range []struct {
+			name         string
+			records      int
+			badRecord    int
+			completeHead bool
+			wantBatches  []int
+			wantError    string
+		}{
+			{name: "coalesced records", records: 2*shared.MaxIncrementalBatchRecords + 3, badRecord: -1, wantBatches: []int{shared.MaxIncrementalBatchRecords, shared.MaxIncrementalBatchRecords, 3}},
+			{name: "bad tag before completion", records: 3, badRecord: 1, wantError: "authentication tag"},
+			{name: "bad tag after complete HTTP", records: 2, completeHead: true, badRecord: 1, wantError: "authentication tag"},
+			{name: "extra HTTP bytes", records: 2, completeHead: true, badRecord: -1, wantError: "HTTP response framing"},
+		} {
+			t.Run(fmt.Sprintf("%04x/%s", suite, tc.name), func(t *testing.T) {
+				c := newIncrementalTestClient(t)
+				c.cipherSuite = suite
+				var aead cipher.AEAD
+				var err error
+				if suite == minitls.TLS_CHACHA20_POLY1305_SHA256 {
+					aead, err = chacha20poly1305.New(make([]byte, chacha20poly1305.KeySize))
+				} else {
+					block, blockErr := aes.NewCipher(make([]byte, 16))
+					if blockErr != nil {
+						t.Fatal(blockErr)
+					}
+					aead, err = cipher.NewGCM(block)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				nonce := func(seq uint64) []byte {
+					value := make([]byte, aead.NonceSize())
+					binary.BigEndian.PutUint64(value[len(value)-8:], seq)
+					return value
+				}
+				var wire []byte
+				for seq := range tc.records {
+					content := []byte("x")
+					if seq == 0 {
+						if tc.completeHead {
+							content = []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+						} else {
+							content = fmt.Appendf(nil, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\nx", tc.records)
+						}
+					}
+					plaintext := append(content, minitls.RecordTypeApplicationData)
+					length := len(plaintext) + aead.Overhead()
+					header := []byte{23, 3, 3, byte(length >> 8), byte(length)}
+					sealed := aead.Seal(nil, nonce(uint64(seq)), plaintext, header)
+					if seq == tc.badRecord {
+						sealed[len(sealed)-1] ^= 1
+					}
+					wire = append(wire, header...)
+					wire = append(wire, sealed...)
+				}
+				if len(wire) > TCPBufferSize {
+					t.Fatal("fixture must fit in one TCP read")
+				}
+				finalized := make(chan *teeproto.FinalizeResponse, 1)
+				c.wsConn = incrementalTestWebSocket(t, func(env *teeproto.Envelope) {
+					if ready := env.GetResponseCaptureReady(); ready != nil {
+						if err := c.receiveResponseCaptureReady(c.sessionID, &teeproto.ResponseCaptureReady{SessionBinding: ready.SessionBinding, Acknowledged: true}); err != nil {
+							t.Error(err)
+						}
+					}
+					if f := env.GetFinalizeResponse(); f != nil {
+						finalized <- f
+						if err := c.receiveResponseFrozen(c.sessionID, &teeproto.ResponseFrozen{SessionBinding: f.SessionBinding, BatchCount: f.BatchCount, RecordCount: f.RecordCount, PrefixCommitment: f.PrefixCommitment}); err != nil {
+							t.Error(err)
+						}
+					}
+				})
+				var batches []int
+				c.teetConn = incrementalTestWebSocket(t, func(env *teeproto.Envelope) {
+					batch := env.GetBatchedEncryptedResponses()
+					if batch == nil {
+						t.Error("unexpected message to authentication peer")
+						return
+					}
+					batches = append(batches, len(batch.Responses))
+					streams := &teeproto.BatchedDecryptionStreams{SessionId: c.sessionID, Metadata: proto.Clone(batch.Metadata).(*teeproto.ResponseBatchMetadata), TotalCount: batch.TotalCount}
+					for _, record := range batch.Responses {
+						plaintext, err := aead.Open(nil, nonce(record.SeqNum), append(bytes.Clone(record.EncryptedData), record.Tag...), record.RecordHeader)
+						if err != nil {
+							c.terminateConnectionWithError("test peer rejected authentication tag", err)
+							return
+						}
+						stream := make([]byte, len(plaintext))
+						for i := range stream {
+							stream[i] = plaintext[i] ^ record.EncryptedData[i]
+						}
+						streams.DecryptionStreams = append(streams.DecryptionStreams, &teeproto.ResponseDecryptionStreamData{SeqNum: record.SeqNum, Length: int32(len(stream)), DecryptionStream: stream})
+					}
+					// Publish only after every submitted record passes authentication.
+					if err := c.receiveIncrementalDecryption(c.sessionID, streams); err != nil {
+						t.Error(err)
+						c.terminateConnectionWithError("test peer decryption reply", err)
+					}
+				})
+				t.Cleanup(c.Close)
+				conn := &responseScriptConn{steps: []responseRead{{data: wire}}}
+				c.tcpConn = conn
+				done := make(chan struct{})
+				go func() { c.tcpToWebsocket(); close(done) }()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("capture did not complete")
+				}
+				if tc.wantError != "" {
+					select {
+					case <-finalized:
+						t.Fatal("invalid batch requested a freeze")
+					default:
+					}
+					if c.responseReconstructed {
+						t.Fatal("invalid batch reconstructed a response")
+					}
+					select {
+					case err := <-c.WaitForCompletion():
+						if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+							t.Fatalf("unexpected failure: %v", err)
+						}
+					case <-time.After(time.Second):
+						t.Fatal("invalid batch did not report failure")
+					}
+					return
+				}
+				var freeze *teeproto.FinalizeResponse
+				select {
+				case freeze = <-finalized:
+				default:
+					t.Fatal("valid response did not request a freeze")
+				}
+				if !slices.Equal(batches, tc.wantBatches) || freeze.BatchCount != uint64(len(tc.wantBatches)) || freeze.RecordCount != uint64(tc.records) {
+					t.Fatalf("batches=%v freeze=%v", batches, freeze)
+				}
+				if !c.responseReconstructed || conn.next != 1 || c.lastResponseData == nil || len(c.lastResponseData.Body) != tc.records {
+					t.Fatal("coalesced response did not complete before EOF")
+				}
+			})
+		}
+	}
 }
 
 func TestIncrementalAuthenticationWaitIsBoundedByWatchdog(t *testing.T) {

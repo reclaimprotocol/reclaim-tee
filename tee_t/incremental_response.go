@@ -10,12 +10,16 @@ import (
 )
 
 func (s *TEETSessionState) responseCipherSuite() uint16 {
+	s.responseCipherMu.Lock()
+	defer s.responseCipherMu.Unlock()
 	if suite := s.negotiatedResponseCipher.Load(); suite != 0 {
 		return uint16(suite)
 	}
 	return s.CipherSuite
 }
 func (s *TEETSessionState) setResponseCipherSuite(suite uint16) error {
+	s.responseCipherMu.Lock()
+	defer s.responseCipherMu.Unlock()
 	if negotiated := s.negotiatedResponseCipher.Load(); negotiated != 0 {
 		if uint16(negotiated) != suite {
 			return fmt.Errorf("request cipher differs from negotiated response cipher")
@@ -48,10 +52,19 @@ func (t *TEET) handleResponseModeRequest(identity *teetSessionIdentity, request 
 	if minitls.IsTLS13CipherSuite(uint16(request.CipherSuite)) {
 		firstSeq = 0
 	}
-	if err := session.ResponseState.Incremental.Configure(session.ID, request.SessionBinding, firstSeq); err != nil {
+	state.responseCipherMu.Lock()
+	if state.CipherSuite != 0 && state.CipherSuite != uint16(request.CipherSuite) {
+		state.responseCipherMu.Unlock()
+		return fmt.Errorf("response cipher differs from existing request cipher")
+	}
+	err = session.ResponseState.Incremental.Configure(session.ID, request.SessionBinding, firstSeq)
+	if err == nil {
+		state.negotiatedResponseCipher.Store(request.CipherSuite)
+	}
+	state.responseCipherMu.Unlock()
+	if err != nil {
 		return err
 	}
-	state.negotiatedResponseCipher.Store(request.CipherSuite)
 	if err := identity.ensureCurrent(); err != nil {
 		return err
 	}

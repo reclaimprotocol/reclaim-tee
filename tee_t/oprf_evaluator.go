@@ -66,16 +66,9 @@ func (t *TEET) handleOPRFOnlineFull(identity *teetSessionIdentity, msg *teeproto
 		return fmt.Errorf("range_index %d out of bounds (total_ranges=%d)", rangeIndex, total)
 	}
 
-	// Initialize OPRF state on the first message. Messages are processed
-	// serially on the per-session connection, so no lock is needed here.
-	if teetState.OPRFResults == nil {
-		teetState.OPRFExpectedCount = total
-		teetState.OPRFResults = make(map[int]*shared.OPRFResult)
-		teetState.PendingOPRF = make(map[int]*pendingOPRFEvaluation)
-		teetState.OPRFKeyShare = t.oprfKeyShare
-		teetState.OPRFState.Store(int32(shared.OPRFStateInProgress))
-	} else if total != teetState.OPRFExpectedCount {
-		return fmt.Errorf("total_ranges changed mid-session: %d vs %d", total, teetState.OPRFExpectedCount)
+	// Peer messages are serial, but session teardown runs concurrently.
+	if err := teetState.initializeOPRFState(total, t.oprfKeyShare); err != nil {
+		return err
 	}
 
 	// Validate range against the response used by this session mode.

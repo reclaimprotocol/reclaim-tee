@@ -19,16 +19,16 @@ import (
 	"github.com/reclaimprotocol/reclaim-tee/providers"
 )
 
-// TestIncrementalDemoIntegration uses the TEEs started by ./demo.sh and the
-// existing local attestor. It is opt-in because it also contacts example.com.
+// TestIncrementalDemoIntegration uses an already running local router, TEE pair,
+// and attestor. It is opt-in because it also contacts example.com.
 // The target connection wrapper preserves real TLS records and certificates.
 func TestIncrementalDemoIntegration(t *testing.T) {
 	if os.Getenv("DEMO_INCREMENTAL_TEST") != "1" {
-		t.Skip("run with DEMO_INCREMENTAL_TEST=1 ./demo.sh; requires a local attestor")
+		t.Skip("set DEMO_INCREMENTAL_TEST=1 and DEMO_ROUTER_URL; requires local TEEs and an attestor")
 	}
 	routerURL := os.Getenv("DEMO_ROUTER_URL")
 	if routerURL == "" {
-		t.Fatal("DEMO_ROUTER_URL is required; use ./demo.sh")
+		t.Fatal("DEMO_ROUTER_URL must identify an already running local router")
 	}
 	if err := requireDemoLoopbackURL(routerURL, "http"); err != nil {
 		t.Fatal(err)

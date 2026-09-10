@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reclaimprotocol/reclaim-tee/mpc"
+	teeproto "github.com/reclaimprotocol/reclaim-tee/proto"
 	"github.com/reclaimprotocol/reclaim-tee/shared"
 )
 
@@ -111,5 +113,74 @@ func TestResponseCleanupDoesNotWaitForResponseHandler(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("cleanup waited for the response handler lock")
+	}
+}
+
+func TestOPRFInitializationConcurrentTeardown(t *testing.T) {
+	manager := NewTEETSessionManager()
+	manager.SetLogger(shared.NewNopLogger())
+	if err := manager.RegisterSession("oprf-cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	session, err := manager.GetSession("oprf-cleanup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	teet := &TEET{sessionManager: manager, logger: shared.NewNopLogger(), oprfKeyShare: make([]byte, 16)}
+	identity := &teetSessionIdentity{session: session}
+	for range 100 {
+		state := &TEETSessionState{session: session, ConsolidatedResponseCiphertext: []byte{1}}
+		manager.SetTEETSessionState(session.ID, state)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			<-start
+			// The real handler must serialize its first initialization with cleanup,
+			// even if it obtained the session state before removal started.
+			_ = teet.handleOPRFOnlineFull(identity, &teeproto.OPRFOnlineFull{
+				SessionId: session.ID, TlsSessionHash: make([]byte, 32), TotalRanges: 1, TlsLength: 1,
+			})
+		})
+		wg.Go(func() {
+			<-start
+			for range 100 {
+				state.DestroySessionState()
+			}
+		})
+		close(start)
+		wg.Wait()
+		if state.PendingOPRF != nil {
+			t.Fatal("initialization recreated pending OPRF state after cleanup")
+		}
+		if err := state.initializeOPRFState(1, teet.oprfKeyShare); err == nil {
+			t.Fatal("OPRF initialization accepted after cleanup")
+		}
+		pending := &pendingOPRFEvaluation{Session: new(mpc.EvaluatorSession)}
+		if err := state.SetPendingOPRF(0, pending); err == nil {
+			t.Fatal("late evaluator publication accepted after cleanup")
+		}
+	}
+}
+
+func TestOPRFInitializationPreservesFirstSubmission(t *testing.T) {
+	state := new(TEETSessionState)
+	keyShare := bytes.Repeat([]byte{1}, 16)
+	if err := state.initializeOPRFState(2, keyShare); err != nil {
+		t.Fatal(err)
+	}
+	result := &shared.OPRFResult{RangeIndex: 0}
+	state.SetOPRFResult(0, result)
+	pending := &pendingOPRFEvaluation{Session: new(mpc.EvaluatorSession)}
+	if err := state.SetPendingOPRF(1, pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.initializeOPRFState(2, bytes.Repeat([]byte{2}, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if state.OPRFResults[0] != result || state.PendingOPRF[1] != pending || !bytes.Equal(state.OPRFKeyShare, keyShare) {
+		t.Fatal("later OPRF range replaced initialized state")
+	}
+	if err := state.initializeOPRFState(3, keyShare); err == nil {
+		t.Fatal("changed total_ranges accepted")
 	}
 }

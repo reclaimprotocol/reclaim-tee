@@ -30,6 +30,11 @@ func (t *TEET) handleTLS12CBCReadState(identity *teetSessionIdentity, message *t
 	if err != nil {
 		return err
 	}
+	if identity.session.ResponseState != nil {
+		if err := identity.session.ResponseState.Incremental.StartLegacy(); err != nil {
+			return err
+		}
+	}
 	if !state.CBCReadStateReceived.CompareAndSwap(false, true) {
 		err := fmt.Errorf("duplicate TLS 1.2 CBC read-state message")
 		_ = t.sendTLS12CBCReadStateAck(identity.session, message.GetBinding(), err)
@@ -73,7 +78,9 @@ func (t *TEET) handleTLS12CBCReadState(identity *teetSessionIdentity, message *t
 	state.cbcMu.Lock()
 	state.CBCBinding = proto.Clone(binding).(*teeproto.TLS12CBCSessionBinding)
 	state.CBCReadContext = readContext
+	state.responseCipherMu.Lock()
 	state.CipherSuite = cipherSuite
+	state.responseCipherMu.Unlock()
 	state.cbcMu.Unlock()
 	return t.sendTLS12CBCReadStateAck(identity.session, binding, nil)
 }
@@ -189,6 +196,11 @@ func (t *TEET) handleTLS12CBCResponseRecords(identity *teetSessionIdentity, batc
 	state, err := t.sessionManager.stateForSession(identity.session)
 	if err != nil {
 		return t.rejectTLS12CBCResponse(identity, err)
+	}
+	if identity.session.ResponseState != nil {
+		if err := identity.session.ResponseState.Incremental.StartLegacy(); err != nil {
+			return err
+		}
 	}
 	state.cbcMu.Lock()
 	if state.CBCBinding == nil || state.CBCReadContext == nil {

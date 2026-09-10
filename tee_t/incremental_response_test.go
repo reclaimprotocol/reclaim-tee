@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"sync"
 	"testing"
 
 	"github.com/reclaimprotocol/reclaim-tee/minitls"
@@ -193,5 +194,136 @@ func TestIncrementalTEETNegotiationCannotChangeCipherOrRepeat(t *testing.T) {
 		if err := teet.handleResponseModeRequest(identity, changed); err == nil {
 			t.Fatal("unsupported peer mode accepted")
 		}
+	}
+}
+
+func newResponseModeStateTest(t *testing.T) (*TEET, *teetSessionIdentity, *TEETSessionState) {
+	t.Helper()
+	manager := NewTEETSessionManager()
+	if err := manager.RegisterSession("response-mode-state"); err != nil {
+		t.Fatal(err)
+	}
+	session, err := manager.GetSession("response-mode-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(session.Cancel)
+	state := &TEETSessionState{session: session}
+	t.Cleanup(state.DestroySessionState)
+	manager.SetTEETSessionState(session.ID, state)
+	return &TEET{sessionManager: manager, logger: shared.NewNopLogger()}, &teetSessionIdentity{session: session}, state
+}
+
+func TestIncrementalTEETRejectsCBCEntryBeforeStateMutation(t *testing.T) {
+	for _, frozen := range []bool{false, true} {
+		teet, identity, state := newResponseModeStateTest(t)
+		transcript := &identity.session.ResponseState.Incremental
+		if err := transcript.Configure(identity.session.ID, make([]byte, 32), 0); err != nil {
+			t.Fatal(err)
+		}
+		state.negotiatedResponseCipher.Store(minitls.TLS_AES_128_GCM_SHA256)
+		if frozen {
+			record, _ := incrementalTEETRecord(t, 0, []byte{1, 23})
+			meta := incrementalTEETBatch(t, identity, []shared.EncryptedResponseData{record}).Metadata
+			if err := transcript.Accept(meta, 23); err != nil {
+				t.Fatal(err)
+			}
+			if err := transcript.ClaimPending(meta); err != nil {
+				t.Fatal(err)
+			}
+			if err := transcript.Complete(meta); err != nil {
+				t.Fatal(err)
+			}
+			// The test has no connections. Finalization publishes the frozen
+			// state before its acknowledgment encounters the missing peer.
+			_ = teet.handleFinalizeResponse(identity, transcript.Snapshot())
+			if !transcript.Frozen() {
+				t.Fatal("test transcript did not freeze")
+			}
+		}
+		_, context := newCBCResponseTestContexts(t, minitls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, minitls.TLS12CBCRecordModeMACThenEncrypt)
+		t.Cleanup(context.Destroy)
+		read := context.ExportReadState()
+		message := &teeproto.TLS12CBCReadState{
+			Binding: &teeproto.TLS12CBCSessionBinding{ContractVersion: 1, CipherSuite: uint32(read.CipherSuite), RecordMode: teeproto.TLS12CBCRecordMode_TLS12_CBC_RECORD_MODE_MAC_THEN_ENCRYPT, SessionBinding: make([]byte, 32)},
+			ReadKey: read.ReadKey, ReadMacKey: read.ReadMACKey, ReadIv: read.ReadIV, ReadSequence: read.ReadSequence,
+		}
+		if err := teet.handleTLS12CBCReadState(identity, message); err == nil {
+			t.Fatal("CBC read state accepted in incremental session")
+		}
+		if state.CBCBinding != nil || state.CBCReadContext != nil || state.CBCReadStateReceived.Load() {
+			t.Fatal("rejected CBC read state changed the session")
+		}
+		// Independently cover CBC batches with otherwise valid CBC state.
+		// The incremental mode must reject them before claiming the batch.
+		state.CBCBinding = message.Binding
+		state.CBCReadContext = context
+		if err := teet.handleTLS12CBCResponseRecords(identity, &teeproto.BatchedTLSRecords{}); err == nil {
+			t.Fatal("CBC batch accepted in incremental session")
+		}
+		if state.ResponseBatchReceived.Load() || transcript.Frozen() != frozen {
+			t.Fatal("rejected CBC batch changed response state")
+		}
+	}
+}
+
+func TestIncrementalTEETChecksExistingRequestCipher(t *testing.T) {
+	for _, same := range []bool{false, true} {
+		teet, identity, state := newResponseModeStateTest(t)
+		suite := uint16(minitls.TLS_AES_128_GCM_SHA256)
+		if !same {
+			suite = minitls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+		}
+		if err := state.setResponseCipherSuite(suite); err != nil {
+			t.Fatal(err)
+		}
+		// No sockets are needed: accepted mode publication is observable
+		// before its acknowledgment reaches the absent test connection.
+		_ = teet.handleResponseModeRequest(identity, &teeproto.ResponseModeRequest{Mode: teeproto.ResponseMode_RESPONSE_MODE_INCREMENTAL_V1, SessionBinding: make([]byte, 32), CipherSuite: minitls.TLS_AES_128_GCM_SHA256})
+		if identity.session.ResponseState.Incremental.Active() != same {
+			t.Fatalf("mode publication did not respect existing cipher: same=%v", same)
+		}
+		if !same && state.negotiatedResponseCipher.Load() != 0 {
+			t.Fatal("mismatched negotiation changed the selected cipher")
+		}
+	}
+}
+
+func TestIncrementalTEETSerializesCipherSelection(t *testing.T) {
+	for range 50 {
+		teet, identity, state := newResponseModeStateTest(t)
+		start := make(chan struct{})
+		var workers sync.WaitGroup
+		workers.Go(func() {
+			<-start
+			_ = state.setResponseCipherSuite(minitls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256)
+		})
+		workers.Go(func() {
+			<-start
+			_ = teet.handleResponseModeRequest(identity, &teeproto.ResponseModeRequest{Mode: teeproto.ResponseMode_RESPONSE_MODE_INCREMENTAL_V1, SessionBinding: make([]byte, 32), CipherSuite: minitls.TLS_AES_128_GCM_SHA256})
+		})
+		close(start)
+		workers.Wait()
+		if state.CipherSuite != 0 && state.negotiatedResponseCipher.Load() != 0 {
+			t.Fatal("concurrent request and response selection accepted different ciphers")
+		}
+	}
+}
+
+func TestIncrementalTEETCBCEntryReservesLegacyMode(t *testing.T) {
+	teet, identity, state := newResponseModeStateTest(t)
+	_, context := newCBCResponseTestContexts(t, minitls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, minitls.TLS12CBCRecordModeMACThenEncrypt)
+	t.Cleanup(context.Destroy)
+	read := context.ExportReadState()
+	message := &teeproto.TLS12CBCReadState{
+		Binding: &teeproto.TLS12CBCSessionBinding{ContractVersion: 1, CipherSuite: uint32(read.CipherSuite), RecordMode: teeproto.TLS12CBCRecordMode_TLS12_CBC_RECORD_MODE_MAC_THEN_ENCRYPT, SessionBinding: make([]byte, 32)},
+		ReadKey: read.ReadKey, ReadMacKey: read.ReadMACKey, ReadIv: read.ReadIV, ReadSequence: read.ReadSequence,
+	}
+	_ = teet.handleTLS12CBCReadState(identity, message)
+	if state.CBCReadContext == nil || state.responseCipherSuite() != read.CipherSuite {
+		t.Fatal("CBC read state was not published in legacy mode")
+	}
+	if err := identity.session.ResponseState.Incremental.Configure(identity.session.ID, make([]byte, 32), 0); err == nil {
+		t.Fatal("CBC entry allowed later incremental configuration")
 	}
 }

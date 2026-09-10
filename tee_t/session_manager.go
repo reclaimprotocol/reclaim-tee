@@ -25,6 +25,7 @@ type TEETSessionState struct {
 	session           *shared.Session
 	controlGeneration uint64
 
+	responseCipherMu          sync.Mutex
 	negotiatedResponseCipher  atomic.Uint32
 	KeyShare                  []byte
 	CipherSuite               uint16
@@ -67,8 +68,8 @@ type TEETSessionState struct {
 
 	// MPC OPRF state. TEE_K is the authoritative source of ranges: it relays
 	// the client's ranges via OPRFOnlineFull (with TotalRanges), so TEE_T
-	// derives everything from that single TCP-ordered stream. handleOPRFOnlineFull
-	// initializes these on the first message (OPRFResults == nil guards init).
+	// derives everything from that single TCP-ordered stream. Initialization and
+	// teardown share oprfMu, so a late message cannot recreate destroyed state.
 	OPRFKeyShare      []byte                     // 16-byte key share for MPC OPRF
 	OPRFResults       map[int]*shared.OPRFResult // Completed OPRF results by range index
 	PendingOPRF       map[int]*pendingOPRFEvaluation
@@ -77,7 +78,8 @@ type TEETSessionState struct {
 	TLSSessionHash    []byte       // Cached TLS session hash for replay protection
 
 	// Per-session mutex for thread-safe access to OPRF state.
-	oprfMu sync.Mutex
+	oprfMu        sync.Mutex
+	oprfDestroyed bool
 }
 
 type TEETSessionManager struct {
@@ -272,11 +274,32 @@ func (s *TEETSessionState) SetOPRFResult(rangeIdx int, result *shared.OPRFResult
 	s.OPRFResults[rangeIdx] = result
 }
 
+func (s *TEETSessionState) initializeOPRFState(total int, keyShare []byte) error {
+	s.oprfMu.Lock()
+	defer s.oprfMu.Unlock()
+	if s.oprfDestroyed {
+		return fmt.Errorf("OPRF session state is destroyed")
+	}
+	if s.OPRFResults == nil {
+		s.OPRFExpectedCount = total
+		s.OPRFResults = make(map[int]*shared.OPRFResult)
+		s.PendingOPRF = make(map[int]*pendingOPRFEvaluation)
+		s.OPRFKeyShare = keyShare
+		s.OPRFState.Store(int32(shared.OPRFStateInProgress))
+	} else if total != s.OPRFExpectedCount {
+		return fmt.Errorf("total_ranges changed mid-session: %d vs %d", total, s.OPRFExpectedCount)
+	}
+	return nil
+}
+
 // SetPendingOPRF stores a prepared evaluator session without overwriting an
 // existing range or a completed result.
 func (s *TEETSessionState) SetPendingOPRF(rangeIdx int, pending *pendingOPRFEvaluation) error {
 	s.oprfMu.Lock()
 	defer s.oprfMu.Unlock()
+	if s.oprfDestroyed {
+		return fmt.Errorf("OPRF session state is destroyed")
+	}
 	if pending == nil || pending.Session == nil {
 		return fmt.Errorf("nil pending OPRF evaluation")
 	}
@@ -324,6 +347,7 @@ func (s *TEETSessionState) DestroyOPRFSessions() {
 		return
 	}
 	s.oprfMu.Lock()
+	s.oprfDestroyed = true
 	pendings := make([]*pendingOPRFEvaluation, 0, len(s.PendingOPRF))
 	for rangeIdx, pending := range s.PendingOPRF {
 		if pending != nil {

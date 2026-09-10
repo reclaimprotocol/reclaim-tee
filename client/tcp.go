@@ -241,10 +241,7 @@ func (c *Client) tcpToWebsocket() {
 				} else {
 					// After handshake: Process for split AEAD
 					c.processTLSRecordFromData(packet)
-					// Check authenticated framing before committing the next TLS
-					// record, including records coalesced into the same TCP read.
-					// Completion can precede close_notify or bytes after closure.
-					if c.incrementalResponseEnabled() && len(c.batchedResponses) > 0 {
+					if c.incrementalResponseEnabled() && len(c.batchedResponses) >= shared.MaxIncrementalBatchRecords {
 						if err := c.authenticateIncrementalBatch(); err != nil {
 							c.terminateConnectionWithError("Failed to authenticate response batch", err)
 							return
