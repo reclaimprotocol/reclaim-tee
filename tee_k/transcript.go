@@ -59,6 +59,11 @@ func (t *TEEK) generateComprehensiveSignatureForIdentity(identity *teekSessionId
 }
 
 func (t *TEEK) generateComprehensiveSignatureForSession(session *shared.Session, teekState *TEEKSessionState, route func(*teeproto.Envelope) error) error {
+	if session != nil && session.ResponseState != nil {
+		if err := session.ResponseState.Incremental.RequireFrozen(); err != nil {
+			return err
+		}
+	}
 	sessionID := session.ID
 	t.logger.WithSession(sessionID).Debug("Generating comprehensive signature")
 

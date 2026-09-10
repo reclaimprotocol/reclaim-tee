@@ -134,6 +134,12 @@ func (t *TEEK) performTLSHandshakeAndHTTP(sessionID string) error {
 		}
 	}
 
+	selectedMode, responseBinding, err := t.negotiateResponseMode(session, tlsState)
+	if err != nil {
+		t.terminateSessionWithError(sessionID, shared.ReasonProtocolViolation, err, "Response mode negotiation failed")
+		return err
+	}
+
 	// Publish handshake completion only after TEE_T has acknowledged any CBC
 	// server-read state. The client cannot send application data before this.
 	tlsState.HandshakeComplete = true
@@ -151,9 +157,11 @@ func (t *TEEK) performTLSHandshakeAndHTTP(sessionID string) error {
 	// Send handshake complete message
 	envHandshake := &teeproto.Envelope{SessionId: sessionID, TimestampMs: time.Now().UnixMilli(),
 		Payload: &teeproto.Envelope_HandshakeComplete{HandshakeComplete: &teeproto.HandshakeComplete{
-			Success:         true,
-			CipherSuite:     uint32(cipherSuite), // Include cipher suite for consolidated verification
-			Tls12CbcBinding: cbcBinding,
+			SelectedResponseMode: selectedMode,
+			ResponseBinding:      responseBinding,
+			Success:              true,
+			CipherSuite:          uint32(cipherSuite), // Include cipher suite for consolidated verification
+			Tls12CbcBinding:      cbcBinding,
 		}},
 	}
 

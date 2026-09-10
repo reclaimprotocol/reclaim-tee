@@ -24,6 +24,10 @@ func (t *TEEK) handleBatchedResponseLengths(identity *teekSessionIdentity, msg *
 		return err
 	}
 
+	if batchedLengths.Metadata != nil || (session.ResponseState != nil && session.ResponseState.Incremental.Active()) {
+		return t.handleIncrementalResponseLengths(identity, batchedLengths)
+	}
+
 	t.logger.WithSession(sessionID).Debug("Received batched response lengths",
 		zap.Int("total_count", batchedLengths.TotalCount))
 
@@ -154,6 +158,10 @@ func (t *TEEK) handleBatchedTagVerifications(identity *teekSessionIdentity, msg 
 		return err
 	}
 
+	if batchedVerification.Metadata != nil || (session.ResponseState != nil && session.ResponseState.Incremental.Active()) {
+		return t.handleIncrementalTagVerifications(identity, batchedVerification)
+	}
+
 	t.logger.WithSession(sessionID).Debug("Received batched tag verification",
 		zap.Int("total_count", batchedVerification.TotalCount),
 		zap.Bool("all_successful", batchedVerification.AllSuccessful))
@@ -256,6 +264,9 @@ func (t *TEEK) checkAndSendSignatureIfReadyForIdentity(identity *teekSessionIden
 
 func finalSignaturePrerequisitesReady(session *shared.Session, teekState *TEEKSessionState) bool {
 	if session == nil || teekState == nil {
+		return false
+	}
+	if session.ResponseState != nil && session.ResponseState.Incremental.RequireFrozen() != nil {
 		return false
 	}
 	session.StreamsMutex.Lock()

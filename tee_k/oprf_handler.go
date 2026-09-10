@@ -27,6 +27,12 @@ func (t *TEEK) handleOPRFRangesFromClient(sessionID string, msg *teeproto.OPRFRa
 		return fmt.Errorf("failed to get TEE_K session state: %w", err)
 	}
 
+	if teekState.session != nil && teekState.session.ResponseState != nil {
+		if err := teekState.session.ResponseState.Incremental.RequireFrozenForInput(); err != nil {
+			return err
+		}
+	}
+
 	// Ranges are submitted exactly once per session. Reject any resubmission:
 	// re-entering below would re-init OPRF maps the peer goroutine reads locked.
 	if !teekState.OPRFRangesSubmitted.CompareAndSwap(false, true) {

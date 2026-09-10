@@ -554,11 +554,15 @@ func GetHostPort(params *HTTPProviderParams, secretParams *HTTPProviderSecretPar
 		return "", -1, fmt.Errorf("url is incorrect: %w", err)
 	}
 
-	intPort, err := strconv.Atoi(port)
+	parsedPort, err := strconv.ParseUint(port, 10, 16)
 	if err != nil {
 		logger.Error("Invalid port number", zap.String("component", "HTTP"), zap.String("operation", "GetHostPort"), zap.String("port", port))
 		return "", -1, fmt.Errorf("url is incorrect: invalid port %q: %w", port, err)
 	}
+	if parsedPort == 0 {
+		return "", -1, fmt.Errorf("url is incorrect: invalid port %q: must be between 1 and 65535", port)
+	}
+	intPort := int(parsedPort)
 
 	logger.Info("Resolved host and port", zap.String("component", "HTTP"), zap.String("operation", "GetHostPort"), zap.String("host", host), zap.Int("port", intPort))
 	return host, intPort, nil

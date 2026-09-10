@@ -185,6 +185,7 @@ func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "-h" || os.Args[1] == "--help") {
 		fmt.Println("Usage: demo_standalone --router-url=URL [tls_version] [cipher_suite] [attestor_url]")
 		fmt.Println("  --router-url: Router base URL (required), e.g. http://localhost:8090 or https://tee.reclaimprotocol.org")
+		fmt.Println("  --response-mode: incremental (default) or legacy")
 		fmt.Println("  tls_version:  Force TLS version: 1.2, 1.3, or empty for auto")
 		fmt.Println("  cipher_suite: Force cipher suite: hex (e.g. 0xc02f) or name")
 		fmt.Println("  attestor_url: Attestor WebSocket URL (default: ws://localhost:8001/ws)")
@@ -200,6 +201,7 @@ func main() {
 	forceTLSVersion := ""
 	forceCipherSuite := ""
 	routerURL := ""
+	responseMode := "incremental"
 
 	// Pull out --router-url=... from args; the remainder is positional.
 	positional := make([]string, 0, len(os.Args))
@@ -210,6 +212,13 @@ func main() {
 		}
 		if after, ok := strings.CutPrefix(a, "--router-url="); ok {
 			routerURL = after
+			continue
+		}
+		if after, ok := strings.CutPrefix(a, "--response-mode="); ok {
+			if after != "legacy" && after != "incremental" {
+				log.Fatalf("Invalid response mode %q: use legacy or incremental", after)
+			}
+			responseMode = after
 			continue
 		}
 		positional = append(positional, a)
@@ -306,6 +315,7 @@ func main() {
 		Mode:             client.ModeAuto,
 		ForceTLSVersion:  forceTLSVersion,
 		ForceCipherSuite: forceCipherSuite,
+		ResponseMode:     responseMode,
 	}
 
 	reclaimClient, err := client.NewReclaimClient(config)
@@ -316,17 +326,17 @@ func main() {
 	defer reclaimClient.Close()
 
 	// Execute the complete protocol with progress reporting
-	fmt.Println("\n🚀 Starting complete protocol execution...")
+	fmt.Println("\n Starting complete protocol execution...")
 	result, err := reclaimClient.ExecuteCompleteProtocol(&providerData)
 	if err != nil {
-		fmt.Printf("\n🔴 Complete protocol execution failed: %v\n", err)
+		fmt.Printf("\n Complete protocol execution failed: %v\n", err)
 		log.Fatalf("Cannot execute complete protocol: %v", err)
 	}
 
 	// Display final results
-	fmt.Printf("\n✅ Protocol completed successfully! Claim ID: %s\n", result.Claim.Identifier)
-	fmt.Printf("🎯 Provider: %s\n", result.Claim.Provider)
-	fmt.Printf("🔏 Attestor: %s\n", result.Signature.AttestorAddress)
+	fmt.Printf("\n Protocol completed successfully! Claim ID: %s\n", result.Claim.Identifier)
+	fmt.Printf(" Provider: %s\n", result.Claim.Provider)
+	fmt.Printf(" Attestor: %s\n", result.Signature.AttestorAddress)
 
 	// Demonstrate accessing protocol results
 	fmt.Println("\n===== PROTOCOL RESULTS =====")
@@ -334,24 +344,24 @@ func main() {
 	// Get complete protocol results
 	protocolResult, err := reclaimClient.GetProtocolResult()
 	if err != nil {
-		fmt.Printf("❌ Error getting protocol result: %v\n", err)
+		fmt.Printf(" Error getting protocol result: %v\n", err)
 	} else {
-		fmt.Printf("✅ Protocol Success: %v\n", protocolResult.Success)
-		fmt.Printf("📋 Session ID: %s\n", protocolResult.SessionID)
-		fmt.Printf("🎯 Target: %s:%d\n", protocolResult.RequestTarget, protocolResult.RequestPort)
-		fmt.Printf("⏱️  Duration: %v\n", protocolResult.CompletionTime.Sub(protocolResult.StartTime))
+		fmt.Printf(" Protocol Success: %v\n", protocolResult.Success)
+		fmt.Printf(" Session ID: %s\n", protocolResult.SessionID)
+		fmt.Printf(" Target: %s:%d\n", protocolResult.RequestTarget, protocolResult.RequestPort)
+		fmt.Printf("Duration: %v\n", protocolResult.CompletionTime.Sub(protocolResult.StartTime))
 
 		if !protocolResult.Success && protocolResult.ErrorMessage != "" {
-			fmt.Printf("❌ Error: %s\n", protocolResult.ErrorMessage)
+			fmt.Printf(" Error: %s\n", protocolResult.ErrorMessage)
 		}
 	}
 
 	// Get transcript results
 	transcripts, err := reclaimClient.GetTranscripts()
 	if err != nil {
-		fmt.Printf("❌ Error getting transcripts: %v\n", err)
+		fmt.Printf(" Error getting transcripts: %v\n", err)
 	} else {
-		fmt.Printf("\n📜 TRANSCRIPT RESULTS:\n")
+		fmt.Printf("\n TRANSCRIPT RESULTS:\n")
 		fmt.Printf("   Both Received: %v\n", transcripts.BothReceived)
 		fmt.Printf("   Both Valid: %v\n", transcripts.BothSignaturesValid)
 
@@ -377,9 +387,9 @@ func main() {
 	// Get validation results
 	validation, err := reclaimClient.GetValidationResults()
 	if err != nil {
-		fmt.Printf("❌ Error getting validation results: %v\n", err)
+		fmt.Printf(" Error getting validation results: %v\n", err)
 	} else {
-		fmt.Printf("\n🔍 VALIDATION RESULTS:\n")
+		fmt.Printf("\n VALIDATION RESULTS:\n")
 		fmt.Printf("   All Validations Passed: %v\n", validation.AllValidationsPassed)
 		fmt.Printf("   Summary: %s\n", validation.ValidationSummary)
 		fmt.Printf("   Transcript Validation: %v\n", validation.TranscriptValidation.OverallValid)
@@ -388,9 +398,9 @@ func main() {
 	// Get response results
 	response, err := reclaimClient.GetResponseResults()
 	if err != nil {
-		fmt.Printf("❌ Error getting response results: %v\n", err)
+		fmt.Printf(" Error getting response results: %v\n", err)
 	} else {
-		fmt.Printf("\n📨 RESPONSE RESULTS:\n")
+		fmt.Printf("\n RESPONSE RESULTS:\n")
 		fmt.Printf("   Response Received: %v\n", response.ResponseReceived)
 		fmt.Printf("   Callback Executed: %v\n", response.CallbackExecuted)
 		fmt.Printf("   Decryption Successful: %v\n", response.DecryptionSuccessful)
@@ -400,7 +410,7 @@ func main() {
 	// Display OPRF results if any were processed
 	oprfRanges := reclaimClient.Client.GetOPRFRanges()
 	if len(oprfRanges) > 0 {
-		fmt.Printf("\n📊 OPRF Results Summary:\n")
+		fmt.Printf("\n OPRF Results Summary:\n")
 		for start, oprfData := range oprfRanges {
 			fmt.Printf("   Range [%d:%d]:\n", start, start+oprfData.Length)
 			fmt.Printf("     - Data: %s\n", string(oprfData.Data[:min(32, len(oprfData.Data))]))

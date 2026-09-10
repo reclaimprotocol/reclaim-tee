@@ -26,6 +26,11 @@ func (t *TEET) handleOPRFOnlineFull(identity *teetSessionIdentity, msg *teeproto
 	}
 	session := identity.session
 	sessionID := session.ID
+	if session.ResponseState != nil {
+		if err := session.ResponseState.Incremental.RequireFrozenForInput(); err != nil {
+			return err
+		}
+	}
 	if msg.GetSessionId() != sessionID {
 		return fmt.Errorf("OPRF round 1 session ID mismatch")
 	}
@@ -61,38 +66,33 @@ func (t *TEET) handleOPRFOnlineFull(identity *teetSessionIdentity, msg *teeproto
 		return fmt.Errorf("range_index %d out of bounds (total_ranges=%d)", rangeIndex, total)
 	}
 
-	// Initialize OPRF state on the first message. Messages are processed
-	// serially on the per-session connection, so no lock is needed here.
-	if teetState.OPRFResults == nil {
-		teetState.OPRFExpectedCount = total
-		teetState.OPRFResults = make(map[int]*shared.OPRFResult)
-		teetState.PendingOPRF = make(map[int]*pendingOPRFEvaluation)
-		teetState.OPRFKeyShare = t.oprfKeyShare
-		teetState.OPRFState.Store(int32(shared.OPRFStateInProgress))
-	} else if total != teetState.OPRFExpectedCount {
-		return fmt.Errorf("total_ranges changed mid-session: %d vs %d", total, teetState.OPRFExpectedCount)
-	}
-
-	// CBC plaintext is published by the response handler on a separate
-	// goroutine. Snapshot it under the CBC state lock. The split-AEAD path keeps
-	// its existing TCP-ordered response buffer.
-	cbcResponse, isCBC := teetState.snapshotCBCResponseForOPRF()
-	var responseCiphertext []byte
-	if isCBC {
-		responseCiphertext = cbcResponse
-		defer clear(responseCiphertext)
-	} else {
-		responseCiphertext = teetState.ConsolidatedResponseCiphertext
+	// Peer messages are serial, but session teardown runs concurrently.
+	if err := teetState.initializeOPRFState(total, t.oprfKeyShare); err != nil {
+		return err
 	}
 
 	// Validate range against the response used by this session mode.
 	if msg.TlsStart < 0 || msg.TlsLength <= 0 || msg.TlsLength > 64 {
 		return fmt.Errorf("invalid range: start=%d length=%d", msg.TlsStart, msg.TlsLength)
 	}
-	if int(msg.TlsStart)+int(msg.TlsLength) > len(responseCiphertext) {
-		return fmt.Errorf("range exceeds ciphertext (end=%d, ciphertext_len=%d)",
-			int(msg.TlsStart)+int(msg.TlsLength), len(responseCiphertext))
+	start, length := int(msg.TlsStart), int(msg.TlsLength)
+	// Own the input bytes before cleanup can clear their backing buffer.
+	// Split-AEAD copies only this range, which is at most 64 bytes.
+	cbcResponse, isCBC := teetState.snapshotCBCResponseForOPRF()
+	var ciphertext []byte
+	if isCBC {
+		defer clear(cbcResponse)
+		if start > len(cbcResponse) || length > len(cbcResponse)-start {
+			return fmt.Errorf("range exceeds ciphertext (end=%d, ciphertext_len=%d)", start+length, len(cbcResponse))
+		}
+		ciphertext = cbcResponse[start : start+length]
+	} else {
+		ciphertext, err = teetState.snapshotResponseCiphertextRange(start, length)
+		if err != nil {
+			return err
+		}
 	}
+	defer clear(ciphertext)
 
 	// Check OT receiver pool is ready
 	if !t.isOTReceiverPoolReady() {
@@ -105,11 +105,6 @@ func (t *TEET) handleOPRFOnlineFull(identity *teetSessionIdentity, msg *teeproto
 		zap.Int("range_index", rangeIndex),
 		zap.Int("msg_size_bytes", len(msg.GarbledTables)),
 		zap.Int64("validation_ms", validationDone.Sub(startTime).Milliseconds()))
-
-	// Extract ciphertext for range
-	start := int(msg.TlsStart)
-	end := start + int(msg.TlsLength)
-	ciphertext := responseCiphertext[start:end]
 
 	// Pad to 64 bytes
 	paddedCiphertext, err := mpc.PadZeros64(ciphertext, int(msg.TlsLength))

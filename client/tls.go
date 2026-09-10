@@ -36,6 +36,10 @@ func recordFingerprint(encryptedData, tag []byte) string {
 
 // handleHandshakeComplete processes handshake completion messages from TEE_K
 func (c *Client) handleHandshakeComplete(msg *shared.Message) {
+	if c.handshakeComplete.Load() {
+		c.terminateConnectionWithError("Duplicate handshake completion", fmt.Errorf("response mode is already selected"))
+		return
+	}
 	var completeData shared.HandshakeCompleteData
 	if err := msg.UnmarshalData(&completeData); err != nil {
 		c.logger.Error("Failed to unmarshal handshake complete data", zap.Error(err))
@@ -72,6 +76,11 @@ func (c *Client) handleHandshakeComplete(msg *shared.Message) {
 			c.cbcMutex.Unlock()
 		} else if completeData.TLS12CBCBinding != nil {
 			c.terminateConnectionWithError("Invalid AEAD handshake binding", fmt.Errorf("TLS 1.2 CBC binding present for non-CBC cipher suite"))
+			return
+		}
+
+		if err := c.configureResponseMode(completeData); err != nil {
+			c.terminateConnectionWithError("Invalid response mode negotiation", err)
 			return
 		}
 

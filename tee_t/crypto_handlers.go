@@ -21,7 +21,7 @@ func (t *TEET) verifyTagForResponse(identity *teetSessionIdentity, encryptedResp
 		return shared.ResponseTagVerificationData{Success: false, SeqNum: encryptedResp.SeqNum, Message: fmt.Sprintf("Failed to get TEE_T session state: %v", err)}
 	}
 	var additionalData []byte
-	cipherSuite := teetState.CipherSuite
+	cipherSuite := teetState.responseCipherSuite()
 	if cipherSuite == 0 {
 		return shared.ResponseTagVerificationData{Success: false, SeqNum: encryptedResp.SeqNum, Message: "CipherSuite not available in session state"}
 	}
@@ -88,13 +88,15 @@ func (t *TEET) verifyTagForResponse(identity *teetSessionIdentity, encryptedResp
 
 	// Consolidate response ciphertext immediately after successful verification
 	if success {
+		ciphertext := encryptedResp.EncryptedData
 		if cipherInfo != nil && cipherInfo.IsTLS13 {
 			if len(encryptedResp.EncryptedData) < 1 {
 				return shared.ResponseTagVerificationData{Success: false, SeqNum: tagSecretsData.SeqNum, Message: "TLS 1.3 EncryptedData empty"}
 			}
-			teetState.AppendResponseCiphertext(encryptedResp.EncryptedData[:len(encryptedResp.EncryptedData)-1]) // strip content type byte
-		} else {
-			teetState.AppendResponseCiphertext(encryptedResp.EncryptedData)
+			ciphertext = ciphertext[:len(ciphertext)-1] // strip content type byte
+		}
+		if err := teetState.AppendResponseCiphertext(ciphertext); err != nil {
+			return shared.ResponseTagVerificationData{Success: false, SeqNum: tagSecretsData.SeqNum, Message: err.Error()}
 		}
 
 		t.logger.WithSession(sessionID).Debug("Appended response ciphertext")
@@ -135,7 +137,7 @@ func (t *TEET) classifyTagFailure(identity *teetSessionIdentity, failed *shared.
 	if err != nil {
 		return
 	}
-	cipherSuite := teetState.CipherSuite
+	cipherSuite := teetState.responseCipherSuite()
 	cipherInfo := minitls.GetCipherSuiteInfo(cipherSuite)
 	if cipherInfo == nil || !cipherInfo.IsTLS13 {
 		t.logger.WithSession(sessionID).Warn("resp-diag: skipped (TLS 1.2)")

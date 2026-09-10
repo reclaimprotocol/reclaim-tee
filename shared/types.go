@@ -371,6 +371,8 @@ func (r *RedactionSessionState) SetRanges(ranges []RequestRedactionRange) {
 
 // ResponseSessionState holds response handling state for each session
 type ResponseSessionState struct {
+	Incremental ResponseTranscript
+
 	PendingResponses    map[string][]byte
 	ResponseSequence    int
 	LastResponseTime    time.Time
@@ -452,13 +454,14 @@ func ConsolidateResponseRedactionRanges(ranges []ResponseRedactionRange) []Respo
 
 // Client to TEE_K: Request to establish connection
 type RequestConnectionData struct {
-	Hostname         string   `json:"hostname"`
-	Port             int      `json:"port"`
-	SNI              string   `json:"sni"`
-	ALPN             []string `json:"alpn"`
-	ForceTLSVersion  string   `json:"force_tls_version,omitempty"`  // Force specific TLS version: "1.2", "1.3", or "" for auto
-	ForceCipherSuite string   `json:"force_cipher_suite,omitempty"` // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
-	SupportsTLS12CBC bool     `json:"supports_tls12_cbc,omitempty"` // Absent/false preserves the pre-CBC negotiation surface.
+	RequestedResponseMode teeproto.ResponseMode `json:"requested_response_mode,omitzero"`
+	Hostname              string                `json:"hostname"`
+	Port                  int                   `json:"port"`
+	SNI                   string                `json:"sni"`
+	ALPN                  []string              `json:"alpn"`
+	ForceTLSVersion       string                `json:"force_tls_version,omitempty"`  // Force specific TLS version: "1.2", "1.3", or "" for auto
+	ForceCipherSuite      string                `json:"force_cipher_suite,omitempty"` // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
+	SupportsTLS12CBC      bool                  `json:"supports_tls12_cbc,omitempty"` // Absent/false preserves the pre-CBC negotiation surface.
 }
 
 // TEE_K to Client: Connection is ready
@@ -478,10 +481,12 @@ type TCPData struct {
 
 // TEE_K to Client: TLS handshake completed
 type HandshakeCompleteData struct {
-	Success          bool                             `json:"success"`
-	CertificateChain [][]byte                         `json:"certificate_chain"`
-	CipherSuite      uint16                           `json:"cipher_suite"` // Negotiated cipher suite
-	TLS12CBCBinding  *teeproto.TLS12CBCSessionBinding `json:"-"`
+	SelectedResponseMode teeproto.ResponseMode            `json:"selected_response_mode,omitzero"`
+	ResponseBinding      []byte                           `json:"response_binding,omitempty"`
+	Success              bool                             `json:"success"`
+	CertificateChain     [][]byte                         `json:"certificate_chain"`
+	CipherSuite          uint16                           `json:"cipher_suite"` // Negotiated cipher suite
+	TLS12CBCBinding      *teeproto.TLS12CBCSessionBinding `json:"-"`
 }
 
 // TEE_K to Client: Handshake key disclosure for certificate verification
@@ -623,14 +628,16 @@ type SignedRedactedDecryptionStream struct {
 
 // BatchedEncryptedResponseData contains multiple encrypted response packets for batch processing
 type BatchedEncryptedResponseData struct {
-	Responses  []EncryptedResponseData `json:"responses"`   // Array of individual encrypted responses
-	SessionID  string                  `json:"session_id"`  // Session identifier
-	TotalCount int                     `json:"total_count"` // Total number of responses in batch
+	Metadata   *teeproto.ResponseBatchMetadata `json:"metadata,omitempty"`
+	Responses  []EncryptedResponseData         `json:"responses"`   // Array of individual encrypted responses
+	SessionID  string                          `json:"session_id"`  // Session identifier
+	TotalCount int                             `json:"total_count"` // Total number of responses in batch
 }
 
 // BatchedResponseLengthData contains multiple response lengths for batch processing
 type BatchedResponseLengthData struct {
-	Lengths []struct {
+	Metadata *teeproto.ResponseBatchMetadata `json:"metadata,omitempty"`
+	Lengths  []struct {
 		Length       int    `json:"length"`                // Length of encrypted response data (without tag)
 		RecordHeader []byte `json:"record_header"`         // Actual TLS record header used by server (5 bytes)
 		SeqNum       uint64 `json:"seq_num"`               // TLS sequence number for AEAD
@@ -642,6 +649,7 @@ type BatchedResponseLengthData struct {
 
 // BatchedTagSecretsData contains multiple tag secrets for batch processing
 type BatchedTagSecretsData struct {
+	Metadata   *teeproto.ResponseBatchMetadata `json:"metadata,omitempty"`
 	TagSecrets []struct {
 		TagSecrets []byte `json:"tag_secrets"` // E_K(0^128) and E_K(nonce||1) for GCM
 		SeqNum     uint64 `json:"seq_num"`     // TLS sequence number for AEAD
@@ -652,17 +660,19 @@ type BatchedTagSecretsData struct {
 
 // BatchedTagVerificationData contains multiple tag verification results for batch processing
 type BatchedTagVerificationData struct {
-	Verifications []ResponseTagVerificationData `json:"verifications"`  // Array of verification results
-	SessionID     string                        `json:"session_id"`     // Session identifier
-	TotalCount    int                           `json:"total_count"`    // Total number of verifications in batch
-	AllSuccessful bool                          `json:"all_successful"` // True if all verifications passed
+	Metadata      *teeproto.ResponseBatchMetadata `json:"metadata,omitempty"`
+	Verifications []ResponseTagVerificationData   `json:"verifications"`  // Array of verification results
+	SessionID     string                          `json:"session_id"`     // Session identifier
+	TotalCount    int                             `json:"total_count"`    // Total number of verifications in batch
+	AllSuccessful bool                            `json:"all_successful"` // True if all verifications passed
 }
 
 // BatchedDecryptionStreamData contains multiple decryption streams for batch processing
 type BatchedDecryptionStreamData struct {
-	DecryptionStreams []ResponseDecryptionStreamData `json:"decryption_streams"` // Array of decryption streams
-	SessionID         string                         `json:"session_id"`         // Session identifier
-	TotalCount        int                            `json:"total_count"`        // Total number of streams in batch
+	Metadata          *teeproto.ResponseBatchMetadata `json:"metadata,omitempty"`
+	DecryptionStreams []ResponseDecryptionStreamData  `json:"decryption_streams"` // Array of decryption streams
+	SessionID         string                          `json:"session_id"`         // Session identifier
+	TotalCount        int                             `json:"total_count"`        // Total number of streams in batch
 }
 
 // BatchedSignedRedactedDecryptionStreamData contains multiple signed redacted decryption streams for batch processing

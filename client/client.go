@@ -149,19 +149,22 @@ type Client struct {
 	connectionRequestPending bool                          // Whether a connection request is pending
 	sessionMutex             sync.RWMutex                  // Protects sessionID and pending connection fields
 
-	teekURL           string
-	teetURL           string
-	routerJWT         string // allocation JWT; sent as ClientAuth first envelope when non-empty
-	attestorURL       string
-	forceTLSVersion   string // Force specific TLS version: "1.2", "1.3", or "" for auto
-	forceCipherSuite  string // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
-	proxyURL          string // HTTPS proxy URL template from env var
-	targetHost        string
-	targetPort        int
-	isClosing         atomic.Bool
-	capturedTraffic   [][]byte // Append guarded by capturedTrafficMu (three writer goroutines).
-	capturedTrafficMu sync.Mutex
-	handshakeComplete atomic.Bool // Routing boundary for captured records; Store after responseSeqNum write.
+	teekURL               string
+	teetURL               string
+	routerJWT             string // allocation JWT; sent as ClientAuth first envelope when non-empty
+	attestorURL           string
+	forceTLSVersion       string // Force specific TLS version: "1.2", "1.3", or "" for auto
+	forceCipherSuite      string // Force specific cipher suite: hex ID (e.g. "0xc02f") or name, or "" for auto
+	proxyURL              string // HTTPS proxy URL template from env var
+	targetHost            string
+	targetPort            int
+	isClosing             atomic.Bool
+	capturedTraffic       [][]byte // Append guarded by capturedTrafficMu (three writer goroutines).
+	capturedTrafficMu     sync.Mutex
+	handshakeComplete     atomic.Bool // Routing boundary for captured records; Store after responseSeqNum write.
+	requestedResponseMode teeproto.ResponseMode
+	selectedResponseMode  teeproto.ResponseMode // Published before handshakeComplete.
+	incrementalResponse   *incrementalResponseState
 
 	// Attestor client (created lazily when needed)
 	attestorClient      *AttestorClient
@@ -293,13 +296,14 @@ func NewClient(teekURL string) *Client {
 	logger := GetLogger("client", false)
 
 	return &Client{
-		logger:              logger,
-		teekURL:             teekURL,
-		teetURL:             "wss://tee-t-gcp.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
-		completionChan:      make(chan error, 1),                      // buffered to avoid blocking
-		coreProtocolTimeout: time.Minute,
-		coreProtocolDone:    make(chan struct{}),
-		watchdogStop:        make(chan struct{}),
+		logger:                logger,
+		requestedResponseMode: teeproto.ResponseMode_RESPONSE_MODE_INCREMENTAL_V1,
+		teekURL:               teekURL,
+		teetURL:               "wss://tee-t-gcp.reclaimprotocol.org/ws", // Default TEE_T URL (enclave mode)
+		completionChan:        make(chan error, 1),                      // buffered to avoid blocking
+		coreProtocolTimeout:   time.Minute,
+		coreProtocolDone:      make(chan struct{}),
+		watchdogStop:          make(chan struct{}),
 
 		protocolPhase:          PhaseHandshaking,
 		teeKTranscriptReceived: false,
@@ -473,13 +477,14 @@ func (c *Client) RequestHTTP() error {
 	// Store connection request data to be sent once session ID is received
 	c.sessionMutex.Lock()
 	c.pendingConnectionRequest = &shared.RequestConnectionData{
-		Hostname:         hostname,
-		Port:             port,
-		SNI:              hostname,
-		ALPN:             []string{"http/1.1"},
-		ForceTLSVersion:  c.forceTLSVersion,
-		ForceCipherSuite: c.forceCipherSuite,
-		SupportsTLS12CBC: true,
+		Hostname:              hostname,
+		Port:                  port,
+		SNI:                   hostname,
+		ALPN:                  []string{"http/1.1"},
+		ForceTLSVersion:       c.forceTLSVersion,
+		ForceCipherSuite:      c.forceCipherSuite,
+		SupportsTLS12CBC:      true,
+		RequestedResponseMode: c.requestedResponseMode,
 	}
 	c.connectionRequestPending = true
 	sessionID := c.sessionID
