@@ -329,8 +329,16 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 	}
 
 	logger.Info("Step 4/4: Processing redaction requests", zap.String("component", "HTTP"), zap.String("operation", "GetResponseRedactions"), zap.Int("step", 4), zap.Int("total", 4))
-	bodyCharset := responseBodyCharset(res.Headers["content-type"])
-	body, err := decodeResponseBody(res.Body, bodyCharset)
+	detection, err := detectResponseBodyCharset(res.Body, res.Headers["content-type"])
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect response charset: %w", err)
+	}
+	logger.Info("Detected HTTP response charset",
+		zap.String("requestId", requestId),
+		zap.String("charset", detection.Charset),
+		zap.String("source", detection.Source))
+	reveals = append(reveals, charsetEvidenceReveals(detection.Evidence, bodyStartIdx, res.Chunks)...)
+	body, err := decodeResponseBody(res.Body, detection.Charset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode response body: %w", err)
 	}
