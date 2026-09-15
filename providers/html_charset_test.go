@@ -169,6 +169,56 @@ func TestDetectHTMLCharset(t *testing.T) {
 	}
 }
 
+func TestHTMLXMLCharsetRejectsProcessingInstructionsAndEmbeddedEncoding(t *testing.T) {
+	for _, prefix := range []string{
+		"<?xml-stylesheet encoding='windows-1251'?>",
+		"<?xmlfoo encoding='windows-1251'?>",
+		"<?xmlencoding='windows-1251'?>",
+		"<?xml\fencoding='windows-1251'?>",
+		"<?xml notencoding='windows-1251'?>",
+		"<?xml version=\"encoding='windows-1251'\"?>",
+		"<?xml version='1.0' note=\"encoding='windows-1251'\"?>",
+		"<?xml version='1.0'encoding='windows-1251'?>",
+		"<?xml encoding='windows-1251' encoding='utf-8'?>",
+		"<?xml encoding='windows-1251'>",
+		"<?xml encoding='windows-1251' broken?>",
+	} {
+		t.Run(prefix, func(t *testing.T) {
+			const target = "Скальська"
+			raw := []byte(prefix + "<span>" + target + "</span>")
+			detection, err := detectResponseBodyCharset(raw, "text/html")
+			if err != nil || detection.Charset != "utf-8" || len(detection.Evidence) != 0 {
+				t.Fatalf("non-declaration changed UTF-8 detection: %+v, %v", detection, err)
+			}
+			params := HTTPProviderParams{URL: "https://example.com/", Method: "GET", ResponseRedactions: []ResponseRedaction{{XPath: "//span/text()", Regex: target}}}
+			ctx := ProviderCtx{Version: ATTESTOR_VERSION_3_2_0}
+			response := responseWithBody(raw, "text/html")
+			ranges, err := GetResponseRedactions(response, &params, &ctx, "xml-instruction-regression")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(reconstructRedactedResponse(t, response, ranges), []byte(target)) {
+				t.Fatal("UTF-8 name was lost during redaction")
+			}
+		})
+	}
+}
+
+func TestHTMLXMLCharsetParsesDeclarationAttributes(t *testing.T) {
+	for _, declaration := range []string{
+		"<?xml version='1.0' encoding='windows-1251'?>",
+		"<?xml\nversion = \"1.1\"\tencoding = \"windows-1251\"\rstandalone='yes' ?>",
+		"<?xml encoding='windows-1251'?>",
+	} {
+		t.Run(declaration, func(t *testing.T) {
+			charset, end := scanHTMLXMLCharset([]byte(declaration + "<p>body</p>"))
+			if charset != "windows-1251" || end != len(declaration) {
+				t.Fatalf("declaration parse = (%q, %d), want (%q, %d)", charset, end, "windows-1251", len(declaration))
+			}
+		})
+	}
+}
+
 func TestHTMLMetaCharsetRedactionPreservesOriginalBytes(t *testing.T) {
 	const meta = "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=windows-1251\">"
 	const name = "Скальська"

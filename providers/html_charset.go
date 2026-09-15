@@ -124,40 +124,73 @@ func scanHTMLMetaCharset(raw []byte) (string, IndexRange) {
 // HTML's XML-declaration fallback is intentionally case-sensitive and only
 // applies at byte zero. This is not an XML parser or XML media-type support.
 func scanHTMLXMLCharset(raw []byte) (string, int) {
-	if !bytes.HasPrefix(raw, []byte("<?xml")) {
+	// A processing instruction such as <?xml-stylesheet ...?> is not a
+	// declaration. XML whitespace must separate the target and attributes.
+	isSpace := func(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
+	if !bytes.HasPrefix(raw, []byte("<?xml")) || len(raw) <= 5 || !isSpace(raw[5]) {
 		return "", 0
 	}
-	end := bytes.IndexByte(raw, '>')
-	if end < 0 {
-		return "", 0
-	}
-	declaration := raw[:end]
-	pos := bytes.Index(declaration, []byte("encoding"))
-	if pos < 0 {
-		return "", 0
-	}
-	s := declaration[pos+len("encoding"):]
-	trim := func(b []byte) []byte {
-		for len(b) > 0 && b[0] <= 0x20 {
-			b = b[1:]
+	pos := 5
+	skipSpace := func() {
+		for pos < len(raw) && isSpace(raw[pos]) {
+			pos++
 		}
-		return b
 	}
-	s = trim(s)
-	if len(s) == 0 || s[0] != '=' {
-		return "", 0
-	}
-	s = trim(s[1:])
-	if len(s) == 0 || (s[0] != '"' && s[0] != '\'') {
-		return "", 0
-	}
-	closeQuote := bytes.IndexByte(s[1:], s[0])
-	if closeQuote < 0 {
-		return "", 0
-	}
-	label := s[1 : closeQuote+1]
-	for _, b := range label {
-		if b <= 0x20 {
+	var label []byte
+	seen := make(map[string]bool)
+	for {
+		skipSpace()
+		if bytes.HasPrefix(raw[pos:], []byte("?>")) {
+			pos += 2
+			break
+		}
+		start := pos
+		for pos < len(raw) && raw[pos] >= 'a' && raw[pos] <= 'z' {
+			pos++
+		}
+		key := string(raw[start:pos])
+		if (key != "version" && key != "encoding" && key != "standalone") || seen[key] {
+			return "", 0
+		}
+		seen[key] = true
+		skipSpace()
+		if pos == len(raw) || raw[pos] != '=' {
+			return "", 0
+		}
+		pos++
+		skipSpace()
+		if pos == len(raw) || (raw[pos] != '\'' && raw[pos] != '"') {
+			return "", 0
+		}
+		quote := raw[pos]
+		pos++
+		start = pos
+		for pos < len(raw) && raw[pos] != quote {
+			pos++
+		}
+		if pos == len(raw) {
+			return "", 0
+		}
+		value := raw[start:pos]
+		pos++
+		switch key {
+		case "version":
+			if string(value) != "1.0" && string(value) != "1.1" {
+				return "", 0
+			}
+		case "standalone":
+			if string(value) != "yes" && string(value) != "no" {
+				return "", 0
+			}
+		case "encoding":
+			label = value
+			for _, b := range label {
+				if b <= 0x20 {
+					return "", 0
+				}
+			}
+		}
+		if !bytes.HasPrefix(raw[pos:], []byte("?>")) && (pos == len(raw) || !isSpace(raw[pos])) {
 			return "", 0
 		}
 	}
@@ -168,7 +201,7 @@ func scanHTMLXMLCharset(raw []byte) (string, int) {
 	if strings.HasPrefix(name, "utf-16") {
 		name = "utf-8"
 	}
-	return name, end + 1
+	return name, pos
 }
 
 // HTML's content attribute allows whitespace and quoted labels; it need not
