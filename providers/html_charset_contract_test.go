@@ -35,6 +35,23 @@ func TestHTMLCharsetReceiptContract(t *testing.T) {
 		encoder           encoding.Encoding
 		rules             []ResponseRedaction
 	}{
+		{"extended-header", fakeMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"continued-header", fakeMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"extended-precedence", fakeMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"invalid-extended-header", realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"escaped-token-header", realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"unknown-entity-private", "<meta http-equiv='Content-Type' content='text/html; &PRIVATEcharset=utf-8'><span>TARGET</span>", "TARGET", nil, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"partial-entity-private", "<meta http-equiv='Content-Type' content='text/html; &#32PRIVATEcharset=utf-8'><span>TARGET</span>", "TARGET", nil, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"noscript-literal", "<noscript>" + fakeMeta + "</noscript>" + realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{Regex: regexp.QuoteMeta(fakeMeta)}, {XPath: "//span/text()"}}},
+		{"selfclosing-script", "<script/>" + fakeMeta + "</script>" + realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{Regex: regexp.QuoteMeta(fakeMeta)}, {XPath: "//span/text()"}}},
+		{"replacement-meta", "<meta charset=replacement>" + realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"replacement-alias", "<meta charset=iso-2022-kr>" + realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"duplicate-header", realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"malformed-header", realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"replacement-header", realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"quoted-header", realMeta + "<span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"utf16-header-Little", "<!doctype html><html><span>" + name + "</span></html>", name, unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM), []ResponseRedaction{{XPath: "//span/text()"}}},
+		{"utf16-header-Big", "<!doctype html><html><span>" + name + "</span></html>", name, unicode.UTF16(unicode.BigEndian, unicode.IgnoreBOM), []ResponseRedaction{{XPath: "//span/text()"}}},
 		{"private-attributes", "<meta charset=utf-8 data-private='PRIVATE'><span>TARGET</span>", "TARGET", nil, []ResponseRedaction{{XPath: "//span/text()"}}},
 		{"private-content", "<meta data-private='PRIVATE' http-equiv='Content-Type' content='text/html; private=PRIVATE; charset=windows-1251; token=PRIVATE'><span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
 		{"entities", "<meta http-equiv='Content-Type' content='text/html; char&#115;et=windows&#45;1251; token=PRIVATE'><span>" + name + "</span>", name, charmap.Windows1251, []ResponseRedaction{{XPath: "//span/text()"}}},
@@ -51,6 +68,32 @@ func TestHTMLCharsetReceiptContract(t *testing.T) {
 		{"utf16-signature", "<?xml version='1.0'?><span>" + name + "</span>", name, unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM), []ResponseRedaction{{XPath: "//span/text()"}}},
 		{"shift-jis", "<meta charset=shift_jis><span>名前</span>", "名前", japanese.ShiftJIS, []ResponseRedaction{{XPath: "//span/text()"}}},
 	} {
+		contentType := "text/html"
+		switch tc.name {
+		case "extended-header":
+			contentType += "; charset*=utf-8''windows-1251"
+		case "continued-header":
+			contentType += "; charset*0*=utf-8''windows%2D; charset*1=1251"
+		case "extended-precedence":
+			contentType += "; charset=windows-1252; charset*=us-ascii'en'windows-1251"
+		case "invalid-extended-header":
+			contentType += "; charset*=utf-8''windows%ZZ1252"
+		case "escaped-token-header":
+			contentType += `; charset="windows\-1252"`
+
+		case "duplicate-header":
+			contentType += "; charset=windows-1252; charset=utf-8"
+		case "malformed-header":
+			contentType += "; broken; charset=windows-1252"
+		case "replacement-header":
+			contentType += "; charset=replacement"
+		case "quoted-header":
+			contentType += `; other="; charset=windows-1252"`
+		case "utf16-header-Little":
+			contentType += "; charset=utf-16le"
+		case "utf16-header-Big":
+			contentType += "; charset=utf-16be"
+		}
 		for _, chunked := range []bool{false, true} {
 			for _, cbc := range []bool{false, true} {
 				label := fmt.Sprintf("%s/chunked=%v/cbc=%v", tc.name, chunked, cbc)
@@ -63,13 +106,13 @@ func TestHTMLCharsetReceiptContract(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					detected, err := detectResponseBodyCharset(body, "text/html")
+					detected, err := detectResponseBodyCharset(body, contentType)
 					if err != nil {
 						t.Fatal(err)
 					}
-					response := responseWithBody(body, "text/html")
+					response := responseWithBody(body, contentType)
 					if chunked {
-						response = chunkedResponse("text/html", body[:2], body[2:len(body)/2], body[len(body)/2:])
+						response = chunkedResponse(contentType, body[:2], body[2:len(body)/2], body[len(body)/2:])
 					}
 					params := HTTPProviderParams{URL: "https://example.com/", Method: "GET", ResponseRedactions: tc.rules}
 					ctx := ProviderCtx{Version: ATTESTOR_VERSION_3_2_0, TLS12CBC: cbc}
@@ -92,7 +135,7 @@ func TestHTMLCharsetReceiptContract(t *testing.T) {
 							revealedBody = append(revealedBody, revealed[ch.Start:ch.Start+ch.Length]...)
 						}
 					}
-					replayed, err := detectResponseBodyCharset(revealedBody, "text/html")
+					replayed, err := detectResponseBodyCharset(revealedBody, contentType)
 					if err != nil || detected.Charset != replayed.Charset {
 						t.Fatalf("encoding changed: %+v -> %+v (%v)", detected, replayed, err)
 					}
@@ -100,7 +143,7 @@ func TestHTMLCharsetReceiptContract(t *testing.T) {
 					if err != nil || !bytes.Contains([]byte(decoded.text), []byte(tc.match)) {
 						t.Fatalf("revealed match lost: %v", err)
 					}
-					fixtures = append(fixtures, fixture{label, "text/html", detected.Charset, body, revealed, tc.match})
+					fixtures = append(fixtures, fixture{label, contentType, detected.Charset, body, revealed, tc.match})
 				})
 			}
 		}

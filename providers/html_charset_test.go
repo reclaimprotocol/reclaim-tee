@@ -287,3 +287,18 @@ func TestHTMLMetaCharsetRedactionPreservesOriginalBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestHTMLCharsetDoesNotGuessUTF16FromLessThan(t *testing.T) {
+	for _, enc := range []encoding.Encoding{unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM), unicode.UTF16(unicode.BigEndian, unicode.IgnoreBOM)} {
+		for _, markup := range []string{"<!doctype html><p>ASCII</p>", "<html><p>ASCII</p></html>", "<meta charset=utf-16>"} {
+			raw, err := enc.NewEncoder().Bytes([]byte(markup))
+			if err != nil {
+				t.Fatal(err)
+			}
+			detected, err := detectResponseBodyCharset(raw, "text/html")
+			if err != nil || detected.Charset != "utf-8" {
+				t.Fatalf("generic '<' must not override UTF-8 fallback: %+v %v", detected, err)
+			}
+		}
+	}
+}

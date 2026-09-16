@@ -47,7 +47,7 @@ func detectResponseBodyCharset(raw []byte, contentType string) (responseCharsetD
 			return responseCharsetDetection{bom.name, "bom", []IndexRange{{Start: 0, End: len(bom.bytes)}}}, nil
 		}
 	}
-	if enc, name := htmlcharset.Lookup(headerCharset); enc != nil {
+	if name := supportedHTMLCharset(headerCharset); name != "" {
 		return responseCharsetDetection{Charset: name, Source: "http-header"}, nil
 	}
 
@@ -108,8 +108,8 @@ func scanHTMLMetaCharset(raw []byte) (string, []IndexRange, error) {
 		if !direct && strings.EqualFold(attrs["http-equiv"], "content-type") {
 			label = metaContentCharset(attrs["content"])
 		}
-		enc, name := htmlcharset.Lookup(label)
-		if enc == nil {
+		name := supportedHTMLCharset(label)
+		if name == "" {
 			continue
 		}
 		// HTML meta declarations cannot switch an ASCII-compatible document
@@ -197,8 +197,8 @@ func scanHTMLXMLCharset(raw []byte) (string, int) {
 			return "", 0
 		}
 	}
-	enc, name := htmlcharset.Lookup(string(label))
-	if enc == nil {
+	name := supportedHTMLCharset(string(label))
+	if name == "" {
 		return "", 0
 	}
 	if strings.HasPrefix(name, "utf-16") {
@@ -277,4 +277,14 @@ func charsetEvidenceReveals(evidence []IndexRange, bodyStart int, chunks []share
 		}
 	}
 	return reveals
+}
+
+// The replacement decoder discards the document and is unavailable to the
+// verifier's TextDecoder. Treat its labels as unsupported on both sides.
+func supportedHTMLCharset(label string) string {
+	enc, name := htmlcharset.Lookup(label)
+	if enc == nil || name == "replacement" {
+		return ""
+	}
+	return name
 }

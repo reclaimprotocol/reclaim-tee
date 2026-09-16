@@ -131,7 +131,24 @@ func charsetAttributeText(raw []byte) (string, []IndexRange) {
 			if end < len(raw) && raw[end] == ';' {
 				end++
 			}
-			text = html.UnescapeString(string(raw[i:end]))
+			// Decode in attribute context (legacy entities followed by an
+			// alphanumeric byte or '=' must remain literal).
+			z := html.NewTokenizer(strings.NewReader(`<a x="` + string(raw[i:end]) + `">`))
+			z.Next()
+			text = z.Token().Attr[0].Val
+			if end < len(raw) && raw[end] == '=' && raw[end-1] != ';' && i+1 < end && raw[i+1] != '#' {
+				text = string(raw[i:end])
+			}
+			// An entity may leave an unchanged suffix. Those bytes retain
+			// individual offsets, rather than inheriting the entity's span.
+			for end > i && len(text) > 0 && raw[end-1] == text[len(text)-1] {
+				end--
+				text = text[:len(text)-1]
+			}
+			if end == i {
+				end = i + 1
+				text = string(raw[i:end])
+			}
 		}
 		out.WriteString(text)
 		for range len(text) {
@@ -170,13 +187,13 @@ func charsetContextEvidence(raw []byte) ([]IndexRange, error) {
 			}
 			rawTextOpening = nil
 			rawTextNeedsClose = false
-			isRawText := strings.Contains("|script|style|title|textarea|xmp|iframe|noembed|noframes|plaintext|", "|"+token.Data+"|")
-			if (isRawText && kind == html.StartTagToken) || containsMeta(tokenBytes[1:]) {
+			isRawText := strings.Contains("|script|style|title|textarea|xmp|iframe|noembed|noframes|noscript|plaintext|", "|"+token.Data+"|")
+			if (isRawText && (kind == html.StartTagToken || kind == html.SelfClosingTagToken)) || containsMeta(tokenBytes[1:]) {
 				syntax, err := charsetTagEvidence(tokenBytes, start, false)
 				if err != nil {
 					return nil, err
 				}
-				if isRawText && kind == html.StartTagToken {
+				if isRawText && (kind == html.StartTagToken || kind == html.SelfClosingTagToken) {
 					rawTextOpening = syntax
 				}
 				if containsMeta(tokenBytes[1:]) {
