@@ -302,3 +302,57 @@ func TestHTMLCharsetDoesNotGuessUTF16FromLessThan(t *testing.T) {
 		}
 	}
 }
+
+func TestHTMLCharsetASCIIWhitespaceLabels(t *testing.T) {
+	for _, label := range []string{"&#160;windows-1251&#160;", "&nbsp;windows-1251&nbsp;", "\vwindows-1251\v", "&nbsp;x-user-defined&nbsp;"} {
+		raw := []byte(`<meta charset="` + label + `"><span>Привет</span>`)
+		detected, err := detectResponseBodyCharset(raw, "text/html")
+		if err != nil || detected.Charset != "utf-8" {
+			t.Fatalf("non-ASCII whitespace label %q: %+v %v", label, detected, err)
+		}
+	}
+	detected, err := detectResponseBodyCharset([]byte("<meta charset=' \t\r\n\fwindows-1251\t'>"), "text/html")
+	if err != nil || detected.Charset != "windows-1251" {
+		t.Fatalf("ASCII whitespace: %+v %v", detected, err)
+	}
+}
+
+func TestHTMLCharsetPreservesScriptEscapeControls(t *testing.T) {
+	body := []byte(`<script><!--<script data-private='PRIVATE'></script><meta charset=windows-1252></script><meta charset=utf-8><span>TARGET</span>`)
+	raw := responseWithBody(body, "text/html")
+	params := HTTPProviderParams{URL: "https://example.com/", Method: "GET", ResponseRedactions: []ResponseRedaction{{Regex: "</script><meta charset=windows-1252>"}}}
+	ctx := ProviderCtx{Version: ATTESTOR_VERSION_3_2_0}
+	ranges, err := GetResponseRedactions(raw, &params, &ctx, "script-escape")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revealed := reconstructRedactedResponse(t, raw, ranges)
+	if bytes.Contains(revealed, []byte("PRIVATE")) {
+		t.Fatal("script private text disclosed")
+	}
+	if !bytes.Contains(revealed, []byte("<!--<script ")) {
+		t.Fatal("script escape controls not preserved")
+	}
+}
+
+func TestHTMLCharsetEvidenceDoesNotHideLegacySelection(t *testing.T) {
+	body := []byte(`<div>BEFORE<meta charset=utf-8><span>TARGET</span></div>`)
+	for _, version := range []AttestorVersion{ATTESTOR_VERSION_3_1_0, ATTESTOR_VERSION_3_2_0} {
+		for _, chunked := range []bool{false, true} {
+			raw := responseWithBody(body, "text/html")
+			if chunked {
+				raw = chunkedResponse("text/html", body[:20], body[20:])
+			}
+			params := HTTPProviderParams{URL: "https://example.com/", Method: "GET", ResponseRedactions: []ResponseRedaction{{XPath: "//div"}}}
+			ctx := ProviderCtx{Version: version}
+			ranges, err := GetResponseRedactions(raw, &params, &ctx, "legacy-union")
+			if err != nil {
+				t.Fatal(err)
+			}
+			revealed := reconstructRedactedResponse(t, raw, ranges)
+			if !bytes.Contains(revealed, []byte("BEFORE")) || !bytes.Contains(revealed, []byte("TARGET")) {
+				t.Fatalf("selected content lost: version=%v chunked=%v", version, chunked)
+			}
+		}
+	}
+}

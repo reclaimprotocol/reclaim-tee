@@ -165,6 +165,7 @@ func charsetContextEvidence(raw []byte) ([]IndexRange, error) {
 	z := html.NewTokenizer(bytes.NewReader(raw))
 	var spans, rawTextOpening []IndexRange
 	rawTextNeedsClose := false
+	rawTextIsScript := false
 	offset := 0
 	containsMeta := func(b []byte) bool { return bytes.Contains(bytes.ToLower(b), []byte("<meta")) }
 	for {
@@ -187,6 +188,7 @@ func charsetContextEvidence(raw []byte) ([]IndexRange, error) {
 			}
 			rawTextOpening = nil
 			rawTextNeedsClose = false
+			rawTextIsScript = false
 			isRawText := strings.Contains("|script|style|title|textarea|xmp|iframe|noembed|noframes|noscript|plaintext|", "|"+token.Data+"|")
 			if (isRawText && (kind == html.StartTagToken || kind == html.SelfClosingTagToken)) || containsMeta(tokenBytes[1:]) {
 				syntax, err := charsetTagEvidence(tokenBytes, start, false)
@@ -195,6 +197,7 @@ func charsetContextEvidence(raw []byte) ([]IndexRange, error) {
 				}
 				if isRawText && (kind == html.StartTagToken || kind == html.SelfClosingTagToken) {
 					rawTextOpening = syntax
+					rawTextIsScript = token.Data == "script"
 				}
 				if containsMeta(tokenBytes[1:]) {
 					spans = append(spans, syntax...)
@@ -203,6 +206,9 @@ func charsetContextEvidence(raw []byte) ([]IndexRange, error) {
 		case html.TextToken:
 			if len(rawTextOpening) > 0 && containsMeta(tokenBytes) {
 				spans = append(spans, rawTextOpening...)
+				if rawTextIsScript {
+					spans = append(spans, scriptEscapeEvidence(tokenBytes, start)...)
+				}
 				rawTextNeedsClose = true
 			}
 		case html.CommentToken:
@@ -224,4 +230,32 @@ func charsetContextEvidence(raw []byte) ([]IndexRange, error) {
 			}
 		}
 	}
+}
+
+// Script escaped/double-escaped states depend on these ASCII control sequences.
+// Retain the controls, not the surrounding script data or attribute values.
+func scriptEscapeEvidence(raw []byte, base int) []IndexRange {
+	lower := bytes.Clone(raw)
+	for i, b := range lower {
+		if b >= 'A' && b <= 'Z' {
+			lower[i] = b + ('a' - 'A')
+		}
+	}
+	var spans []IndexRange
+	for i := range lower {
+		for _, control := range []string{"<!--", "-->", "<script", "</script"} {
+			if !bytes.HasPrefix(lower[i:], []byte(control)) {
+				continue
+			}
+			end := i + len(control)
+			if control == "<script" || control == "</script" {
+				if end == len(lower) || !strings.ContainsRune(" \t\n\r\f/>", rune(lower[end])) {
+					continue
+				}
+				end++
+			}
+			spans = append(spans, IndexRange{Start: base + i, End: base + end})
+		}
+	}
+	return spans
 }

@@ -282,6 +282,11 @@ func charsetEvidenceReveals(evidence []IndexRange, bodyStart int, chunks []share
 // The replacement decoder discards the document and is unavailable to the
 // verifier's TextDecoder. Treat its labels as unsupported on both sides.
 func supportedHTMLCharset(label string) string {
+	// Encoding labels permit only ASCII whitespace, unlike Go's Lookup.
+	label = strings.Trim(label, " \t\n\r\f")
+	if label != strings.TrimSpace(label) {
+		return ""
+	}
 	enc, name := htmlcharset.Lookup(label)
 	if enc == nil || name == "replacement" {
 		return ""

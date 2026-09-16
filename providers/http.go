@@ -386,48 +386,26 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		}
 	}
 
-	if revealFraming {
-		// reveals can overlap (a redaction reveal spanning chunk framing), so
-		// redact the complement of their union
-		sort.Slice(reveals, func(i, j int) bool { return reveals[i].Start < reveals[j].Start })
-		if len(reveals) > 1 {
-			currentIndex := 0
-			for _, r := range reveals {
-				if currentIndex < r.Start {
-					redactions = append(redactions, shared.ResponseRedactionRange{Start: currentIndex, Length: r.Start - currentIndex})
-				}
-				if end := r.Start + r.Length; end > currentIndex {
-					currentIndex = end
-				}
+	// Automatic charset evidence may nest inside selected ranges in every
+	// protocol version. Compute the complement of their union by start order.
+	sort.Slice(reveals, func(i, j int) bool { return reveals[i].Start < reveals[j].Start })
+	if len(reveals) > 1 {
+		currentIndex := 0
+		for _, r := range reveals {
+			if currentIndex < r.Start {
+				redactions = append(redactions, shared.ResponseRedactionRange{Start: currentIndex, Length: r.Start - currentIndex})
 			}
-			if currentIndex < len(response) {
-				redactions = append(redactions, shared.ResponseRedactionRange{Start: currentIndex, Length: len(response) - currentIndex})
+			currentIndex = max(currentIndex, r.Start+r.Length)
+		}
+		// Preserve the legacy extension of the final chunk reveal to EOF.
+		if !revealFraming && len(res.Chunks) > 0 {
+			last := res.Chunks[len(res.Chunks)-1]
+			if currentIndex == last.Start+last.Length {
+				currentIndex = len(response)
 			}
 		}
-	} else {
-		sort.Slice(reveals, func(i, j int) bool { return reveals[i].Start+reveals[i].Length < reveals[j].Start+reveals[j].Length })
-
-		if len(reveals) > 1 {
-			currentIndex := 0
-			for i, r := range reveals {
-				if currentIndex < r.Start {
-					redactions = append(redactions, shared.ResponseRedactionRange{Start: currentIndex, Length: r.Start - currentIndex})
-				}
-				currentIndex = r.Start + r.Length
-
-				// legacy: extend the final chunked reveal to EOF to match old TS
-				if len(res.Chunks) > 0 && i == len(reveals)-1 {
-					lastChunk := res.Chunks[len(res.Chunks)-1]
-					lastChunkEnd := lastChunk.Start + lastChunk.Length
-					if currentIndex == lastChunkEnd && currentIndex < len(response) {
-						currentIndex = len(response)
-					}
-				}
-			}
-			endIndex := len(response)
-			if currentIndex < endIndex {
-				redactions = append(redactions, shared.ResponseRedactionRange{Start: currentIndex, Length: endIndex - currentIndex})
-			}
+		if currentIndex < len(response) {
+			redactions = append(redactions, shared.ResponseRedactionRange{Start: currentIndex, Length: len(response) - currentIndex})
 		}
 	}
 
