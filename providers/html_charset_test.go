@@ -112,7 +112,7 @@ func TestHTMLCharsetSourcesPreserveChunkedRawOffsets(t *testing.T) {
 
 func TestDetectHTMLCharset(t *testing.T) {
 	for _, tc := range []struct{ name, contentType, body, want, evidence string }{
-		{"http equiv", "text/html", "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=windows-1251\">", "windows-1251", "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=windows-1251\">"},
+		{"http equiv", "text/html", "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=windows-1251\">", "windows-1251", "<meta http-equiv=\"Content-Type\" content=\"charset=windows-1251\">"},
 		{"short mixed case", "text/html", "<META CHARSET='WINDOWS-1251'/>", "windows-1251", "<META CHARSET='WINDOWS-1251'/>"},
 		{"quoted content label", "text/html", "<meta content=\"charset = 'windows-1251'\" http-equiv='content-type'>", "windows-1251", "<meta content=\"charset = 'windows-1251'\" http-equiv='content-type'>"},
 		{"header wins", "text/html; charset=utf-8", "<meta charset=windows-1251>", "utf-8", ""},
@@ -123,7 +123,7 @@ func TestDetectHTMLCharset(t *testing.T) {
 		{"script", "text/html", "<script>const s = '<meta charset=windows-1251>';</script>", "utf-8", ""},
 		{"missing pragma", "text/html", "<meta content='text/html; charset=windows-1251'>", "utf-8", ""},
 		{"invalid then valid", "text/html", "<meta charset=nonsense><meta charset=windows-1251>", "windows-1251", "<meta charset=windows-1251>"},
-		{"duplicate attribute", "text/html", "<meta charset=utf-8 charset=windows-1251>", "utf-8", "<meta charset=utf-8 charset=windows-1251>"},
+		{"duplicate attribute", "text/html", "<meta charset=utf-8 charset=windows-1251>", "utf-8", "<meta charset=utf-8 charset=>"},
 		{"late declaration", "text/html", strings.Repeat(" ", 1024) + "<meta charset=windows-1251>", "windows-1251", "<meta charset=windows-1251>"},
 		{"partial declaration", "text/html", strings.Repeat(" ", 1010) + "<meta charset=windows-1251>", "windows-1251", "<meta charset=windows-1251>"},
 		{"utf16 meta", "text/html", "<meta charset=utf-16le>", "utf-8", "<meta charset=utf-16le>"},
@@ -268,7 +268,7 @@ func TestHTMLMetaCharsetRedactionPreservesOriginalBytes(t *testing.T) {
 					if !bytes.Contains(revealedBody, rawName) {
 						t.Fatal("raw name lost or truncated")
 					}
-					if !bytes.Contains(revealedBody, []byte(meta)) {
+					if !bytes.Contains(revealedBody, []byte("charset=windows-1251")) {
 						t.Fatal("charset evidence lost")
 					}
 					if bytes.Contains(revealedBody, []byte("PRIVATE_AFTER")) {

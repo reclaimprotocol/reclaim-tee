@@ -67,8 +67,10 @@ func detectResponseBodyCharset(raw []byte, contentType string) (responseCharsetD
 	// The complete response is already available. Continue past the browser's
 	// initial 1024-byte prescan so late declarations are not silently missed.
 	// Tokenization excludes comments and raw-text elements such as scripts.
-	if name, span := scanHTMLMetaCharset(raw); name != "" {
-		return responseCharsetDetection{name, "html-meta", []IndexRange{span}}, nil
+	if name, spans, err := scanHTMLMetaCharset(raw); err != nil {
+		return responseCharsetDetection{}, err
+	} else if name != "" {
+		return responseCharsetDetection{name, "html-meta", spans}, nil
 	}
 	if name, end := scanHTMLXMLCharset(raw); name != "" {
 		return responseCharsetDetection{name, "xml-declaration", []IndexRange{{Start: 0, End: end}}}, nil
@@ -79,7 +81,7 @@ func detectResponseBodyCharset(raw []byte, contentType string) (responseCharsetD
 	return responseCharsetDetection{Charset: "utf-8", Source: "utf-8-default"}, nil
 }
 
-func scanHTMLMetaCharset(raw []byte) (string, IndexRange) {
+func scanHTMLMetaCharset(raw []byte) (string, []IndexRange, error) {
 	z := html.NewTokenizer(bytes.NewReader(raw))
 	offset := 0
 	for {
@@ -87,7 +89,7 @@ func scanHTMLMetaCharset(raw []byte) (string, IndexRange) {
 		start := offset
 		offset += len(z.Raw())
 		if kind == html.ErrorToken {
-			return "", IndexRange{}
+			return "", nil, nil
 		}
 		if kind != html.StartTagToken && kind != html.SelfClosingTagToken {
 			continue
@@ -117,7 +119,8 @@ func scanHTMLMetaCharset(raw []byte) (string, IndexRange) {
 		} else if name == "x-user-defined" {
 			name = "windows-1252"
 		}
-		return name, IndexRange{Start: start, End: offset}
+		spans, err := charsetTagEvidence(raw[start:offset], start, true)
+		return name, spans, err
 	}
 }
 
@@ -207,31 +210,52 @@ func scanHTMLXMLCharset(raw []byte) (string, int) {
 // HTML's content attribute allows whitespace and quoted labels; it need not
 // be a syntactically valid MIME header.
 func metaContentCharset(content string) string {
-	s := strings.ToLower(content)
-	for {
-		i := strings.Index(s, "charset")
-		if i < 0 {
-			return ""
+	label, _, _ := metaContentCharsetRange(content)
+	return label
+}
+
+func metaContentCharsetRange(content string) (string, int, int) {
+	lower := []byte(content)
+	for i, b := range lower {
+		if b >= 'A' && b <= 'Z' {
+			lower[i] = b + ('a' - 'A')
 		}
-		s = strings.TrimLeft(s[i+len("charset"):], " \t\n\f\r")
-		if !strings.HasPrefix(s, "=") {
+	}
+	s := string(lower)
+	for offset := 0; offset < len(s); {
+		i := strings.Index(s[offset:], "charset")
+		if i < 0 {
+			break
+		}
+		start := offset + i
+		offset = start + len("charset")
+		for offset < len(s) && strings.ContainsRune(" \t\n\f\r", rune(s[offset])) {
+			offset++
+		}
+		if offset == len(s) || s[offset] != '=' {
 			continue
 		}
-		s = strings.TrimLeft(s[1:], " \t\n\f\r")
-		if s == "" {
-			return ""
+		offset++
+		for offset < len(s) && strings.ContainsRune(" \t\n\f\r", rune(s[offset])) {
+			offset++
 		}
-		if s[0] == '\'' || s[0] == '"' {
-			if end := strings.IndexByte(s[1:], s[0]); end >= 0 {
-				return s[1 : end+1]
+		if offset == len(s) {
+			break
+		}
+		if s[offset] == '\'' || s[offset] == '"' {
+			end := strings.IndexByte(s[offset+1:], s[offset])
+			if end < 0 {
+				break
 			}
-			return ""
+			return s[offset+1 : offset+1+end], start, offset + end + 2
 		}
-		if end := strings.IndexAny(s, "; \t\n\f\r"); end >= 0 {
-			return s[:end]
+		end := offset
+		for end < len(s) && !strings.ContainsRune("; \t\n\f\r", rune(s[end])) {
+			end++
 		}
-		return s
+		return s[offset:end], start, end
 	}
+	return "", 0, 0
 }
 
 // Reveal only declaration bytes, splitting at chunk boundaries so a

@@ -338,6 +338,15 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		zap.String("charset", detection.Charset),
 		zap.String("source", detection.Source))
 	reveals = append(reveals, charsetEvidenceReveals(detection.Evidence, bodyStartIdx, res.Chunks)...)
+	preserveCharsetContext := strings.EqualFold(strings.TrimSpace(strings.SplitN(res.Headers["content-type"], ";", 2)[0]), "text/html") &&
+		(detection.Source == "html-meta" || detection.Source == "xml-declaration" || detection.Source == "utf-8-default")
+	if preserveCharsetContext {
+		context, err := charsetContextEvidence(res.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to preserve charset context: %w", err)
+		}
+		reveals = append(reveals, charsetEvidenceReveals(context, bodyStartIdx, res.Chunks)...)
+	}
 	body, err := decodeResponseBody(res.Body, detection.Charset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode response body: %w", err)
@@ -441,6 +450,29 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		return total
 	}()))
 
+	if preserveCharsetContext {
+		masked := bytes.Clone(response)
+		for _, span := range redactions {
+			if span.Start < 0 || span.Length < 0 || span.Start > len(masked)-span.Length {
+				return nil, fmt.Errorf("invalid charset redaction range")
+			}
+			for i := span.Start; i < span.Start+span.Length; i++ {
+				masked[i] = '*'
+			}
+		}
+		var revealedBody []byte
+		if len(res.Chunks) > 0 {
+			for _, chunk := range res.Chunks {
+				revealedBody = append(revealedBody, masked[chunk.Start:chunk.Start+chunk.Length]...)
+			}
+		} else {
+			revealedBody = masked[bodyStartIdx : bodyStartIdx+len(res.Body)]
+		}
+		replayed, err := detectResponseBodyCharset(revealedBody, res.Headers["content-type"])
+		if err != nil || replayed.Charset != detection.Charset {
+			return nil, fmt.Errorf("response redaction changed the detected charset")
+		}
+	}
 	return redactions, nil
 }
 
