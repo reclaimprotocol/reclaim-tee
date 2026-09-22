@@ -58,9 +58,48 @@ class BaseHistoryTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         history_module.validate(invalid)
 
-    def run_helper(self, action, history, evidence):
-        return subprocess.run([sys.executable, str(SCRIPT), action, str(history), "gcp", str(evidence)],
+    def run_helper(self, action, history, evidence, *digests):
+        return subprocess.run([sys.executable, str(SCRIPT), action, str(history), "gcp", str(evidence), *digests],
                               capture_output=True, text=True)
+
+    def test_exact_digest_selection(self):
+        old = entry()
+        newer = dict(old, base="snp-base:" + "d" * 64, sourceCommit="e" * 40)
+        history = dict(base_images=[old, entry("aws"), newer])
+        self.assertEqual(history_module.select(history, "gcp"), newer)
+        self.assertEqual(history_module.select(history, digest="a" * 64), old)
+        self.assertEqual(history_module.select(history, "gcp", "a" * 64), old)
+        self.assertEqual(history_module.select(history, digest="a" * 96), entry("aws"))
+        with self.assertRaises(ValueError):
+            history_module.select(history, "aws", "a" * 64)
+        for digest in ("", "bad", "f" * 64, old["base"]):
+            with self.subTest(digest=digest), self.assertRaises(ValueError):
+                history_module.select(history, digest=digest)
+        history["base_images"].append(dict(old, sourceCommit="f" * 40))
+        with self.assertRaises(ValueError):
+            history_module.select(history, digest="a" * 64)
+
+    def test_historical_extraction_uses_selected_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history = root / "history.json"
+            old = entry()
+            newer = dict(old, base="snp-base:" + "d" * 64, sourceCommit="e" * 40,
+                         base_uki_sha256="f" * 64, kernelCmdline="different",
+                         base_uki_signature=base64.b64encode(b"new-signature").decode())
+            history.write_text(json.dumps(dict(base_images=[old, newer])))
+            result = self.run_helper("extract", history, root, "a" * 64)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / "commit").read_text(), old["sourceCommit"])
+            self.assertEqual((root / "expected-sha256").read_text(), old["base_uki_sha256"])
+            self.assertEqual((root / "expected-pcr").read_text(), old["base"])
+            self.assertEqual((root / "cmdline").read_text(), old["kernelCmdline"])
+            self.assertEqual((root / "base-signature.pk7").read_bytes(), b"test-public-signature")
+            del old["base_uki_signature"]
+            history.write_text(json.dumps(dict(base_images=[old, newer])))
+            result = self.run_helper("extract", history, root, "a" * 64)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("base_uki_signature", result.stderr)
 
     def test_extraction_and_record_preserve_history(self):
         with tempfile.TemporaryDirectory() as tmp:

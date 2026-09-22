@@ -15,12 +15,37 @@ set -euo pipefail
 #   - Go, Python 3, OpenSSL, and GNU tar
 #
 # Usage:
-#   ./verify.sh
+#   ./verify.sh                              verify the latest recorded builds
+#   ./verify.sh --app <digest>               verify a recorded SNP app
+#   ./verify.sh --base <digest>              verify a recorded signed SNP base
+# Selectors can be combined or repeated. Only selected builds are verified.
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
 HISTORY="${SCRIPT_DIR}/image-history.json"
+
+usage() {
+    echo "Usage: $0 [--app <digest>] [--base <digest>]"
+    echo 'Use bare hexadecimal digests without snp-app: or snp-base: prefixes.'
+    echo 'Without selectors, verify the latest recorded builds.'
+    echo 'Repeat or combine selectors to verify specific SNP apps and signed bases.'
+}
+APP_DIGESTS=()
+BASE_DIGESTS=()
+TARGETED=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --app|--base)
+            [[ $# -ge 2 && -n "$2" ]] || { echo "ERROR: $1 requires a digest" >&2; exit 1; }
+            if [[ "$1" == --app ]]; then APP_DIGESTS+=("$2"); else BASE_DIGESTS+=("$2"); fi
+            TARGETED=true
+            shift 2
+            ;;
+        --help|-h) usage; exit 0 ;;
+        *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 1 ;;
+    esac
+done
 
 # Same pinned BuildKit image as build.sh -- must match exactly
 BUILDKIT_IMAGE="moby/buildkit:buildx-stable-1@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f"
@@ -46,30 +71,44 @@ fi
 
 # Validate SNP entries before building. Write the selection to a file so Python
 # errors propagate to the script rather than disappearing in process substitution.
-python3 - "${HISTORY}" >"${VERIFY_DIR}/snp-apps" <<'PY'
+python3 - "${HISTORY}" "${TARGETED}" "${APP_DIGESTS[@]}" >"${VERIFY_DIR}/snp-apps" <<'PY'
 import json
 import re
 import sys
 
 apps = [a for a in json.load(open(sys.argv[1])).get('app_images', [])
         if a.get('type') == 'sev-snp']
-if apps:
+selected = []
+if sys.argv[2] == 'true':
+    for digest in dict.fromkeys(sys.argv[3:]):
+        if not re.fullmatch(r'[0-9a-f]{64}', digest):
+            sys.exit(f'ERROR: invalid SNP app selector: {digest}')
+        matches = [a for a in apps if a.get('version') == 'snp-app:' + digest]
+        if len(matches) != 1:
+            sys.exit(f'ERROR: expected one recorded SNP app for {digest}, found {len(matches)}')
+        selected.append(matches[0])
+elif apps:
     for role in ('k', 't'):
         entry = next((a for a in reversed(apps) if a.get('role') == role), None)
         if entry is None:
             sys.exit(f'ERROR: missing SNP app entry for tee_{role}')
-        commit = entry.get('sourceCommit', '')
-        digest = entry.get('version', '')
-        if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit):
-            sys.exit(f'ERROR: invalid sourceCommit for SNP tee_{role}')
-        if not isinstance(digest, str) or not re.fullmatch(r'snp-app:[0-9a-f]{64}', digest):
-            sys.exit(f'ERROR: invalid app digest for SNP tee_{role}')
-        print(role, commit, digest)
+        selected.append(entry)
+for entry in selected:
+    role = entry.get('role')
+    if role not in ('k', 't'):
+        sys.exit('ERROR: SNP app role must be k or t')
+    commit = entry.get('sourceCommit', '')
+    digest = entry.get('version', '')
+    if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+        sys.exit(f'ERROR: invalid sourceCommit for SNP tee_{role}')
+    if not isinstance(digest, str) or not re.fullmatch(r'snp-app:[0-9a-f]{64}', digest):
+        sys.exit(f'ERROR: invalid app digest for SNP tee_{role}')
+    print(role, commit, digest)
 PY
 
-# Require complete evidence for the latest base of each recorded cloud. A
+# Require complete evidence for each selected base (latest per cloud by default). A
 # legacy entry without a signature must fail instead of silently skipping bases.
-python3 -B - "${HISTORY}" "${SCRIPT_DIR}/snp-image" >"${VERIFY_DIR}/snp-bases" <<'PY'
+python3 -B - "${HISTORY}" "${SCRIPT_DIR}/snp-image" "${TARGETED}" "${BASE_DIGESTS[@]}" >"${VERIFY_DIR}/snp-bases" <<'PY'
 import importlib.util
 import json
 import sys
@@ -78,19 +117,26 @@ spec = importlib.util.spec_from_file_location('base_history', sys.argv[2] + '/ba
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 history = json.load(open(sys.argv[1]))
-clouds = {entry['cloud'] for entry in history.get('base_images', [])}
-for cloud in sorted(clouds):
-    module.validate(module.select(history, cloud))
-    print(cloud)
+if sys.argv[3] == 'true':
+    selected = [module.select(history, digest=digest) for digest in dict.fromkeys(sys.argv[4:])]
+else:
+    clouds = {entry['cloud'] for entry in history.get('base_images', [])}
+    selected = [module.select(history, cloud) for cloud in sorted(clouds)]
+for entry in selected:
+    module.validate(entry)
+    print(entry['cloud'], entry['base'].split(':', 1)[1])
 PY
 
 PASS=true
 VERIFIED=0
 
 # CS and SNP app checks are independent. An empty CS set skips only CS builds.
-CS_COUNT=$(python3 -c "import json; d=json.load(open('${HISTORY}')); print(sum(1 for e in d.get('app_images',[]) if e.get('type','cs')=='cs'))")
+CS_COUNT=0
+if [[ "${TARGETED}" == false ]]; then
+    CS_COUNT=$(python3 -c "import json; d=json.load(open('${HISTORY}')); print(sum(1 for e in d.get('app_images',[]) if e.get('type','cs')=='cs'))")
+fi
 if [[ "${CS_COUNT}" == "0" ]]; then
-    log "No CS images in history to verify, skipping."
+    log "No CS images selected for verification, skipping."
 else
 
 # Extract the latest CS tee-k / tee-t app entry + build metadata.
@@ -270,10 +316,12 @@ if [[ -s "${VERIFY_DIR}/snp-apps" ]]; then
     echo "============================================="
 fi
 
-while read -r CLOUD; do
-    log "Verifying signed SNP base (${CLOUD})..."
+while read -r CLOUD BASE_DIGEST; do
+    log "Verifying signed SNP base (${CLOUD}, ${BASE_DIGEST})..."
     BASE_LOG="${VERIFY_DIR}/snp-base-${CLOUD}.log"
-    if ! "${SCRIPT_DIR}/snp-base.sh" verify "${CLOUD}" >"${BASE_LOG}" 2>&1; then
+    BASE_ARGS=("${CLOUD}")
+    if [[ "${TARGETED}" == true ]]; then BASE_ARGS+=("${BASE_DIGEST}"); fi
+    if ! "${SCRIPT_DIR}/snp-base.sh" verify "${BASE_ARGS[@]}" >"${BASE_LOG}" 2>&1; then
         log "ERROR: SNP base verification failed for ${CLOUD}"
         tail -30 "${BASE_LOG}" | sed 's/^/    /'
         PASS=false

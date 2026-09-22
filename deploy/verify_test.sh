@@ -15,7 +15,7 @@ cat >"${REPO}/deploy/snp-base.sh" <<'MOCK'
 #!/bin/bash
 set -euo pipefail
 [[ "$1" == verify ]]
-echo "base $2" >>"${MOCK_CALLS}"
+echo "base $2 ${3:-}" >>"${MOCK_CALLS}"
 [[ "${MOCK_FAIL_BASE:-}" != "$2" ]] || { echo 'base signature failed' >&2; exit 25; }
 echo "[base] VERIFIED $2"
 MOCK
@@ -114,7 +114,7 @@ if mode not in ('empty', 'cs-only', 'base-only'):
         apps.append(dict(type='sev-snp', role=role,
                          sourceCommit=os.environ['MOCK_COMMIT'],
                          version=os.environ['MOCK_APP_' + role.upper()]))
-if mode in ('mixed', 'cs-only', 'cs-mismatch'):
+if mode in ('mixed', 'cs-only', 'cs-mismatch', 'historical'):
     for role in ('k', 't'):
         apps.append(dict(type='cs', package='test/tee-' + role,
                          sourceCommit=os.environ['MOCK_COMMIT'], sourceDateEpoch=1735689600,
@@ -132,7 +132,7 @@ if mode == 'malformed-digest':
 if mode == 'cs-mismatch':
     apps[-2]['version'] = 'sha256:' + '0' * 64
 bases = []
-if mode in ('base-only', 'mixed-bases', 'missing-base-signature'):
+if mode in ('base-only', 'mixed-bases', 'missing-base-signature', 'historical'):
     for cloud in ('gcp', 'aws'):
         bases.append(dict(cloud=cloud, base='snp-base:' + '1' * (64 if cloud == 'gcp' else 96),
                           base_uki_sha256='2' * 64, sourceCommit=os.environ['MOCK_COMMIT'],
@@ -140,6 +140,12 @@ if mode in ('base-only', 'mixed-bases', 'missing-base-signature'):
                           base_uki_signature=base64.b64encode(b'fixture-signature').decode()))
 if mode == 'missing-base-signature':
     del bases[-1]['base_uki_signature']
+if mode == 'historical':
+    apps.append(dict(type='sev-snp', role='k', sourceCommit='0' * 40,
+                     version='snp-app:' + '3' * 64))
+    bases.append(dict(bases[0], base='snp-base:' + '3' * 64, sourceCommit='0' * 40))
+if mode == 'ambiguous-app':
+    apps.append(dict(apps[0], sourceCommit='0' * 40))
 json.dump(dict(base_images=bases, app_images=apps),
           open(sys.argv[1], 'w'))
 PY
@@ -147,11 +153,12 @@ PY
 
 verify_success() {
     : >"${MOCK_CALLS}"
-    bash "${REPO}/deploy/verify.sh" >"${TEST_DIR}/output.log" 2>&1
+    bash "${REPO}/deploy/verify.sh" "$@" >"${TEST_DIR}/output.log" 2>&1
     grep -q 'VERIFICATION PASSED' "${TEST_DIR}/output.log"
 }
 verify_failure() {
-    if bash "${REPO}/deploy/verify.sh" >"${TEST_DIR}/output.log" 2>&1; then
+    : >"${MOCK_CALLS}"
+    if bash "${REPO}/deploy/verify.sh" "$@" >"${TEST_DIR}/output.log" 2>&1; then
         echo 'verification unexpectedly passed' >&2
         return 1
     fi
@@ -193,6 +200,49 @@ mv "${REPO}/deploy/snp-base.sh" "${TEST_DIR}/snp-base.sh"
 verify_failure
 mv "${TEST_DIR}/snp-base.sh" "${REPO}/deploy/snp-base.sh"
 echo 'PASS: both base clouds run; failed or missing base builders fail verification'
+
+write_history historical
+OLD_BASE="$(printf '1%.0s' {1..64})"
+verify_success --app "${MOCK_APP_K#snp-app:}"
+[[ "$(cat "${MOCK_CALLS}")" == 'app ./tee_k' ]]
+verify_success --base "${OLD_BASE}"
+[[ "$(cat "${MOCK_CALLS}")" == "base gcp ${OLD_BASE}" ]]
+verify_success --app "${MOCK_APP_K#snp-app:}" --app "${MOCK_APP_T#snp-app:}" --base "${OLD_BASE}"
+[[ "$(wc -l <"${MOCK_CALLS}")" == 3 ]]
+grep -qx 'app ./tee_k' "${MOCK_CALLS}"
+grep -qx 'app ./tee_t' "${MOCK_CALLS}"
+grep -qx "base gcp ${OLD_BASE}" "${MOCK_CALLS}"
+echo 'PASS: explicit historical app/base digests select only the requested builds'
+
+for option in --app --base; do
+    verify_failure "${option}"
+    [[ ! -s "${MOCK_CALLS}" ]]
+    verify_failure "${option}" invalid
+    [[ ! -s "${MOCK_CALLS}" ]]
+    verify_failure "${option}" "$(printf 'f%.0s' {1..64})"
+    [[ ! -s "${MOCK_CALLS}" ]]
+done
+verify_failure --app "${MOCK_APP_K#snp-app:}" --base "$(printf 'f%.0s' {1..64})"
+[[ ! -s "${MOCK_CALLS}" ]]
+verify_failure --app "${MOCK_APP_K}"
+[[ ! -s "${MOCK_CALLS}" ]]
+verify_failure --base "snp-base:${OLD_BASE}"
+[[ ! -s "${MOCK_CALLS}" ]]
+verify_failure --unknown
+[[ ! -s "${MOCK_CALLS}" ]]
+write_history ambiguous-app
+verify_failure --app "${MOCK_APP_K#snp-app:}"
+[[ ! -s "${MOCK_CALLS}" ]]
+write_history missing-commit
+verify_failure --app "${MOCK_APP_K#snp-app:}"
+[[ ! -s "${MOCK_CALLS}" ]]
+write_history missing-base-signature
+verify_failure --base "$(printf '1%.0s' {1..96})"
+[[ ! -s "${MOCK_CALLS}" ]]
+write_history missing-role
+verify_success --app "${MOCK_APP_K#snp-app:}"
+[[ "$(cat "${MOCK_CALLS}")" == 'app ./tee_k' ]]
+echo 'PASS: invalid selectors and missing evidence fail before builds; a selected app needs no other role'
 
 for mode in empty mismatch missing-role missing-commit unknown-commit malformed-digest cs-mismatch missing-base-signature; do
     write_history "${mode}"
