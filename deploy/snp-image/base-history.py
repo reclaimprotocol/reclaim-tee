@@ -34,10 +34,10 @@ def validate(entry):
 
 def select(history, cloud=None, digest=None):
     if digest is not None:
-        if not re.fullmatch(r'snp-base:(?:[0-9a-f]{64}|[0-9a-f]{96})', digest):
+        if not re.fullmatch(r'(?:[0-9a-f]{64}|[0-9a-f]{96})', digest):
             raise ValueError(f"invalid SNP base selector: {digest}")
         matches = [b for b in history.get("base_images", [])
-                   if b.get("base") == digest and (cloud is None or b.get("cloud") == cloud)]
+                   if b.get("base") == 'snp-base:' + digest and (cloud is None or b.get("cloud") == cloud)]
         if len(matches) != 1:
             raise ValueError(f"expected one recorded SNP base for {digest}, found {len(matches)}")
         return matches[0]

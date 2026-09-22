@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Verify a recorded base using its public signature, without R.key or cloud access:
-#   ./deploy/snp-base.sh verify <gcp|aws> [snp-base:<digest>]
+#   ./deploy/snp-base.sh verify <gcp|aws> [<digest>]
 # Record an existing signed release only after reproducing it byte for byte:
 #   ./deploy/snp-base.sh record <gcp|aws> <source-commit> <signed-uki>
 # sourceCommit selects the loader, pins, Dockerfile, and historical tier recipe.
@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
 HISTORY="${SCRIPT_DIR}/image-history.json"
 source "${SCRIPT_DIR}/snp-image/source-commit.sh"
-ACTION="${1:?usage: $0 verify <gcp|aws> [snp-base:<digest>] OR $0 record <gcp|aws> <source-commit> <signed-uki>}"
+ACTION="${1:?usage: $0 verify <gcp|aws> [<digest>] OR $0 record <gcp|aws> <source-commit> <signed-uki>}"
 CLOUD="${2:?cloud required}"
 case "${CLOUD}" in gcp|aws) ;; *) echo 'ERROR: cloud must be gcp or aws' >&2; exit 1 ;; esac
 case "${ACTION}:${#}" in verify:2|verify:3|record:4) ;; *) echo 'ERROR: invalid base command or arguments' >&2; exit 1 ;; esac

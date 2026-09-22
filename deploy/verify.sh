@@ -16,8 +16,8 @@ set -euo pipefail
 #
 # Usage:
 #   ./verify.sh                              verify the latest recorded builds
-#   ./verify.sh --app snp-app:<digest>        verify a recorded SNP app
-#   ./verify.sh --base snp-base:<digest>      verify a recorded signed SNP base
+#   ./verify.sh --app <digest>               verify a recorded SNP app
+#   ./verify.sh --base <digest>              verify a recorded signed SNP base
 # Selectors can be combined or repeated. Only selected builds are verified.
 # =============================================================================
 
@@ -26,7 +26,8 @@ REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
 HISTORY="${SCRIPT_DIR}/image-history.json"
 
 usage() {
-    echo "Usage: $0 [--app snp-app:<digest>] [--base snp-base:<digest>]"
+    echo "Usage: $0 [--app <digest>] [--base <digest>]"
+    echo 'Use bare hexadecimal digests without snp-app: or snp-base: prefixes.'
     echo 'Without selectors, verify the latest recorded builds.'
     echo 'Repeat or combine selectors to verify specific SNP apps and signed bases.'
 }
@@ -80,9 +81,9 @@ apps = [a for a in json.load(open(sys.argv[1])).get('app_images', [])
 selected = []
 if sys.argv[2] == 'true':
     for digest in dict.fromkeys(sys.argv[3:]):
-        if not re.fullmatch(r'snp-app:[0-9a-f]{64}', digest):
+        if not re.fullmatch(r'[0-9a-f]{64}', digest):
             sys.exit(f'ERROR: invalid SNP app selector: {digest}')
-        matches = [a for a in apps if a.get('version') == digest]
+        matches = [a for a in apps if a.get('version') == 'snp-app:' + digest]
         if len(matches) != 1:
             sys.exit(f'ERROR: expected one recorded SNP app for {digest}, found {len(matches)}')
         selected.append(matches[0])
@@ -123,7 +124,7 @@ else:
     selected = [module.select(history, cloud) for cloud in sorted(clouds)]
 for entry in selected:
     module.validate(entry)
-    print(entry['cloud'], entry['base'])
+    print(entry['cloud'], entry['base'].split(':', 1)[1])
 PY
 
 PASS=true

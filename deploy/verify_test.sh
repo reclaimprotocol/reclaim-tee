@@ -202,12 +202,12 @@ mv "${TEST_DIR}/snp-base.sh" "${REPO}/deploy/snp-base.sh"
 echo 'PASS: both base clouds run; failed or missing base builders fail verification'
 
 write_history historical
-OLD_BASE="snp-base:$(printf '1%.0s' {1..64})"
-verify_success --app "${MOCK_APP_K}"
+OLD_BASE="$(printf '1%.0s' {1..64})"
+verify_success --app "${MOCK_APP_K#snp-app:}"
 [[ "$(cat "${MOCK_CALLS}")" == 'app ./tee_k' ]]
 verify_success --base "${OLD_BASE}"
 [[ "$(cat "${MOCK_CALLS}")" == "base gcp ${OLD_BASE}" ]]
-verify_success --app "${MOCK_APP_K}" --app "${MOCK_APP_T}" --base "${OLD_BASE}"
+verify_success --app "${MOCK_APP_K#snp-app:}" --app "${MOCK_APP_T#snp-app:}" --base "${OLD_BASE}"
 [[ "$(wc -l <"${MOCK_CALLS}")" == 3 ]]
 grep -qx 'app ./tee_k' "${MOCK_CALLS}"
 grep -qx 'app ./tee_t' "${MOCK_CALLS}"
@@ -219,24 +219,28 @@ for option in --app --base; do
     [[ ! -s "${MOCK_CALLS}" ]]
     verify_failure "${option}" invalid
     [[ ! -s "${MOCK_CALLS}" ]]
-    verify_failure "${option}" "snp-${option#--}:$(printf 'f%.0s' {1..64})"
+    verify_failure "${option}" "$(printf 'f%.0s' {1..64})"
     [[ ! -s "${MOCK_CALLS}" ]]
 done
-verify_failure --app "${MOCK_APP_K}" --base "snp-base:$(printf 'f%.0s' {1..64})"
+verify_failure --app "${MOCK_APP_K#snp-app:}" --base "$(printf 'f%.0s' {1..64})"
+[[ ! -s "${MOCK_CALLS}" ]]
+verify_failure --app "${MOCK_APP_K}"
+[[ ! -s "${MOCK_CALLS}" ]]
+verify_failure --base "snp-base:${OLD_BASE}"
 [[ ! -s "${MOCK_CALLS}" ]]
 verify_failure --unknown
 [[ ! -s "${MOCK_CALLS}" ]]
 write_history ambiguous-app
-verify_failure --app "${MOCK_APP_K}"
+verify_failure --app "${MOCK_APP_K#snp-app:}"
 [[ ! -s "${MOCK_CALLS}" ]]
 write_history missing-commit
-verify_failure --app "${MOCK_APP_K}"
+verify_failure --app "${MOCK_APP_K#snp-app:}"
 [[ ! -s "${MOCK_CALLS}" ]]
 write_history missing-base-signature
-verify_failure --base "snp-base:$(printf '1%.0s' {1..96})"
+verify_failure --base "$(printf '1%.0s' {1..96})"
 [[ ! -s "${MOCK_CALLS}" ]]
 write_history missing-role
-verify_success --app "${MOCK_APP_K}"
+verify_success --app "${MOCK_APP_K#snp-app:}"
 [[ "$(cat "${MOCK_CALLS}")" == 'app ./tee_k' ]]
 echo 'PASS: invalid selectors and missing evidence fail before builds; a selected app needs no other role'
 
