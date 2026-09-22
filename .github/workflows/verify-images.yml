@@ -14,5 +14,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify TEE images match image-history.json
+      - name: Test image verification scripts
+        run: bash ./deploy/verify_test.sh
+
+      - name: Verify CS images and SNP app bundles match image-history.json
         run: ./deploy/verify.sh

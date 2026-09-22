@@ -1,16 +1,18 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # =============================================================================
 # RECLAIM TEE IMAGE VERIFICATION
 # =============================================================================
-# Rebuilds TEE images from source and verifies the digests match the ones
-# recorded in deploy/image-history.json. No GCP credentials needed.
+# Rebuilds CS images and SNP app bundles from source and checks their digests
+# against deploy/image-history.json. No cloud credentials or signing keys needed.
+# SNP base-image verification is separate and is not performed by this script.
 #
 # Uses the same pinned BuildKit image as build.sh to ensure identical output.
 #
 # Requirements:
 #   - Docker with buildx
+#   - Go (for SNP app bundles), Python 3, and GNU tar
 #
 # Usage:
 #   ./verify.sh
@@ -23,13 +25,13 @@ HISTORY="${SCRIPT_DIR}/image-history.json"
 # Same pinned BuildKit image as build.sh -- must match exactly
 BUILDKIT_IMAGE="moby/buildkit:buildx-stable-1@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f"
 
-TMPDIR=$(mktemp -d)
+VERIFY_DIR=$(mktemp -d)
 WORKTREE_DIR=""
 cleanup() {
     if [[ -n "${WORKTREE_DIR}" && -d "${WORKTREE_DIR}" ]]; then
         git -C "${REPO_ROOT}" worktree remove --force "${WORKTREE_DIR}" 2>/dev/null || true
     fi
-    rm -rf "${TMPDIR}"
+    rm -rf "${VERIFY_DIR}"
 }
 trap cleanup EXIT
 
@@ -42,14 +44,37 @@ if [[ ! -f "${HISTORY}" ]]; then
     exit 1
 fi
 
-# image-history.json is { base_images, app_images }. This script verifies the
-# latest CS app entry per role (SNP base/app verification is separate). Check
-# for an empty CS app set.
+# Validate SNP entries before building. Write the selection to a file so Python
+# errors propagate to the script rather than disappearing in process substitution.
+python3 - "${HISTORY}" >"${VERIFY_DIR}/snp-apps" <<'PY'
+import json
+import re
+import sys
+
+apps = [a for a in json.load(open(sys.argv[1])).get('app_images', [])
+        if a.get('type') == 'sev-snp']
+if apps:
+    for role in ('k', 't'):
+        entry = next((a for a in reversed(apps) if a.get('role') == role), None)
+        if entry is None:
+            sys.exit(f'ERROR: missing SNP app entry for tee_{role}')
+        commit = entry.get('sourceCommit', '')
+        digest = entry.get('version', '')
+        if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+            sys.exit(f'ERROR: invalid sourceCommit for SNP tee_{role}')
+        if not isinstance(digest, str) or not re.fullmatch(r'snp-app:[0-9a-f]{64}', digest):
+            sys.exit(f'ERROR: invalid app digest for SNP tee_{role}')
+        print(role, commit, digest)
+PY
+
+PASS=true
+VERIFIED=0
+
+# CS and SNP app checks are independent. An empty CS set skips only CS builds.
 CS_COUNT=$(python3 -c "import json; d=json.load(open('${HISTORY}')); print(sum(1 for e in d.get('app_images',[]) if e.get('type','cs')=='cs'))")
 if [[ "${CS_COUNT}" == "0" ]]; then
     log "No CS images in history to verify, skipping."
-    exit 0
-fi
+else
 
 # Extract the latest CS tee-k / tee-t app entry + build metadata.
 read -r EXPECTED_TK SOURCE_COMMIT_TK SOURCE_EPOCH_TK < <(python3 -c "
@@ -113,7 +138,7 @@ log "Verifying recorded build commit: ${BUILD_COMMIT:0:12}"
 # Verify against the commit the image was released from, not HEAD. The property
 # being checked is "the recorded image is reproducible from its recorded source
 # commit" -- which is independent of what's happening on the current branch.
-WORKTREE_DIR="${TMPDIR}/src"
+WORKTREE_DIR="${VERIFY_DIR}/src"
 git -C "${REPO_ROOT}" worktree add --detach "${WORKTREE_DIR}" "${BUILD_COMMIT}" >/dev/null
 
 # Normalize file mtimes to SOURCE_DATE_EPOCH. rewrite-timestamp only clamps
@@ -139,14 +164,14 @@ log "  TEE-T: ${EXPECTED_TT}"
 log "Building TEE-K from source..."
 docker buildx build ${BUILDER_FLAG} --no-cache \
     -f "${WORKTREE_DIR}/tee_k/Dockerfile.enclave" \
-    -o type=oci,dest="${TMPDIR}/tee-k.tar",rewrite-timestamp=true \
+    -o type=oci,dest="${VERIFY_DIR}/tee-k.tar",rewrite-timestamp=true \
     "${WORKTREE_DIR}"
 
 # Build TEE-T
 log "Building TEE-T from source..."
 docker buildx build ${BUILDER_FLAG} --no-cache \
     -f "${WORKTREE_DIR}/tee_t/Dockerfile.enclave" \
-    -o type=oci,dest="${TMPDIR}/tee-t.tar",rewrite-timestamp=true \
+    -o type=oci,dest="${VERIFY_DIR}/tee-t.tar",rewrite-timestamp=true \
     "${WORKTREE_DIR}"
 
 # Extract digests
@@ -158,12 +183,10 @@ extract_digest() {
     python3 -c "import json; print(json.load(open('${dir}/index.json'))['manifests'][0]['digest'])"
 }
 
-ACTUAL_TK=$(extract_digest "${TMPDIR}/tee-k.tar")
-ACTUAL_TT=$(extract_digest "${TMPDIR}/tee-t.tar")
+ACTUAL_TK=$(extract_digest "${VERIFY_DIR}/tee-k.tar")
+ACTUAL_TT=$(extract_digest "${VERIFY_DIR}/tee-t.tar")
 
 # Compare
-PASS=true
-
 echo ""
 echo "============================================="
 echo "Verification Results:"
@@ -191,89 +214,73 @@ else
 fi
 
 echo "============================================="
+VERIFIED=$((VERIFIED + 2))
+fi
 
 # ---------------------------------------------------------------------------
-# SEV-SNP verification. Identity-only builds (SNP_BUILD_ONLY=1) skip systemd-
-# repart, so they need no --privileged, no /dev, and no cloud creds (GCP_PROJECT
-# is unused once packaging is skipped). base_images are commit-independent ->
-# rebuilt from the CURRENT pins.env. sev-snp app_images track their sourceCommit;
-# snp-build.sh clones that commit and uses its recorded app toolchain and CA
-# bundle, while retaining the current loader/base inputs. App is cross-cloud,
-# so we use gcp.
+# SNP app bundles are cross-cloud. Rebuild each recorded source commit with
+# its app toolchain and CA bundle, without building or signing a base image.
 # ---------------------------------------------------------------------------
 SNP_BUILD="${REPO_ROOT}/deploy/snp-build.sh"
-if [[ -x "${SNP_BUILD}" ]]; then
-    while read -r CLOUD EXP_UKI; do
-        [[ -z "${CLOUD}" ]] && continue
-        log "Verifying SNP base (${CLOUD}) from pins.env..."
-        BASE_LOG="${TMPDIR}/snp-base-${CLOUD}.log"
-        GCP_PROJECT=verify SNP_BUILD_ONLY=1 SNP_ALLOW_DIRTY=1 "${SNP_BUILD}" t "${CLOUD}" >"${BASE_LOG}" 2>&1 || true
-        ACT_UKI=$(sed -n 's/.*base UKI *= *\([0-9a-f]\{64\}\).*/\1/p' "${BASE_LOG}" | tail -1)
-        echo "SNP base ${CLOUD}: expected ${EXP_UKI:0:16}… actual ${ACT_UKI:0:16}…"
-        if [[ "${ACT_UKI}" != "${EXP_UKI}" ]]; then
-            echo "  Result:   MISMATCH — snp-build.sh output (tail):"
-            tail -25 "${BASE_LOG}" | sed 's/^/    /'
-            PASS=false
-        else echo "  Result:   MATCH"; fi
-    done < <(python3 -c "
-import json
-bases = json.load(open('${HISTORY}')).get('base_images', [])
-latest = {}
-for b in bases:
-    latest[b['cloud']] = b
-for cloud in ('gcp', 'aws'):
-    if cloud in latest:
-        print(cloud, latest[cloud]['base_uki_sha256'])
-")
+log "SNP base images are not verified by this script; release signing is separate."
+if [[ -s "${VERIFY_DIR}/snp-apps" ]]; then
+    if [[ ! -x "${SNP_BUILD}" ]]; then
+        log "ERROR: SNP app builder is missing or not executable: ${SNP_BUILD}"
+        exit 1
+    fi
     while read -r ROLE COMMIT EXP_APP; do
-        [[ -z "${ROLE}" ]] && continue
         log "Verifying SNP app (tee_${ROLE} @ ${COMMIT:0:12})..."
         git -C "${REPO_ROOT}" rev-parse --verify "${COMMIT}^{commit}" >/dev/null 2>&1 || { log "ERROR: sourceCommit ${COMMIT} not in repo"; PASS=false; continue; }
-        APP_LOG="${TMPDIR}/snp-app-${ROLE}.log"
+        APP_LOG="${VERIFY_DIR}/snp-app-${ROLE}.log"
         # SNP_BUILD_COMMIT makes snp-build.sh create a real clone of the recorded
         # source commit, use that commit's app pins, and embed the same VCS stamp
-        # as the fleet build. Base inputs stay on the current pins.
-        GCP_PROJECT=verify SNP_BUILD_ONLY=1 SNP_BUILD_COMMIT="${COMMIT}" \
-            "${SNP_BUILD}" "${ROLE}" gcp >"${APP_LOG}" 2>&1 || true
-        ACT_APP=$(sed -n 's/.*app digest *= *\(snp-app:[0-9a-f]*\).*/\1/p' "${APP_LOG}" | tail -1)
+        # as the fleet build. App-only mode needs no deployment configuration.
+        if ! SNP_BUILD_COMMIT="${COMMIT}" SNP_EXPECT_DIGEST="${EXP_APP}" \
+            "${SNP_BUILD}" --app-only "${ROLE}" >"${APP_LOG}" 2>&1; then
+            log "ERROR: SNP app build failed for tee_${ROLE}"
+            tail -25 "${APP_LOG}" | sed 's/^/    /'
+            PASS=false
+            continue
+        fi
+        ACT_APP=$(sed -n 's/^\[build\]   app digest = \(snp-app:[0-9a-f]\{64\}\)  .*/\1/p' "${APP_LOG}")
         echo "SNP app tee_${ROLE}: expected ${EXP_APP:0:24}… actual ${ACT_APP:0:24}…"
         if [[ "${ACT_APP}" != "${EXP_APP}" ]]; then
             echo "  Result:   MISMATCH — snp-build.sh output (tail):"
             tail -25 "${APP_LOG}" | sed 's/^/    /'
             PASS=false
         else echo "  Result:   MATCH"; fi
-    done < <(python3 -c "
-import json
-app = json.load(open('${HISTORY}')).get('app_images', [])
-for role in ('k', 't'):
-    for a in reversed(app):
-        if a.get('type')=='sev-snp' and a.get('role')==role:
-            print(a['role'], a['sourceCommit'], a['version']); break
-")
+        VERIFIED=$((VERIFIED + 1))
+    done <"${VERIFY_DIR}/snp-apps"
     echo "============================================="
 fi
 
+if [[ "${VERIFIED}" == 0 ]]; then
+    log "ERROR: No images or app bundles were verified"
+    exit 1
+fi
+
 if [[ "${PASS}" == "true" ]]; then
-    echo "VERIFICATION PASSED: Images match source code"
+    echo "VERIFICATION PASSED: ${VERIFIED} CS images/SNP app bundles match recorded source code"
     exit 0
 else
     echo "VERIFICATION FAILED: Images do not match source code"
 
-    # Dump debug info: compare OCI manifests and layer hashes
+    # Dump CS debug info only when CS images were built.
+    if [[ "${CS_COUNT}" != 0 ]]; then
     echo ""
     echo "=== DEBUG: TEE-K OCI manifest ==="
-    cat "${TMPDIR}/tee-k-oci/index.json" 2>/dev/null | python3 -m json.tool || true
+    cat "${VERIFY_DIR}/tee-k-oci/index.json" 2>/dev/null | python3 -m json.tool || true
 
     echo ""
     echo "=== DEBUG: TEE-K config ==="
-    MANIFEST_DIGEST=$(python3 -c "import json; print(json.load(open('${TMPDIR}/tee-k-oci/index.json'))['manifests'][0]['digest'].split(':')[1])" 2>/dev/null)
+    MANIFEST_DIGEST=$(python3 -c "import json; print(json.load(open('${VERIFY_DIR}/tee-k-oci/index.json'))['manifests'][0]['digest'].split(':')[1])" 2>/dev/null || true)
     if [[ -n "${MANIFEST_DIGEST}" ]]; then
-        cat "${TMPDIR}/tee-k-oci/blobs/sha256/${MANIFEST_DIGEST}" 2>/dev/null | python3 -m json.tool || true
+        cat "${VERIFY_DIR}/tee-k-oci/blobs/sha256/${MANIFEST_DIGEST}" 2>/dev/null | python3 -m json.tool || true
     fi
 
     echo ""
     echo "=== DEBUG: TEE-K layer listing ==="
-    find "${TMPDIR}/tee-k-oci/blobs" -type f -exec sha256sum {} \; 2>/dev/null | sort || true
+    find "${VERIFY_DIR}/tee-k-oci/blobs" -type f -exec sha256sum {} \; 2>/dev/null | sort || true
 
     echo ""
     echo "=== DEBUG: BuildKit worker info ==="
@@ -282,7 +289,8 @@ else
 
     # Save tarballs for artifact upload
     mkdir -p /tmp/verify-debug
-    cp "${TMPDIR}"/tee-*.tar /tmp/verify-debug/ 2>/dev/null || true
+    cp "${VERIFY_DIR}"/tee-*.tar /tmp/verify-debug/ 2>/dev/null || true
+    fi
 
     exit 1
 fi
