@@ -32,7 +32,15 @@ def validate(entry):
     return signature
 
 
-def select(history, cloud):
+def select(history, cloud=None, digest=None):
+    if digest is not None:
+        if not re.fullmatch(r'snp-base:(?:[0-9a-f]{64}|[0-9a-f]{96})', digest):
+            raise ValueError(f"invalid SNP base selector: {digest}")
+        matches = [b for b in history.get("base_images", [])
+                   if b.get("base") == digest and (cloud is None or b.get("cloud") == cloud)]
+        if len(matches) != 1:
+            raise ValueError(f"expected one recorded SNP base for {digest}, found {len(matches)}")
+        return matches[0]
     entry = next((b for b in reversed(history.get("base_images", [])) if b.get("cloud") == cloud), None)
     if entry is None:
         raise ValueError(f"no recorded base for {cloud}")
@@ -40,12 +48,14 @@ def select(history, cloud):
 
 
 def main():
-    action, history_name, cloud, directory = sys.argv[1:]
+    action, history_name, cloud, directory, *digests = sys.argv[1:]
+    if len(digests) > 1 or (digests and action != "extract"):
+        raise ValueError("only extract accepts an optional base digest")
     history_path = Path(history_name)
     history = json.loads(history_path.read_text())
     directory = Path(directory)
     if action == "extract":
-        entry = select(history, cloud)
+        entry = select(history, cloud, digests[0] if digests else None)
         signature = validate(entry)
         for field, filename in (("sourceCommit", "commit"), ("kernelCmdline", "cmdline"),
                                 ("base_uki_sha256", "expected-sha256"), ("base", "expected-pcr")):
