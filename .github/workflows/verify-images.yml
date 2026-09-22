@@ -15,7 +15,9 @@ jobs:
           fetch-depth: 0
 
       - name: Test image verification scripts
-        run: bash ./deploy/verify_test.sh
+        run: |
+          bash ./deploy/verify_test.sh
+          python3 ./deploy/snp-image/base-history_test.py
 
-      - name: Verify CS images and SNP app bundles match image-history.json
+      - name: Verify CS images, signed SNP bases, and app bundles
         run: ./deploy/verify.sh

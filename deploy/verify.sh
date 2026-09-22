@@ -4,15 +4,15 @@ set -euo pipefail
 # =============================================================================
 # RECLAIM TEE IMAGE VERIFICATION
 # =============================================================================
-# Rebuilds CS images and SNP app bundles from source and checks their digests
+# Rebuilds CS images, SNP bases, and app bundles from source and checks their digests
 # against deploy/image-history.json. No cloud credentials or signing keys needed.
-# SNP base-image verification is separate and is not performed by this script.
+# SNP bases reuse the recorded release signature and the public R certificate.
 #
 # Uses the same pinned BuildKit image as build.sh to ensure identical output.
 #
 # Requirements:
 #   - Docker with buildx
-#   - Go (for SNP app bundles), Python 3, and GNU tar
+#   - Go, Python 3, OpenSSL, and GNU tar
 #
 # Usage:
 #   ./verify.sh
@@ -65,6 +65,23 @@ if apps:
         if not isinstance(digest, str) or not re.fullmatch(r'snp-app:[0-9a-f]{64}', digest):
             sys.exit(f'ERROR: invalid app digest for SNP tee_{role}')
         print(role, commit, digest)
+PY
+
+# Require complete evidence for the latest base of each recorded cloud. A
+# legacy entry without a signature must fail instead of silently skipping bases.
+python3 -B - "${HISTORY}" "${SCRIPT_DIR}/snp-image" >"${VERIFY_DIR}/snp-bases" <<'PY'
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location('base_history', sys.argv[2] + '/base-history.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+history = json.load(open(sys.argv[1]))
+clouds = {entry['cloud'] for entry in history.get('base_images', [])}
+for cloud in sorted(clouds):
+    module.validate(module.select(history, cloud))
+    print(cloud)
 PY
 
 PASS=true
@@ -222,7 +239,6 @@ fi
 # its app toolchain and CA bundle, without building or signing a base image.
 # ---------------------------------------------------------------------------
 SNP_BUILD="${REPO_ROOT}/deploy/snp-build.sh"
-log "SNP base images are not verified by this script; release signing is separate."
 if [[ -s "${VERIFY_DIR}/snp-apps" ]]; then
     if [[ ! -x "${SNP_BUILD}" ]]; then
         log "ERROR: SNP app builder is missing or not executable: ${SNP_BUILD}"
@@ -254,13 +270,26 @@ if [[ -s "${VERIFY_DIR}/snp-apps" ]]; then
     echo "============================================="
 fi
 
+while read -r CLOUD; do
+    log "Verifying signed SNP base (${CLOUD})..."
+    BASE_LOG="${VERIFY_DIR}/snp-base-${CLOUD}.log"
+    if ! "${SCRIPT_DIR}/snp-base.sh" verify "${CLOUD}" >"${BASE_LOG}" 2>&1; then
+        log "ERROR: SNP base verification failed for ${CLOUD}"
+        tail -30 "${BASE_LOG}" | sed 's/^/    /'
+        PASS=false
+        continue
+    fi
+    log "SNP base ${CLOUD}: signature, image SHA-256, and PCR 11 match"
+    VERIFIED=$((VERIFIED + 1))
+done <"${VERIFY_DIR}/snp-bases"
+
 if [[ "${VERIFIED}" == 0 ]]; then
     log "ERROR: No images or app bundles were verified"
     exit 1
 fi
 
 if [[ "${PASS}" == "true" ]]; then
-    echo "VERIFICATION PASSED: ${VERIFIED} CS images/SNP app bundles match recorded source code"
+    echo "VERIFICATION PASSED: ${VERIFIED} images/app bundles match recorded source code"
     exit 0
 else
     echo "VERIFICATION FAILED: Images do not match source code"

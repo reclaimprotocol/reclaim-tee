@@ -10,6 +10,15 @@ MOCK_BIN="${TEST_DIR}/bin"
 mkdir -p "${REPO}/deploy/snp-image" "${MOCK_BIN}" "${TEST_DIR}/mpc/pkg"
 cp "${SCRIPT_DIR}/verify.sh" "${SCRIPT_DIR}/snp-build.sh" "${SCRIPT_DIR}/_lib.sh" "${REPO}/deploy/"
 cp "${SCRIPT_DIR}/snp-image/"{app-pins,source-commit}.sh "${REPO}/deploy/snp-image/"
+cp "${SCRIPT_DIR}/snp-image/base-history.py" "${REPO}/deploy/snp-image/"
+cat >"${REPO}/deploy/snp-base.sh" <<'MOCK'
+#!/bin/bash
+set -euo pipefail
+[[ "$1" == verify ]]
+echo "base $2" >>"${MOCK_CALLS}"
+[[ "${MOCK_FAIL_BASE:-}" != "$2" ]] || { echo 'base signature failed' >&2; exit 25; }
+echo "[base] VERIFIED $2"
+MOCK
 chmod +x "${REPO}/deploy/"*.sh
 printf 'circuit\n' >"${TEST_DIR}/mpc/pkg/circuit"
 printf '%s\n' 'deploy/image-history.json' 'deploy/.env' 'deploy/snp-image/app-bundle.tar' \
@@ -97,10 +106,10 @@ export MOCK_APP_K="$(expected_app k)" MOCK_APP_T="$(expected_app t)"
 
 write_history() {
     python3 - "${REPO}/deploy/image-history.json" "$1" <<'PY'
-import json, os, sys
+import base64, json, os, sys
 mode = sys.argv[2]
 apps = []
-if mode not in ('empty', 'cs-only'):
+if mode not in ('empty', 'cs-only', 'base-only'):
     for role in ('k', 't'):
         apps.append(dict(type='sev-snp', role=role,
                          sourceCommit=os.environ['MOCK_COMMIT'],
@@ -122,8 +131,16 @@ if mode == 'malformed-digest':
     apps[0]['version'] = 'snp-app:bad'
 if mode == 'cs-mismatch':
     apps[-2]['version'] = 'sha256:' + '0' * 64
-# Base entries alone must never count as successful verification.
-json.dump(dict(base_images=[dict(cloud='gcp', base_uki_sha256='0' * 64)], app_images=apps),
+bases = []
+if mode in ('base-only', 'mixed-bases', 'missing-base-signature'):
+    for cloud in ('gcp', 'aws'):
+        bases.append(dict(cloud=cloud, base='snp-base:' + '1' * (64 if cloud == 'gcp' else 96),
+                          base_uki_sha256='2' * 64, sourceCommit=os.environ['MOCK_COMMIT'],
+                          kernelCmdline='console=ttyS0,115200',
+                          base_uki_signature=base64.b64encode(b'fixture-signature').decode()))
+if mode == 'missing-base-signature':
+    del bases[-1]['base_uki_signature']
+json.dump(dict(base_images=bases, app_images=apps),
           open(sys.argv[1], 'w'))
 PY
 }
@@ -161,7 +178,23 @@ verify_success
 [[ "$(grep -c '^cs ' "${MOCK_CALLS}")" == 2 ]]
 echo 'PASS: mixed and CS-only histories preserve CS verification'
 
-for mode in empty mismatch missing-role missing-commit unknown-commit malformed-digest cs-mismatch; do
+write_history base-only
+verify_success
+[[ "$(grep -c '^base ' "${MOCK_CALLS}")" == 2 ]]
+write_history mixed-bases
+verify_success
+[[ "$(grep -c '^app ' "${MOCK_CALLS}")" == 2 ]]
+[[ "$(grep -c '^base ' "${MOCK_CALLS}")" == 2 ]]
+export MOCK_FAIL_BASE=aws
+verify_failure
+grep -q 'base signature failed' "${TEST_DIR}/output.log"
+unset MOCK_FAIL_BASE
+mv "${REPO}/deploy/snp-base.sh" "${TEST_DIR}/snp-base.sh"
+verify_failure
+mv "${TEST_DIR}/snp-base.sh" "${REPO}/deploy/snp-base.sh"
+echo 'PASS: both base clouds run; failed or missing base builders fail verification'
+
+for mode in empty mismatch missing-role missing-commit unknown-commit malformed-digest cs-mismatch missing-base-signature; do
     write_history "${mode}"
     verify_failure
 done
