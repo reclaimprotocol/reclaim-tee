@@ -8,28 +8,36 @@ set -euo pipefail
 # cross-cloud snp-app: digest (printed at the end).
 #
 #   ./deploy/snp-build.sh <k|t> <gcp|aws> [TAG]   default TAG = tee<role>-<cloud>
+#   ./deploy/snp-build.sh --app-only <k|t>       rebuild the app without signing
 #   ./deploy/snp-build.sh clean
 #
 # Run with the proxy SET (the AWS steps need it); go/docker/gcloud/gsutil steps
 # unset it themselves. Deployment-specific values come from deploy/.env.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/.env" ]]; then set -a; source "${SCRIPT_DIR}/.env"; set +a; fi
+APP_ONLY=false
+if [[ "${1:-}" == --app-only ]]; then
+    APP_ONLY=true
+    shift
+fi
+if [[ "${APP_ONLY}" == false && -f "${SCRIPT_DIR}/.env" ]]; then set -a; source "${SCRIPT_DIR}/.env"; set +a; fi
 source "${SCRIPT_DIR}/_lib.sh"
-set -a; source "${SCRIPT_DIR}/snp-image/pins.env"; set +a
 source "${SCRIPT_DIR}/snp-image/app-pins.sh"
 source "${SCRIPT_DIR}/snp-image/source-commit.sh"
 
-: "${SNP_LOADER_GO_TOOLCHAIN:?set SNP_LOADER_GO_TOOLCHAIN in snp-image/pins.env}"
-: "${SNP_TEE_GO_TOOLCHAIN:?set SNP_TEE_GO_TOOLCHAIN in snp-image/pins.env}"
-: "${SNP_APT_SNAPSHOT:?set SNP_APT_SNAPSHOT in snp-image/pins.env}"
+if [[ "${APP_ONLY}" == false ]]; then
+    set -a; source "${SCRIPT_DIR}/snp-image/pins.env"; set +a
+    : "${SNP_LOADER_GO_TOOLCHAIN:?set SNP_LOADER_GO_TOOLCHAIN in snp-image/pins.env}"
+    : "${SNP_TEE_GO_TOOLCHAIN:?set SNP_TEE_GO_TOOLCHAIN in snp-image/pins.env}"
+    : "${SNP_APT_SNAPSHOT:?set SNP_APT_SNAPSHOT in snp-image/pins.env}"
 
-# SNP_CA_IMAGE is an app-bundle input as well as the TLS bootstrap image for
-# the base builder. Preserve the current value for the base; historical app
-# reconstruction replaces only the app copy below.
-SNP_BASE_CA_IMAGE="${SNP_CA_IMAGE:?set SNP_CA_IMAGE in snp-image/pins.env}"
+    # SNP_CA_IMAGE is an app-bundle input as well as the TLS bootstrap image for
+    # the base builder. Preserve the current value for the base; historical app
+    # reconstruction replaces only the app copy below.
+    SNP_BASE_CA_IMAGE="${SNP_CA_IMAGE:?set SNP_CA_IMAGE in snp-image/pins.env}"
 
-GCP_PROJECT="${GCP_PROJECT:?set GCP_PROJECT in deploy/.env}"
+    GCP_PROJECT="${GCP_PROJECT:?set GCP_PROJECT in deploy/.env}"
+fi
 IMG_DIR="${SCRIPT_DIR}/snp-image"
 SECURE_BOOT_DIR="${SCRIPT_DIR}/secure-boot"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -38,12 +46,14 @@ BUNDLE_HOST="${IMG_DIR}/app-bundle.tar"
 DOCKER="${DOCKER:-docker}"
 AWS_TYPE="${AWS_SNP_TYPE:-c6a.large}"
 
-for required in PK.crt.der KEK.crt.der R.crt.der R.crt.pem R.pub.pem R.key aws-uefi-data.b64; do
-    [[ -f "${SECURE_BOOT_DIR}/${required}" ]] || {
-        echo "[build] missing Secure Boot artifact ${SECURE_BOOT_DIR}/${required}" >&2
-        exit 1
-    }
-done
+if [[ "${APP_ONLY}" == false ]]; then
+    for required in PK.crt.der KEK.crt.der R.crt.der R.crt.pem R.pub.pem R.key aws-uefi-data.b64; do
+        [[ -f "${SECURE_BOOT_DIR}/${required}" ]] || {
+            echo "[build] missing Secure Boot artifact ${SECURE_BOOT_DIR}/${required}" >&2
+            exit 1
+        }
+    done
+fi
 
 # The AWS steps go through a flaky local proxy; let the CLI retry dropped
 # connections itself so one blip doesn't kill a 10-min VM-import build.
@@ -100,7 +110,7 @@ build_raw() {
     local cloud="$1"
     local img="snp-img-builder-${cloud}"
     echo "[build] two-tier image in Docker (cloud=${cloud} kernel=$(kernel_for "$cloud"))..."
-    # Identity-only (verify) builds skip systemd-repart -> no --privileged, no /dev.
+    # Build-only images skip disk assembly but still sign the base UKI.
     local priv="--privileged -v /dev:/dev" idonly=""
     [[ "${SNP_BUILD_ONLY:-0}" == 1 ]] && { priv=""; idonly="-e SNP_IDENTITY_ONLY=1"; }
     ( _np; ${DOCKER} build --build-arg KERNEL_PKG="$(kernel_for "$cloud")" \
@@ -211,11 +221,13 @@ record_digest_env() {
     echo "[build]   recorded ${role^^} digest in deploy/snp-digests.env (COMMIT=${commit:0:7})"
 }
 
-ROLE="${1:?usage: $0 <k|t> <gcp|aws> [TAG]}"
-CLOUD="${2:?usage: $0 <k|t> <gcp|aws> [TAG]}"
+ROLE="${1:?usage: $0 --app-only <k|t> OR $0 <k|t> <gcp|aws> [TAG]}"
 case "${ROLE}" in k|t) ;; *) echo "role must be k|t" >&2; exit 1 ;; esac
-case "${CLOUD}" in gcp|aws) ;; *) echo "cloud must be gcp|aws" >&2; exit 1 ;; esac
-TAG="${3:-tee${ROLE}-${CLOUD}}"
+if [[ "${APP_ONLY}" == false ]]; then
+    CLOUD="${2:?usage: $0 <k|t> <gcp|aws> [TAG]}"
+    case "${CLOUD}" in gcp|aws) ;; *) echo "cloud must be gcp|aws" >&2; exit 1 ;; esac
+    TAG="${3:-tee${ROLE}-${CLOUD}}"
+fi
 
 # Reproducible per-commit app build. The app is VCS-stamped, so its digest is
 # commit-specific AND a dirty tree taints it. Default to the latest app_images
@@ -232,19 +244,19 @@ if [[ -n "${BUILD_COMMIT}" ]]; then
     echo "[build] app source: clean clone @ ${BUILD_COMMIT:0:12} (dirty-tree-immune)"
     snp_checkout_source_commit "${REPO_ROOT}" "${BUILD_COMMIT}" "${CLONE_DIR}"
     REPO_ROOT="${CLONE_DIR}"
-    # The app toolchain and CA bundle are part of the recorded app identity, so
-    # take them from the same source commit. Loader/base inputs remain the
-    # current values loaded before the clone.
-    snp_load_app_pins "${REPO_ROOT}/deploy/snp-image/pins.env"
 fi
+# Use the selected source's app inputs. Full builds retain the current base pins.
+snp_load_app_pins "${REPO_ROOT}/deploy/snp-image/pins.env"
 
 # Check the selected app source, not only the deployment worktree. This rejects
 # an old SEV2-only commit or a verifier pinned to a different R before the image
 # is signed. Certificate reissuance remains safe because the SPKI file is stable.
-cmp -s "${SECURE_BOOT_DIR}/R.pub.pem" "${REPO_ROOT}/shared/secure_boot_release_pub.pem" || {
-    echo "[build] selected app source does not contain the deployed Secure Boot R public key" >&2
-    exit 1
-}
+if [[ "${APP_ONLY}" == false ]]; then
+    cmp -s "${SECURE_BOOT_DIR}/R.pub.pem" "${REPO_ROOT}/shared/secure_boot_release_pub.pem" || {
+        echo "[build] selected app source does not contain the deployed Secure Boot R public key" >&2
+        exit 1
+    }
+fi
 
 # The app digest is VCS-stamped (tracks the commit), so a dirty tree yields a
 # vcs.modified artifact, not the clean-commit value. Refuse unless overridden.
@@ -255,15 +267,21 @@ if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" && "${SNP_ALL
     exit 1
 fi
 
-echo "[build] === tee_${ROLE}@${CLOUD} (tag ${TAG}) ==="
+if [[ "${APP_ONLY}" == true ]]; then
+    echo "[build] === tee_${ROLE} app bundle ==="
+else
+    echo "[build] === tee_${ROLE}@${CLOUD} (tag ${TAG}) ==="
+fi
 echo "[build] app inputs: ${SNP_TEE_GO_TOOLCHAIN}, ${SNP_CA_IMAGE}"
-build_loader
+if [[ "${APP_ONLY}" == false ]]; then build_loader; fi
 build_bundle "${ROLE}"
-build_raw "${CLOUD}"
+if [[ "${APP_ONLY}" == false ]]; then
+    build_raw "${CLOUD}"
 
-# The base UKI is R-signed and verified through Secure Boot. Its hash is printed
-# for diagnostics only; it is no longer a production pin or rollout dependency.
-BASE_UKI="$(sha256sum "${IMG_DIR}/snp-base.efi" | cut -d' ' -f1)"
+    # The base UKI is R-signed and verified through Secure Boot. Its hash is printed
+    # for diagnostics only; it is no longer a production pin or rollout dependency.
+    BASE_UKI="$(sha256sum "${IMG_DIR}/snp-base.efi" | cut -d' ' -f1)"
+fi
 
 # App bundle (PCR 8) tracks the commit -> compute + report; operator allowlists.
 DIGEST="snp-app:$(sha256sum "${BUNDLE_HOST}" | cut -d' ' -f1)"
@@ -273,7 +291,12 @@ if [[ -n "${SNP_EXPECT_DIGEST:-}" && "${SNP_EXPECT_DIGEST}" != "${DIGEST}" ]]; t
     echo "[build] base/toolchain/commit differ from the allowlisted build; do NOT deploy." >&2
     exit 1
 fi
-# SNP_BUILD_ONLY: identity verify (verify.sh) — emit digests, skip cloud packaging.
+if [[ "${APP_ONLY}" == true ]]; then
+    echo "[build] DONE tee_${ROLE} app bundle"
+    echo "[build]   app digest = ${DIGEST}  (commit $(git -C "${REPO_ROOT}" rev-parse --short HEAD))"
+    exit 0
+fi
+# SNP_BUILD_ONLY emits image digests and skips cloud packaging.
 if [[ "${SNP_BUILD_ONLY:-0}" != 1 ]]; then
     [[ "${CLOUD}" == gcp ]] && package_gcp "${TAG}" || package_aws "${TAG}"
     record_digest_env "${ROLE}" "${DIGEST}"
