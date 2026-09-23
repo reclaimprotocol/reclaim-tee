@@ -85,9 +85,11 @@ build_bundle() {
     local dst="${IMG_DIR}/mkosi.extra/usr/local/bin/snp-tee${role}"
     echo "[build] compiling tee_${role}..."
     mkdir -p "$(dirname "${dst}")"
+    # Bash 3.2 does not apply errexit to a failed subshell. Do not reuse a stale
+    # binary if compilation fails.
     ( _np; cd "${REPO_ROOT}" && GOTOOLCHAIN="${SNP_TEE_GO_TOOLCHAIN}" GOFLAGS=-mod=readonly GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
         go build -trimpath -tags 'enclave osusergo netgo static_build' \
-        -ldflags "-s -w -buildid= -extldflags=-static" -o "${dst}" "./tee_${role}" )
+        -ldflags "-s -w -buildid= -extldflags=-static" -o "${dst}" "./tee_${role}" ) || return
     chmod 0755 "${dst}"
     local stage; stage="$(mktemp -d)"
     cp "${dst}" "${stage}/app"
