@@ -71,7 +71,9 @@ fi
 
 # Validate SNP entries before building. Write the selection to a file so Python
 # errors propagate to the script rather than disappearing in process substitution.
-python3 - "${HISTORY}" "${TARGETED}" "${APP_DIGESTS[@]}" >"${VERIFY_DIR}/snp-apps" <<'PY'
+# Bash 3.2 treats empty arrays as unset under nounset. Omit empty selector arrays
+# from argv while preserving each argument when selectors are present.
+python3 - "${HISTORY}" "${TARGETED}" ${APP_DIGESTS[@]+"${APP_DIGESTS[@]}"} >"${VERIFY_DIR}/snp-apps" <<'PY'
 import json
 import re
 import sys
@@ -108,7 +110,7 @@ PY
 
 # Require complete evidence for each selected base (latest per cloud by default). A
 # legacy entry without a signature must fail instead of silently skipping bases.
-python3 -B - "${HISTORY}" "${SCRIPT_DIR}/snp-image" "${TARGETED}" "${BASE_DIGESTS[@]}" >"${VERIFY_DIR}/snp-bases" <<'PY'
+python3 -B - "${HISTORY}" "${SCRIPT_DIR}/snp-image" "${TARGETED}" ${BASE_DIGESTS[@]+"${BASE_DIGESTS[@]}"} >"${VERIFY_DIR}/snp-bases" <<'PY'
 import importlib.util
 import json
 import sys
