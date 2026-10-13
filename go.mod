@@ -30,12 +30,13 @@ require (
 	github.com/markkurossi/mpc v0.0.0-20260616034910-9c484ce016a7
 	github.com/mr-tron/base58 v1.3.0
 	github.com/reclaimprotocol/jsonpathplus-go/v2 v2.0.1
-	github.com/reclaimprotocol/xpath-go v1.7.1
+	github.com/reclaimprotocol/xpath-go v1.8.0
 	github.com/reclaimprotocol/zk-symmetric-crypto/gnark v0.0.0-20260828170805-394f777fa404
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.mozilla.org/pkcs7 v0.10.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/crypto v0.55.0
+	golang.org/x/net v0.58.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.41.0
@@ -96,7 +97,6 @@ require (
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	google.golang.org/genproto v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
