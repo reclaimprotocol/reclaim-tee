@@ -39,6 +39,12 @@ func extractHTMLElementsIndexes(html []byte, xpathExpression string, contentsOnl
 
 	out := make([]IndexRange, 0, len(matches))
 	for i, m := range matches {
+		if m.NodeType == 0 {
+			return nil, fmt.Errorf("XPath %q returns a computed value; response redactions require node selections with source byte ranges", xpathExpression)
+		}
+		if m.NodeType == 2 && m.EndLocation <= m.StartLocation {
+			return nil, fmt.Errorf("XPath %q selects an attribute without source byte ranges; extract the raw attribute with regex instead", xpathExpression)
+		}
 		logger.Debug("Match found", zap.String("component", "XPath"), zap.String("operation", "extractHTMLElementsIndexes"), zap.String("level", "verbose"), zap.Int("match_index", i+1), zap.Int("start", m.StartLocation), zap.Int("end", m.EndLocation), zap.ByteString("content", html[m.StartLocation:m.EndLocation]))
 		out = append(out, IndexRange{Start: m.StartLocation, End: m.EndLocation})
 	}
