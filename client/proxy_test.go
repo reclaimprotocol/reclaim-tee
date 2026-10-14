@@ -1,6 +1,9 @@
 package client
 
 import (
+	"encoding/csv"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -15,12 +18,21 @@ func TestValidateGeoLocation(t *testing.T) {
 		{"valid GB", "GB", false},
 		{"valid DE", "DE", false},
 		{"valid JP", "JP", false},
+		{"valid Canada", "CA", false},
+		{"valid Canada lowercase", "ca", false},
+		{"valid Austria", "AT", false},
+		{"valid Austria lowercase", "at", false},
+		{"obsolete CS", "CS", true},
+		{"unassigned XK", "XK", true},
 		{"invalid XX", "XX", true},
 		{"invalid ZZ", "ZZ", true},
 		{"too short", "U", true},
 		{"too long", "USA", true},
 		{"empty", "", true},
 		{"numbers", "12", true},
+		{"leading whitespace", " CA", true},
+		{"trailing whitespace", "CA ", true},
+		{"non-ASCII", "é", true},
 	}
 
 	for _, tt := range tests {
@@ -30,6 +42,36 @@ func TestValidateGeoLocation(t *testing.T) {
 				t.Errorf("validateGeoLocation(%q) error = %v, wantErr %v", tt.geoLocation, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateGeoLocationISO3166(t *testing.T) {
+	// Independent reference: https://github.com/datasets/country-list/blob/02b3e31c3eeb355933ae351d1e7c7cdd0e0e9b84/data.csv
+	file, err := os.Open("testdata/iso3166.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	rows, err := csv.NewReader(file).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assigned := make(map[string]bool)
+	for _, row := range rows[1:] {
+		assigned[row[1]] = true
+	}
+	if len(assigned) != 249 {
+		t.Fatalf("expected 249 assigned ISO codes, got %d", len(assigned))
+	}
+	for first := byte('A'); first <= 'Z'; first++ {
+		for second := byte('A'); second <= 'Z'; second++ {
+			code := string([]byte{first, second})
+			for _, input := range []string{code, strings.ToLower(code), strings.ToLower(code[:1]) + code[1:]} {
+				if err := validateGeoLocation(input); (err == nil) != assigned[code] {
+					t.Errorf("validateGeoLocation(%q) = %v, assigned = %v", input, err, assigned[code])
+				}
+			}
+		}
 	}
 }
 
