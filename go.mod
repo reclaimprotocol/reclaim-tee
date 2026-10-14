@@ -10,7 +10,6 @@ require (
 	cloud.google.com/go/logging v1.19.1
 	cloud.google.com/go/secretmanager v1.21.0
 	filippo.io/nistec v0.0.4
-	github.com/KGKallasmaa/countries v0.2.0
 	github.com/aws/aws-sdk-go-v2 v1.43.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.37
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.82.2
