@@ -3,7 +3,7 @@
 # privileged with /dev mounted for the loop-free systemd-repart disk assembly.
 # Base images and the Ubuntu archive snapshot are pinned so a rebuild cannot
 # drift when live APT repositories supersede a package. Defaults match pins.env.
-ARG CA_IMAGE=alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+ARG CA_IMAGE=alpine@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395
 ARG UBUNTU_DIGEST=sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 # Ubuntu's minimal image has no TLS roots, but the official snapshot service

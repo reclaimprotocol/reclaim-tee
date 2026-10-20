@@ -11,8 +11,8 @@
   "license": "ISC",
   "description": "Interactive 3D walkthrough of the Reclaim TEE proving flow",
   "dependencies": {
-    "three": "^0.185.1",
-    "vite": "^8.1.5",
-    "vite-plugin-singlefile": "^2.3.3"
+    "three": "^0.186.1",
+    "vite": "^8.3.4",
+    "vite-plugin-singlefile": "^2.3.4"
   }
 }
