@@ -7,13 +7,20 @@ ARG CA_IMAGE=alpine@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c
 ARG UBUNTU_DIGEST=sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 # Ubuntu's minimal image has no TLS roots, but the official snapshot service
-# uses HTTPS. Bootstrap trust comes from the digest-pinned current base CA that
-# snp-build.sh passes here; historical app CA pins do not alter this base input.
-# Ubuntu's ca-certificates package replaces this file below.
+# uses HTTPS. The pinned Alpine image still ships an older CA bundle. Bootstrap
+# APT with a version-pinned package from Alpine, checked against its SHA256.
+# Verify its Alpine signature offline before extracting it. The signing keys
+# come from the digest-pinned CA_IMAGE.
+# Ubuntu's ca-certificates package replaces this bootstrap bundle below.
 FROM ${CA_IMAGE} AS apt-tls
+ADD --checksum=sha256:bb008f6d214b6af7576324659856fb63dc8dcb4373f8345ff706388696f1254d \
+    https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/ca-certificates-bundle-20261020-r0.apk /ca-certificates-bundle.apk
+RUN apk --no-network --keys-dir /etc/apk/keys verify /ca-certificates-bundle.apk \
+    && mkdir -p /tmp/ca-root \
+    && apk --no-network extract --destination /tmp/ca-root /ca-certificates-bundle.apk
 
 FROM ubuntu:24.04@${UBUNTU_DIGEST}
-COPY --from=apt-tls /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=apt-tls /tmp/ca-root/etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 ENV DEBIAN_FRONTEND=noninteractive
 
