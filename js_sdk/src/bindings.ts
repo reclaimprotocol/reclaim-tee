@@ -1,4 +1,4 @@
-import koffi from 'koffi';
+import koffi, { type LibraryHandle } from 'koffi';
 import path from 'path';
 
 // Error codes matching C enum
@@ -28,14 +28,16 @@ const GoSlice = koffi.struct('GoSlice', {
 });
 
 // Library instance
-let lib: koffi.IKoffiLib | null = null;
+let lib: LibraryHandle | null = null;
+
+type KoffiFunction = ReturnType<LibraryHandle['func']>;
 
 // Function pointers
-let _reclaim_execute_protocol: koffi.KoffiFunction | null = null;
-let _reclaim_free_string: koffi.KoffiFunction | null = null;
-let _reclaim_get_error_message: koffi.KoffiFunction | null = null;
-let _reclaim_get_version: koffi.KoffiFunction | null = null;
-let _init_algorithm: koffi.KoffiFunction | null = null;
+let _reclaim_execute_protocol: KoffiFunction | null = null;
+let _reclaim_free_string: KoffiFunction | null = null;
+let _reclaim_get_error_message: KoffiFunction | null = null;
+let _reclaim_get_version: KoffiFunction | null = null;
+let _init_algorithm: KoffiFunction | null = null;
 
 /**
  * Get the architecture-specific library path
