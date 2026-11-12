@@ -266,6 +266,12 @@ func GetResponseRedactions(response []byte, rawParams *HTTPProviderParams, ctx *
 		return nil, fmt.Errorf("expected status 2xx, got %d (%s)", res.StatusCode, res.StatusMessage)
 	}
 
+	// Redaction rules only work on an uncompressed body; see ErrResponseContentEncoded.
+	if err := checkResponseNotContentEncoded(res.Headers, res.Body); err != nil {
+		logger.Error("Response body is content-encoded", zap.String("component", "HTTP"), zap.String("operation", "GetResponseRedactions"), zap.String("requestId", requestId), zap.String("content_encoding", res.Headers["content-encoding"]), zap.String("transfer_encoding", res.Headers["transfer-encoding"]), zap.Int("body_bytes", len(res.Body)))
+		return nil, err
+	}
+
 	logger.Info("Step 2/4: Substituting parameters in redaction rules", zap.String("component", "HTTP"), zap.String("operation", "GetResponseRedactions"), zap.Int("step", 2), zap.Int("total", 4))
 	// substitute placeholders in params (ignoreMissing = true)
 	sp, err := substituteParamValues(rawParams, nil, true)
